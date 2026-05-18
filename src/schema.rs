@@ -1,0 +1,588 @@
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+use hcl_edit::Span;
+use hcl_edit::expr::{Expression, Traversal, TraversalOperator};
+use hcl_edit::structure::{Block, Body, Structure};
+
+use crate::diagnostics::Diag;
+use crate::parser::ParsedFile;
+
+#[derive(Clone)]
+pub enum FieldType {
+    String,
+    Integer,
+    Bool,
+    Enum(&'static [&'static str]),
+    Ref(&'static [&'static str]),
+}
+
+pub struct AttributeSchema {
+    pub name: &'static str,
+    pub ty: FieldType,
+    pub required: bool,
+}
+
+pub struct NestedBlockSchema {
+    pub name: &'static str,
+    pub schema: BlockSchema,
+}
+
+pub struct BlockSchema {
+    pub attributes: Vec<AttributeSchema>,
+    pub blocks: Vec<NestedBlockSchema>,
+}
+
+const STATUS: &[&str] = &["ENABLED", "PAUSED", "REMOVED"];
+
+fn attr(name: &'static str, ty: FieldType, required: bool) -> AttributeSchema {
+    AttributeSchema { name, ty, required }
+}
+
+fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
+    static SCHEMAS: OnceLock<HashMap<&'static str, BlockSchema>> = OnceLock::new();
+    SCHEMAS.get_or_init(|| {
+        let mut m = HashMap::new();
+
+        m.insert(
+            "google_ads_campaign_budget",
+            BlockSchema {
+                attributes: vec![
+                    attr("name", FieldType::String, true),
+                    attr("amount_micros", FieldType::Integer, true),
+                    attr(
+                        "delivery_method",
+                        FieldType::Enum(&["STANDARD", "ACCELERATED"]),
+                        false,
+                    ),
+                    attr("explicitly_shared", FieldType::Bool, false),
+                ],
+                blocks: vec![],
+            },
+        );
+
+        m.insert(
+            "google_ads_campaign",
+            BlockSchema {
+                attributes: vec![
+                    attr("name", FieldType::String, true),
+                    attr("status", FieldType::Enum(STATUS), false),
+                    attr(
+                        "advertising_channel_type",
+                        FieldType::Enum(&[
+                            "SEARCH",
+                            "DISPLAY",
+                            "SHOPPING",
+                            "VIDEO",
+                            "PERFORMANCE_MAX",
+                            "MULTI_CHANNEL",
+                            "LOCAL",
+                            "SMART",
+                            "DISCOVERY",
+                            "DEMAND_GEN",
+                        ]),
+                        true,
+                    ),
+                    attr(
+                        "campaign_budget",
+                        FieldType::Ref(&["google_ads_campaign_budget"]),
+                        true,
+                    ),
+                ],
+                blocks: vec![
+                    NestedBlockSchema {
+                        name: "manual_cpc",
+                        schema: BlockSchema {
+                            attributes: vec![attr(
+                                "enhanced_cpc_enabled",
+                                FieldType::Bool,
+                                false,
+                            )],
+                            blocks: vec![],
+                        },
+                    },
+                    NestedBlockSchema {
+                        name: "network_settings",
+                        schema: BlockSchema {
+                            attributes: vec![
+                                attr("target_google_search", FieldType::Bool, false),
+                                attr("target_search_network", FieldType::Bool, false),
+                                attr("target_content_network", FieldType::Bool, false),
+                                attr(
+                                    "target_partner_search_network",
+                                    FieldType::Bool,
+                                    false,
+                                ),
+                            ],
+                            blocks: vec![],
+                        },
+                    },
+                ],
+            },
+        );
+
+        m.insert(
+            "google_ads_ad_group",
+            BlockSchema {
+                attributes: vec![
+                    attr("name", FieldType::String, true),
+                    attr(
+                        "campaign",
+                        FieldType::Ref(&["google_ads_campaign"]),
+                        true,
+                    ),
+                    attr("status", FieldType::Enum(STATUS), false),
+                    attr(
+                        "type",
+                        FieldType::Enum(&[
+                            "SEARCH_STANDARD",
+                            "DISPLAY_STANDARD",
+                            "SHOPPING_PRODUCT_ADS",
+                            "VIDEO_BUMPER",
+                            "VIDEO_TRUE_VIEW_IN_STREAM",
+                            "VIDEO_TRUE_VIEW_IN_DISPLAY",
+                        ]),
+                        false,
+                    ),
+                    attr("cpc_bid_micros", FieldType::Integer, false),
+                ],
+                blocks: vec![],
+            },
+        );
+
+        m
+    })
+}
+
+fn provider_schemas() -> &'static HashMap<&'static str, BlockSchema> {
+    static SCHEMAS: OnceLock<HashMap<&'static str, BlockSchema>> = OnceLock::new();
+    SCHEMAS.get_or_init(|| {
+        let mut m = HashMap::new();
+        m.insert(
+            "google_ads",
+            BlockSchema {
+                attributes: vec![
+                    attr("customer_id", FieldType::String, true),
+                    attr("login_customer_id", FieldType::String, false),
+                ],
+                blocks: vec![],
+            },
+        );
+        m
+    })
+}
+
+struct ResourceDecl {
+    file: String,
+}
+
+pub fn validate_files(files: &[ParsedFile]) -> Vec<Diag> {
+    let mut diags = Vec::new();
+    let mut resources: HashMap<String, ResourceDecl> = HashMap::new();
+
+    for f in files {
+        for s in f.body.iter() {
+            let Structure::Block(b) = s else { continue };
+            if b.ident.as_str() != "resource" || b.labels.len() != 2 {
+                continue;
+            }
+            let ty = b.labels[0].as_str();
+            let name = b.labels[1].as_str();
+            let address = format!("{ty}.{name}");
+            if let Some(prev) = resources.get(&address) {
+                diags.push(Diag::new(
+                    f.src.clone(),
+                    block_span(b),
+                    format!(
+                        "duplicate resource '{address}' (also declared at {})",
+                        prev.file
+                    ),
+                ));
+                continue;
+            }
+            resources.insert(
+                address,
+                ResourceDecl {
+                    file: f.path.display().to_string(),
+                },
+            );
+        }
+    }
+    let _ = &resources;
+
+    for f in files {
+        validate_top_level(f, &resources, &mut diags);
+    }
+
+    diags.sort_by(|a, b| {
+        (a.src.name(), a.span.offset()).cmp(&(b.src.name(), b.span.offset()))
+    });
+    diags
+}
+
+fn validate_top_level(
+    file: &ParsedFile,
+    resources: &HashMap<String, ResourceDecl>,
+    diags: &mut Vec<Diag>,
+) {
+    for s in file.body.iter() {
+        match s {
+            Structure::Attribute(a) => {
+                diags.push(Diag::new(
+                    file.src.clone(),
+                    span_of(a.key.span()),
+                    format!(
+                        "top-level attributes are not allowed; place '{}' inside a 'provider' or 'resource' block",
+                        a.key.as_str()
+                    ),
+                ));
+            }
+            Structure::Block(b) => match b.ident.as_str() {
+                "provider" => validate_provider(file, b, resources, diags),
+                "resource" => validate_resource(file, b, resources, diags),
+                other => {
+                    diags.push(Diag::new(
+                        file.src.clone(),
+                        span_of(b.ident.span()),
+                        format!(
+                            "unknown top-level block '{other}'; expected 'provider' or 'resource'"
+                        ),
+                    ));
+                }
+            },
+        }
+    }
+}
+
+fn validate_provider(
+    file: &ParsedFile,
+    block: &Block,
+    resources: &HashMap<String, ResourceDecl>,
+    diags: &mut Vec<Diag>,
+) {
+    if block.labels.len() != 1 {
+        diags.push(Diag::new(
+            file.src.clone(),
+            span_of(block.ident.span()),
+            format!(
+                "'provider' block requires exactly one label (the provider name), got {}",
+                block.labels.len()
+            ),
+        ));
+        return;
+    }
+    let provider_name = block.labels[0].as_str();
+    let schema = match provider_schemas().get(provider_name) {
+        Some(s) => s,
+        None => {
+            diags.push(Diag::new(
+                file.src.clone(),
+                span_of(block.labels[0].span()),
+                format!("unknown provider '{provider_name}'"),
+            ));
+            return;
+        }
+    };
+    validate_body(
+        file,
+        block,
+        &block.body,
+        schema,
+        &format!("provider.{provider_name}"),
+        resources,
+        diags,
+    );
+}
+
+fn validate_resource(
+    file: &ParsedFile,
+    block: &Block,
+    resources: &HashMap<String, ResourceDecl>,
+    diags: &mut Vec<Diag>,
+) {
+    if block.labels.len() != 2 {
+        diags.push(Diag::new(
+            file.src.clone(),
+            span_of(block.ident.span()),
+            format!(
+                "'resource' block requires exactly two labels (type and name), got {}",
+                block.labels.len()
+            ),
+        ));
+        return;
+    }
+    let ty = block.labels[0].as_str();
+    let name = block.labels[1].as_str();
+    let schema = match resource_schemas().get(ty) {
+        Some(s) => s,
+        None => {
+            diags.push(Diag::new(
+                file.src.clone(),
+                span_of(block.labels[0].span()),
+                format!("unknown resource type '{ty}'"),
+            ));
+            return;
+        }
+    };
+    validate_body(
+        file,
+        block,
+        &block.body,
+        schema,
+        &format!("{ty}.{name}"),
+        resources,
+        diags,
+    );
+}
+
+fn validate_body(
+    file: &ParsedFile,
+    containing: &Block,
+    body: &Body,
+    schema: &BlockSchema,
+    address: &str,
+    resources: &HashMap<String, ResourceDecl>,
+    diags: &mut Vec<Diag>,
+) {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+
+    for s in body.iter() {
+        match s {
+            Structure::Attribute(a) => {
+                let key = a.key.as_str();
+                if !seen.insert(key) {
+                    diags.push(Diag::new(
+                        file.src.clone(),
+                        span_of(a.key.span()),
+                        format!("duplicate attribute '{key}' in {address}"),
+                    ));
+                    continue;
+                }
+                let Some(attr_schema) = schema.attributes.iter().find(|x| x.name == key) else {
+                    diags.push(Diag::new(
+                        file.src.clone(),
+                        span_of(a.key.span()),
+                        format!("unknown attribute '{key}' in {address}"),
+                    ));
+                    continue;
+                };
+                validate_value(file, &a.value, &attr_schema.ty, resources, diags);
+            }
+            Structure::Block(b) => {
+                let bname = b.ident.as_str();
+                let Some(sub_schema) = schema.blocks.iter().find(|x| x.name == bname) else {
+                    diags.push(Diag::new(
+                        file.src.clone(),
+                        span_of(b.ident.span()),
+                        format!("unknown nested block '{bname}' in {address}"),
+                    ));
+                    continue;
+                };
+                if !b.labels.is_empty() {
+                    diags.push(Diag::new(
+                        file.src.clone(),
+                        span_of(b.labels[0].span()),
+                        format!("nested block '{bname}' does not take labels"),
+                    ));
+                }
+                validate_body(
+                    file,
+                    b,
+                    &b.body,
+                    &sub_schema.schema,
+                    &format!("{address}.{bname}"),
+                    resources,
+                    diags,
+                );
+            }
+        }
+    }
+
+    for a in &schema.attributes {
+        if a.required && !seen.contains(a.name) {
+            diags.push(Diag::new(
+                file.src.clone(),
+                span_of(containing.ident.span()),
+                format!("missing required attribute '{}' in {}", a.name, address),
+            ));
+        }
+    }
+}
+
+fn validate_value(
+    file: &ParsedFile,
+    expr: &Expression,
+    ty: &FieldType,
+    resources: &HashMap<String, ResourceDecl>,
+    diags: &mut Vec<Diag>,
+) {
+    let span = span_of(expr.span());
+    match ty {
+        FieldType::String => {
+            if !matches!(expr, Expression::String(_)) {
+                diags.push(Diag::new(
+                    file.src.clone(),
+                    span,
+                    format!("expected string, got {}", describe_expr(expr)),
+                ));
+            }
+        }
+        FieldType::Integer => match expr {
+            Expression::Number(n) => {
+                let formatted = &**n;
+                if formatted.as_f64().map(|f| f.fract() != 0.0).unwrap_or(false) {
+                    diags.push(Diag::new(
+                        file.src.clone(),
+                        span,
+                        format!("expected integer, got fractional number {formatted}"),
+                    ));
+                }
+            }
+            other => diags.push(Diag::new(
+                file.src.clone(),
+                span,
+                format!("expected integer, got {}", describe_expr(other)),
+            )),
+        },
+        FieldType::Bool => {
+            if !matches!(expr, Expression::Bool(_)) {
+                diags.push(Diag::new(
+                    file.src.clone(),
+                    span,
+                    format!("expected boolean, got {}", describe_expr(expr)),
+                ));
+            }
+        }
+        FieldType::Enum(values) => match expr {
+            Expression::String(s) => {
+                let v = s.as_str();
+                if !values.iter().any(|&x| x == v) {
+                    diags.push(Diag::new(
+                        file.src.clone(),
+                        span,
+                        format!(
+                            "invalid value \"{v}\"; expected one of [{}]",
+                            values.join(", ")
+                        ),
+                    ));
+                }
+            }
+            other => diags.push(Diag::new(
+                file.src.clone(),
+                span,
+                format!(
+                    "expected one of [{}], got {}",
+                    values.join(", "),
+                    describe_expr(other)
+                ),
+            )),
+        },
+        FieldType::Ref(targets) => {
+            let Expression::Traversal(t) = expr else {
+                diags.push(Diag::new(
+                    file.src.clone(),
+                    span,
+                    format!(
+                        "expected reference to {}, got {}",
+                        join_or(targets),
+                        describe_expr(expr)
+                    ),
+                ));
+                return;
+            };
+            let Some(path) = extract_traversal_path(t) else {
+                diags.push(Diag::new(
+                    file.src.clone(),
+                    span,
+                    "unsupported reference expression (only `<type>.<name>.<attribute>` is allowed)"
+                        .to_string(),
+                ));
+                return;
+            };
+            if path.len() < 2 {
+                diags.push(Diag::new(
+                    file.src.clone(),
+                    span,
+                    format!(
+                        "incomplete reference '{}'; expected '<type>.<name>.<attribute>'",
+                        path.join(".")
+                    ),
+                ));
+                return;
+            }
+            let ref_type = &path[0];
+            let ref_name = &path[1];
+            if !targets.iter().any(|&t| t == ref_type) {
+                diags.push(Diag::new(
+                    file.src.clone(),
+                    span,
+                    format!(
+                        "expected reference to {}, got reference to '{}'",
+                        join_or(targets),
+                        ref_type
+                    ),
+                ));
+                return;
+            }
+            let address = format!("{ref_type}.{ref_name}");
+            if !resources.contains_key(&address) {
+                diags.push(Diag::new(
+                    file.src.clone(),
+                    span,
+                    format!("reference to undeclared resource '{address}'"),
+                ));
+            }
+        }
+    }
+}
+
+fn extract_traversal_path(t: &Traversal) -> Option<Vec<String>> {
+    let mut path = Vec::new();
+    match &t.expr {
+        Expression::Variable(v) => path.push(v.as_str().to_string()),
+        _ => return None,
+    }
+    for op in t.operators.iter() {
+        match &**op {
+            TraversalOperator::GetAttr(name) => path.push(name.as_str().to_string()),
+            _ => return None,
+        }
+    }
+    Some(path)
+}
+
+fn describe_expr(expr: &Expression) -> String {
+    match expr {
+        Expression::String(s) => format!("string \"{}\"", s.as_str()),
+        Expression::Number(n) => format!("number {}", **n),
+        Expression::Bool(b) => format!("boolean {}", **b),
+        Expression::Traversal(t) => match extract_traversal_path(t) {
+            Some(p) => format!("reference '{}'", p.join(".")),
+            None => "expression".to_string(),
+        },
+        Expression::Variable(v) => format!("identifier '{}'", v.as_str()),
+        Expression::Array(_) => "array".to_string(),
+        Expression::Object(_) => "object".to_string(),
+        Expression::Null(_) => "null".to_string(),
+        _ => "expression".to_string(),
+    }
+}
+
+fn join_or(items: &[&str]) -> String {
+    items.join(" or ")
+}
+
+fn block_span(b: &Block) -> std::ops::Range<usize> {
+    let start = b.ident.span().map(|r| r.start).unwrap_or(0);
+    let end = b
+        .body
+        .span()
+        .map(|r| r.end)
+        .or_else(|| b.labels.last().and_then(|l| l.span().map(|r| r.end)))
+        .unwrap_or(start);
+    start..end
+}
+
+fn span_of(s: Option<std::ops::Range<usize>>) -> std::ops::Range<usize> {
+    s.unwrap_or(0..0)
+}

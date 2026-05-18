@@ -1,0 +1,3 @@
+resource "google_ads_campaign_budget" "broken" {
+  name          = "Oops"
+  amount_micros = 1000000

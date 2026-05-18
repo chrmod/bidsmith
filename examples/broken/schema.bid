@@ -1,0 +1,30 @@
+provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+resource "google_ads_campaign_budget" "summer" {
+  name            = "Summer 2026"
+  amount_micros   = "ten million"
+  delivery_method = "TURBO"
+}
+
+resource "google_ads_campaign" "summer_search" {
+  name                     = "Search"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.winter.id
+  status                   = "ENABLED"
+  budget_typo              = "oops"
+
+  network_settings {
+    target_google_search = true
+    target_unknown       = true
+  }
+}
+
+resource "google_ads_campaing" "typo" {
+  name = "Whoops"
+}
+
+resource "google_ads_ad_group" "missing_required" {
+  campaign = google_ads_campaign.summer_search.id
+}

@@ -1,0 +1,36 @@
+provider "google_ads" {
+  customer_id       = "1234567890"
+  login_customer_id = "9876543210"
+}
+
+resource "google_ads_campaign_budget" "summer" {
+  name            = "Summer 2026"
+  amount_micros   = 10000000
+  delivery_method = "STANDARD"
+}
+
+resource "google_ads_campaign" "summer_search" {
+  name                     = "Summer 2026 — Search"
+  status                   = "PAUSED"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.summer.id
+
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+
+  network_settings {
+    target_google_search          = true
+    target_search_network         = false
+    target_content_network        = false
+    target_partner_search_network = false
+  }
+}
+
+resource "google_ads_ad_group" "summer_search_default" {
+  name           = "Default"
+  campaign       = google_ads_campaign.summer_search.id
+  status         = "ENABLED"
+  type           = "SEARCH_STANDARD"
+  cpc_bid_micros = 2000000
+}
