@@ -1,0 +1,45 @@
+provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+resource "google_ads_campaign_budget" "fall" {
+  name = "Fall 2026"
+  amount_micros = 5000000
+}
+
+resource "google_ads_campaign" "fall_search" {
+  name = "Fall 2026 — Search"
+  advertising_channel_type = "SEARCH"
+  campaign_budget = google_ads_campaign_budget.fall.id
+
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+}
+
+resource "google_ads_ad_group" "fall_default" {
+  name = "Default"
+  campaign = google_ads_campaign.fall_search.id
+}
+
+resource "google_ads_ad_group_ad" "fall_thin_rsa" {
+  ad_group = google_ads_ad_group.fall_default.id
+
+  ad {
+    final_urls = ["https://example.com/fall"]
+
+    responsive_search_ad {
+      headline {
+        text = "Call 555-123-4567 for Deals"
+      }
+
+      headline {
+        text = "Fall Specials"
+      }
+
+      description {
+        text = "Reach out today."
+      }
+    }
+  }
+}

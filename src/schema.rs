@@ -12,9 +12,17 @@ use crate::parser::ParsedFile;
 pub enum FieldType {
     String,
     Integer,
+    Number,
     Bool,
     Enum(&'static [&'static str]),
     Ref(&'static [&'static str]),
+    List(Box<FieldType>),
+}
+
+impl FieldType {
+    pub fn list_of(inner: FieldType) -> Self {
+        FieldType::List(Box::new(inner))
+    }
 }
 
 pub struct AttributeSchema {
@@ -34,6 +42,41 @@ pub struct BlockSchema {
 }
 
 const STATUS: &[&str] = &["ENABLED", "PAUSED", "REMOVED"];
+const KEYWORD_MATCH_TYPE: &[&str] = &["EXACT", "PHRASE", "BROAD"];
+const RSA_PIN: &[&str] = &[
+    "HEADLINE_1",
+    "HEADLINE_2",
+    "HEADLINE_3",
+    "DESCRIPTION_1",
+    "DESCRIPTION_2",
+];
+const PROXIMITY_RADIUS_UNITS: &[&str] = &["MILES", "KILOMETERS"];
+
+fn rsa_asset_block(name: &'static str) -> NestedBlockSchema {
+    NestedBlockSchema {
+        name,
+        schema: BlockSchema {
+            attributes: vec![
+                attr("text", FieldType::String, true),
+                attr("pin", FieldType::Enum(RSA_PIN), false),
+            ],
+            blocks: vec![],
+        },
+    }
+}
+
+fn keyword_block() -> NestedBlockSchema {
+    NestedBlockSchema {
+        name: "keyword",
+        schema: BlockSchema {
+            attributes: vec![
+                attr("text", FieldType::String, true),
+                attr("match_type", FieldType::Enum(KEYWORD_MATCH_TYPE), true),
+            ],
+            blocks: vec![],
+        },
+    }
+}
 
 fn attr(name: &'static str, ty: FieldType, required: bool) -> AttributeSchema {
     AttributeSchema { name, ty, required }
@@ -118,6 +161,134 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         },
                     },
                 ],
+            },
+        );
+
+        m.insert(
+            "google_ads_ad_group_criterion",
+            BlockSchema {
+                attributes: vec![
+                    attr(
+                        "ad_group",
+                        FieldType::Ref(&["google_ads_ad_group"]),
+                        true,
+                    ),
+                    attr("status", FieldType::Enum(STATUS), false),
+                    attr("negative", FieldType::Bool, false),
+                    attr("cpc_bid_micros", FieldType::Integer, false),
+                ],
+                blocks: vec![keyword_block()],
+            },
+        );
+
+        m.insert(
+            "google_ads_campaign_criterion",
+            BlockSchema {
+                attributes: vec![
+                    attr(
+                        "campaign",
+                        FieldType::Ref(&["google_ads_campaign"]),
+                        true,
+                    ),
+                    attr("status", FieldType::Enum(STATUS), false),
+                    attr("negative", FieldType::Bool, false),
+                ],
+                blocks: vec![
+                    keyword_block(),
+                    NestedBlockSchema {
+                        name: "location",
+                        schema: BlockSchema {
+                            attributes: vec![attr(
+                                "geo_target_constant",
+                                FieldType::String,
+                                true,
+                            )],
+                            blocks: vec![],
+                        },
+                    },
+                    NestedBlockSchema {
+                        name: "language",
+                        schema: BlockSchema {
+                            attributes: vec![attr(
+                                "language_constant",
+                                FieldType::String,
+                                true,
+                            )],
+                            blocks: vec![],
+                        },
+                    },
+                    NestedBlockSchema {
+                        name: "proximity",
+                        schema: BlockSchema {
+                            attributes: vec![
+                                attr("radius", FieldType::Number, true),
+                                attr(
+                                    "radius_units",
+                                    FieldType::Enum(PROXIMITY_RADIUS_UNITS),
+                                    true,
+                                ),
+                            ],
+                            blocks: vec![NestedBlockSchema {
+                                name: "geo_point",
+                                schema: BlockSchema {
+                                    attributes: vec![
+                                        attr(
+                                            "latitude_in_micro_degrees",
+                                            FieldType::Integer,
+                                            true,
+                                        ),
+                                        attr(
+                                            "longitude_in_micro_degrees",
+                                            FieldType::Integer,
+                                            true,
+                                        ),
+                                    ],
+                                    blocks: vec![],
+                                },
+                            }],
+                        },
+                    },
+                ],
+            },
+        );
+
+        m.insert(
+            "google_ads_ad_group_ad",
+            BlockSchema {
+                attributes: vec![
+                    attr(
+                        "ad_group",
+                        FieldType::Ref(&["google_ads_ad_group"]),
+                        true,
+                    ),
+                    attr("status", FieldType::Enum(STATUS), false),
+                ],
+                blocks: vec![NestedBlockSchema {
+                    name: "ad",
+                    schema: BlockSchema {
+                        attributes: vec![
+                            attr("name", FieldType::String, false),
+                            attr(
+                                "final_urls",
+                                FieldType::list_of(FieldType::String),
+                                true,
+                            ),
+                        ],
+                        blocks: vec![NestedBlockSchema {
+                            name: "responsive_search_ad",
+                            schema: BlockSchema {
+                                attributes: vec![
+                                    attr("path1", FieldType::String, false),
+                                    attr("path2", FieldType::String, false),
+                                ],
+                                blocks: vec![
+                                    rsa_asset_block("headline"),
+                                    rsa_asset_block("description"),
+                                ],
+                            },
+                        }],
+                    },
+                }],
             },
         );
 
@@ -427,6 +598,15 @@ fn validate_value(
                 ));
             }
         }
+        FieldType::Number => {
+            if !matches!(expr, Expression::Number(_)) {
+                diags.push(Diag::new(
+                    file.src.clone(),
+                    span,
+                    format!("expected number, got {}", describe_expr(expr)),
+                ));
+            }
+        }
         FieldType::Integer => match expr {
             Expression::Number(n) => {
                 let formatted = &**n;
@@ -473,6 +653,22 @@ fn validate_value(
                 format!(
                     "expected one of [{}], got {}",
                     values.join(", "),
+                    describe_expr(other)
+                ),
+            )),
+        },
+        FieldType::List(inner) => match expr {
+            Expression::Array(arr) => {
+                for item in arr.iter() {
+                    validate_value(file, item, inner, resources, diags);
+                }
+            }
+            other => diags.push(Diag::new(
+                file.src.clone(),
+                span,
+                format!(
+                    "expected list of {}, got {}",
+                    describe_field_type(inner),
                     describe_expr(other)
                 ),
             )),
@@ -549,6 +745,18 @@ fn extract_traversal_path(t: &Traversal) -> Option<Vec<String>> {
         }
     }
     Some(path)
+}
+
+fn describe_field_type(ty: &FieldType) -> String {
+    match ty {
+        FieldType::String => "string".to_string(),
+        FieldType::Integer => "integer".to_string(),
+        FieldType::Number => "number".to_string(),
+        FieldType::Bool => "boolean".to_string(),
+        FieldType::Enum(values) => format!("one of [{}]", values.join(", ")),
+        FieldType::Ref(targets) => format!("reference to {}", join_or(targets)),
+        FieldType::List(inner) => format!("list of {}", describe_field_type(inner)),
+    }
 }
 
 fn describe_expr(expr: &Expression) -> String {

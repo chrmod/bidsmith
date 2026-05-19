@@ -34,5 +34,76 @@
       "type": "SEARCH_STANDARD",
       "cpc_bid_micros": 2000000
     }
+  ],
+  "ad_group_criteria": [
+    {
+      "id": "5001",
+      "ad_group": "3001",
+      "status": "ENABLED",
+      "keyword": {
+        "text": "summer deals",
+        "match_type": "PHRASE"
+      }
+    }
+  ],
+  "campaign_criteria": [
+    {
+      "id": "6001",
+      "campaign": "2001",
+      "status": "ENABLED",
+      "negative": true,
+      "keyword": {
+        "text": "winter",
+        "match_type": "BROAD"
+      }
+    },
+    {
+      "id": "6002",
+      "campaign": "2001",
+      "status": "ENABLED",
+      "location": {
+        "geo_target_constant": "geoTargetConstants/2840"
+      }
+    },
+    {
+      "id": "6003",
+      "campaign": "2001",
+      "status": "ENABLED",
+      "proximity": {
+        "radius": 15,
+        "radius_units": "KILOMETERS",
+        "geo_point": {
+          "latitude_in_micro_degrees": 52229675,
+          "longitude_in_micro_degrees": 21012228
+        }
+      }
+    }
+  ],
+  "ad_group_ads": [
+    {
+      "id": "4001",
+      "ad_group": "3001",
+      "status": "ENABLED",
+      "ad": {
+        "name": "Summer RSA",
+        "final_urls": [
+          "https://www.google.com/?q=summer+deals",
+          "https://www.google.com/"
+        ],
+        "responsive_search_ad": {
+          "headlines": [
+            { "text": "Summer Deals 2026", "pin": "HEADLINE_1" },
+            { "text": "Save on Summer Gear" },
+            { "text": "Free Shipping This Summer" }
+          ],
+          "descriptions": [
+            { "text": "Limited-time offers across our summer range.", "pin": "DESCRIPTION_1" },
+            { "text": "Order today and get free shipping on every box." }
+          ],
+          "path1": "summer",
+          "path2": "deals"
+        }
+      }
+    }
   ]
 }

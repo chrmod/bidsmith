@@ -1,36 +1,118 @@
 provider "google_ads" {
-  customer_id       = "1234567890"
+  customer_id = "1234567890"
   login_customer_id = "9876543210"
 }
 
 resource "google_ads_campaign_budget" "summer" {
-  name            = "Summer 2026"
-  amount_micros   = 10000000
+  name = "Summer 2026"
+  amount_micros = 10000000
   delivery_method = "STANDARD"
 }
 
 resource "google_ads_campaign" "summer_search" {
-  name                     = "Summer 2026 — Search"
-  status                   = "PAUSED"
+  name = "Summer 2026 — Search"
+  status = "PAUSED"
   advertising_channel_type = "SEARCH"
-  campaign_budget          = google_ads_campaign_budget.summer.id
+  campaign_budget = google_ads_campaign_budget.summer.id
 
   manual_cpc {
     enhanced_cpc_enabled = false
   }
 
   network_settings {
-    target_google_search          = true
-    target_search_network         = false
-    target_content_network        = false
+    target_google_search = true
+    target_search_network = false
+    target_content_network = false
     target_partner_search_network = false
   }
 }
 
 resource "google_ads_ad_group" "summer_search_default" {
-  name           = "Default"
-  campaign       = google_ads_campaign.summer_search.id
-  status         = "ENABLED"
-  type           = "SEARCH_STANDARD"
+  name = "Default"
+  campaign = google_ads_campaign.summer_search.id
+  status = "ENABLED"
+  type = "SEARCH_STANDARD"
   cpc_bid_micros = 2000000
+}
+
+resource "google_ads_ad_group_criterion" "summer_kw_summer_deals" {
+  ad_group = google_ads_ad_group.summer_search_default.id
+  status = "ENABLED"
+
+  keyword {
+    text = "summer deals"
+    match_type = "PHRASE"
+  }
+}
+
+resource "google_ads_campaign_criterion" "summer_neg_winter" {
+  campaign = google_ads_campaign.summer_search.id
+  status = "ENABLED"
+  negative = true
+
+  keyword {
+    text = "winter"
+    match_type = "BROAD"
+  }
+}
+
+resource "google_ads_campaign_criterion" "summer_geo_us" {
+  campaign = google_ads_campaign.summer_search.id
+  status = "ENABLED"
+
+  location {
+    geo_target_constant = "geoTargetConstants/2840"
+  }
+}
+
+resource "google_ads_campaign_criterion" "summer_proximity_warsaw" {
+  campaign = google_ads_campaign.summer_search.id
+  status = "ENABLED"
+
+  proximity {
+    geo_point {
+      latitude_in_micro_degrees = 52229675
+      longitude_in_micro_degrees = 21012228
+    }
+
+    radius = 15
+    radius_units = "KILOMETERS"
+  }
+}
+
+resource "google_ads_ad_group_ad" "summer_search_default_rsa" {
+  ad_group = google_ads_ad_group.summer_search_default.id
+  status = "ENABLED"
+
+  ad {
+    name = "Summer RSA"
+    final_urls = ["https://www.google.com/?q=summer+deals", "https://www.google.com/"]
+
+    responsive_search_ad {
+      headline {
+        text = "Summer Deals 2026"
+        pin = "HEADLINE_1"
+      }
+
+      headline {
+        text = "Save on Summer Gear"
+      }
+
+      headline {
+        text = "Free Shipping This Summer"
+      }
+
+      description {
+        text = "Limited-time offers across our summer range."
+        pin = "DESCRIPTION_1"
+      }
+
+      description {
+        text = "Order today and get free shipping on every box."
+      }
+
+      path1 = "summer"
+      path2 = "deals"
+    }
+  }
 }

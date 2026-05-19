@@ -1,5 +1,7 @@
+mod api;
 mod commands;
 mod diagnostics;
+mod lint;
 mod parser;
 mod schema;
 
@@ -17,7 +19,14 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Rewrite .bid files in canonical format
-    Fmt,
+    Fmt {
+        /// File or directory to format
+        #[arg(default_value = ".")]
+        path: String,
+        /// Don't write; exit non-zero if any file would change
+        #[arg(long)]
+        check: bool,
+    },
     /// Check .bid syntax, schema, and references
     Validate {
         /// File or directory to validate
@@ -26,15 +35,41 @@ enum Cmd {
     },
     /// Render a .bid file from a Google Ads campaign source
     Export {
-        /// JSON file describing the campaign(s) to render
-        #[arg(long = "from-json", value_name = "PATH")]
-        from_json: String,
+        /// Flat bidsmith JSON describing the campaign(s) to render
+        #[arg(long = "from-json", value_name = "PATH", conflicts_with = "from_gads_search_response")]
+        from_json: Option<String>,
+        /// Raw Google Ads SearchStream JSON dump to adapt and render
+        #[arg(long = "from-gads-search-response", value_name = "PATH")]
+        from_gads_search_response: Option<String>,
         /// Output file path (defaults to stdout)
         #[arg(short = 'o', long, value_name = "PATH")]
         output: Option<String>,
+        /// Include resources whose status is REMOVED (default: drop them)
+        #[arg(long)]
+        include_removed: bool,
+        /// Override / set the provider login_customer_id (MCC)
+        #[arg(long = "login-customer-id", value_name = "ID")]
+        login_customer_id: Option<String>,
+        /// Override the provider customer_id
+        #[arg(long = "customer-id", value_name = "ID")]
+        customer_id: Option<String>,
     },
     /// Show what would change against the live Google Ads account
-    Plan,
+    Plan {
+        /// .bid file or directory to plan
+        path: Option<String>,
+        /// Exchange the refresh token and print the resulting access token's
+        /// expiry, without making any Google Ads API call
+        #[arg(long)]
+        whoami: bool,
+        /// Print a summary of the live state for this customer (no .bid
+        /// required, no diff, no mutate). Useful for debugging.
+        #[arg(long)]
+        read_live: bool,
+        /// Dump the outgoing request body and raw API response
+        #[arg(long)]
+        verbose: bool,
+    },
     /// Reconcile the live account with the .bid files
     Apply,
     /// Pull live state into .bid files
@@ -45,17 +80,25 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Cmd::Validate { path } => commands::validate::run(&path),
-        Cmd::Export { from_json, output } => {
-            commands::export::run(&from_json, output.as_deref())
+        Cmd::Export {
+            from_json,
+            from_gads_search_response,
+            output,
+            include_removed,
+            login_customer_id,
+            customer_id,
+        } => commands::export::run(
+            from_json.as_deref(),
+            from_gads_search_response.as_deref(),
+            output.as_deref(),
+            include_removed,
+            login_customer_id.as_deref(),
+            customer_id.as_deref(),
+        ),
+        Cmd::Fmt { path, check } => commands::fmt::run(&path, check),
+        Cmd::Plan { path, whoami, read_live, verbose } => {
+            commands::plan::run(path.as_deref(), whoami, read_live, verbose)
         }
-        Cmd::Fmt => commands::stub(
-            "fmt",
-            "Will rewrite .bid files in canonical HCL2 style.",
-        ),
-        Cmd::Plan => commands::stub(
-            "plan",
-            "Will diff .bid files against the live Google Ads account using validate-only mutates.",
-        ),
         Cmd::Apply => commands::stub(
             "apply",
             "Will reconcile the live Google Ads account with the .bid files.",

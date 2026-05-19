@@ -40,21 +40,41 @@ pub fn run(target: &str) -> ExitCode {
     }
 
     diags.extend(validate_files(&parsed));
+    diags.extend(crate::lint::lint_files(&parsed));
+
+    diags.sort_by(|a, b| {
+        (a.src.name(), a.span.offset()).cmp(&(b.src.name(), b.span.offset()))
+    });
+
+    let errors = diags.iter().filter(|d| d.is_error()).count();
+    let warnings = diags.len() - errors;
 
     if diags.is_empty() {
         println!("OK: {} file(s) valid.", parsed.len());
         return ExitCode::SUCCESS;
     }
 
-    let total = diags.len();
     for d in diags {
         let report = miette::Report::new(d);
         eprintln!("{report:?}");
     }
+
+    if errors == 0 {
+        println!(
+            "OK: {} file(s) valid ({} warning{}).",
+            parsed.len(),
+            warnings,
+            if warnings == 1 { "" } else { "s" }
+        );
+        return ExitCode::SUCCESS;
+    }
+
     eprintln!(
-        "{} error{} in {} file{}.",
-        total,
-        if total == 1 { "" } else { "s" },
+        "{} error{}, {} warning{} in {} file{}.",
+        errors,
+        if errors == 1 { "" } else { "s" },
+        warnings,
+        if warnings == 1 { "" } else { "s" },
         files.len(),
         if files.len() == 1 { "" } else { "s" }
     );

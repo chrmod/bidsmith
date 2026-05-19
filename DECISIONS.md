@@ -9,7 +9,7 @@ Declarative, AI-friendly tooling for Google Ads campaigns. Think
 **Terraform for Google Ads**: HCL2 config files, modules, validate /
 plan / apply / refresh. The engine is deterministic; AI sits **on top**
 — authoring `.bid` files, reviewing PRs, recommending optimizations.
-Distribution: a Rust-compiled CLI binary (~1.3 MB release),
+Distribution: a Rust-compiled CLI binary (~1.5 MB release),
 GitHub-native workflows for collaboration and continuous tuning.
 
 The seed is `/Users/chrmod/Projects/github.com/chrmod/rezolutnie.com/ads/`
@@ -44,6 +44,12 @@ resource type, any file layout, modules, schema validation.
   in v1.
 - **Single platform first**: Google Ads only. Meta / LinkedIn after a
   second installer exists.
+- **`export` input shape**: keep the flat bidsmith JSON as the canonical
+  input. Real Google Ads SearchStream dumps are handled by an internal
+  adapter exposed via `bidsmith export --from-gads-search-response
+  <PATH>` (no separate `adapt` verb). Rationale: one-step ergonomics,
+  the renderer keeps a single output, and the adapter module can be
+  promoted to a standalone verb later if needed.
 
 ## Current state
 
@@ -59,46 +65,83 @@ bidsmith/
 │   ├── main.rs           # clap dispatcher, subcommands
 │   ├── parser.rs         # hcl-edit wrapper: parse_file → ParsedFile
 │   ├── schema.rs         # resource-type registry + validator
-│   ├── diagnostics.rs    # miette Diag type
+│   ├── lint.rs           # soft-issue warnings (status, RSA min, phone)
+│   ├── diagnostics.rs    # miette Diag type with severity
 │   └── commands/
 │       ├── mod.rs        # shared stub helper
+│       ├── adapt.rs      # SearchStream JSON → ExportInput
 │       ├── export.rs     # render .bid from a JSON source description
+│       ├── fmt.rs        # canonical re-emitter (in-place / --check)
 │       └── validate.rs   # parse + validate orchestration
 └── examples/
-    ├── basic/main.bid          # provider, budget, campaign, ad group
+    ├── basic/main.bid          # provider, budget, campaign, ad group, ad, criteria
     ├── broken/
     │   ├── schema.bid          # schema/type/ref errors
     │   └── syntax.bid          # parse error
+    ├── lint/
+    │   └── warnings.bid        # valid syntax/schema but trips every lint rule
     └── exports/
-        └── basic.json          # input for `bidsmith export` (mirrors basic/main.bid)
+        ├── basic.json          # flat bidsmith input for `export --from-json`
+        └── raw.json            # SearchStream-shaped input for `export --from-gads-search-response`
 ```
 
 Verified locally:
 - `cargo build` clean (no warnings)
-- `cargo build --release` → 1.3 MB binary
+- `cargo build --release` → ~1.5 MB binary
 - `cargo run -- validate examples/basic` → `OK: 1 file(s) valid.`
-- `cargo run -- validate examples/broken` → 8 source-mapped miette
-  diagnostics (parse failure, type mismatch, enum violation, dangling
+- `cargo run -- validate examples/broken` → exit 1 with 11 errors and
+  5 warnings (parse failure, type mismatch, enum violation, dangling
   reference, unknown attribute at two depths, unknown resource type,
-  missing required field).
+  missing required field, list type mismatch, wrong list-element type,
+  invalid keyword match_type, invalid RSA pin; plus incidental
+  status/RSA-block lint warnings on the affected resources).
+- `cargo run -- validate examples/lint` → exit 0 with 6 warnings (the
+  four lint rules trip: missing `status` on three blocks, RSA headlines
+  < 3, RSA descriptions < 2, phone number in a headline).
 - `cargo run -- export --from-json examples/exports/basic.json`
   round-trips through `validate` cleanly (`-o out.bid` then
   `validate out.bid` → OK).
+- `cargo run -- export --from-gads-search-response
+  examples/exports/raw.json -o /tmp/raw.bid && validate /tmp/raw.bid
+  && fmt --check /tmp/raw.bid` → all OK. Export output is
+  fmt-canonical by construction (the renderer's string is parsed and
+  re-emitted through the same `format_body` fmt uses), so chaining
+  through `fmt --check` is always a no-op.
+- `cargo run -- fmt --check examples/basic examples/lint` →
+  `fmt: N file(s) already canonical.` (idempotent; canonical = 2-space
+  indent, single space around `=`, blank line between blocks but not
+  within attribute runs, arrays wrap onto multiple lines when the
+  single-line form exceeds 80 chars).
 
 Validator covers (so far):
 - `google_ads_campaign_budget`, `google_ads_campaign` (SEARCH with
-  `manual_cpc` / `network_settings`), `google_ads_ad_group`
-- `provider "google_ads"`
-- Type system: `string`, `integer`, `bool`, `enum<…>`, `ref<targets>`
+  `manual_cpc` / `network_settings`), `google_ads_ad_group`,
+  `google_ads_ad_group_ad` (with `ad` → `responsive_search_ad` →
+  repeating `headline { text, pin? }` / `description { text, pin? }`
+  blocks; `final_urls` still uses `list<string>`),
+  `google_ads_ad_group_criterion` (positive/negative keyword with
+  match_type), `google_ads_campaign_criterion` (negative keyword,
+  location, language, proximity with `geo_point` sub-block and
+  `radius` + `radius_units`)
+- `provider "google_ads"` (`customer_id` required, `login_customer_id`
+  optional — overridable via `--login-customer-id` / `--customer-id` on
+  `export`)
+- Type system: `string`, `integer`, `number`, `bool`, `enum<…>`,
+  `ref<targets>`, `list<T>` (recurses into each element)
 - Two-pass validation: collect addresses, then walk each block.
+- Lints (warning severity, do not affect exit code): missing `status`
+  on campaign / ad_group / ad_group_ad / criterion blocks; responsive
+  search ad with `< 3` headline blocks or `< 2` description blocks;
+  phone-number-like patterns (7+ digits with phone separators) inside
+  any headline/description `text` attribute.
 
 **CLI verbs**:
 
 | Verb       | Status  | Purpose                                              |
 |------------|---------|------------------------------------------------------|
-| `fmt`      | stub    | Canonicalize `.bid` files                            |
-| `validate` | partial | Syntax + schema + references + lint (local only)     |
-| `export`   | partial | Render a `.bid` file from a JSON description of a campaign (testing/seed) |
+| `fmt`      | partial | Canonicalize `.bid` files (in-place; `--check` for CI) |
+| `validate` | partial | Syntax + schema + references + lint warnings (local only) |
+| `export`   | partial | Render a fmt-canonical `.bid` file from flat bidsmith JSON (`--from-json`) or raw Google Ads SearchStream JSON (`--from-gads-search-response`); drops REMOVED resources unless `--include-removed`; `--login-customer-id` / `--customer-id` (or env vars `GOOGLE_ADS_LOGIN_CUSTOMER_ID` / `GOOGLE_ADS_CUSTOMER_ID`) override the provider block |
 | `plan`     | stub    | Diff `.bid` vs live, server-validated via API        |
 | `apply`    | stub    | Execute mutates after `--confirm`                    |
 | `refresh`  | stub    | Import live state into `.bid` files                  |

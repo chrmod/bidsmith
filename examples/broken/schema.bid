@@ -3,21 +3,21 @@ provider "google_ads" {
 }
 
 resource "google_ads_campaign_budget" "summer" {
-  name            = "Summer 2026"
-  amount_micros   = "ten million"
+  name = "Summer 2026"
+  amount_micros = "ten million"
   delivery_method = "TURBO"
 }
 
 resource "google_ads_campaign" "summer_search" {
-  name                     = "Search"
+  name = "Search"
   advertising_channel_type = "SEARCH"
-  campaign_budget          = google_ads_campaign_budget.winter.id
-  status                   = "ENABLED"
-  budget_typo              = "oops"
+  campaign_budget = google_ads_campaign_budget.winter.id
+  status = "ENABLED"
+  budget_typo = "oops"
 
   network_settings {
     target_google_search = true
-    target_unknown       = true
+    target_unknown = true
   }
 }
 
@@ -27,4 +27,32 @@ resource "google_ads_campaing" "typo" {
 
 resource "google_ads_ad_group" "missing_required" {
   campaign = google_ads_campaign.summer_search.id
+}
+
+resource "google_ads_ad_group_criterion" "bad_match_type" {
+  ad_group = google_ads_ad_group.missing_required.id
+
+  keyword {
+    text = "summer"
+    match_type = "FUZZY"
+  }
+}
+
+resource "google_ads_ad_group_ad" "bad_ad" {
+  ad_group = google_ads_ad_group.missing_required.id
+
+  ad {
+    final_urls = "https://example.com"
+
+    responsive_search_ad {
+      headline {
+        text = "Headline"
+        pin = "TOPLEFT"
+      }
+
+      description {
+        text = "Description one"
+      }
+    }
+  }
 }

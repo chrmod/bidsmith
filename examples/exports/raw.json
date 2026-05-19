@@ -1,0 +1,133 @@
+[
+  {
+    "results": [
+      {
+        "campaignBudget": {
+          "resourceName": "customers/1234567890/campaignBudgets/1001",
+          "id": "1001",
+          "name": "Summer 2026",
+          "amountMicros": "10000000",
+          "deliveryMethod": "STANDARD"
+        }
+      },
+      {
+        "campaign": {
+          "resourceName": "customers/1234567890/campaigns/2001",
+          "id": "2001",
+          "name": "Summer 2026 — Search",
+          "status": "PAUSED",
+          "advertisingChannelType": "SEARCH",
+          "campaignBudget": "customers/1234567890/campaignBudgets/1001",
+          "manualCpc": {
+            "enhancedCpcEnabled": false
+          },
+          "networkSettings": {
+            "targetGoogleSearch": true,
+            "targetSearchNetwork": false,
+            "targetContentNetwork": false,
+            "targetPartnerSearchNetwork": false
+          }
+        }
+      },
+      {
+        "adGroup": {
+          "resourceName": "customers/1234567890/adGroups/3001",
+          "id": "3001",
+          "name": "Default",
+          "campaign": "customers/1234567890/campaigns/2001",
+          "status": "ENABLED",
+          "type": "SEARCH_STANDARD",
+          "cpcBidMicros": "2000000"
+        }
+      },
+      {
+        "adGroupAd": {
+          "resourceName": "customers/1234567890/adGroupAds/3001~4001",
+          "adGroup": "customers/1234567890/adGroups/3001",
+          "status": "ENABLED",
+          "ad": {
+            "id": "4001",
+            "name": "Summer RSA",
+            "finalUrls": [
+              "https://www.google.com/?q=summer+deals",
+              "https://www.google.com/"
+            ],
+            "responsiveSearchAd": {
+              "headlines": [
+                {"text": "Summer Deals 2026", "pinnedField": "HEADLINE_1"},
+                {"text": "Save on Summer Gear"},
+                {"text": "Free Shipping This Summer"}
+              ],
+              "descriptions": [
+                {"text": "Limited-time offers across our summer range.", "pinnedField": "DESCRIPTION_1"},
+                {"text": "Order today and get free shipping on every box."}
+              ],
+              "path1": "summer",
+              "path2": "deals"
+            }
+          }
+        }
+      },
+      {
+        "adGroupCriterion": {
+          "resourceName": "customers/1234567890/adGroupCriteria/3001~5001",
+          "adGroup": "customers/1234567890/adGroups/3001",
+          "status": "ENABLED",
+          "keyword": {
+            "text": "summer deals",
+            "matchType": "PHRASE"
+          }
+        }
+      },
+      {
+        "campaignCriterion": {
+          "resourceName": "customers/1234567890/campaignCriteria/2001~6001",
+          "campaign": "customers/1234567890/campaigns/2001",
+          "status": "ENABLED",
+          "negative": true,
+          "keyword": {
+            "text": "winter",
+            "matchType": "BROAD"
+          }
+        }
+      },
+      {
+        "campaignCriterion": {
+          "resourceName": "customers/1234567890/campaignCriteria/2001~6002",
+          "campaign": "customers/1234567890/campaigns/2001",
+          "status": "ENABLED",
+          "location": {
+            "geoTargetConstant": "geoTargetConstants/2840"
+          }
+        }
+      },
+      {
+        "campaignCriterion": {
+          "resourceName": "customers/1234567890/campaignCriteria/2001~6003",
+          "campaign": "customers/1234567890/campaigns/2001",
+          "status": "ENABLED",
+          "proximity": {
+            "geoPoint": {
+              "latitudeInMicroDegrees": 52229675,
+              "longitudeInMicroDegrees": 21012228
+            },
+            "radius": 15,
+            "radiusUnits": "KILOMETERS"
+          }
+        }
+      },
+      {
+        "campaignCriterion": {
+          "resourceName": "customers/1234567890/campaignCriteria/2001~6999",
+          "campaign": "customers/1234567890/campaigns/2001",
+          "status": "REMOVED",
+          "negative": true,
+          "keyword": {
+            "text": "old negative",
+            "matchType": "BROAD"
+          }
+        }
+      }
+    ]
+  }
+]

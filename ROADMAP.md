@@ -43,12 +43,10 @@ declared HCL against live labeled state. Local cache is rebuildable.
   credential manager.
 - Multi-account: how do `provider` blocks compose? One provider per
   file? Aliases?
-- Lint catalog: which policy heuristics ship by default (phone-in-RSA,
-  headline counts, missing negatives, declension hints for PL)?
-- `export` input shape: today we accept a clean bidsmith-flavored JSON.
-  Should we also accept raw Google Ads API JSON (camelCase,
-  `resourceName` paths) directly, or keep that as a separate adapter
-  step? Tradeoff: one-step ergonomics vs. a small focused renderer.
+- Lint catalog: starter set shipped (missing `status`, RSA min
+  headlines/descriptions, phone-in-RSA). Still open: missing-negatives
+  on search campaigns, declension hints for PL, RSA pinning advice,
+  policy-wordlist patterns.
 
 ## Phases
 
@@ -59,12 +57,15 @@ declared HCL against live labeled state. Local cache is rebuildable.
   - ✅ `google_ads_campaign_budget`
   - ✅ `google_ads_campaign` (SEARCH)
   - ✅ `google_ads_ad_group`
-  - ⏳ `google_ads_ad_group_ad`
-  - ⏳ `google_ads_ad_group_criterion`
-  - ⏳ `google_ads_campaign_criterion`
-- ✅ `validate`: syntax + schema + references (lint TBD)
-- ⏳ `fmt`: rewrite canonical (hcl-edit already preserves layout —
-  likely a thin wrapper)
+  - ✅ `google_ads_ad_group_ad` (with `ad` → `responsive_search_ad` →
+    pinned `headline { text, pin? }` / `description { text, pin? }`
+    blocks)
+  - ✅ `google_ads_ad_group_criterion` (keyword + match_type)
+  - ✅ `google_ads_campaign_criterion` (keyword, location, language,
+    proximity)
+- ✅ `validate`: syntax + schema + references + lint warnings
+- ✅ `fmt`: canonical re-emitter (parse → walk → emit; in-place or
+  `--check`)
 - Exit criterion: the rezolutnie `[W1] magazyny-energii` setup
   expressible in `.bid` files; `validate` passes.
 
@@ -103,31 +104,27 @@ declared HCL against live labeled state. Local cache is rebuildable.
 Phase 1 isn't quite done. Concrete picks for the next session, in
 priority order:
 
-1. **List/array literal support in the schema**. `hcl-edit` already
-   parses `[a, b, c]` into `Expression::Array`. Extend `FieldType` with
-   `List(Box<FieldType>)` and teach `validate_value` to walk it.
-   Unblocks `final_urls`, `headlines`, etc.
-2. **Add the remaining resource schemas** in `src/schema.rs` *and* the
-   matching renderers in `src/commands/export.rs` (the two must stay
-   in lockstep — anything `validate` knows about, `export` should be
-   able to produce):
-   - `google_ads_ad_group_ad` (with the `ad` nested block; needs list
-     support)
-   - `google_ads_ad_group_criterion` (keyword + match_type)
-   - `google_ads_campaign_criterion` (negative keyword, location, etc.)
-3. **Real Google Ads JSON adapter for `export`**. Accept the camelCase
-   / `resourceName`-flavored output of `googleads-python-lib`
-   SearchStream so we can pull a real campaign and feed it in without
-   hand-shaping. Either a `--from-gads-search-response` flag or a
-   separate `bidsmith adapt` step (see open decisions).
-4. **Lint pass**. After type-checking, walk the AST emitting `Diag`s
-   with miette severity = warning for soft issues: missing-`status`,
-   too few headlines on RSA, phone-number in ad copy. The plumbing for
-   warnings already exists in miette — pass `severity` to `Diag`.
-5. **`fmt` command**. `hcl-edit` preserves layout — `cargo run -- fmt
-   path` could be roughly: parse → re-emit via `Body::to_string()`
-   with our own alignment rules.
-6. **Exit criterion**: the rezolutnie `[W1] magazyny-energii` setup
+1. **Account-scoped resource types**, unblocked by the W1 trial:
+   - `google_ads_asset` (especially `CallAsset` for the +PL phone)
+   - `google_ads_customer_asset` (wire account-level call assets)
+   - `google_ads_conversion_action` (Lead, Phone — referenced from the
+     account, not from a single campaign)
+   These let bidsmith own the policy fix in W1: move the literal phone
+   out of RSA copy into a Call asset. They also unblock the next-most-
+   common refresh paths.
+2. **Re-trial against W1** once the asset/conversion types land. Verify
+   we round-trip the full account-scoped graph, not just one campaign.
+3. **Exit criterion**: the rezolutnie `[W1] magazyny-energii` setup
    expressible in `.bid` files; `validate` passes; `fmt` is a no-op on
    the canonical form; `export` round-trips a real campaign JSON
-   through `validate`.
+   through `validate`. Campaign-scoped resources, RSA pinning, and
+   proximity are in; account-scoped pieces above are what's left.
+
+Smaller follow-ups that can ride along:
+
+- Campaign label support — `[W1]` is encoded in the name today; making
+  it a real `label` would let us migrate off the name-prefix
+  convention.
+- Repeating `text { value, pin? }` for non-RSA ad types when they land
+  (Discovery, Performance Max ad-strength assets) — share the
+  asset-block design we have for RSA headlines.
