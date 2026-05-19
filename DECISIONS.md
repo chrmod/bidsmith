@@ -142,8 +142,8 @@ Validator covers (so far):
 | `fmt`      | partial | Canonicalize `.bid` files (in-place; `--check` for CI) |
 | `validate` | partial | Syntax + schema + references + lint warnings (local only) |
 | `export`   | partial | Render a fmt-canonical `.bid` file from flat bidsmith JSON (`--from-json`) or raw Google Ads SearchStream JSON (`--from-gads-search-response`); drops REMOVED resources unless `--include-removed`; `--login-customer-id` / `--customer-id` (or env vars `GOOGLE_ADS_LOGIN_CUSTOMER_ID` / `GOOGLE_ADS_CUSTOMER_ID`) override the provider block |
-| `plan`     | stub    | Diff `.bid` vs live, server-validated via API        |
-| `apply`    | stub    | Execute mutates after `--confirm`                    |
+| `plan`     | partial | Diff `.bid` vs live (name-matched, scalar-level), validateOnly batch via googleAds:mutate; emits `+ create` / `~ update` / `no-op` per resource |
+| `apply`    | partial | Same pipeline as `plan` but mutates for real when `--confirm` is set; without `--confirm` runs as dry run. Does not yet write `bidsmith:address=…` labels or detect removals (state-tracking is the v2 follow-up) |
 | `refresh`  | stub    | Import live state into `.bid` files                  |
 | `init`     | —       | (later) Bootstrap project skeleton                   |
 | `graph`    | —       | (later) Visualize resource graph                     |

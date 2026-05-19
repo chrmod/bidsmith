@@ -71,7 +71,17 @@ enum Cmd {
         verbose: bool,
     },
     /// Reconcile the live account with the .bid files
-    Apply,
+    Apply {
+        /// .bid file or directory to apply
+        path: Option<String>,
+        /// Required to actually mutate. Without it, apply runs as a dry run
+        /// (validateOnly) and prints what would change.
+        #[arg(long)]
+        confirm: bool,
+        /// Dump the outgoing request body and raw API response
+        #[arg(long)]
+        verbose: bool,
+    },
     /// Pull live state into .bid files
     Refresh,
 }
@@ -99,10 +109,9 @@ fn main() -> ExitCode {
         Cmd::Plan { path, whoami, read_live, verbose } => {
             commands::plan::run(path.as_deref(), whoami, read_live, verbose)
         }
-        Cmd::Apply => commands::stub(
-            "apply",
-            "Will reconcile the live Google Ads account with the .bid files.",
-        ),
+        Cmd::Apply { path, confirm, verbose } => {
+            commands::apply::run(path.as_deref(), confirm, verbose)
+        }
         Cmd::Refresh => commands::stub(
             "refresh",
             "Will pull live Google Ads state into .bid files.",

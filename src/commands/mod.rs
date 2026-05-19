@@ -1,4 +1,5 @@
 pub mod adapt;
+pub mod apply;
 pub mod export;
 pub mod fmt;
 pub mod plan;

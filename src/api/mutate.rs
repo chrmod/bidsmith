@@ -24,9 +24,10 @@ pub struct PlanBuildError {
     pub message: String,
 }
 
-pub fn build_validate_only_with_diff(
+pub fn build_mutate_with_diff(
     input: &ExportInput,
     report: &DiffReport,
+    validate_only: bool,
 ) -> Result<PlanBody, Vec<PlanBuildError>> {
     let customer_id = input.customer_id.as_str();
     let mut refs: HashMap<String, String> = HashMap::new();
@@ -242,7 +243,7 @@ pub fn build_validate_only_with_diff(
 
     let body = json!({
         "mutateOperations": mutate_ops,
-        "validateOnly": true,
+        "validateOnly": validate_only,
     });
     Ok(PlanBody { body, operations })
 }

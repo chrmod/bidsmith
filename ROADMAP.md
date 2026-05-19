@@ -70,17 +70,25 @@ declared HCL against live labeled state. Local cache is rebuildable.
   expressible in `.bid` files; `validate` passes.
 
 **Phase 2 — Provider & plan**
-- Google Ads SDK: generate Rust bindings via `tonic-build` from
-  Google's `.proto` files, or evaluate `google-ads-rs` community crate
-- OAuth helper (port `rezolutnie/ads/oauth_flow.py` → `oauth2` +
-  `reqwest`)
-- `plan`: builds mutate ops, sends `validate_only=true`, prints diff
-  vs live (GAQL queries)
+- ✅ REST client over `reqwest::blocking` (chose REST over gRPC for the
+  debugging UX during early iteration; tonic-build remains a future
+  swap if we hit gRPC-only ergonomics)
+- ✅ OAuth via Google's refresh-token endpoint; same env vars as
+  `rezolutnie/.env`
+- ✅ `plan`: parse + validate + import .bid, fetch live state via
+  `googleAds:searchStream`, diff by name with parent cascade, scalar
+  field-level drift detection, send a validateOnly batch with
+  CREATE+UPDATE operations, merge per-resource accepted/rejected with
+  no-ops into the output
 
 **Phase 3 — Apply**
-- `apply --confirm` executes mutates
-- Writes `bidsmith:address=...` labels on created resources
-- Idempotent by label lookup
+- ✅ `apply <path>` (dry run) and `apply <path> --confirm` (mutate).
+  Same pipeline as `plan` with validateOnly flipped.
+- ⏳ Write `bidsmith:address=...` labels on created/updated resources
+  (state tracking via Google Ads Label + CampaignLabel / AdGroupLabel
+  / AdGroupAdLabel / AdGroupCriterionLabel associations)
+- ⏳ Removal detection: labeled live resources with no matching .bid
+  entry → `- destroy`
 
 **Phase 4 — Refresh / Import**
 - `refresh`: regenerate `.bid` from labeled live resources

@@ -22,7 +22,11 @@ pub fn run(path: Option<&str>, whoami: bool, read_live: bool, verbose: bool) -> 
         return ExitCode::from(2);
     };
 
-    run_plan(path, verbose)
+    run_pipeline(path, /* validate_only */ true, verbose, "plan")
+}
+
+pub fn run_apply(path: &str, validate_only: bool, verbose: bool) -> ExitCode {
+    run_pipeline(path, validate_only, verbose, "apply")
 }
 
 fn run_read_live(verbose: bool) -> ExitCode {
@@ -70,7 +74,7 @@ fn run_read_live(verbose: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run_plan(path: &str, verbose: bool) -> ExitCode {
+fn run_pipeline(path: &str, validate_only: bool, verbose: bool, label: &str) -> ExitCode {
     let parsed = match load_and_validate(path) {
         Ok(v) => v,
         Err(code) => return code,
@@ -94,10 +98,10 @@ fn run_plan(path: &str, verbose: bool) -> ExitCode {
         + imported.input.ad_group_criteria.len()
         + imported.input.campaign_criteria.len();
     if total == 0 {
-        eprintln!("plan: nothing to validate (no recognised resources in the .bid).");
+        eprintln!("{label}: nothing to do (no recognised resources in the .bid).");
         if !imported.skipped.is_empty() {
             eprintln!(
-                "plan: skipped {} resource(s) of unsupported types.",
+                "{label}: skipped {} resource(s) of unsupported types.",
                 imported.skipped.len()
             );
         }
@@ -107,7 +111,7 @@ fn run_plan(path: &str, verbose: bool) -> ExitCode {
     let client = match client::Client::from_env() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("plan: {e}");
+            eprintln!("{label}: {e}");
             return ExitCode::from(1);
         }
     };
@@ -122,19 +126,19 @@ fn run_plan(path: &str, verbose: bool) -> ExitCode {
     let token = match auth::exchange_refresh_token() {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("plan: {e}");
+            eprintln!("{label}: {e}");
             return ExitCode::from(1);
         }
     };
 
     eprintln!(
-        "plan: fetching live state from customers/{}...",
+        "{label}: fetching live state from customers/{}...",
         client.customer_id,
     );
     let live = match live_state::fetch(&client, &token.token) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("plan: live-state fetch failed: {e}");
+            eprintln!("{label}: live-state fetch failed: {e}");
             return ExitCode::from(1);
         }
     };
@@ -147,6 +151,7 @@ fn run_plan(path: &str, verbose: bool) -> ExitCode {
         .max()
         .unwrap_or(0)
         .max(40);
+    let title = if label == "apply" { "Apply" } else { "Plan" };
 
     if report.create_count == 0 && report.update_count == 0 {
         for d in &report.diffs {
@@ -154,26 +159,27 @@ fn run_plan(path: &str, verbose: bool) -> ExitCode {
         }
         println!();
         println!(
-            "Plan: 0 to create, 0 to update, {} unchanged. (no API call needed)",
+            "{title}: 0 to create, 0 to update, {} unchanged. (no API call needed)",
             report.noop_count,
         );
         return ExitCode::SUCCESS;
     }
 
-    // Build CREATE-only mutate body
-    let plan_body = match mutate::build_validate_only_with_diff(&imported.input, &report) {
+    // Build the mutate body (CREATEs for unmatched, UPDATEs for drifted)
+    let plan_body = match mutate::build_mutate_with_diff(&imported.input, &report, validate_only) {
         Ok(b) => b,
         Err(errs) => {
             for e in errs {
-                eprintln!("plan: {} — {}", e.address, e.message);
+                eprintln!("{label}: {} — {}", e.address, e.message);
             }
             return ExitCode::from(1);
         }
     };
 
     if verbose {
+        let mode = if validate_only { "validateOnly" } else { "real apply" };
         eprintln!(
-            "plan: POST /{}/customers/{}/googleAds:mutate ({} CREATE+UPDATE op(s))",
+            "{label}: POST /{}/customers/{}/googleAds:mutate ({} op(s), {mode})",
             client::api_version(),
             client.customer_id,
             plan_body.operations.len(),
@@ -185,7 +191,7 @@ fn run_plan(path: &str, verbose: bool) -> ExitCode {
     let response = match client.googleads_mutate(&token.token, &plan_body.body) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("plan: {e}");
+            eprintln!("{label}: {e}");
             return ExitCode::from(1);
         }
     };
@@ -202,7 +208,7 @@ fn run_plan(path: &str, verbose: bool) -> ExitCode {
     if !success {
         if response.status == 404 && response.body_raw.contains("<!DOCTYPE html>") {
             eprintln!(
-                "plan: HTTP 404 + HTML body — likely a retired Google Ads API version. \
+                "{label}: HTTP 404 + HTML body — likely a retired Google Ads API version. \
                  Try BIDSMITH_API_VERSION=v22 (or current).",
             );
             return ExitCode::from(1);
@@ -253,10 +259,17 @@ fn run_plan(path: &str, verbose: bool) -> ExitCode {
     }
 
     println!();
-    println!(
-        "Plan: {} to create, {} to update, {} unchanged. ({} accepted, {} rejected)",
-        report.create_count, report.update_count, report.noop_count, accepted, rejected,
-    );
+    if validate_only {
+        println!(
+            "{title}: {} to create, {} to update, {} unchanged. ({} accepted, {} rejected)",
+            report.create_count, report.update_count, report.noop_count, accepted, rejected,
+        );
+    } else {
+        println!(
+            "{title}: {} created, {} updated, {} unchanged. ({} succeeded, {} failed)",
+            report.create_count, report.update_count, report.noop_count, accepted, rejected,
+        );
+    }
 
     // Surface unattributed errors so they're not silently dropped (e.g. top-level
     // GoogleAdsFailure errors not tied to a specific operation).
@@ -290,64 +303,6 @@ fn run_plan(path: &str, verbose: bool) -> ExitCode {
     }
 }
 
-#[allow(dead_code)]
-fn print_results(
-    operations: &[mutate::PlanOperation],
-    response: &client::MutateResponse,
-    verbose: bool,
-) -> ExitCode {
-    if response.status >= 200 && response.status < 300 {
-        for op in operations {
-            println!("{:50}  ok", op.address);
-        }
-        if !operations.is_empty() {
-            let n = operations.len();
-            println!(
-                "\n{} accepted, 0 rejected (validateOnly).",
-                n,
-            );
-        }
-        ExitCode::SUCCESS
-    } else {
-        // Print high-level header, then per-operation result if we can extract it.
-        eprintln!("plan: googleAds:mutate returned HTTP {}.", response.status);
-        if response.status == 404 && response.body_raw.contains("<!DOCTYPE html>") {
-            eprintln!(
-                "plan: this looks like a retired Google Ads API version. \
-                 Try setting BIDSMITH_API_VERSION=v22 (or whatever is current); \
-                 the default ships pointed at v{}.",
-                client::api_version().trim_start_matches('v'),
-            );
-            return ExitCode::from(1);
-        }
-        let errors = extract_google_ads_errors(&response.body);
-        if errors.is_empty() {
-            eprintln!("plan: (no structured error details parsed)");
-            if !verbose {
-                eprintln!("plan: re-run with --verbose to see the full response body.");
-            }
-        } else {
-            for (i, err) in errors.iter().enumerate() {
-                let op_address = err
-                    .op_index
-                    .and_then(|i| operations.get(i))
-                    .map(|op| op.address.as_str())
-                    .unwrap_or("(unknown operation)");
-                eprintln!("[{}] {op_address}", i + 1);
-                eprintln!("    error: {}", err.message);
-                if !err.path.is_empty() {
-                    eprintln!("    at:    {}", err.path);
-                }
-                for topic in &err.policy_topics {
-                    eprintln!("    policy: {topic}");
-                }
-            }
-        }
-        ExitCode::from(1)
-    }
-}
-
-#[allow(dead_code)]
 struct GoogleAdsErrorEntry {
     message: String,
     path: String,
@@ -355,7 +310,6 @@ struct GoogleAdsErrorEntry {
     policy_topics: Vec<String>,
 }
 
-#[allow(dead_code)]
 fn extract_google_ads_errors(body: &Value) -> Vec<GoogleAdsErrorEntry> {
     let mut out = Vec::new();
     let Some(details) = body
@@ -408,7 +362,6 @@ fn extract_google_ads_errors(body: &Value) -> Vec<GoogleAdsErrorEntry> {
     out
 }
 
-#[allow(dead_code)]
 fn extract_policy_topics(err: &Value) -> Vec<String> {
     let mut topics: Vec<String> = Vec::new();
     let candidates = [
@@ -439,7 +392,7 @@ fn extract_policy_topics(err: &Value) -> Vec<String> {
 fn load_and_validate(path: &str) -> Result<Vec<ParsedFile>, ExitCode> {
     let target = Path::new(path);
     if !target.exists() {
-        eprintln!("plan: no such file or directory: {}", target.display());
+        eprintln!("no such file or directory: {}", target.display());
         return Err(ExitCode::from(1));
     }
 
