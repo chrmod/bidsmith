@@ -148,14 +148,14 @@ fn run_plan(path: &str, verbose: bool) -> ExitCode {
         .unwrap_or(0)
         .max(40);
 
-    if report.create_count == 0 {
+    if report.create_count == 0 && report.update_count == 0 {
         for d in &report.diffs {
-            println!("{addr:<width$}  existing", addr = d.address, width = width);
+            println!("{addr:<width$}  no-op", addr = d.address, width = width);
         }
         println!();
         println!(
-            "Plan: 0 to create, {} existing. (no API call needed)",
-            report.existing_count,
+            "Plan: 0 to create, 0 to update, {} unchanged. (no API call needed)",
+            report.noop_count,
         );
         return ExitCode::SUCCESS;
     }
@@ -173,7 +173,7 @@ fn run_plan(path: &str, verbose: bool) -> ExitCode {
 
     if verbose {
         eprintln!(
-            "plan: POST /{}/customers/{}/googleAds:mutate ({} CREATE op(s))",
+            "plan: POST /{}/customers/{}/googleAds:mutate ({} CREATE+UPDATE op(s))",
             client::api_version(),
             client.customer_id,
             plan_body.operations.len(),
@@ -221,41 +221,41 @@ fn run_plan(path: &str, verbose: bool) -> ExitCode {
     let mut accepted = 0usize;
     let mut rejected = 0usize;
     for d in &report.diffs {
-        match &d.action {
-            diff::Action::Existing { .. } => {
-                println!("{addr:<width$}  existing", addr = d.address, width = width);
+        let (verb, detail): (&str, String) = match &d.action {
+            diff::Action::NoOp { .. } => ("no-op", String::new()),
+            diff::Action::Create => ("+ create", String::new()),
+            diff::Action::Update { changed_fields, .. } => {
+                ("~ update", format!(" ({})", changed_fields.join(", ")))
             }
-            diff::Action::Create => match errors_by_address.get(&d.address) {
-                Some(msgs) => {
-                    println!(
-                        "{addr:<width$}  + create  err: {}",
-                        msgs.first().copied().unwrap_or("(unknown)"),
-                        addr = d.address,
-                        width = width,
-                    );
-                    rejected += 1;
-                }
-                None if success => {
-                    println!("{addr:<width$}  + create  ok", addr = d.address, width = width);
-                    accepted += 1;
-                }
-                None => {
-                    // Non-2xx but no error attributed to this op: cascade or unrelated.
-                    println!(
-                        "{addr:<width$}  + create  (no result — batch rejected)",
-                        addr = d.address,
-                        width = width,
-                    );
-                    rejected += 1;
-                }
+        };
+        let outcome = match &d.action {
+            diff::Action::NoOp { .. } => "".to_string(),
+            _ => match errors_by_address.get(&d.address) {
+                Some(msgs) => format!("  err: {}", msgs.first().copied().unwrap_or("(unknown)")),
+                None if success => "  ok".to_string(),
+                None => "  (no result — batch rejected)".to_string(),
             },
+        };
+        if matches!(d.action, diff::Action::Create | diff::Action::Update { .. }) {
+            if errors_by_address.contains_key(&d.address) {
+                rejected += 1;
+            } else if success {
+                accepted += 1;
+            } else {
+                rejected += 1;
+            }
         }
+        println!(
+            "{addr:<width$}  {verb}{detail}{outcome}",
+            addr = d.address,
+            width = width,
+        );
     }
 
     println!();
     println!(
-        "Plan: {} to create ({} accepted, {} rejected), {} existing.",
-        report.create_count, accepted, rejected, report.existing_count,
+        "Plan: {} to create, {} to update, {} unchanged. ({} accepted, {} rejected)",
+        report.create_count, report.update_count, report.noop_count, accepted, rejected,
     );
 
     // Surface unattributed errors so they're not silently dropped (e.g. top-level
