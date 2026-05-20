@@ -1,0 +1,38 @@
+provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+resource "google_ads_campaign_budget" "budget" {
+  name = "W1 Nadarzyn"
+  amount_micros = 5000000
+}
+
+resource "google_ads_campaign" "main" {
+  name = "[W1] Nadarzyn"
+  status = "ENABLED"
+  advertising_channel_type = "SEARCH"
+  campaign_budget = google_ads_campaign_budget.budget.id
+  contains_eu_political_advertising = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"
+}
+
+resource "google_ads_campaign_criterion" "broad_wikipedia" {
+  campaign = google_ads_campaign.main.id
+  status = "ENABLED"
+  negative = true
+
+  keyword {
+    text = "wikipedia"
+    match_type = "BROAD"
+  }
+}
+
+resource "google_ads_campaign_criterion" "broad_olx" {
+  campaign = google_ads_campaign.main.id
+  status = "ENABLED"
+  negative = true
+
+  keyword {
+    text = "olx"
+    match_type = "BROAD"
+  }
+}

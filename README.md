@@ -126,6 +126,32 @@ the equivalent `.bid`. The renderer is the same one `refresh` will use
 once the API client is in place; growing it now seeds the test corpus and
 forces schema completeness.
 
+## Multiple files in one directory
+
+Each `.bid` file's basename is its implicit module name. Two files in the
+same directory can each declare `google_ads_campaign_criterion.broad_wikipedia`
+without conflict — their fully-qualified addresses are
+`nadarzyn.google_ads_campaign_criterion.broad_wikipedia` and
+`warszawa.google_ads_campaign_criterion.broad_wikipedia`. References
+inside a file resolve to the same module first, then fall back to a
+global search; cross-module matches are accepted when exactly one
+resource matches and rejected as `ambiguous reference` otherwise. See
+[`examples/multi/`](examples/multi/) for a two-file example.
+
+This makes the dump-per-campaign workflow work in one shot:
+
+```sh
+for campaign_id in $campaign_ids; do
+  python -m ads.dump_campaign --campaign-id "$campaign_id" -o "/tmp/$campaign_id.json"
+  bidsmith export --from-gads-search-response "/tmp/$campaign_id.json" \
+    -o "ads-bid/$campaign_id.bid"
+done
+bidsmith validate ads-bid/
+```
+
+Shared negatives (`broad_wikipedia`, …) that appear in every campaign
+no longer collide across files — they live in different modules.
+
 ## How it works
 
 ```
@@ -167,6 +193,9 @@ bidsmith/
 └── examples/
     ├── basic/main.bid
     ├── broken/             # schema and syntax errors for testing
+    ├── multi/              # two files in one dir with colliding bare
+    │   ├── nadarzyn.bid    # criterion names; resolved via the
+    │   └── warszawa.bid    # file-stem module prefix
     └── exports/basic.json  # input for `bidsmith export`
 ```
 

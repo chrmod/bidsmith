@@ -41,6 +41,19 @@ pub struct Prepared {
     pub imported: import::ImportResult,
     pub report: diff::DiffReport,
     pub width: usize,
+    pub strip_module: bool,
+}
+
+fn display_address(qualified: &str, strip_module: bool) -> &str {
+    if strip_module {
+        qualified.splitn(2, '.').nth(1).unwrap_or(qualified)
+    } else {
+        qualified
+    }
+}
+
+fn module_of(qualified: &str) -> &str {
+    qualified.split_once('.').map(|(m, _)| m).unwrap_or("")
 }
 
 pub enum DisplayMode {
@@ -167,10 +180,13 @@ pub fn prepare(path: &str, label: &'static str) -> Result<Option<Prepared>, Exit
     };
 
     let report = diff::diff(&imported.input, &live);
+    let modules: std::collections::HashSet<&str> =
+        report.diffs.iter().map(|d| module_of(&d.address)).collect();
+    let strip_module = modules.len() <= 1;
     let width = report
         .diffs
         .iter()
-        .map(|d| d.address.len())
+        .map(|d| display_address(&d.address, strip_module).len())
         .max()
         .unwrap_or(0)
         .max(40);
@@ -182,6 +198,7 @@ pub fn prepare(path: &str, label: &'static str) -> Result<Option<Prepared>, Exit
         imported,
         report,
         width,
+        strip_module,
     }))
 }
 
@@ -196,11 +213,16 @@ pub fn execute(
     let report = &prepared.report;
     let width = prepared.width;
     let label = prepared.label;
+    let strip = prepared.strip_module;
 
     if report.create_count == 0 && report.update_count == 0 {
         if matches!(display, DisplayMode::PerResource) {
             for d in &report.diffs {
-                println!("{addr:<width$}  no-op", addr = d.address, width = width);
+                println!(
+                    "{addr:<width$}  no-op",
+                    addr = display_address(&d.address, strip),
+                    width = width
+                );
             }
             println!();
         }
@@ -217,7 +239,7 @@ pub fn execute(
             Ok(b) => b,
             Err(errs) => {
                 for e in errs {
-                    eprintln!("{label}: {} — {}", e.address, e.message);
+                    eprintln!("{label}: {} — {}", display_address(&e.address, strip), e.message);
                 }
                 return ExitCode::from(1);
             }
@@ -303,7 +325,7 @@ pub fn execute(
         if printable {
             println!(
                 "{addr:<width$}  {verb}{detail}{outcome}",
-                addr = d.address,
+                addr = display_address(&d.address, strip),
                 width = width,
             );
         }

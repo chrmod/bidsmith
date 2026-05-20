@@ -11,14 +11,36 @@ use crate::commands::export::{
 };
 use crate::diagnostics::Diag;
 use crate::parser::ParsedFile;
+use crate::schema::{ResourceRegistry, Resolution};
 
 pub struct ImportResult {
     pub input: ExportInput,
     pub skipped: Vec<(String, String)>,
 }
 
+struct Ctx<'a> {
+    file: &'a ParsedFile,
+    registry: &'a ResourceRegistry,
+}
+
+impl<'a> Ctx<'a> {
+    fn resolve_ref(&self, bare: &str) -> String {
+        let mut parts = bare.splitn(2, '.');
+        let Some(ty) = parts.next() else {
+            return bare.to_string();
+        };
+        let Some(name) = parts.next() else {
+            return bare.to_string();
+        };
+        match self.registry.resolve(&self.file.module, ty, name) {
+            Resolution::Found(q) => q,
+            _ => bare.to_string(),
+        }
+    }
+}
+
 pub fn import_files(files: &[ParsedFile]) -> Result<ImportResult, Vec<Diag>> {
-    let mut diags = Vec::new();
+    let (registry, mut diags) = ResourceRegistry::build(files);
     let mut input = ExportInput {
         customer_id: String::new(),
         login_customer_id: None,
@@ -35,6 +57,10 @@ pub fn import_files(files: &[ParsedFile]) -> Result<ImportResult, Vec<Diag>> {
     let mut skipped: Vec<(String, String)> = Vec::new();
 
     for f in files {
+        let ctx = Ctx {
+            file: f,
+            registry: &registry,
+        };
         for s in f.body.iter() {
             let Structure::Block(b) = s else { continue };
             match b.ident.as_str() {
@@ -45,7 +71,7 @@ pub fn import_files(files: &[ParsedFile]) -> Result<ImportResult, Vec<Diag>> {
                     }
                     let ty = b.labels[0].as_str();
                     let name = b.labels[1].as_str();
-                    let address = format!("{ty}.{name}");
+                    let address = ResourceRegistry::qualified(&f.module, ty, name);
                     let mut emit = |result: Result<(), Diag>| {
                         if let Err(d) = result {
                             diags.push(d);
@@ -53,38 +79,38 @@ pub fn import_files(files: &[ParsedFile]) -> Result<ImportResult, Vec<Diag>> {
                     };
                     match ty {
                         "google_ads_campaign_budget" => emit(
-                            import_budget(f, b, &address).map(|x| input.campaign_budgets.push(x)),
+                            import_budget(&ctx, b, &address).map(|x| input.campaign_budgets.push(x)),
                         ),
                         "google_ads_campaign" => emit(
-                            import_campaign(f, b, &address).map(|x| input.campaigns.push(x)),
+                            import_campaign(&ctx, b, &address).map(|x| input.campaigns.push(x)),
                         ),
                         "google_ads_ad_group" => emit(
-                            import_ad_group(f, b, &address).map(|x| input.ad_groups.push(x)),
+                            import_ad_group(&ctx, b, &address).map(|x| input.ad_groups.push(x)),
                         ),
                         "google_ads_ad_group_ad" => emit(
-                            import_ad_group_ad(f, b, &address).map(|x| input.ad_group_ads.push(x)),
+                            import_ad_group_ad(&ctx, b, &address).map(|x| input.ad_group_ads.push(x)),
                         ),
                         "google_ads_ad_group_criterion" => emit(
-                            import_ad_group_criterion(f, b, &address)
+                            import_ad_group_criterion(&ctx, b, &address)
                                 .map(|x| input.ad_group_criteria.push(x)),
                         ),
                         "google_ads_campaign_criterion" => emit(
-                            import_campaign_criterion(f, b, &address).map(|xs| {
+                            import_campaign_criterion(&ctx, b, &address).map(|xs| {
                                 for x in xs {
                                     input.campaign_criteria.push(x);
                                 }
                             }),
                         ),
                         "google_ads_conversion_action" => emit(
-                            import_conversion_action(f, b, &address)
+                            import_conversion_action(&ctx, b, &address)
                                 .map(|x| input.conversion_actions.push(x)),
                         ),
                         "google_ads_call_asset" => emit(
-                            import_call_asset(f, b, &address)
+                            import_call_asset(&ctx, b, &address)
                                 .map(|x| input.call_assets.push(x)),
                         ),
                         "google_ads_customer_asset" => emit(
-                            import_customer_asset(f, b, &address)
+                            import_customer_asset(&ctx, b, &address)
                                 .map(|x| input.customer_assets.push(x)),
                         ),
                         other => {
@@ -147,7 +173,7 @@ fn import_provider(
     }
 }
 
-fn import_budget(file: &ParsedFile, block: &Block, address: &str) -> Result<JsonBudget, Diag> {
+fn import_budget(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonBudget, Diag> {
     let mut name = None;
     let mut amount = None;
     let mut delivery_method = None;
@@ -164,8 +190,8 @@ fn import_budget(file: &ParsedFile, block: &Block, address: &str) -> Result<Json
         }
     }
 
-    let name = name.ok_or_else(|| missing(file, block, address, "name"))?;
-    let amount = amount.ok_or_else(|| missing(file, block, address, "amount_micros"))?;
+    let name = name.ok_or_else(|| missing(ctx.file, block, address, "name"))?;
+    let amount = amount.ok_or_else(|| missing(ctx.file, block, address, "amount_micros"))?;
     Ok(JsonBudget {
         id: address.to_string(),
         name,
@@ -175,7 +201,7 @@ fn import_budget(file: &ParsedFile, block: &Block, address: &str) -> Result<Json
     })
 }
 
-fn import_campaign(file: &ParsedFile, block: &Block, address: &str) -> Result<JsonCampaign, Diag> {
+fn import_campaign(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonCampaign, Diag> {
     let mut name = None;
     let mut status = None;
     let mut channel = None;
@@ -190,7 +216,7 @@ fn import_campaign(file: &ParsedFile, block: &Block, address: &str) -> Result<Js
                 "name" => name = expect_string_owned(a),
                 "status" => status = expect_string_owned(a),
                 "advertising_channel_type" => channel = expect_string_owned(a),
-                "campaign_budget" => budget_ref = extract_resource_ref(&a.value),
+                "campaign_budget" => budget_ref = extract_resource_ref(&a.value).map(|r| ctx.resolve_ref(&r)),
                 "contains_eu_political_advertising" => eu_political = expect_string_owned(a),
                 _ => {}
             },
@@ -202,9 +228,9 @@ fn import_campaign(file: &ParsedFile, block: &Block, address: &str) -> Result<Js
         }
     }
 
-    let name = name.ok_or_else(|| missing(file, block, address, "name"))?;
-    let channel = channel.ok_or_else(|| missing(file, block, address, "advertising_channel_type"))?;
-    let budget = budget_ref.ok_or_else(|| missing(file, block, address, "campaign_budget"))?;
+    let name = name.ok_or_else(|| missing(ctx.file, block, address, "name"))?;
+    let channel = channel.ok_or_else(|| missing(ctx.file, block, address, "advertising_channel_type"))?;
+    let budget = budget_ref.ok_or_else(|| missing(ctx.file, block, address, "campaign_budget"))?;
 
     Ok(JsonCampaign {
         id: address.to_string(),
@@ -253,7 +279,7 @@ fn import_network_settings(block: &Block) -> JsonNetworkSettings {
     s
 }
 
-fn import_ad_group(file: &ParsedFile, block: &Block, address: &str) -> Result<JsonAdGroup, Diag> {
+fn import_ad_group(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonAdGroup, Diag> {
     let mut name = None;
     let mut campaign_ref = None;
     let mut status = None;
@@ -264,7 +290,7 @@ fn import_ad_group(file: &ParsedFile, block: &Block, address: &str) -> Result<Js
         let Structure::Attribute(a) = s else { continue };
         match a.key.as_str() {
             "name" => name = expect_string_owned(a),
-            "campaign" => campaign_ref = extract_resource_ref(&a.value),
+            "campaign" => campaign_ref = extract_resource_ref(&a.value).map(|r| ctx.resolve_ref(&r)),
             "status" => status = expect_string_owned(a),
             "type" => ty = expect_string_owned(a),
             "cpc_bid_micros" => cpc = expect_i64(a),
@@ -272,8 +298,8 @@ fn import_ad_group(file: &ParsedFile, block: &Block, address: &str) -> Result<Js
         }
     }
 
-    let name = name.ok_or_else(|| missing(file, block, address, "name"))?;
-    let campaign = campaign_ref.ok_or_else(|| missing(file, block, address, "campaign"))?;
+    let name = name.ok_or_else(|| missing(ctx.file, block, address, "name"))?;
+    let campaign = campaign_ref.ok_or_else(|| missing(ctx.file, block, address, "campaign"))?;
     Ok(JsonAdGroup {
         id: address.to_string(),
         name,
@@ -285,7 +311,7 @@ fn import_ad_group(file: &ParsedFile, block: &Block, address: &str) -> Result<Js
 }
 
 fn import_ad_group_ad(
-    file: &ParsedFile,
+    ctx: &Ctx,
     block: &Block,
     address: &str,
 ) -> Result<JsonAdGroupAd, Diag> {
@@ -296,7 +322,7 @@ fn import_ad_group_ad(
     for s in block.body.iter() {
         match s {
             Structure::Attribute(a) => match a.key.as_str() {
-                "ad_group" => ad_group_ref = extract_resource_ref(&a.value),
+                "ad_group" => ad_group_ref = extract_resource_ref(&a.value).map(|r| ctx.resolve_ref(&r)),
                 "status" => status = expect_string_owned(a),
                 _ => {}
             },
@@ -307,8 +333,8 @@ fn import_ad_group_ad(
         }
     }
 
-    let ad_group = ad_group_ref.ok_or_else(|| missing(file, block, address, "ad_group"))?;
-    let ad = ad.ok_or_else(|| missing(file, block, address, "ad"))?;
+    let ad_group = ad_group_ref.ok_or_else(|| missing(ctx.file, block, address, "ad_group"))?;
+    let ad = ad.ok_or_else(|| missing(ctx.file, block, address, "ad"))?;
     Ok(JsonAdGroupAd {
         id: address.to_string(),
         ad_group,
@@ -396,7 +422,7 @@ fn import_rsa_asset(block: &Block) -> Option<JsonRsaAsset> {
 }
 
 fn import_ad_group_criterion(
-    file: &ParsedFile,
+    ctx: &Ctx,
     block: &Block,
     address: &str,
 ) -> Result<JsonAdGroupCriterion, Diag> {
@@ -409,7 +435,7 @@ fn import_ad_group_criterion(
     for s in block.body.iter() {
         match s {
             Structure::Attribute(a) => match a.key.as_str() {
-                "ad_group" => ad_group_ref = extract_resource_ref(&a.value),
+                "ad_group" => ad_group_ref = extract_resource_ref(&a.value).map(|r| ctx.resolve_ref(&r)),
                 "status" => status = expect_string_owned(a),
                 "negative" => negative = expect_bool(a),
                 "cpc_bid_micros" => cpc = expect_i64(a),
@@ -422,8 +448,8 @@ fn import_ad_group_criterion(
         }
     }
 
-    let ad_group = ad_group_ref.ok_or_else(|| missing(file, block, address, "ad_group"))?;
-    let keyword = keyword.ok_or_else(|| missing(file, block, address, "keyword"))?;
+    let ad_group = ad_group_ref.ok_or_else(|| missing(ctx.file, block, address, "ad_group"))?;
+    let keyword = keyword.ok_or_else(|| missing(ctx.file, block, address, "keyword"))?;
     Ok(JsonAdGroupCriterion {
         id: address.to_string(),
         ad_group,
@@ -435,7 +461,7 @@ fn import_ad_group_criterion(
 }
 
 fn import_campaign_criterion(
-    file: &ParsedFile,
+    ctx: &Ctx,
     block: &Block,
     address: &str,
 ) -> Result<Vec<JsonCampaignCriterion>, Diag> {
@@ -451,7 +477,7 @@ fn import_campaign_criterion(
     for s in block.body.iter() {
         match s {
             Structure::Attribute(a) => match a.key.as_str() {
-                "campaign" => campaign_ref = extract_resource_ref(&a.value),
+                "campaign" => campaign_ref = extract_resource_ref(&a.value).map(|r| ctx.resolve_ref(&r)),
                 "status" => status = expect_string_owned(a),
                 "negative" => negative = expect_bool(a),
                 _ => {}
@@ -471,12 +497,12 @@ fn import_campaign_criterion(
         }
     }
 
-    let campaign = campaign_ref.ok_or_else(|| missing(file, block, address, "campaign"))?;
+    let campaign = campaign_ref.ok_or_else(|| missing(ctx.file, block, address, "campaign"))?;
 
     if !bulk_negatives.is_empty() {
         if keyword.is_some() || location.is_some() || language.is_some() || proximity.is_some() {
             return Err(Diag::new(
-                file.src.clone(),
+                ctx.file.src.clone(),
                 span_of(block.ident.span()),
                 format!(
                     "{address} mixes negative_keyword blocks with a single-criterion form; pick one (a container resource is negatives-only)"
@@ -558,7 +584,7 @@ fn import_language(block: &Block) -> Option<JsonLanguage> {
 }
 
 fn import_conversion_action(
-    file: &ParsedFile,
+    ctx: &Ctx,
     block: &Block,
     address: &str,
 ) -> Result<JsonConversionAction, Diag> {
@@ -609,9 +635,9 @@ fn import_conversion_action(
         }
     }
 
-    let name = name.ok_or_else(|| missing(file, block, address, "name"))?;
-    let ty = ty.ok_or_else(|| missing(file, block, address, "type"))?;
-    let category = category.ok_or_else(|| missing(file, block, address, "category"))?;
+    let name = name.ok_or_else(|| missing(ctx.file, block, address, "name"))?;
+    let ty = ty.ok_or_else(|| missing(ctx.file, block, address, "type"))?;
+    let category = category.ok_or_else(|| missing(ctx.file, block, address, "category"))?;
     Ok(JsonConversionAction {
         id: address.to_string(),
         name,
@@ -626,7 +652,7 @@ fn import_conversion_action(
 }
 
 fn import_call_asset(
-    file: &ParsedFile,
+    ctx: &Ctx,
     block: &Block,
     address: &str,
 ) -> Result<JsonCallAsset, Diag> {
@@ -641,13 +667,13 @@ fn import_call_asset(
                 "country_code" => country_code = expect_string_owned(a),
                 "phone_number" => phone_number = expect_string_owned(a),
                 "call_conversion_reporting_state" => reporting_state = expect_string_owned(a),
-                "call_conversion_action" => action_ref = extract_resource_ref(&a.value),
+                "call_conversion_action" => action_ref = extract_resource_ref(&a.value).map(|r| ctx.resolve_ref(&r)),
                 _ => {}
             }
         }
     }
-    let country_code = country_code.ok_or_else(|| missing(file, block, address, "country_code"))?;
-    let phone_number = phone_number.ok_or_else(|| missing(file, block, address, "phone_number"))?;
+    let country_code = country_code.ok_or_else(|| missing(ctx.file, block, address, "country_code"))?;
+    let phone_number = phone_number.ok_or_else(|| missing(ctx.file, block, address, "phone_number"))?;
     Ok(JsonCallAsset {
         id: address.to_string(),
         country_code,
@@ -658,7 +684,7 @@ fn import_call_asset(
 }
 
 fn import_customer_asset(
-    file: &ParsedFile,
+    ctx: &Ctx,
     block: &Block,
     address: &str,
 ) -> Result<JsonCustomerAsset, Diag> {
@@ -668,15 +694,15 @@ fn import_customer_asset(
     for s in block.body.iter() {
         if let Structure::Attribute(a) = s {
             match a.key.as_str() {
-                "asset" => asset_ref = extract_resource_ref(&a.value),
+                "asset" => asset_ref = extract_resource_ref(&a.value).map(|r| ctx.resolve_ref(&r)),
                 "field_type" => field_type = expect_string_owned(a),
                 "status" => status = expect_string_owned(a),
                 _ => {}
             }
         }
     }
-    let asset = asset_ref.ok_or_else(|| missing(file, block, address, "asset"))?;
-    let field_type = field_type.ok_or_else(|| missing(file, block, address, "field_type"))?;
+    let asset = asset_ref.ok_or_else(|| missing(ctx.file, block, address, "asset"))?;
+    let field_type = field_type.ok_or_else(|| missing(ctx.file, block, address, "field_type"))?;
     Ok(JsonCustomerAsset {
         id: address.to_string(),
         asset,
