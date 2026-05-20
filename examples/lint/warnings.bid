@@ -38,16 +38,19 @@ resource "google_ads_ad_group_ad" "fall_thin_rsa" {
     final_urls = ["https://example.com/fall"]
 
     responsive_search_ad {
+      path1 = "FALL_promo_2026"
+      path2 = "ok"
+
       headline {
         text = "Call 555-123-4567 for Deals"
       }
 
       headline {
-        text = "Fall Specials"
+        text = "An especially long fall promotional headline 2026"
       }
 
       description {
-        text = "Reach out today."
+        text = "Reach out today and we will get back to you within one business day with a quote that beats the competition."
       }
     }
   }

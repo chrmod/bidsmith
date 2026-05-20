@@ -3,6 +3,7 @@ pub mod apply;
 pub mod export;
 pub mod fmt;
 pub mod plan;
+pub mod query;
 pub mod validate;
 
 use std::process::ExitCode;

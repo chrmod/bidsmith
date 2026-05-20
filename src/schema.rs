@@ -51,6 +51,81 @@ const RSA_PIN: &[&str] = &[
     "DESCRIPTION_2",
 ];
 const PROXIMITY_RADIUS_UNITS: &[&str] = &["MILES", "KILOMETERS"];
+const CONVERSION_ACTION_TYPE: &[&str] = &[
+    "WEBPAGE",
+    "UPLOAD_CALLS",
+    "UPLOAD_CLICKS",
+    "AD_CALL",
+    "CLICK_TO_CALL",
+    "WEBSITE_CALL",
+    "GOOGLE_PLAY_DOWNLOAD",
+    "GOOGLE_PLAY_IN_APP_PURCHASE",
+    "FIREBASE_ANDROID_FIRST_OPEN",
+    "FIREBASE_IOS_FIRST_OPEN",
+    "STORE_VISITS",
+    "STORE_SALES",
+];
+const CONVERSION_ACTION_CATEGORY: &[&str] = &[
+    "DEFAULT",
+    "PAGE_VIEW",
+    "PURCHASE",
+    "SIGNUP",
+    "LEAD",
+    "DOWNLOAD",
+    "ADD_TO_CART",
+    "BEGIN_CHECKOUT",
+    "SUBSCRIBE_PAID",
+    "PHONE_CALL_LEAD",
+    "IMPORTED_LEAD",
+    "SUBMIT_LEAD_FORM",
+    "BOOK_APPOINTMENT",
+    "REQUEST_QUOTE",
+    "GET_DIRECTIONS",
+    "OUTBOUND_CLICK",
+    "CONTACT",
+    "ENGAGEMENT",
+    "STORE_VISIT",
+    "STORE_SALE",
+    "QUALIFIED_LEAD",
+    "CONVERTED_LEAD",
+];
+const CONVERSION_ACTION_STATUS: &[&str] = &["ENABLED", "REMOVED", "HIDDEN"];
+const CONVERSION_COUNTING_TYPE: &[&str] = &["ONE_PER_CLICK", "MANY_PER_CLICK"];
+const CALL_CONVERSION_REPORTING_STATE: &[&str] = &[
+    "DISABLED",
+    "USE_ACCOUNT_LEVEL_CALL_CONVERSION_ACTION",
+    "USE_RESOURCE_LEVEL_CALL_CONVERSION_ACTION",
+];
+const ASSET_FIELD_TYPE: &[&str] = &[
+    "HEADLINE",
+    "DESCRIPTION",
+    "MANDATORY_AD_TEXT",
+    "MARKETING_IMAGE",
+    "MEDIA_BUNDLE",
+    "YOUTUBE_VIDEO",
+    "BOOK_ON_GOOGLE",
+    "LEAD_FORM",
+    "PROMOTION",
+    "CALLOUT",
+    "STRUCTURED_SNIPPET",
+    "SITELINK",
+    "MOBILE_APP",
+    "HOTEL_CALLOUT",
+    "CALL",
+    "PRICE",
+    "LONG_HEADLINE",
+    "BUSINESS_NAME",
+    "SQUARE_MARKETING_IMAGE",
+    "PORTRAIT_MARKETING_IMAGE",
+    "LOGO",
+    "LANDSCAPE_LOGO",
+    "VIDEO",
+    "CALL_TO_ACTION_SELECTOR",
+    "AD_IMAGE",
+    "BUSINESS_LOGO",
+    "HOTEL_PROPERTY",
+    "DISCOVERY_CAROUSEL_CARD",
+];
 
 fn rsa_asset_block(name: &'static str) -> NestedBlockSchema {
     NestedBlockSchema {
@@ -131,6 +206,14 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         FieldType::Ref(&["google_ads_campaign_budget"]),
                         true,
                     ),
+                    attr(
+                        "contains_eu_political_advertising",
+                        FieldType::Enum(&[
+                            "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING",
+                            "CONTAINS_EU_POLITICAL_ADVERTISING",
+                        ]),
+                        false,
+                    ),
                 ],
                 blocks: vec![
                     NestedBlockSchema {
@@ -195,6 +278,20 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                 ],
                 blocks: vec![
                     keyword_block(),
+                    NestedBlockSchema {
+                        name: "negative_keyword",
+                        schema: BlockSchema {
+                            attributes: vec![
+                                attr("text", FieldType::String, true),
+                                attr(
+                                    "match_type",
+                                    FieldType::Enum(KEYWORD_MATCH_TYPE),
+                                    true,
+                                ),
+                            ],
+                            blocks: vec![],
+                        },
+                    },
                     NestedBlockSchema {
                         name: "location",
                         schema: BlockSchema {
@@ -301,6 +398,97 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         false,
                     ),
                     attr("cpc_bid_micros", FieldType::Integer, false),
+                ],
+                blocks: vec![],
+            },
+        );
+
+        m.insert(
+            "google_ads_conversion_action",
+            BlockSchema {
+                attributes: vec![
+                    attr("name", FieldType::String, true),
+                    attr(
+                        "type",
+                        FieldType::Enum(CONVERSION_ACTION_TYPE),
+                        true,
+                    ),
+                    attr(
+                        "category",
+                        FieldType::Enum(CONVERSION_ACTION_CATEGORY),
+                        true,
+                    ),
+                    attr(
+                        "status",
+                        FieldType::Enum(CONVERSION_ACTION_STATUS),
+                        false,
+                    ),
+                    attr(
+                        "counting_type",
+                        FieldType::Enum(CONVERSION_COUNTING_TYPE),
+                        false,
+                    ),
+                    attr(
+                        "click_through_lookback_window_days",
+                        FieldType::Integer,
+                        false,
+                    ),
+                    attr(
+                        "view_through_lookback_window_days",
+                        FieldType::Integer,
+                        false,
+                    ),
+                ],
+                blocks: vec![NestedBlockSchema {
+                    name: "value_settings",
+                    schema: BlockSchema {
+                        attributes: vec![
+                            attr("default_value", FieldType::Number, false),
+                            attr("default_currency_code", FieldType::String, false),
+                            attr("always_use_default_value", FieldType::Bool, false),
+                        ],
+                        blocks: vec![],
+                    },
+                }],
+            },
+        );
+
+        m.insert(
+            "google_ads_call_asset",
+            BlockSchema {
+                attributes: vec![
+                    attr("country_code", FieldType::String, true),
+                    attr("phone_number", FieldType::String, true),
+                    attr(
+                        "call_conversion_reporting_state",
+                        FieldType::Enum(CALL_CONVERSION_REPORTING_STATE),
+                        false,
+                    ),
+                    attr(
+                        "call_conversion_action",
+                        FieldType::Ref(&["google_ads_conversion_action"]),
+                        false,
+                    ),
+                ],
+                blocks: vec![],
+            },
+        );
+
+        m.insert(
+            "google_ads_customer_asset",
+            BlockSchema {
+                attributes: vec![
+                    attr(
+                        "asset",
+                        FieldType::Ref(&["google_ads_call_asset"]),
+                        true,
+                    ),
+                    attr(
+                        "field_type",
+                        FieldType::Enum(ASSET_FIELD_TYPE),
+                        true,
+                    ),
+                    attr("status", FieldType::Enum(STATUS), false),
                 ],
                 blocks: vec![],
             },

@@ -5,7 +5,8 @@ use serde_json::{Map, Value, json};
 use crate::api::diff::{Action, DiffReport};
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupCriterion, JsonBudget,
-    JsonCampaign, JsonCampaignCriterion, JsonResponsiveSearchAd, JsonRsaAsset,
+    JsonCallAsset, JsonCampaign, JsonCampaignCriterion, JsonConversionAction,
+    JsonCustomerAsset, JsonResponsiveSearchAd, JsonRsaAsset,
 };
 
 pub struct PlanOperation {
@@ -48,6 +49,9 @@ pub fn build_mutate_with_diff(
             "ad_group_ad" => "adGroupAds",
             "ad_group_criterion" => "adGroupCriteria",
             "campaign_criterion" => "campaignCriteria",
+            "conversion_action" => "conversionActions",
+            "call_asset" => "assets",
+            "customer_asset" => "customerAssets",
             _ => continue,
         };
         if let Some(live_id) = d.action.live_id() {
@@ -234,6 +238,59 @@ pub fn build_mutate_with_diff(
                 }
             }));
             operations.push(PlanOperation { address: cr.id.clone(), kind: "campaign_criterion" });
+        }
+    }
+    for c in &input.conversion_actions {
+        let rn = refs.get(&c.id).expect("conversion_action rn");
+        if create_set.contains(&c.id) {
+            mutate_ops.push(json!({
+                "conversionActionOperation": { "create": conversion_action_create(c, rn) }
+            }));
+            operations
+                .push(PlanOperation { address: c.id.clone(), kind: "conversion_action" });
+        } else if let Some(fields) = update_set.get(&c.id) {
+            mutate_ops.push(json!({
+                "conversionActionOperation": {
+                    "update": conversion_action_update_body(c, rn, fields),
+                    "updateMask": fields.join(","),
+                }
+            }));
+            operations
+                .push(PlanOperation { address: c.id.clone(), kind: "conversion_action" });
+        }
+    }
+    for a in &input.call_assets {
+        let rn = refs.get(&a.id).expect("call_asset rn");
+        if create_set.contains(&a.id) {
+            let action_rn = match a.call_conversion_action.as_ref() {
+                Some(addr) => resolve(&refs, addr, &a.id, "call_conversion_action", &mut errors),
+                None => None,
+            };
+            mutate_ops.push(json!({
+                "assetOperation": { "create": call_asset_create(a, rn, action_rn.as_deref()) }
+            }));
+            operations.push(PlanOperation { address: a.id.clone(), kind: "call_asset" });
+        }
+    }
+    for a in &input.customer_assets {
+        let rn = refs.get(&a.id).expect("customer_asset rn");
+        if create_set.contains(&a.id) {
+            let asset_rn = match resolve(&refs, &a.asset, &a.id, "asset", &mut errors) {
+                Some(s) => s,
+                None => continue,
+            };
+            mutate_ops.push(json!({
+                "customerAssetOperation": { "create": customer_asset_create(a, rn, &asset_rn) }
+            }));
+            operations.push(PlanOperation { address: a.id.clone(), kind: "customer_asset" });
+        } else if let Some(fields) = update_set.get(&a.id) {
+            mutate_ops.push(json!({
+                "customerAssetOperation": {
+                    "update": customer_asset_update_body(a, rn, fields),
+                    "updateMask": fields.join(","),
+                }
+            }));
+            operations.push(PlanOperation { address: a.id.clone(), kind: "customer_asset" });
         }
     }
 
@@ -452,6 +509,14 @@ fn campaign_update_body(c: &JsonCampaign, resource_name: &str, fields: &[String]
                     m.insert("status".into(), Value::String(s.clone()));
                 }
             }
+            "contains_eu_political_advertising" => {
+                if let Some(s) = &c.contains_eu_political_advertising {
+                    m.insert(
+                        "containsEuPoliticalAdvertising".into(),
+                        Value::String(s.clone()),
+                    );
+                }
+            }
             "manual_cpc.enhanced_cpc_enabled" => {
                 let sub = manual_cpc_sub.get_or_insert_with(Map::new);
                 if let Some(e) = c.manual_cpc.as_ref().and_then(|m| m.enhanced_cpc_enabled) {
@@ -607,6 +672,172 @@ fn campaign_criterion_update_body(
     Value::Object(m)
 }
 
+fn conversion_action_create(c: &JsonConversionAction, resource_name: &str) -> Value {
+    let mut m = Map::new();
+    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
+    m.insert("name".into(), Value::String(c.name.clone()));
+    m.insert("type".into(), Value::String(c.ty.clone()));
+    m.insert("category".into(), Value::String(c.category.clone()));
+    if let Some(s) = &c.status {
+        m.insert("status".into(), Value::String(s.clone()));
+    }
+    if let Some(ct) = &c.counting_type {
+        m.insert("countingType".into(), Value::String(ct.clone()));
+    }
+    if let Some(d) = c.click_through_lookback_window_days {
+        m.insert(
+            "clickThroughLookbackWindowDays".into(),
+            Value::String(d.to_string()),
+        );
+    }
+    if let Some(d) = c.view_through_lookback_window_days {
+        m.insert(
+            "viewThroughLookbackWindowDays".into(),
+            Value::String(d.to_string()),
+        );
+    }
+    if let Some(vs) = &c.value_settings {
+        m.insert("valueSettings".into(), value_settings_value(vs));
+    }
+    Value::Object(m)
+}
+
+fn value_settings_value(vs: &crate::commands::export::JsonValueSettings) -> Value {
+    let mut sub = Map::new();
+    if let Some(v) = vs.default_value {
+        if let Some(n) = serde_json::Number::from_f64(v) {
+            sub.insert("defaultValue".into(), Value::Number(n));
+        }
+    }
+    if let Some(s) = &vs.default_currency_code {
+        sub.insert("defaultCurrencyCode".into(), Value::String(s.clone()));
+    }
+    if let Some(b) = vs.always_use_default_value {
+        sub.insert("alwaysUseDefaultValue".into(), Value::Bool(b));
+    }
+    Value::Object(sub)
+}
+
+fn conversion_action_update_body(
+    c: &JsonConversionAction,
+    resource_name: &str,
+    fields: &[String],
+) -> Value {
+    let mut m = Map::new();
+    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
+    let mut value_settings_sub: Option<Map<String, Value>> = None;
+    for f in fields {
+        match f.as_str() {
+            "status" => {
+                if let Some(s) = &c.status {
+                    m.insert("status".into(), Value::String(s.clone()));
+                }
+            }
+            "counting_type" => {
+                if let Some(ct) = &c.counting_type {
+                    m.insert("countingType".into(), Value::String(ct.clone()));
+                }
+            }
+            "click_through_lookback_window_days" => {
+                if let Some(d) = c.click_through_lookback_window_days {
+                    m.insert(
+                        "clickThroughLookbackWindowDays".into(),
+                        Value::String(d.to_string()),
+                    );
+                }
+            }
+            "view_through_lookback_window_days" => {
+                if let Some(d) = c.view_through_lookback_window_days {
+                    m.insert(
+                        "viewThroughLookbackWindowDays".into(),
+                        Value::String(d.to_string()),
+                    );
+                }
+            }
+            "value_settings.default_value" => {
+                let sub = value_settings_sub.get_or_insert_with(Map::new);
+                if let Some(v) = c.value_settings.as_ref().and_then(|v| v.default_value) {
+                    if let Some(n) = serde_json::Number::from_f64(v) {
+                        sub.insert("defaultValue".into(), Value::Number(n));
+                    }
+                }
+            }
+            "value_settings.default_currency_code" => {
+                let sub = value_settings_sub.get_or_insert_with(Map::new);
+                if let Some(s) = c
+                    .value_settings
+                    .as_ref()
+                    .and_then(|v| v.default_currency_code.clone())
+                {
+                    sub.insert("defaultCurrencyCode".into(), Value::String(s));
+                }
+            }
+            "value_settings.always_use_default_value" => {
+                let sub = value_settings_sub.get_or_insert_with(Map::new);
+                if let Some(b) = c
+                    .value_settings
+                    .as_ref()
+                    .and_then(|v| v.always_use_default_value)
+                {
+                    sub.insert("alwaysUseDefaultValue".into(), Value::Bool(b));
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(sub) = value_settings_sub {
+        m.insert("valueSettings".into(), Value::Object(sub));
+    }
+    Value::Object(m)
+}
+
+fn call_asset_create(a: &JsonCallAsset, resource_name: &str, action_rn: Option<&str>) -> Value {
+    let mut m = Map::new();
+    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
+    let mut call = Map::new();
+    call.insert("countryCode".into(), Value::String(a.country_code.clone()));
+    call.insert("phoneNumber".into(), Value::String(a.phone_number.clone()));
+    if let Some(s) = &a.call_conversion_reporting_state {
+        call.insert("callConversionReportingState".into(), Value::String(s.clone()));
+    }
+    if let Some(action_rn) = action_rn {
+        call.insert(
+            "callConversionAction".into(),
+            Value::String(action_rn.to_string()),
+        );
+    }
+    m.insert("callAsset".into(), Value::Object(call));
+    Value::Object(m)
+}
+
+fn customer_asset_create(a: &JsonCustomerAsset, resource_name: &str, asset_rn: &str) -> Value {
+    let mut m = Map::new();
+    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
+    m.insert("asset".into(), Value::String(asset_rn.to_string()));
+    m.insert("fieldType".into(), Value::String(a.field_type.clone()));
+    if let Some(s) = &a.status {
+        m.insert("status".into(), Value::String(s.clone()));
+    }
+    Value::Object(m)
+}
+
+fn customer_asset_update_body(
+    a: &JsonCustomerAsset,
+    resource_name: &str,
+    fields: &[String],
+) -> Value {
+    let mut m = Map::new();
+    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
+    for f in fields {
+        if f == "status" {
+            if let Some(s) = &a.status {
+                m.insert("status".into(), Value::String(s.clone()));
+            }
+        }
+    }
+    Value::Object(m)
+}
+
 fn resolve(
     refs: &HashMap<String, String>,
     address: &str,
@@ -655,9 +886,13 @@ fn campaign_create(c: &JsonCampaign, resource_name: &str, budget_rn: &str) -> Va
         Value::String(c.advertising_channel_type.clone()),
     );
     m.insert("campaignBudget".into(), Value::String(budget_rn.to_string()));
+    let eu_political = c
+        .contains_eu_political_advertising
+        .clone()
+        .unwrap_or_else(|| "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING".to_string());
     m.insert(
         "containsEuPoliticalAdvertising".into(),
-        Value::String("DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING".to_string()),
+        Value::String(eu_political),
     );
     if let Some(mc) = &c.manual_cpc {
         let mut sub = Map::new();

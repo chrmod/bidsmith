@@ -139,11 +139,12 @@ Verified locally:
   missing required field, list type mismatch, wrong list-element type,
   invalid keyword match_type, invalid RSA pin; plus incidental
   status/RSA-block lint warnings on the affected resources).
-- `cargo run -- validate examples/lint` → exit 0 with 7 warnings (the
-  five lint rules trip: missing `status` on three blocks, RSA headlines
-  < 3, RSA descriptions < 2, phone number in a headline, and a
-  suspicious `languageConstants/1045` (Afar) entry that's almost
-  certainly meant to be 1030 (Polish)).
+- `cargo run -- validate examples/lint` → exit 0 with 10 warnings (the
+  lint rules trip: missing `status` on three blocks, RSA headlines
+  < 3, RSA descriptions < 2, phone number in a headline, the
+  suspicious `languageConstants/1045` (Afar) entry, a headline over 30
+  chars, a description over 90 chars, and a path1 with uppercase /
+  underscore outside the `[a-z0-9-]` charset).
 - `cargo run -- export --from-json examples/exports/basic.json`
   round-trips through `validate` cleanly (`-o out.bid` then
   `validate out.bid` → OK).
@@ -181,15 +182,29 @@ Verified locally:
 
 Validator covers (so far):
 - `google_ads_campaign_budget`, `google_ads_campaign` (SEARCH with
-  `manual_cpc` / `network_settings`), `google_ads_ad_group`,
-  `google_ads_ad_group_ad` (with `ad` → `responsive_search_ad` →
-  repeating `headline { text, pin? }` / `description { text, pin? }`
-  blocks; `final_urls` still uses `list<string>`),
+  `manual_cpc` / `network_settings` and the required
+  `contains_eu_political_advertising` enum — defaults to
+  `DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING` at mutate time when the
+  attribute is omitted, since Google Ads rejects new campaigns that
+  don't declare it), `google_ads_ad_group`, `google_ads_ad_group_ad`
+  (with `ad` → `responsive_search_ad` → repeating
+  `headline { text, pin? }` / `description { text, pin? }` blocks;
+  `final_urls` still uses `list<string>`),
   `google_ads_ad_group_criterion` (positive/negative keyword with
-  match_type), `google_ads_campaign_criterion` (negative keyword,
-  location, language, proximity with flat `latitude` / `longitude` in
-  decimal degrees plus `radius` + `radius_units`; the adapter rounds to
-  the API's micro-degree integers at the wire boundary)
+  match_type, optional per-keyword `cpc_bid_micros`),
+  `google_ads_campaign_criterion` (single negative keyword, location,
+  language, proximity with flat `latitude` / `longitude` in decimal
+  degrees plus `radius` + `radius_units`; the adapter rounds to the
+  API's micro-degree integers at the wire boundary), plus a bulk
+  syntactic-sugar form where repeating `negative_keyword { text,
+  match_type }` sub-blocks in one resource expand into N individual
+  negative criteria at import time, `google_ads_conversion_action`
+  (`type`, `category`, lookback windows, optional `value_settings`
+  sub-block with default value / currency / always-use flag),
+  `google_ads_call_asset` (country code + phone number, optional
+  `call_conversion_reporting_state` and reference to a
+  `google_ads_conversion_action`), `google_ads_customer_asset` (links
+  a call asset to the account via `field_type = "CALL"`)
 - `provider "google_ads"` (`customer_id` required, `login_customer_id`
   optional — overridable via `--login-customer-id` / `--customer-id` on
   `export`)
@@ -200,7 +215,9 @@ Validator covers (so far):
   on campaign / ad_group / ad_group_ad / criterion blocks; responsive
   search ad with `< 3` headline blocks or `< 2` description blocks;
   phone-number-like patterns (7+ digits with phone separators) inside
-  any headline/description `text` attribute; suspicious
+  any headline/description `text` attribute; headline text over 30
+  chars or description text over 90 chars; `path1` / `path2` over 15
+  chars or containing characters outside `[a-z0-9-]`; suspicious
   `language_constant` values (currently just `languageConstants/1045`,
   Afar — a near-universal typo for `1030`, Polish).
 
@@ -214,6 +231,7 @@ Validator covers (so far):
 | `plan`     | partial | Diff `.bid` vs live (name-matched, scalar-level), validateOnly batch via googleAds:mutate; emits `+ create` / `~ update` / `no-op` per resource |
 | `apply`    | partial | Shows the validateOnly diff first, then prompts for `yes` (or skips the prompt with `--auto-approve`) before mutating. Refuses to prompt when stdin is not a TTY. Does not yet write `bidsmith:address=…` labels or detect removals (state-tracking is the v2 follow-up) |
 | `refresh`  | stub    | Import live state into `.bid` files                  |
+| `query`    | partial | Read-only GAQL passthrough; `--format table` (default), `json`, or `tsv`; uses the same OAuth + customer envelope as `plan` / `apply` |
 | `init`     | —       | (later) Bootstrap project skeleton                   |
 | `graph`    | —       | (later) Visualize resource graph                     |
 | `import`   | —       | (later) Adopt an unlabeled existing resource         |

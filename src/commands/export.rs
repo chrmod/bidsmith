@@ -21,6 +21,12 @@ pub struct ExportInput {
     pub ad_group_criteria: Vec<JsonAdGroupCriterion>,
     #[serde(default)]
     pub campaign_criteria: Vec<JsonCampaignCriterion>,
+    #[serde(default)]
+    pub conversion_actions: Vec<JsonConversionAction>,
+    #[serde(default)]
+    pub call_assets: Vec<JsonCallAsset>,
+    #[serde(default)]
+    pub customer_assets: Vec<JsonCustomerAsset>,
 }
 
 #[derive(Deserialize)]
@@ -42,6 +48,8 @@ pub struct JsonCampaign {
     pub status: Option<String>,
     pub advertising_channel_type: String,
     pub campaign_budget: String,
+    #[serde(default)]
+    pub contains_eu_political_advertising: Option<String>,
     #[serde(default)]
     pub manual_cpc: Option<JsonManualCpc>,
     #[serde(default)]
@@ -155,6 +163,55 @@ pub struct JsonProximity {
 }
 
 #[derive(Deserialize)]
+pub struct JsonConversionAction {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+    pub category: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub counting_type: Option<String>,
+    #[serde(default)]
+    pub click_through_lookback_window_days: Option<i64>,
+    #[serde(default)]
+    pub view_through_lookback_window_days: Option<i64>,
+    #[serde(default)]
+    pub value_settings: Option<JsonValueSettings>,
+}
+
+#[derive(Deserialize)]
+pub struct JsonValueSettings {
+    #[serde(default)]
+    pub default_value: Option<f64>,
+    #[serde(default)]
+    pub default_currency_code: Option<String>,
+    #[serde(default)]
+    pub always_use_default_value: Option<bool>,
+}
+
+#[derive(Deserialize)]
+pub struct JsonCallAsset {
+    pub id: String,
+    pub country_code: String,
+    pub phone_number: String,
+    #[serde(default)]
+    pub call_conversion_reporting_state: Option<String>,
+    #[serde(default)]
+    pub call_conversion_action: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct JsonCustomerAsset {
+    pub id: String,
+    pub asset: String,
+    pub field_type: String,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub struct JsonResponsiveSearchAd {
     pub headlines: Vec<JsonRsaAsset>,
     pub descriptions: Vec<JsonRsaAsset>,
@@ -249,6 +306,10 @@ fn filter_removed(input: &mut ExportInput) {
     input.ad_group_ads.retain(|a| !is_removed(&a.status));
     input.ad_group_criteria.retain(|c| !is_removed(&c.status));
     input.campaign_criteria.retain(|c| !is_removed(&c.status));
+    input
+        .conversion_actions
+        .retain(|c| !is_removed(&c.status));
+    input.customer_assets.retain(|a| !is_removed(&a.status));
 }
 
 fn load_flat_json(path: &str) -> Result<ExportInput, ExitCode> {
@@ -280,8 +341,34 @@ fn render(input: &ExportInput) -> String {
     let mut budget_addr: HashMap<String, String> = HashMap::new();
     let mut campaign_addr: HashMap<String, String> = HashMap::new();
     let mut ad_group_addr: HashMap<String, String> = HashMap::new();
+    let mut conversion_action_addr: HashMap<String, String> = HashMap::new();
+    let mut call_asset_addr: HashMap<String, String> = HashMap::new();
 
     write_provider(&mut out, input);
+
+    for c in &input.conversion_actions {
+        let name = names.allocate("google_ads_conversion_action", &slugify(&c.name));
+        conversion_action_addr
+            .insert(c.id.clone(), format!("google_ads_conversion_action.{name}"));
+        write_conversion_action(&mut out, &name, c);
+    }
+
+    for a in &input.call_assets {
+        let base = format!("call_{}_{}", a.country_code, a.phone_number);
+        let name = names.allocate("google_ads_call_asset", &slugify(&base));
+        call_asset_addr.insert(a.id.clone(), format!("google_ads_call_asset.{name}"));
+        write_call_asset(&mut out, &name, a, &conversion_action_addr);
+    }
+
+    for a in &input.customer_assets {
+        let base = call_asset_addr
+            .get(&a.asset)
+            .and_then(|addr| addr.strip_prefix("google_ads_call_asset."))
+            .map(|s| format!("link_{s}"))
+            .unwrap_or_else(|| slugify(&a.id));
+        let name = names.allocate("google_ads_customer_asset", &slugify(&base));
+        write_customer_asset(&mut out, &name, a, &call_asset_addr);
+    }
 
     for b in &input.campaign_budgets {
         let name = names.allocate("google_ads_campaign_budget", &slugify(&b.name));
@@ -373,6 +460,9 @@ fn write_campaign(
         None => format!("\"<unresolved budget {}>\"", c.campaign_budget),
     };
     write_attr(out, 1, "campaign_budget", &budget_ref);
+    if let Some(v) = &c.contains_eu_political_advertising {
+        write_attr(out, 1, "contains_eu_political_advertising", &fmt_string(v));
+    }
 
     if let Some(m) = &c.manual_cpc {
         out.push_str("\n  manual_cpc {\n");
@@ -557,6 +647,80 @@ fn write_campaign_criterion(
         write_attr(out, 2, "radius", &format_number(prox.radius));
         write_attr(out, 2, "radius_units", &fmt_string(&prox.radius_units));
         out.push_str("  }\n");
+    }
+    out.push_str("}\n\n");
+}
+
+fn write_conversion_action(out: &mut String, name: &str, c: &JsonConversionAction) {
+    let _ = writeln!(out, "resource \"google_ads_conversion_action\" \"{name}\" {{");
+    write_attr(out, 1, "name", &fmt_string(&c.name));
+    write_attr(out, 1, "type", &fmt_string(&c.ty));
+    write_attr(out, 1, "category", &fmt_string(&c.category));
+    if let Some(s) = &c.status {
+        write_attr(out, 1, "status", &fmt_string(s));
+    }
+    if let Some(ct) = &c.counting_type {
+        write_attr(out, 1, "counting_type", &fmt_string(ct));
+    }
+    if let Some(d) = c.click_through_lookback_window_days {
+        write_attr(out, 1, "click_through_lookback_window_days", &d.to_string());
+    }
+    if let Some(d) = c.view_through_lookback_window_days {
+        write_attr(out, 1, "view_through_lookback_window_days", &d.to_string());
+    }
+    if let Some(vs) = &c.value_settings {
+        out.push_str("\n  value_settings {\n");
+        if let Some(v) = vs.default_value {
+            write_attr(out, 2, "default_value", &format_number(v));
+        }
+        if let Some(s) = &vs.default_currency_code {
+            write_attr(out, 2, "default_currency_code", &fmt_string(s));
+        }
+        if let Some(b) = vs.always_use_default_value {
+            write_attr(out, 2, "always_use_default_value", &b.to_string());
+        }
+        out.push_str("  }\n");
+    }
+    out.push_str("}\n\n");
+}
+
+fn write_call_asset(
+    out: &mut String,
+    name: &str,
+    a: &JsonCallAsset,
+    conversion_action_addr: &HashMap<String, String>,
+) {
+    let _ = writeln!(out, "resource \"google_ads_call_asset\" \"{name}\" {{");
+    write_attr(out, 1, "country_code", &fmt_string(&a.country_code));
+    write_attr(out, 1, "phone_number", &fmt_string(&a.phone_number));
+    if let Some(s) = &a.call_conversion_reporting_state {
+        write_attr(out, 1, "call_conversion_reporting_state", &fmt_string(s));
+    }
+    if let Some(action) = &a.call_conversion_action {
+        let action_ref = match conversion_action_addr.get(action) {
+            Some(addr) => format!("{addr}.id"),
+            None => format!("\"<unresolved conversion_action {action}>\""),
+        };
+        write_attr(out, 1, "call_conversion_action", &action_ref);
+    }
+    out.push_str("}\n\n");
+}
+
+fn write_customer_asset(
+    out: &mut String,
+    name: &str,
+    a: &JsonCustomerAsset,
+    call_asset_addr: &HashMap<String, String>,
+) {
+    let _ = writeln!(out, "resource \"google_ads_customer_asset\" \"{name}\" {{");
+    let asset_ref = match call_asset_addr.get(&a.asset) {
+        Some(addr) => format!("{addr}.id"),
+        None => format!("\"<unresolved asset {}>\"", a.asset),
+    };
+    write_attr(out, 1, "asset", &asset_ref);
+    write_attr(out, 1, "field_type", &fmt_string(&a.field_type));
+    if let Some(s) = &a.status {
+        write_attr(out, 1, "status", &fmt_string(s));
     }
     out.push_str("}\n\n");
 }

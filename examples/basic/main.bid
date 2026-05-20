@@ -14,6 +14,7 @@ resource "google_ads_campaign" "summer_search" {
   status = "PAUSED"
   advertising_channel_type = "SEARCH"
   campaign_budget = google_ads_campaign_budget.summer.id
+  contains_eu_political_advertising = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"
 
   manual_cpc {
     enhanced_cpc_enabled = false
@@ -45,6 +46,17 @@ resource "google_ads_ad_group_criterion" "summer_kw_summer_deals" {
   }
 }
 
+resource "google_ads_ad_group_criterion" "summer_kw_summer_sale_exact" {
+  ad_group = google_ads_ad_group.summer_search_default.id
+  status = "ENABLED"
+  cpc_bid_micros = 3500000
+
+  keyword {
+    text = "summer sale"
+    match_type = "EXACT"
+  }
+}
+
 resource "google_ads_campaign_criterion" "summer_neg_winter" {
   campaign = google_ads_campaign.summer_search.id
   status = "ENABLED"
@@ -54,6 +66,55 @@ resource "google_ads_campaign_criterion" "summer_neg_winter" {
     text = "winter"
     match_type = "BROAD"
   }
+}
+
+resource "google_ads_campaign_criterion" "summer_negatives_bulk" {
+  campaign = google_ads_campaign.summer_search.id
+  status = "ENABLED"
+
+  negative_keyword {
+    text = "free"
+    match_type = "BROAD"
+  }
+
+  negative_keyword {
+    text = "diy"
+    match_type = "BROAD"
+  }
+
+  negative_keyword {
+    text = "used"
+    match_type = "BROAD"
+  }
+}
+
+resource "google_ads_conversion_action" "lead" {
+  name = "Summer Lead"
+  type = "WEBPAGE"
+  category = "SUBMIT_LEAD_FORM"
+  status = "ENABLED"
+  counting_type = "ONE_PER_CLICK"
+  click_through_lookback_window_days = 30
+  view_through_lookback_window_days = 1
+
+  value_settings {
+    default_value = 1
+    default_currency_code = "USD"
+    always_use_default_value = true
+  }
+}
+
+resource "google_ads_call_asset" "main_phone" {
+  country_code = "US"
+  phone_number = "5551234567"
+  call_conversion_reporting_state = "USE_RESOURCE_LEVEL_CALL_CONVERSION_ACTION"
+  call_conversion_action = google_ads_conversion_action.lead.id
+}
+
+resource "google_ads_customer_asset" "main_phone_link" {
+  asset = google_ads_call_asset.main_phone.id
+  field_type = "CALL"
+  status = "ENABLED"
 }
 
 resource "google_ads_campaign_criterion" "summer_geo_us" {

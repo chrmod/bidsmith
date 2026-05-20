@@ -4,9 +4,10 @@ use serde_json::Value;
 
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupCriterion, JsonBudget,
-    JsonCampaign, JsonCampaignCriterion, JsonKeyword, JsonLanguage,
-    JsonLocation, JsonManualCpc, JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd,
-    JsonRsaAsset,
+    JsonCallAsset, JsonCampaign, JsonCampaignCriterion, JsonConversionAction,
+    JsonCustomerAsset, JsonKeyword, JsonLanguage, JsonLocation, JsonManualCpc,
+    JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset,
+    JsonValueSettings,
 };
 
 pub fn from_search_response(raw: &str) -> Result<ExportInput, String> {
@@ -56,6 +57,9 @@ struct AdapterState {
     ad_group_ads: BTreeMap<String, JsonAdGroupAd>,
     ad_group_criteria: BTreeMap<String, JsonAdGroupCriterion>,
     campaign_criteria: BTreeMap<String, JsonCampaignCriterion>,
+    conversion_actions: BTreeMap<String, JsonConversionAction>,
+    call_assets: BTreeMap<String, JsonCallAsset>,
+    customer_assets: BTreeMap<String, JsonCustomerAsset>,
 }
 
 impl AdapterState {
@@ -77,6 +81,15 @@ impl AdapterState {
         }
         if let Some(v) = row.get("campaignCriterion") {
             self.merge_campaign_criterion(v);
+        }
+        if let Some(v) = row.get("conversionAction") {
+            self.merge_conversion_action(v);
+        }
+        if let Some(v) = row.get("asset") {
+            self.merge_asset(v);
+        }
+        if let Some(v) = row.get("customerAsset") {
+            self.merge_customer_asset(v);
         }
     }
 
@@ -131,6 +144,7 @@ impl AdapterState {
                 status: None,
                 advertising_channel_type: String::new(),
                 campaign_budget: String::new(),
+                contains_eu_political_advertising: None,
                 manual_cpc: None,
                 network_settings: None,
             });
@@ -147,6 +161,12 @@ impl AdapterState {
             if let Some(id) = last_segment(rn) {
                 entry.campaign_budget = id.to_string();
             }
+        }
+        if let Some(s) = v
+            .get("containsEuPoliticalAdvertising")
+            .and_then(Value::as_str)
+        {
+            entry.contains_eu_political_advertising = Some(s.to_string());
         }
         if let Some(mc) = v.get("manualCpc") {
             entry.manual_cpc = Some(JsonManualCpc {
@@ -412,6 +432,127 @@ impl AdapterState {
         }
     }
 
+    fn merge_conversion_action(&mut self, v: &Value) {
+        if let Some(rn) = v.get("resourceName").and_then(Value::as_str) {
+            self.note_customer(rn);
+        }
+        let Some(id) = extract_id(v) else { return };
+        let entry = self
+            .conversion_actions
+            .entry(id.clone())
+            .or_insert_with(|| JsonConversionAction {
+                id,
+                name: String::new(),
+                ty: String::new(),
+                category: String::new(),
+                status: None,
+                counting_type: None,
+                click_through_lookback_window_days: None,
+                view_through_lookback_window_days: None,
+                value_settings: None,
+            });
+        if let Some(s) = v.get("name").and_then(Value::as_str) {
+            entry.name = s.to_string();
+        }
+        if let Some(s) = v.get("type").and_then(Value::as_str) {
+            entry.ty = s.to_string();
+        }
+        if let Some(s) = v.get("category").and_then(Value::as_str) {
+            entry.category = s.to_string();
+        }
+        if let Some(s) = v.get("status").and_then(Value::as_str) {
+            entry.status = Some(s.to_string());
+        }
+        if let Some(s) = v.get("countingType").and_then(Value::as_str) {
+            entry.counting_type = Some(s.to_string());
+        }
+        if let Some(n) = parse_i64(v.get("clickThroughLookbackWindowDays")) {
+            entry.click_through_lookback_window_days = Some(n);
+        }
+        if let Some(n) = parse_i64(v.get("viewThroughLookbackWindowDays")) {
+            entry.view_through_lookback_window_days = Some(n);
+        }
+        if let Some(vs) = v.get("valueSettings") {
+            entry.value_settings = Some(JsonValueSettings {
+                default_value: vs.get("defaultValue").and_then(parse_f64_value),
+                default_currency_code: vs
+                    .get("defaultCurrencyCode")
+                    .and_then(Value::as_str)
+                    .map(String::from),
+                always_use_default_value: vs
+                    .get("alwaysUseDefaultValue")
+                    .and_then(Value::as_bool),
+            });
+        }
+    }
+
+    fn merge_asset(&mut self, v: &Value) {
+        if let Some(rn) = v.get("resourceName").and_then(Value::as_str) {
+            self.note_customer(rn);
+        }
+        let Some(id) = extract_id(v) else { return };
+        let Some(call) = v.get("callAsset") else { return };
+        let entry = self
+            .call_assets
+            .entry(id.clone())
+            .or_insert_with(|| JsonCallAsset {
+                id,
+                country_code: String::new(),
+                phone_number: String::new(),
+                call_conversion_reporting_state: None,
+                call_conversion_action: None,
+            });
+        if let Some(s) = call.get("countryCode").and_then(Value::as_str) {
+            entry.country_code = s.to_string();
+        }
+        if let Some(s) = call.get("phoneNumber").and_then(Value::as_str) {
+            entry.phone_number = s.to_string();
+        }
+        if let Some(s) = call.get("callConversionReportingState").and_then(Value::as_str) {
+            entry.call_conversion_reporting_state = Some(s.to_string());
+        }
+        if let Some(rn) = call.get("callConversionAction").and_then(Value::as_str) {
+            if let Some(id) = last_segment(rn) {
+                entry.call_conversion_action = Some(id.to_string());
+            }
+        }
+    }
+
+    fn merge_customer_asset(&mut self, v: &Value) {
+        if let Some(rn) = v.get("resourceName").and_then(Value::as_str) {
+            self.note_customer(rn);
+        }
+        let Some(key) = v
+            .get("resourceName")
+            .and_then(Value::as_str)
+            .and_then(last_segment)
+            .map(str::to_string)
+            .or_else(|| extract_id(v))
+        else {
+            return;
+        };
+        let entry = self
+            .customer_assets
+            .entry(key.clone())
+            .or_insert_with(|| JsonCustomerAsset {
+                id: key,
+                asset: String::new(),
+                field_type: String::new(),
+                status: None,
+            });
+        if let Some(rn) = v.get("asset").and_then(Value::as_str) {
+            if let Some(id) = last_segment(rn) {
+                entry.asset = id.to_string();
+            }
+        }
+        if let Some(s) = v.get("fieldType").and_then(Value::as_str) {
+            entry.field_type = s.to_string();
+        }
+        if let Some(s) = v.get("status").and_then(Value::as_str) {
+            entry.status = Some(s.to_string());
+        }
+    }
+
     fn into_export_input(self) -> Result<ExportInput, String> {
         let customer_id = self
             .customer_id
@@ -425,6 +566,9 @@ impl AdapterState {
             ad_group_ads: self.ad_group_ads.into_values().collect(),
             ad_group_criteria: self.ad_group_criteria.into_values().collect(),
             campaign_criteria: self.campaign_criteria.into_values().collect(),
+            conversion_actions: self.conversion_actions.into_values().collect(),
+            call_assets: self.call_assets.into_values().collect(),
+            customer_assets: self.customer_assets.into_values().collect(),
         })
     }
 }
