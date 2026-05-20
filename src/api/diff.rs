@@ -331,8 +331,8 @@ fn campaign_criterion_key(cr: &JsonCampaignCriterion) -> Option<String> {
     if let Some(p) = &cr.proximity {
         return Some(format!(
             "prox:{}:{}:{:.6}:{}",
-            p.geo_point.latitude_in_micro_degrees,
-            p.geo_point.longitude_in_micro_degrees,
+            (p.latitude * 1_000_000.0).round() as i64,
+            (p.longitude * 1_000_000.0).round() as i64,
             p.radius,
             p.radius_units,
         ));

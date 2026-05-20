@@ -70,11 +70,8 @@ resource "google_ads_campaign_criterion" "summer_proximity_warsaw" {
   status = "ENABLED"
 
   proximity {
-    geo_point {
-      latitude_in_micro_degrees = 52229675
-      longitude_in_micro_degrees = 21012228
-    }
-
+    latitude = 52.229675
+    longitude = 21.012228
     radius = 15
     radius_units = "KILOMETERS"
   }

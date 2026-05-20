@@ -221,6 +221,8 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         name: "proximity",
                         schema: BlockSchema {
                             attributes: vec![
+                                attr("latitude", FieldType::Number, true),
+                                attr("longitude", FieldType::Number, true),
                                 attr("radius", FieldType::Number, true),
                                 attr(
                                     "radius_units",
@@ -228,24 +230,7 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                                     true,
                                 ),
                             ],
-                            blocks: vec![NestedBlockSchema {
-                                name: "geo_point",
-                                schema: BlockSchema {
-                                    attributes: vec![
-                                        attr(
-                                            "latitude_in_micro_degrees",
-                                            FieldType::Integer,
-                                            true,
-                                        ),
-                                        attr(
-                                            "longitude_in_micro_degrees",
-                                            FieldType::Integer,
-                                            true,
-                                        ),
-                                    ],
-                                    blocks: vec![],
-                                },
-                            }],
+                            blocks: vec![],
                         },
                     },
                 ],

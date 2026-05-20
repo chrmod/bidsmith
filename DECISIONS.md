@@ -185,8 +185,9 @@ Validator covers (so far):
   blocks; `final_urls` still uses `list<string>`),
   `google_ads_ad_group_criterion` (positive/negative keyword with
   match_type), `google_ads_campaign_criterion` (negative keyword,
-  location, language, proximity with `geo_point` sub-block and
-  `radius` + `radius_units`)
+  location, language, proximity with flat `latitude` / `longitude` in
+  decimal degrees plus `radius` + `radius_units`; the adapter rounds to
+  the API's micro-degree integers at the wire boundary)
 - `provider "google_ads"` (`customer_id` required, `login_customer_id`
   optional — overridable via `--login-customer-id` / `--customer-id` on
   `export`)

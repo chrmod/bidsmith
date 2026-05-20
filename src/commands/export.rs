@@ -148,15 +148,10 @@ pub struct JsonLanguage {
 
 #[derive(Deserialize)]
 pub struct JsonProximity {
+    pub latitude: f64,
+    pub longitude: f64,
     pub radius: f64,
     pub radius_units: String,
-    pub geo_point: JsonGeoPoint,
-}
-
-#[derive(Deserialize)]
-pub struct JsonGeoPoint {
-    pub latitude_in_micro_degrees: i64,
-    pub longitude_in_micro_degrees: i64,
 }
 
 #[derive(Deserialize)]
@@ -557,20 +552,8 @@ fn write_campaign_criterion(
     }
     if let Some(prox) = &c.proximity {
         out.push_str("\n  proximity {\n");
-        out.push_str("    geo_point {\n");
-        write_attr(
-            out,
-            3,
-            "latitude_in_micro_degrees",
-            &prox.geo_point.latitude_in_micro_degrees.to_string(),
-        );
-        write_attr(
-            out,
-            3,
-            "longitude_in_micro_degrees",
-            &prox.geo_point.longitude_in_micro_degrees.to_string(),
-        );
-        out.push_str("    }\n");
+        write_attr(out, 2, "latitude", &format_number(prox.latitude));
+        write_attr(out, 2, "longitude", &format_number(prox.longitude));
         write_attr(out, 2, "radius", &format_number(prox.radius));
         write_attr(out, 2, "radius_units", &fmt_string(&prox.radius_units));
         out.push_str("  }\n");

@@ -70,12 +70,10 @@
       "campaign": "2001",
       "status": "ENABLED",
       "proximity": {
+        "latitude": 52.229675,
+        "longitude": 21.012228,
         "radius": 15,
-        "radius_units": "KILOMETERS",
-        "geo_point": {
-          "latitude_in_micro_degrees": 52229675,
-          "longitude_in_micro_degrees": 21012228
-        }
+        "radius_units": "KILOMETERS"
       }
     }
   ],

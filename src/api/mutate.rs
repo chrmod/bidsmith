@@ -376,6 +376,10 @@ pub fn build_validate_only(input: &ExportInput) -> Result<PlanBody, Vec<PlanBuil
     Ok(PlanBody { body, operations })
 }
 
+fn to_micro_degrees(decimal_degrees: f64) -> i64 {
+    (decimal_degrees * 1_000_000.0).round() as i64
+}
+
 fn temp_rn(customer_id: &str, segment: &str, idx: i32) -> String {
     format!("customers/{customer_id}/{segment}/{idx}")
 }
@@ -811,11 +815,11 @@ fn campaign_criterion_create(
         let mut geo = Map::new();
         geo.insert(
             "latitudeInMicroDegrees".into(),
-            Value::Number(prox.geo_point.latitude_in_micro_degrees.into()),
+            Value::Number(to_micro_degrees(prox.latitude).into()),
         );
         geo.insert(
             "longitudeInMicroDegrees".into(),
-            Value::Number(prox.geo_point.longitude_in_micro_degrees.into()),
+            Value::Number(to_micro_degrees(prox.longitude).into()),
         );
         sub.insert("geoPoint".into(), Value::Object(geo));
         sub.insert(

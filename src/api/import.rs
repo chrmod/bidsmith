@@ -4,7 +4,7 @@ use hcl_edit::structure::{Attribute, Block, Structure};
 
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupCriterion, JsonBudget,
-    JsonCampaign, JsonCampaignCriterion, JsonGeoPoint, JsonKeyword, JsonLanguage, JsonLocation,
+    JsonCampaign, JsonCampaignCriterion, JsonKeyword, JsonLanguage, JsonLocation,
     JsonManualCpc, JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset,
 };
 use crate::diagnostics::Diag;
@@ -504,36 +504,24 @@ fn import_language(block: &Block) -> Option<JsonLanguage> {
 fn import_proximity(block: &Block) -> Option<JsonProximity> {
     let mut radius = None;
     let mut units = None;
-    let mut lat = None;
-    let mut lng = None;
+    let mut latitude = None;
+    let mut longitude = None;
     for s in block.body.iter() {
-        match s {
-            Structure::Attribute(a) => match a.key.as_str() {
+        if let Structure::Attribute(a) = s {
+            match a.key.as_str() {
+                "latitude" => latitude = expect_f64(a),
+                "longitude" => longitude = expect_f64(a),
                 "radius" => radius = expect_f64(a),
                 "radius_units" => units = expect_string_owned(a),
                 _ => {}
-            },
-            Structure::Block(b) if b.ident.as_str() == "geo_point" => {
-                for s in b.body.iter() {
-                    if let Structure::Attribute(a) = s {
-                        match a.key.as_str() {
-                            "latitude_in_micro_degrees" => lat = expect_i64(a),
-                            "longitude_in_micro_degrees" => lng = expect_i64(a),
-                            _ => {}
-                        }
-                    }
-                }
             }
-            _ => {}
         }
     }
     Some(JsonProximity {
+        latitude: latitude?,
+        longitude: longitude?,
         radius: radius?,
         radius_units: units?,
-        geo_point: JsonGeoPoint {
-            latitude_in_micro_degrees: lat?,
-            longitude_in_micro_degrees: lng?,
-        },
     })
 }
 

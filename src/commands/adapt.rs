@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupCriterion, JsonBudget,
-    JsonCampaign, JsonCampaignCriterion, JsonGeoPoint, JsonKeyword, JsonLanguage,
+    JsonCampaign, JsonCampaignCriterion, JsonKeyword, JsonLanguage,
     JsonLocation, JsonManualCpc, JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd,
     JsonRsaAsset,
 };
@@ -403,12 +403,10 @@ impl AdapterState {
                 (lat, lng, radius, units)
             {
                 entry.proximity = Some(JsonProximity {
+                    latitude: lat as f64 / 1_000_000.0,
+                    longitude: lng as f64 / 1_000_000.0,
                     radius,
                     radius_units: units.to_string(),
-                    geo_point: JsonGeoPoint {
-                        latitude_in_micro_degrees: lat,
-                        longitude_in_micro_degrees: lng,
-                    },
                 });
             }
         }
