@@ -69,11 +69,96 @@ resource "google_ads_campaign" "summer_search" {
 
 Cross-references use `<type>.<name>.id`. Resources currently supported:
 `google_ads_campaign_budget`, `google_ads_campaign` (SEARCH channel with
-`manual_cpc` / `network_settings`), `google_ads_ad_group`.
+`manual_cpc` / `network_settings`), `google_ads_ad_group`,
+`google_ads_ad_group_ad` (with `ad` → `responsive_search_ad` →
+headline/description assets), `google_ads_ad_group_criterion`,
+`google_ads_campaign_criterion` (keyword/location/language/proximity),
+`google_ads_shared_set` + `google_ads_campaign_shared_set` (reusable
+negative-keyword lists shared across campaigns),
+`google_ads_conversion_action`, `google_ads_call_asset`,
+`google_ads_customer_asset`.
 
 `amount_micros` is the budget in millionths of the account currency
 (`10000000` = 10 currency units). `status` for campaigns and ad groups:
 `ENABLED` | `PAUSED` | `REMOVED`.
+
+## Compact forms for repetitive resources
+
+A real campaign accumulates dozens of negative keywords and many RSA
+assets. Prefer the bulk / list-attribute forms over one-resource-per-
+keyword sprawl — they're semantically identical and validated /
+formatted / planned the same way, but cut a 1000-line file by ~80%.
+
+**Bulk ad-group keywords**: repeating `keyword {}` and
+`negative_keyword {}` sub-blocks in one `google_ads_ad_group_criterion`
+expand to N criteria at import time. Parent attrs (`status`,
+`cpc_bid_micros`) apply to every expanded criterion.
+
+```hcl
+resource "google_ads_ad_group_criterion" "warszawa_phrase" {
+  ad_group = google_ads_ad_group.warszawa.id
+  status   = "ENABLED"
+
+  keyword { text = "klimatyzacja Warszawa",        match_type = "PHRASE" }
+  keyword { text = "klimatyzator inwerterowy Wwa", match_type = "PHRASE" }
+}
+```
+
+**Bulk campaign negatives**: same shape on
+`google_ads_campaign_criterion` (`negative_keyword {}` sub-blocks
+only — positives don't live here).
+
+**Shared negative-keyword sets**: define once with
+`google_ads_shared_set` (bulk `negative_keyword {}` sub-blocks
+inside), then attach to as many campaigns as needed with
+`google_ads_campaign_shared_set`. Reuse beats per-campaign copy-paste
+when the same competitor-brand or informational-query negatives apply
+across cities/services.
+
+```hcl
+resource "google_ads_shared_set" "competitor_brands" {
+  name   = "Klima — competitor brands"
+  type   = "NEGATIVE_KEYWORDS"   # default; can omit
+  status = "ENABLED"
+
+  negative_keyword { text = "samsung", match_type = "BROAD" }
+  negative_keyword { text = "lg",      match_type = "BROAD" }
+  negative_keyword { text = "daikin",  match_type = "BROAD" }
+}
+
+resource "google_ads_campaign_shared_set" "warszawa_brands" {
+  campaign   = google_ads_campaign.warszawa.id
+  shared_set = google_ads_shared_set.competitor_brands.id
+  status     = "ENABLED"
+}
+```
+
+**List-attribute RSA assets**: `headlines = [...]` and
+`descriptions = [...]` accept bare strings (un-pinned) or
+`{ text, pin = "HEADLINE_1" }` object literals. Equivalent to the
+verbose `headline {}` / `description {}` blocks — both forms can
+coexist inside one `responsive_search_ad`. Use the list form when
+the asset count is high.
+
+```hcl
+responsive_search_ad {
+  headlines = [
+    { text = "Klimatyzacja Warszawa",    pin = "HEADLINE_1" },
+    { text = "Certyfikowany instalator", pin = "HEADLINE_2" },
+    "Toshiba Mitsubishi Rotenso",
+    "Cicha praca, niski prąd",
+    { text = "Bezpłatna wycena", pin = "HEADLINE_3" },
+  ]
+
+  descriptions = [
+    "Montaż klimatyzacji split i multi w Warszawie.",
+    "Działamy w Warszawie i okolicach.",
+  ]
+}
+```
+
+See [`examples/bulk/main.bid`](../../examples/bulk/main.bid) for a full
+campaign that uses all three compact forms.
 
 ## Files are modules
 

@@ -4,10 +4,10 @@ use serde_json::Value;
 
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupCriterion, JsonBudget,
-    JsonCallAsset, JsonCampaign, JsonCampaignCriterion, JsonConversionAction,
-    JsonCustomerAsset, JsonKeyword, JsonLanguage, JsonLocation, JsonManualCpc,
-    JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset,
-    JsonValueSettings,
+    JsonCallAsset, JsonCampaign, JsonCampaignCriterion, JsonCampaignSharedSet,
+    JsonConversionAction, JsonCustomerAsset, JsonKeyword, JsonLanguage, JsonLocation,
+    JsonManualCpc, JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset,
+    JsonSharedSet, JsonValueSettings,
 };
 
 pub fn from_search_response(raw: &str) -> Result<ExportInput, String> {
@@ -48,6 +48,13 @@ fn collect_rows(v: &Value) -> Result<Vec<&Value>, String> {
     }
 }
 
+struct SharedSetBuilder {
+    id: String,
+    name: String,
+    ty: Option<String>,
+    status: Option<String>,
+}
+
 #[derive(Default)]
 struct AdapterState {
     customer_id: Option<String>,
@@ -60,6 +67,9 @@ struct AdapterState {
     conversion_actions: BTreeMap<String, JsonConversionAction>,
     call_assets: BTreeMap<String, JsonCallAsset>,
     customer_assets: BTreeMap<String, JsonCustomerAsset>,
+    shared_sets: BTreeMap<String, SharedSetBuilder>,
+    shared_criteria: BTreeMap<String, Vec<JsonKeyword>>,
+    campaign_shared_sets: BTreeMap<String, JsonCampaignSharedSet>,
 }
 
 impl AdapterState {
@@ -90,6 +100,15 @@ impl AdapterState {
         }
         if let Some(v) = row.get("customerAsset") {
             self.merge_customer_asset(v);
+        }
+        if let Some(v) = row.get("sharedSet") {
+            self.merge_shared_set(v);
+        }
+        if let Some(v) = row.get("sharedCriterion") {
+            self.merge_shared_criterion(v);
+        }
+        if let Some(v) = row.get("campaignSharedSet") {
+            self.merge_campaign_shared_set(v);
         }
     }
 
@@ -553,10 +572,124 @@ impl AdapterState {
         }
     }
 
-    fn into_export_input(self) -> Result<ExportInput, String> {
+    fn merge_shared_set(&mut self, v: &Value) {
+        if let Some(rn) = v.get("resourceName").and_then(Value::as_str) {
+            self.note_customer(rn);
+        }
+        let Some(id) = extract_id(v) else { return };
+        let entry = self
+            .shared_sets
+            .entry(id.clone())
+            .or_insert_with(|| SharedSetBuilder {
+                id: id.clone(),
+                name: String::new(),
+                ty: None,
+                status: None,
+            });
+        if let Some(s) = v.get("name").and_then(Value::as_str) {
+            entry.name = s.to_string();
+        }
+        if let Some(s) = v.get("type").and_then(Value::as_str) {
+            entry.ty = Some(s.to_string());
+        }
+        if let Some(s) = v.get("status").and_then(Value::as_str) {
+            entry.status = Some(s.to_string());
+        }
+    }
+
+    fn merge_shared_criterion(&mut self, v: &Value) {
+        let Some(set_id) = v
+            .get("sharedSet")
+            .and_then(Value::as_str)
+            .and_then(last_segment)
+            .map(str::to_string)
+        else {
+            return;
+        };
+        let Some(kw) = v.get("keyword") else { return };
+        let text = kw.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+        let match_type = kw
+            .get("matchType")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if text.is_empty() || match_type.is_empty() {
+            return;
+        }
+        self.shared_criteria
+            .entry(set_id)
+            .or_default()
+            .push(JsonKeyword { text, match_type });
+    }
+
+    fn merge_campaign_shared_set(&mut self, v: &Value) {
+        if let Some(rn) = v.get("resourceName").and_then(Value::as_str) {
+            self.note_customer(rn);
+        }
+        let Some(key) = v
+            .get("resourceName")
+            .and_then(Value::as_str)
+            .and_then(last_segment)
+            .map(str::to_string)
+        else {
+            return;
+        };
+        let campaign_id = v
+            .get("campaign")
+            .and_then(Value::as_str)
+            .and_then(last_segment)
+            .unwrap_or("")
+            .to_string();
+        let shared_set_id = v
+            .get("sharedSet")
+            .and_then(Value::as_str)
+            .and_then(last_segment)
+            .unwrap_or("")
+            .to_string();
+        let entry = self
+            .campaign_shared_sets
+            .entry(key.clone())
+            .or_insert_with(|| JsonCampaignSharedSet {
+                id: key,
+                campaign: String::new(),
+                shared_set: String::new(),
+                status: None,
+            });
+        if !campaign_id.is_empty() {
+            entry.campaign = campaign_id;
+        }
+        if !shared_set_id.is_empty() {
+            entry.shared_set = shared_set_id;
+        }
+        if let Some(s) = v.get("status").and_then(Value::as_str) {
+            entry.status = Some(s.to_string());
+        }
+    }
+
+    fn into_export_input(mut self) -> Result<ExportInput, String> {
         let customer_id = self
             .customer_id
             .ok_or_else(|| "could not determine customer_id from any resourceName".to_string())?;
+        let shared_sets = self
+            .shared_sets
+            .into_values()
+            .map(|s| {
+                let SharedSetBuilder {
+                    id,
+                    name,
+                    ty,
+                    status,
+                } = s;
+                let keywords = self.shared_criteria.remove(&id).unwrap_or_default();
+                JsonSharedSet {
+                    id,
+                    name,
+                    ty,
+                    status,
+                    negative_keywords: keywords,
+                }
+            })
+            .collect();
         Ok(ExportInput {
             customer_id,
             login_customer_id: None,
@@ -569,6 +702,8 @@ impl AdapterState {
             conversion_actions: self.conversion_actions.into_values().collect(),
             call_assets: self.call_assets.into_values().collect(),
             customer_assets: self.customer_assets.into_values().collect(),
+            shared_sets,
+            campaign_shared_sets: self.campaign_shared_sets.into_values().collect(),
         })
     }
 }

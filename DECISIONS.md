@@ -129,6 +129,8 @@ bidsmith/
     ├── broken/
     │   ├── schema.bid          # schema/type/ref errors
     │   └── syntax.bid          # parse error
+    ├── bulk/main.bid           # bulk keyword sub-blocks, shared sets,
+    │                           # RSA headlines/descriptions list attributes
     ├── lint/
     │   └── warnings.bid        # valid syntax/schema but trips every lint rule
     ├── multi/                  # two campaigns in one dir with colliding bare
@@ -157,6 +159,12 @@ Verified locally:
   missing required field, list type mismatch, wrong list-element type,
   invalid keyword match_type, invalid RSA pin; plus incidental
   status/RSA-block lint warnings on the affected resources).
+- `cargo run -- validate examples/bulk` → `OK: 1 file(s) valid.` —
+  exercises the bulk `keyword {}` / `negative_keyword {}` ad-group
+  form, `google_ads_shared_set` + `google_ads_campaign_shared_set`,
+  and the `headlines = [...]` / `descriptions = [...]` RSA list
+  attributes. Re-encodes the rezolutnie `[W2]` campaign (1025 lines
+  one-resource-per-keyword) in 177 lines.
 - `cargo run -- validate examples/lint` → exit 0 with 10 warnings (the
   lint rules trip: missing `status` on three blocks, RSA headlines
   < 3, RSA descriptions < 2, phone number in a headline, the
@@ -206,17 +214,29 @@ Validator covers (so far):
   attribute is omitted, since Google Ads rejects new campaigns that
   don't declare it), `google_ads_ad_group`, `google_ads_ad_group_ad`
   (with `ad` → `responsive_search_ad` → repeating
-  `headline { text, pin? }` / `description { text, pin? }` blocks;
+  `headline { text, pin? }` / `description { text, pin? }` blocks,
+  plus an equivalent list-attribute form `headlines = [...]` /
+  `descriptions = [...]` whose items are either bare strings or
+  `{ text, pin? }` object literals — both forms can coexist, and
   `final_urls` still uses `list<string>`),
   `google_ads_ad_group_criterion` (positive/negative keyword with
-  match_type, optional per-keyword `cpc_bid_micros`),
+  match_type, optional per-keyword `cpc_bid_micros`; also accepts a
+  bulk form where repeating `keyword {}` and/or `negative_keyword {}`
+  sub-blocks in one resource expand into N individual criteria at
+  import time),
   `google_ads_campaign_criterion` (single negative keyword, location,
   language, proximity with flat `latitude` / `longitude` in decimal
   degrees plus `radius` + `radius_units`; the adapter rounds to the
   API's micro-degree integers at the wire boundary), plus a bulk
   syntactic-sugar form where repeating `negative_keyword { text,
   match_type }` sub-blocks in one resource expand into N individual
-  negative criteria at import time, `google_ads_conversion_action`
+  negative criteria at import time,
+  `google_ads_shared_set` (named negative-keyword set with a bulk
+  `negative_keyword { text, match_type }` sub-block form; type
+  defaults to `NEGATIVE_KEYWORDS` at mutate time),
+  `google_ads_campaign_shared_set` (links a `google_ads_shared_set`
+  to a `google_ads_campaign`),
+  `google_ads_conversion_action`
   (`type`, `category`, lookback windows, optional `value_settings`
   sub-block with default value / currency / always-use flag),
   `google_ads_call_asset` (country code + phone number, optional

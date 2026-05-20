@@ -1,0 +1,177 @@
+provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+resource "google_ads_campaign_budget" "warszawa" {
+  name = "Warszawa daily"
+  amount_micros = 10000000
+  delivery_method = "STANDARD"
+}
+
+resource "google_ads_campaign" "warszawa" {
+  name = "[W2] Klimatyzacja × Warszawa"
+  status = "ENABLED"
+  advertising_channel_type = "SEARCH"
+  campaign_budget = google_ads_campaign_budget.warszawa.id
+
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+}
+
+resource "google_ads_ad_group" "warszawa" {
+  name = "Warszawa — Klimatyzacja"
+  campaign = google_ads_campaign.warszawa.id
+  status = "ENABLED"
+  type = "SEARCH_STANDARD"
+  cpc_bid_micros = 3500000
+}
+
+resource "google_ads_ad_group_criterion" "warszawa_phrase" {
+  ad_group = google_ads_ad_group.warszawa.id
+  status = "ENABLED"
+
+  keyword {
+    text = "klimatyzacja multi split Warszawa"
+    match_type = "PHRASE"
+  }
+
+  keyword {
+    text = "klimatyzacja split Warszawa"
+    match_type = "PHRASE"
+  }
+
+  keyword {
+    text = "klimatyzator inwerterowy Warszawa"
+    match_type = "PHRASE"
+  }
+}
+
+resource "google_ads_ad_group_criterion" "warszawa_exact" {
+  ad_group = google_ads_ad_group.warszawa.id
+  status = "ENABLED"
+
+  keyword {
+    text = "klimatyzacja Warszawa"
+    match_type = "EXACT"
+  }
+
+  keyword {
+    text = "montaż klimatyzacji Warszawa"
+    match_type = "EXACT"
+  }
+
+  keyword {
+    text = "klimatyzator Warszawa"
+    match_type = "EXACT"
+  }
+}
+
+resource "google_ads_ad_group_criterion" "warszawa_ag_negatives" {
+  ad_group = google_ads_ad_group.warszawa.id
+  status = "ENABLED"
+
+  negative_keyword {
+    text = "darmowa wycena"
+    match_type = "PHRASE"
+  }
+
+  negative_keyword {
+    text = "kursy montażu"
+    match_type = "PHRASE"
+  }
+}
+
+resource "google_ads_shared_set" "competitor_brands" {
+  name = "Klima — competitor brands"
+  type = "NEGATIVE_KEYWORDS"
+  status = "ENABLED"
+
+  negative_keyword {
+    text = "samsung"
+    match_type = "BROAD"
+  }
+
+  negative_keyword {
+    text = "lg"
+    match_type = "BROAD"
+  }
+
+  negative_keyword {
+    text = "daikin"
+    match_type = "BROAD"
+  }
+
+  negative_keyword {
+    text = "panasonic"
+    match_type = "BROAD"
+  }
+}
+
+resource "google_ads_shared_set" "informational" {
+  name = "Klima — informational queries"
+  type = "NEGATIVE_KEYWORDS"
+  status = "ENABLED"
+
+  negative_keyword {
+    text = "jak działa"
+    match_type = "BROAD"
+  }
+
+  negative_keyword {
+    text = "co to jest"
+    match_type = "BROAD"
+  }
+
+  negative_keyword {
+    text = "wikipedia"
+    match_type = "BROAD"
+  }
+
+  negative_keyword {
+    text = "schemat"
+    match_type = "BROAD"
+  }
+}
+
+resource "google_ads_campaign_shared_set" "warszawa_brands" {
+  campaign = google_ads_campaign.warszawa.id
+  shared_set = google_ads_shared_set.competitor_brands.id
+  status = "ENABLED"
+}
+
+resource "google_ads_campaign_shared_set" "warszawa_info" {
+  campaign = google_ads_campaign.warszawa.id
+  shared_set = google_ads_shared_set.informational.id
+  status = "ENABLED"
+}
+
+resource "google_ads_ad_group_ad" "warszawa_rsa" {
+  ad_group = google_ads_ad_group.warszawa.id
+  status = "ENABLED"
+
+  ad {
+    final_urls = ["https://www.example.com/uslugi/klimatyzacja/warszawa/"]
+
+    responsive_search_ad {
+      headlines = [
+        { text = "Klimatyzacja Warszawa", pin = "HEADLINE_1" },
+        { text = "Klimatyzator Warszawa", pin = "HEADLINE_1" },
+        { text = "Certyfikowany instalator", pin = "HEADLINE_2" },
+        "Toshiba Mitsubishi Rotenso",
+        "Klimatyzator inwerterowy",
+        "Split i multi-split",
+        "Cicha praca, niski prąd",
+        "Estetyczny montaż",
+        { text = "Bezpłatna wycena", pin = "HEADLINE_3" },
+      ]
+      descriptions = [
+        "Montaż klimatyzacji split i multi w Warszawie.",
+        "Cicha praca, niskie zużycie prądu.",
+        "Działamy w Warszawie i okolicach.",
+      ]
+      path1 = "klimatyzacja"
+      path2 = "warszawa"
+    }
+  }
+}
