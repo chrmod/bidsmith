@@ -146,6 +146,8 @@ bidsmith/
 
 Verified locally:
 - `cargo build` clean (no warnings)
+- `cargo build --features e2e` clean (gates the live round-trip
+  integration test in `tests/e2e.rs`)
 - `cargo build --release` → ~4 MB binary (the jump from ~1.5 MB is
   the reqwest + rustls TLS stack added for the live API client)
 - `cargo run -- validate examples/basic` → `OK: 1 file(s) valid.`

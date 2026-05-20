@@ -394,6 +394,48 @@ pub fn build_mutate_with_diff(
     Ok(PlanBody { body, operations })
 }
 
+/// Build a REMOVE-only googleAds:mutate body for the given (kind, resource_name)
+/// pairs. Sorts into the API's required removal order (children before parents)
+/// before emitting operations. Unknown kinds are skipped.
+pub fn build_remove_only_mutate(operations: &[(&str, String)], validate_only: bool) -> Value {
+    let mut ordered: Vec<&(&str, String)> = operations.iter().collect();
+    ordered.sort_by_key(|(kind, _)| removal_order_index(kind));
+    let mutate_ops: Vec<Value> = ordered
+        .iter()
+        .filter_map(|(kind, rn)| {
+            remove_envelope_for(kind).map(|env| json!({ env: { "remove": rn } }))
+        })
+        .collect();
+    json!({
+        "mutateOperations": mutate_ops,
+        "validateOnly": validate_only,
+    })
+}
+
+fn remove_envelope_for(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "campaign_budget" => "campaignBudgetOperation",
+        "campaign" => "campaignOperation",
+        "ad_group" => "adGroupOperation",
+        "ad_group_ad" => "adGroupAdOperation",
+        "ad_group_criterion" => "adGroupCriterionOperation",
+        "campaign_criterion" => "campaignCriterionOperation",
+        _ => return None,
+    })
+}
+
+fn removal_order_index(kind: &str) -> usize {
+    match kind {
+        "ad_group_criterion" => 0,
+        "campaign_criterion" => 1,
+        "ad_group_ad" => 2,
+        "ad_group" => 3,
+        "campaign" => 4,
+        "campaign_budget" => 5,
+        _ => usize::MAX,
+    }
+}
+
 #[allow(dead_code)]
 pub fn build_validate_only(input: &ExportInput) -> Result<PlanBody, Vec<PlanBuildError>> {
     let customer_id = input.customer_id.as_str();

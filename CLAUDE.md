@@ -22,6 +22,28 @@ start here" in ROADMAP.md unless the user redirects.
 - `cargo run -- export --from-json examples/exports/basic.json
   --output /tmp/out.bid && cargo run -- validate /tmp/out.bid` →
   round-trips cleanly.
+- `cargo test --features e2e --no-run` should compile clean — keeps
+  the opt-in e2e tier from rotting.
+
+### Optional: live round-trip e2e
+
+The `e2e` Cargo feature gates `tests/e2e.rs`, a live round-trip test
+(`apply → pull → export → fmt --check → plan`) against a dedicated
+Google Ads test manager account. Don't run this on a production
+account — every step issues real mutate ops.
+
+```sh
+export BIDSMITH_E2E_CUSTOMER_ID=1234567890   # test account, NOT prod
+# (plus the usual GOOGLE_ADS_DEVELOPER_TOKEN / _CLIENT_ID / _CLIENT_SECRET /
+#  _REFRESH_TOKEN — same envelope plan/apply use)
+cargo test --features e2e -- --nocapture
+```
+
+The test forces `GOOGLE_ADS_CUSTOMER_ID` to `BIDSMITH_E2E_CUSTOMER_ID`
+for every subprocess, so a developer's shell env can't redirect it.
+Resources are named `bidsmith-e2e-<unix-ts>-…`; teardown (run from a
+`Drop` guard, so it fires even on panic) sweeps that prefix via the
+hidden `_e2e-cleanup` subcommand.
 
 ## Project-specific rules
 
