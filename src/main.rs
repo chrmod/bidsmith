@@ -82,6 +82,15 @@ enum Cmd {
         #[arg(long)]
         verbose: bool,
     },
+    /// Dump live Google Ads state as raw SearchStream JSON
+    Pull {
+        /// Output file path (defaults to stdout)
+        #[arg(short = 'o', long, value_name = "PATH")]
+        output: Option<String>,
+        /// Print the outgoing request envelope
+        #[arg(long)]
+        verbose: bool,
+    },
     /// Pull live state into .bid files
     Refresh,
     /// Run a GAQL query against the live Google Ads account (read-only)
@@ -129,6 +138,9 @@ fn main() -> ExitCode {
         }
         Cmd::Apply { path, auto_approve, verbose } => {
             commands::apply::run(path.as_deref(), auto_approve, verbose)
+        }
+        Cmd::Pull { output, verbose } => {
+            commands::pull::run(output.as_deref(), verbose)
         }
         Cmd::Refresh => commands::stub(
             "refresh",
