@@ -139,9 +139,11 @@ Verified locally:
   missing required field, list type mismatch, wrong list-element type,
   invalid keyword match_type, invalid RSA pin; plus incidental
   status/RSA-block lint warnings on the affected resources).
-- `cargo run -- validate examples/lint` → exit 0 with 6 warnings (the
-  four lint rules trip: missing `status` on three blocks, RSA headlines
-  < 3, RSA descriptions < 2, phone number in a headline).
+- `cargo run -- validate examples/lint` → exit 0 with 7 warnings (the
+  five lint rules trip: missing `status` on three blocks, RSA headlines
+  < 3, RSA descriptions < 2, phone number in a headline, and a
+  suspicious `languageConstants/1045` (Afar) entry that's almost
+  certainly meant to be 1030 (Polish)).
 - `cargo run -- export --from-json examples/exports/basic.json`
   round-trips through `validate` cleanly (`-o out.bid` then
   `validate out.bid` → OK).
@@ -198,7 +200,9 @@ Validator covers (so far):
   on campaign / ad_group / ad_group_ad / criterion blocks; responsive
   search ad with `< 3` headline blocks or `< 2` description blocks;
   phone-number-like patterns (7+ digits with phone separators) inside
-  any headline/description `text` attribute.
+  any headline/description `text` attribute; suspicious
+  `language_constant` values (currently just `languageConstants/1045`,
+  Afar — a near-universal typo for `1030`, Polish).
 
 **CLI verbs**:
 

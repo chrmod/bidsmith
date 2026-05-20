@@ -15,6 +15,14 @@ const STATUS_AWARE: &[&str] = &[
 const MIN_HEADLINES: usize = 3;
 const MIN_DESCRIPTIONS: usize = 2;
 
+const SUSPICIOUS_LANGUAGE_CONSTANTS: &[(&str, &str, &str)] = &[
+    (
+        "languageConstants/1045",
+        "Afar",
+        "did you mean languageConstants/1030 (Polish)?",
+    ),
+];
+
 pub fn lint_files(files: &[ParsedFile]) -> Vec<Diag> {
     let mut diags = Vec::new();
     for f in files {
@@ -53,6 +61,32 @@ fn lint_resource(file: &ParsedFile, block: &Block, diags: &mut Vec<Diag>) {
             if let Some(rsa_block) = find_block(&ad_block.body, "responsive_search_ad") {
                 lint_rsa(file, rsa_block, &address, diags);
             }
+        }
+    }
+
+    if ty == "google_ads_campaign_criterion" {
+        if let Some(lang_block) = find_block(&block.body, "language") {
+            lint_language(file, lang_block, &address, diags);
+        }
+    }
+}
+
+fn lint_language(file: &ParsedFile, block: &Block, address: &str, diags: &mut Vec<Diag>) {
+    let Some(constant_attr) = find_attr(&block.body, "language_constant") else {
+        return;
+    };
+    let Some(value) = constant_attr.value.as_str() else {
+        return;
+    };
+    for (constant, name, hint) in SUSPICIOUS_LANGUAGE_CONSTANTS {
+        if value == *constant {
+            diags.push(Diag::warning(
+                file.src.clone(),
+                span_of(constant_attr.value.span()),
+                format!(
+                    "language_constant '{value}' in {address} is {name}, a rarely-targeted language — {hint}"
+                ),
+            ));
         }
     }
 }

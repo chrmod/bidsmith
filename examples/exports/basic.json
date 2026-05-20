@@ -66,6 +66,14 @@
       }
     },
     {
+      "id": "6004",
+      "campaign": "2001",
+      "status": "ENABLED",
+      "language": {
+        "language_constant": "languageConstants/1030"
+      }
+    },
+    {
       "id": "6003",
       "campaign": "2001",
       "status": "ENABLED",

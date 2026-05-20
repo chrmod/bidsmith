@@ -65,6 +65,15 @@ resource "google_ads_campaign_criterion" "summer_geo_us" {
   }
 }
 
+resource "google_ads_campaign_criterion" "summer_lang_polish" {
+  campaign = google_ads_campaign.summer_search.id
+  status = "ENABLED"
+
+  language {
+    language_constant = "languageConstants/1030"
+  }
+}
+
 resource "google_ads_campaign_criterion" "summer_proximity_warsaw" {
   campaign = google_ads_campaign.summer_search.id
   status = "ENABLED"
