@@ -525,7 +525,7 @@ fn import_ad_group_criterion(
                 id: format!("{address}.keywords[{i}]"),
                 ad_group: ad_group.clone(),
                 status: status.clone(),
-                negative,
+                negative: negative.or(Some(false)),
                 cpc_bid_micros: cpc,
                 keyword: kw,
             });
@@ -554,7 +554,7 @@ fn import_ad_group_criterion(
         id: address.to_string(),
         ad_group,
         status,
-        negative,
+        negative: negative.or(Some(false)),
         cpc_bid_micros: cpc,
         keyword,
     }])
@@ -625,11 +625,13 @@ fn import_campaign_criterion(
         return Ok(out);
     }
 
+    let has_positive_shape =
+        keyword.is_some() || location.is_some() || language.is_some() || proximity.is_some();
     Ok(vec![JsonCampaignCriterion {
         id: address.to_string(),
         campaign,
         status,
-        negative,
+        negative: if has_positive_shape { negative.or(Some(false)) } else { negative },
         keyword,
         location,
         language,
