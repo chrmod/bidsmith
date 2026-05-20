@@ -104,6 +104,17 @@ enum Cmd {
         #[arg(long)]
         verbose: bool,
     },
+    /// (internal) Remove every resource whose name starts with --prefix.
+    /// Used by the e2e test tier; not a public verb.
+    #[command(name = "_e2e-cleanup", hide = true)]
+    E2eCleanup {
+        /// Name prefix to sweep (e.g. `bidsmith-e2e-`)
+        #[arg(long, value_name = "STR")]
+        prefix: String,
+        /// Print every resource_name before removal
+        #[arg(long)]
+        verbose: bool,
+    },
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -146,6 +157,9 @@ fn main() -> ExitCode {
             "refresh",
             "Will pull live Google Ads state into .bid files.",
         ),
+        Cmd::E2eCleanup { prefix, verbose } => {
+            commands::e2e_cleanup::run(&prefix, verbose)
+        }
         Cmd::Query { query, format, verbose } => {
             let fmt = match format {
                 QueryFormat::Table => commands::query::Format::Table,
