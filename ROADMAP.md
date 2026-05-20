@@ -124,7 +124,22 @@ declared HCL against live labeled state. Local cache is rebuildable.
 Phases 1 and 2 are done; Phase 3 has its CREATE/UPDATE half landed.
 Priority order for what closes the most user-facing gaps:
 
-1. **Phase 3 v2 — labels + removal**. Write
+1. **`pull` verb + live round-trip e2e test**. Promote
+   `examples/trial/dump_campaign.py` to a Rust subcommand
+   `bidsmith pull -o <path>` that runs the same SearchStream queries
+   `plan --read-live` already issues and writes the raw API JSON to
+   disk (no adapter step). Then wire the loop
+   `apply → pull → export --from-gads-search-response → plan` as an
+   opt-in `cargo test --features e2e` (or `bidsmith self-test --live`)
+   that asserts the final `plan` reports `0 to create, 0 to update`
+   against a dedicated Google Ads **test manager account**. This is
+   the highest-value test the project can have: Google Ads itself is
+   the oracle, the read path uses real bytes off the wire, and the
+   write path is exercised end-to-end without invented mock
+   assumptions. Details and design notes in
+   [§ `pull` verb + live round-trip e2e](#pull-verb--live-round-trip-e2e)
+   below.
+2. **Phase 3 v2 — labels + removal**. Write
    `bidsmith:address=<address>` labels on every resource bidsmith
    creates / updates (via `Label` + `CampaignLabel` / `AdGroupLabel` /
    `AdGroupAdLabel` / `AdGroupCriterionLabel` associations). Use those
@@ -132,11 +147,11 @@ Priority order for what closes the most user-facing gaps:
    (no more "matched by name" guessing), and emit `- destroy` rows
    for labeled live resources that no longer appear in `.bid`. Closes
    the lifecycle and makes adoption (`import`) and refresh tractable.
-2. **Phase 4 — refresh**. `bidsmith refresh -o <file>` walks labeled
+3. **Phase 4 — refresh**. `bidsmith refresh -o <file>` walks labeled
    live resources, runs them through the existing renderer, writes a
    canonical `.bid`. Reuses `live_state.rs` + the renderer; the new
    work is a label-driven filter plus a small CLI.
-3. **Account-scoped resource types**, unblocked by the W1 trial:
+4. **Account-scoped resource types**, unblocked by the W1 trial:
    - `google_ads_asset` (especially `CallAsset` for the +PL phone)
    - `google_ads_customer_asset` (wire account-level call assets)
    - `google_ads_conversion_action` (Lead, Phone — referenced from
@@ -156,3 +171,139 @@ Smaller follow-ups that can ride along:
 - Tighten `fmt` ↔ export alignment for non-bidsmith outputs (the
   internal renderer already pipes through fmt; external pretty-print
   use cases may want their own knobs).
+
+## `pull` verb + live round-trip e2e
+
+> Status: not started. Design notes — adjust freely once the first
+> attempt hits real Google Ads behavior.
+
+### Why
+
+Today the test plan is the "Verified locally" checklist in
+DECISIONS.md, run by hand. We have no automated coverage at all (zero
+`#[test]` blocks in the tree). HTTP-mock based tests work in principle
+but risk encoding hand-written assumptions about wire shapes that
+don't match what Google actually emits.
+
+The strongest oracle available is Google Ads itself. The loop
+`apply → pull → export → plan` against a test account proves, in one
+shot:
+
+- the renderer round-trips every field bidsmith claims to model;
+- `adapt::from_search_response` doesn't drop anything we sent in;
+- the mutate request bodies in `api/mutate.rs` are accepted by the
+  real API (not just by a fixture);
+- the diff engine in `api/diff.rs` correctly recognises a freshly
+  applied state as drift-free.
+
+Wins this catches that fixture-replay tests can't: Google adding a new
+required field, our enum spelling drifting from the API, server-side
+defaults filling in fields we don't render.
+
+### The `pull` verb
+
+Add a subcommand alongside `plan` / `apply` / `query`. Reuses the
+existing `live_state::QUERIES` table and `Client::search_stream`; the
+*only* difference vs `live_state::fetch` is that it skips the adapter
+and writes the accumulated batches as a JSON array to disk in the same
+shape as `examples/exports/raw.json`.
+
+```
+bidsmith pull -o dump.json
+bidsmith pull --customer-id 1234567890 -o dump.json
+bidsmith pull --campaign-id 9876543210 -o dump.json   # optional filter
+```
+
+Implementation sketch (`src/commands/pull.rs`):
+
+```rust
+pub fn run(output: Option<&str>, campaign_id: Option<&str>, verbose: bool) -> ExitCode {
+    // 1. Same OAuth + client construction as plan/apply.
+    // 2. Loop over live_state::QUERIES; if --campaign-id is set,
+    //    append `AND campaign.id = <id>` (or the per-resource
+    //    equivalent) to each query.
+    // 3. Accumulate batches into one Vec<Value>.
+    // 4. Pretty-print as JSON array to `output` (or stdout).
+}
+```
+
+Notes:
+
+- The QUERIES table is already the source of truth for "everything
+  bidsmith models." Whenever a new resource type gets a query there,
+  `pull` picks it up for free — that's the same lockstep rule as the
+  validator/renderer pair.
+- Output is the *raw* SearchStream JSON, not the adapted ExportInput.
+  Adapter logic stays in `commands/adapt.rs` so `pull` and
+  `--from-gads-search-response` share zero new code.
+- `--campaign-id` is the practical scoping flag; matches what
+  `dump_campaign.py` already does for fixture generation.
+
+Side benefit: makes it trivial to commit small, redacted real dumps
+under `tests/fixtures/` as offline test inputs for the read path.
+
+### The e2e test
+
+Opt-in tier. Gated on a single env var (`BIDSMITH_E2E_CUSTOMER_ID`)
+that points at a dedicated Google Ads **test manager account** — a
+free, non-serving account flagged at MCC creation time. If the var
+isn't set, the test is skipped (not failed). Either a Cargo feature
+(`cargo test --features e2e`) or a hidden CLI verb
+(`bidsmith self-test --live`); the latter is friendlier for ad-hoc
+runs against a real account without a Rust toolchain.
+
+The loop:
+
+```
+1. fixture.bid           ← small canonical .bid (one budget, one
+                           campaign, one ad group, one RSA, a few
+                           keyword + location criteria)
+2. rewrite all resource names with prefix "bidsmith-e2e-<run-id>-"
+3. bidsmith apply --auto-approve fixture.bid
+4. bidsmith pull -o /tmp/dump.json
+5. bidsmith export --from-gads-search-response /tmp/dump.json \
+       -o /tmp/roundtrip.bid
+6. bidsmith fmt --check /tmp/roundtrip.bid         (should be no-op)
+7. bidsmith plan /tmp/roundtrip.bid                MUST report
+                                                   0 to create,
+                                                   0 to update
+8. (optional) edit one scalar in roundtrip.bid → plan reports
+   exactly 1 update — proves drift detection against the same live
+   state we just pulled
+9. teardown (always runs, even on failure): REMOVE every resource
+   whose name begins with "bidsmith-e2e-"
+```
+
+The pivotal assertion is step 7. Strict text equality between
+`fixture.bid` and `roundtrip.bid` is *too strict* — the API legitimately
+fills in defaults, normalises proximity to micro-degrees, assigns
+`resourceName` / `id`, etc. "Plan is a no-op" is the semantically
+correct invariant: it says the file we'd commit matches reality.
+
+### Test-account hygiene
+
+- **Dedicated test manager account**, separate from any production
+  account, so a runaway test can't touch real campaigns or spend.
+  Test manager accounts can't serve ads and don't spend money — exactly
+  what we want.
+- **Unique name prefix per run** (`bidsmith-e2e-<timestamp>-` or
+  `<git-sha>-`). Two pre-flight steps: sweep anything matching the
+  prefix older than 1 hour before the run starts (defensive cleanup
+  for prior aborted runs), and assert there are zero matches for the
+  current run-id (concurrency guard).
+- **Teardown runs unconditionally** via `Drop` on a guard struct (or
+  a `defer!`-style cleanup) so a panic mid-test still removes the
+  resources it created.
+- **CI integration**: a separate workflow file, nightly schedule, with
+  the test-account creds in repo secrets. Not gated on every PR — too
+  slow, too much quota.
+
+### What this still doesn't cover
+
+- Apply failure paths (rejected validateOnly, retired API version
+  surfaced as 404, expired refresh token). Capture real error
+  responses as fixtures once observed and replay them in unit tests
+  in `api/client.rs`.
+- Removal / `- destroy` flow (waits on Phase 3 v2 labels).
+- Multi-customer / module composition (waits on the open decision in
+  the "Open decisions" section above).
