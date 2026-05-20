@@ -1,11 +1,10 @@
 # Bidsmith — Roadmap
 
-> **Status: speculative.** This roadmap was drafted before a
-> requirements-driven pass against a real campaign (the `rezolutnie/ads`
-> seed). A follow-up agent grounded in actual `[W1]` needs is expected
-> to revise priorities and phases. The locked choices in
-> [DECISIONS.md](DECISIONS.md) stand; everything below is up for
-> revision.
+> Phases 1, 2, and the core of 3 are landed against the real
+> rezolutnie `[W1]` campaign. The remaining items are the v2 work for
+> Phase 3 (labels + removal), Phase 4 (refresh), and account-scoped
+> resource types. Open decisions below; locked choices in
+> [DECISIONS.md](DECISIONS.md).
 
 ## Architecture (envisioned)
 
@@ -35,18 +34,23 @@ declared HCL against live labeled state. Local cache is rebuildable.
 
 ## Open decisions
 
-- Google Ads SDK: community `google-ads-rs` (thin) vs generate our own
-  bindings from Google's published `.proto` files via `tonic-build`.
-  Lean toward the latter for ergonomics + version control.
-- Auth flow: port the rezolutnie OAuth helper (one-shot refresh token to
-  `.env`) to `oauth2` + `reqwest`, or build a richer interactive
-  credential manager.
 - Multi-account: how do `provider` blocks compose? One provider per
-  file? Aliases?
+  file? Aliases? Today's `provider` block is single-customer, with the
+  customer/login_customer ids overridable via env at `export` / `plan`
+  / `apply` time — works for the rezolutnie loop but needs revisiting
+  before bidsmith manages multiple customers in one tree.
 - Lint catalog: starter set shipped (missing `status`, RSA min
   headlines/descriptions, phone-in-RSA). Still open: missing-negatives
   on search campaigns, declension hints for PL, RSA pinning advice,
   policy-wordlist patterns.
+- RSA repeating-block diff strategy: today `headline` / `description`
+  blocks are matched all-or-nothing (live trumps; we don't diff them
+  per-asset). Open: detect added/removed/repinned assets and emit a
+  granular update — or accept "replace the whole ad" as the only edit
+  path (which matches how Google Ads operators usually edit RSAs).
+- Removal mechanics on `apply`: once labels land, do we delete on
+  apply (terraform-style "configured-state is reality") or require a
+  separate `apply --allow-destroy` flag?
 
 ## Phases
 
@@ -66,8 +70,10 @@ declared HCL against live labeled state. Local cache is rebuildable.
 - ✅ `validate`: syntax + schema + references + lint warnings
 - ✅ `fmt`: canonical re-emitter (parse → walk → emit; in-place or
   `--check`)
-- Exit criterion: the rezolutnie `[W1] magazyny-energii` setup
-  expressible in `.bid` files; `validate` passes.
+- ✅ Exit criterion: the rezolutnie `[W1] magazyny-energii` setup is
+  expressible in `.bid` files, `validate` passes clean, `fmt --check`
+  is a no-op on the canonical form, both `export` paths round-trip
+  through `validate`.
 
 **Phase 2 — Provider & plan**
 - ✅ REST client over `reqwest::blocking` (chose REST over gRPC for the
@@ -109,30 +115,38 @@ declared HCL against live labeled state. Local cache is rebuildable.
 
 ## Next session: start here
 
-Phase 1 isn't quite done. Concrete picks for the next session, in
-priority order:
+Phases 1 and 2 are done; Phase 3 has its CREATE/UPDATE half landed.
+Priority order for what closes the most user-facing gaps:
 
-1. **Account-scoped resource types**, unblocked by the W1 trial:
+1. **Phase 3 v2 — labels + removal**. Write
+   `bidsmith:address=<address>` labels on every resource bidsmith
+   creates / updates (via `Label` + `CampaignLabel` / `AdGroupLabel` /
+   `AdGroupAdLabel` / `AdGroupCriterionLabel` associations). Use those
+   labels at diff time to identify managed resources unambiguously
+   (no more "matched by name" guessing), and emit `- destroy` rows
+   for labeled live resources that no longer appear in `.bid`. Closes
+   the lifecycle and makes adoption (`import`) and refresh tractable.
+2. **Phase 4 — refresh**. `bidsmith refresh -o <file>` walks labeled
+   live resources, runs them through the existing renderer, writes a
+   canonical `.bid`. Reuses `live_state.rs` + the renderer; the new
+   work is a label-driven filter plus a small CLI.
+3. **Account-scoped resource types**, unblocked by the W1 trial:
    - `google_ads_asset` (especially `CallAsset` for the +PL phone)
    - `google_ads_customer_asset` (wire account-level call assets)
-   - `google_ads_conversion_action` (Lead, Phone — referenced from the
-     account, not from a single campaign)
-   These let bidsmith own the policy fix in W1: move the literal phone
-   out of RSA copy into a Call asset. They also unblock the next-most-
-   common refresh paths.
-2. **Re-trial against W1** once the asset/conversion types land. Verify
-   we round-trip the full account-scoped graph, not just one campaign.
-3. **Exit criterion**: the rezolutnie `[W1] magazyny-energii` setup
-   expressible in `.bid` files; `validate` passes; `fmt` is a no-op on
-   the canonical form; `export` round-trips a real campaign JSON
-   through `validate`. Campaign-scoped resources, RSA pinning, and
-   proximity are in; account-scoped pieces above are what's left.
+   - `google_ads_conversion_action` (Lead, Phone — referenced from
+     the account, not from a single campaign)
+   These let bidsmith own the policy fix in W1: move the literal
+   phone out of RSA copy into a proper Call asset.
 
 Smaller follow-ups that can ride along:
 
-- Campaign label support — `[W1]` is encoded in the name today; making
-  it a real `label` would let us migrate off the name-prefix
-  convention.
-- Repeating `text { value, pin? }` for non-RSA ad types when they land
-  (Discovery, Performance Max ad-strength assets) — share the
-  asset-block design we have for RSA headlines.
+- Repeating-block field-level diff for RSA `headline` / `description`
+  blocks and the `final_urls` list. Today these are matched
+  all-or-nothing; per-asset add/remove/repin detection would close
+  the last drift gap below the apply layer.
+- Campaign label support beyond bidsmith state — making `[W1]` a real
+  campaign label (rather than a name prefix) once the label
+  infrastructure exists for state tracking.
+- Tighten `fmt` ↔ export alignment for non-bidsmith outputs (the
+  internal renderer already pipes through fmt; external pretty-print
+  use cases may want their own knobs).

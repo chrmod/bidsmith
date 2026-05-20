@@ -9,8 +9,9 @@ Declarative, AI-friendly tooling for Google Ads campaigns. Think
 **Terraform for Google Ads**: HCL2 config files, modules, validate /
 plan / apply / refresh. The engine is deterministic; AI sits **on top**
 — authoring `.bid` files, reviewing PRs, recommending optimizations.
-Distribution: a Rust-compiled CLI binary (~1.5 MB release),
-GitHub-native workflows for collaboration and continuous tuning.
+Distribution: a Rust-compiled CLI binary (~4 MB release once the REST
++ TLS stack is linked in), GitHub-native workflows for collaboration
+and continuous tuning.
 
 The seed is `/Users/chrmod/Projects/github.com/chrmod/rezolutnie.com/ads/`
 — a Python module that already encodes the right shape (dry-run by
@@ -50,13 +51,37 @@ resource type, any file layout, modules, schema validation.
   <PATH>` (no separate `adapt` verb). Rationale: one-step ergonomics,
   the renderer keeps a single output, and the adapter module can be
   promoted to a standalone verb later if needed.
+- **Google Ads transport**: REST over `reqwest::blocking`, not gRPC.
+  Chosen for the early-iteration debugging UX (curl-able endpoints,
+  human-readable JSON wire format, no proto compile step). Endpoint
+  version pinned via `BIDSMITH_API_VERSION` env var (default `v22`);
+  retired-version 404s are detected and surfaced with an actionable
+  hint. tonic-build / `google-ads-rs` remain available as future
+  swaps if a specific gRPC-only RPC is needed.
+- **Auth**: same env vars the rezolutnie `ads/` scripts already use
+  (`GOOGLE_ADS_DEVELOPER_TOKEN`, `GOOGLE_ADS_CLIENT_ID`,
+  `GOOGLE_ADS_CLIENT_SECRET`, `GOOGLE_ADS_REFRESH_TOKEN`,
+  `GOOGLE_ADS_CUSTOMER_ID`, `GOOGLE_ADS_LOGIN_CUSTOMER_ID`). bidsmith
+  exchanges the refresh token for an access token on every run; no
+  local credential caching. `--customer-id` / `--login-customer-id`
+  flags override the env when needed.
+- **Plan = dry-run diff against live**: `plan` always fetches live
+  state via `googleAds:searchStream`, matches by name with parent
+  cascade, computes scalar field-level drift, and sends one
+  `googleAds:mutate` batch with `validateOnly=true` containing
+  CREATE+UPDATE ops for only the diffs.
+- **Apply = same pipeline, `validateOnly=false`, `--confirm` gate**.
+  Without `--confirm`, `apply` runs as a dry run (same output as
+  `plan`). Never auto-apply. Mutates are sent in dependency order
+  (budgets → campaigns → ad_groups → ads → criteria) inside one
+  atomic batch.
 
 ## Current state
 
 ```
 bidsmith/
 ├── .gitignore
-├── Cargo.toml            # hcl-edit, miette, clap, thiserror, serde, serde_json
+├── Cargo.toml            # hcl-edit, miette, clap, thiserror, serde, serde_json, reqwest
 ├── Cargo.lock
 ├── DECISIONS.md          # this file
 ├── ROADMAP.md            # forward-looking plan
@@ -67,11 +92,21 @@ bidsmith/
 │   ├── schema.rs         # resource-type registry + validator
 │   ├── lint.rs           # soft-issue warnings (status, RSA min, phone)
 │   ├── diagnostics.rs    # miette Diag type with severity
+│   ├── api/
+│   │   ├── mod.rs
+│   │   ├── auth.rs       # OAuth refresh-token → access token
+│   │   ├── client.rs     # reqwest::blocking wrapper; googleAds:mutate + :searchStream
+│   │   ├── live_state.rs # six GAQL queries → populated ExportInput
+│   │   ├── import.rs     # AST → ExportInput (round-trip with the renderer)
+│   │   ├── diff.rs       # declared vs live → Create / NoOp / Update(fields)
+│   │   └── mutate.rs     # ExportInput + DiffReport → googleAds:mutate body
 │   └── commands/
-│       ├── mod.rs        # shared stub helper
-│       ├── adapt.rs      # SearchStream JSON → ExportInput
+│       ├── mod.rs        # module declarations + small shared helpers
+│       ├── adapt.rs      # SearchStream JSON → ExportInput (used by export + live_state)
+│       ├── apply.rs      # plan pipeline with --confirm gate flipping validateOnly off
 │       ├── export.rs     # render .bid from a JSON source description
 │       ├── fmt.rs        # canonical re-emitter (in-place / --check)
+│       ├── plan.rs       # parse + validate + import + diff + validateOnly batch
 │       └── validate.rs   # parse + validate orchestration
 └── examples/
     ├── basic/main.bid          # provider, budget, campaign, ad group, ad, criteria
@@ -80,14 +115,18 @@ bidsmith/
     │   └── syntax.bid          # parse error
     ├── lint/
     │   └── warnings.bid        # valid syntax/schema but trips every lint rule
-    └── exports/
-        ├── basic.json          # flat bidsmith input for `export --from-json`
-        └── raw.json            # SearchStream-shaped input for `export --from-gads-search-response`
+    ├── exports/
+    │   ├── basic.json          # flat bidsmith input for `export --from-json`
+    │   └── raw.json            # SearchStream-shaped input for `export --from-gads-search-response`
+    └── trial/
+        ├── README.md           # end-to-end runbook against the rezolutnie account
+        └── dump_campaign.py    # Python helper that produces raw.json-shaped dumps
 ```
 
 Verified locally:
 - `cargo build` clean (no warnings)
-- `cargo build --release` → ~1.5 MB binary
+- `cargo build --release` → ~4 MB binary (the jump from ~1.5 MB is
+  the reqwest + rustls TLS stack added for the live API client)
 - `cargo run -- validate examples/basic` → `OK: 1 file(s) valid.`
 - `cargo run -- validate examples/broken` → exit 1 with 11 errors and
   5 warnings (parse failure, type mismatch, enum violation, dangling
@@ -112,6 +151,24 @@ Verified locally:
   indent, single space around `=`, blank line between blocks but not
   within attribute runs, arrays wrap onto multiple lines when the
   single-line form exceeds 80 chars).
+- `bidsmith plan --whoami` against a real `.env` exchanges the refresh
+  token and prints `access token … expires_in: 3599s` plus the
+  customer / login / developer-token envelope. No Google Ads API call
+  yet — just the OAuth token endpoint.
+- `bidsmith plan --read-live` lists per-resource-type counts for the
+  customer (one `googleAds:searchStream` call per type bidsmith
+  models).
+- `bidsmith plan examples/basic` against the rezolutnie account
+  validates 8 CREATE operations on the live API and prints
+  `8 accepted, 0 rejected (validateOnly)`. Proves every resource
+  bidsmith models is API-faithful end-to-end.
+- `bidsmith plan /tmp/w1.bid` against the rezolutnie account (where
+  the campaign already exists) prints `Plan: 0 to create, 0 to
+  update, 97 unchanged. (no API call needed)` once the .bid is
+  in-sync with live. Editing any scalar in the file produces a
+  single `~ update (field)  ok` row + 96 no-ops on the next run.
+- `bidsmith apply` without `--confirm` is a dry run; with `--confirm`
+  flips `validateOnly: false` and mutates the live account.
 
 Validator covers (so far):
 - `google_ads_campaign_budget`, `google_ads_campaign` (SEARCH with
