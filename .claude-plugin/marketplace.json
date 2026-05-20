@@ -1,0 +1,14 @@
+{
+  "name": "bidsmith",
+  "owner": {
+    "name": "chrmod",
+    "url": "https://github.com/chrmod"
+  },
+  "plugins": [
+    {
+      "name": "bidsmith",
+      "source": "./",
+      "description": "Claude Code skill for bidsmith — declarative Google Ads via .bid files"
+    }
+  ]
+}

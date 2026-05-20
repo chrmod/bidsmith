@@ -86,10 +86,12 @@ same release pipeline.
 
 ## Claude Code skill
 
-This repo doubles as a Claude Code plugin. From inside Claude Code:
+This repo doubles as a one-plugin Claude Code marketplace. From inside
+Claude Code:
 
 ```
-/plugin install bidsmith@chrmod/bidsmith
+/plugin marketplace add chrmod/bidsmith
+/plugin install bidsmith@bidsmith
 ```
 
 Once installed, agents auto-discover the skill when the conversation
