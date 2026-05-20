@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::commands::export::{
-    ExportInput, JsonAdGroup, JsonAdGroupAd, JsonAdGroupCriterion, JsonBudget, JsonCampaign,
-    JsonCampaignCriterion,
+    ExportInput, JsonAdGroup, JsonAdGroupAd, JsonAdGroupCriterion, JsonBudget, JsonCallAsset,
+    JsonCampaign, JsonCampaignCriterion, JsonConversionAction, JsonCustomerAsset,
 };
 
 #[derive(Debug, Clone)]
@@ -44,6 +44,8 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     let mut diffs: Vec<ResourceDiff> = Vec::new();
     let mut campaign_match: HashMap<String, String> = HashMap::new();
     let mut ad_group_match: HashMap<String, String> = HashMap::new();
+    let mut conversion_match: HashMap<String, String> = HashMap::new();
+    let mut call_asset_match: HashMap<String, String> = HashMap::new();
 
     // ---- campaign_budgets (match by name) --------------------------------
     let live_budgets: HashMap<&str, &JsonBudget> = live
@@ -183,6 +185,71 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         });
     }
 
+    let live_conversion_actions: HashMap<&str, &JsonConversionAction> = live
+        .conversion_actions
+        .iter()
+        .map(|c| (c.name.as_str(), c))
+        .collect();
+    for d in &declared.conversion_actions {
+        let action = match live_conversion_actions.get(d.name.as_str()) {
+            Some(l) => {
+                conversion_match.insert(d.id.clone(), l.id.clone());
+                action_for_match(l.id.clone(), diff_conversion_action(d, l))
+            }
+            None => Action::Create,
+        };
+        diffs.push(ResourceDiff {
+            address: d.id.clone(),
+            kind: "conversion_action",
+            action,
+        });
+    }
+
+    let live_call_assets: HashMap<(String, String), &JsonCallAsset> = live
+        .call_assets
+        .iter()
+        .map(|a| ((a.country_code.clone(), a.phone_number.clone()), a))
+        .collect();
+    for d in &declared.call_assets {
+        let action = match live_call_assets
+            .get(&(d.country_code.clone(), d.phone_number.clone()))
+        {
+            Some(l) => {
+                call_asset_match.insert(d.id.clone(), l.id.clone());
+                action_for_match(l.id.clone(), diff_call_asset(d, l))
+            }
+            None => Action::Create,
+        };
+        diffs.push(ResourceDiff {
+            address: d.id.clone(),
+            kind: "call_asset",
+            action,
+        });
+    }
+
+    let mut live_customer_assets: HashMap<(String, String), &JsonCustomerAsset> = HashMap::new();
+    for a in &live.customer_assets {
+        live_customer_assets.insert((a.asset.clone(), a.field_type.clone()), a);
+    }
+    for d in &declared.customer_assets {
+        let action = match call_asset_match.get(&d.asset) {
+            Some(asset_id) => match live_customer_assets
+                .get(&(asset_id.clone(), d.field_type.clone()))
+            {
+                Some(l) => action_for_match(l.id.clone(), diff_customer_asset(d, l)),
+                None => Action::Create,
+            },
+            None => Action::Create,
+        };
+        diffs.push(ResourceDiff {
+            address: d.id.clone(),
+            kind: "customer_asset",
+            action,
+        });
+    }
+
+    let _ = conversion_match;
+
     let mut noop_count = 0;
     let mut create_count = 0;
     let mut update_count = 0;
@@ -237,6 +304,11 @@ fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign) -> Vec<String> {
     }
     if d.status != l.status {
         c.push("status".into());
+    }
+    if d.contains_eu_political_advertising != l.contains_eu_political_advertising
+        && d.contains_eu_political_advertising.is_some()
+    {
+        c.push("contains_eu_political_advertising".into());
     }
     // advertising_channel_type is creation-only; skip.
     let dm = d.manual_cpc.as_ref().and_then(|m| m.enhanced_cpc_enabled);
@@ -318,6 +390,62 @@ fn diff_campaign_criterion(d: &JsonCampaignCriterion, l: &JsonCampaignCriterion)
     c
 }
 
+fn diff_conversion_action(d: &JsonConversionAction, l: &JsonConversionAction) -> Vec<String> {
+    let mut c = Vec::new();
+    if d.status != l.status {
+        c.push("status".into());
+    }
+    if d.counting_type != l.counting_type {
+        c.push("counting_type".into());
+    }
+    if d.click_through_lookback_window_days != l.click_through_lookback_window_days {
+        c.push("click_through_lookback_window_days".into());
+    }
+    if d.view_through_lookback_window_days != l.view_through_lookback_window_days {
+        c.push("view_through_lookback_window_days".into());
+    }
+    let dv = d.value_settings.as_ref().and_then(|v| v.default_value);
+    let lv = l.value_settings.as_ref().and_then(|v| v.default_value);
+    if dv != lv {
+        c.push("value_settings.default_value".into());
+    }
+    let dc = d
+        .value_settings
+        .as_ref()
+        .and_then(|v| v.default_currency_code.clone());
+    let lc = l
+        .value_settings
+        .as_ref()
+        .and_then(|v| v.default_currency_code.clone());
+    if dc != lc {
+        c.push("value_settings.default_currency_code".into());
+    }
+    let da = d
+        .value_settings
+        .as_ref()
+        .and_then(|v| v.always_use_default_value);
+    let la = l
+        .value_settings
+        .as_ref()
+        .and_then(|v| v.always_use_default_value);
+    if da != la {
+        c.push("value_settings.always_use_default_value".into());
+    }
+    c
+}
+
+fn diff_call_asset(_d: &JsonCallAsset, _l: &JsonCallAsset) -> Vec<String> {
+    Vec::new()
+}
+
+fn diff_customer_asset(d: &JsonCustomerAsset, l: &JsonCustomerAsset) -> Vec<String> {
+    let mut c = Vec::new();
+    if d.status != l.status {
+        c.push("status".into());
+    }
+    c
+}
+
 fn campaign_criterion_key(cr: &JsonCampaignCriterion) -> Option<String> {
     if let Some(kw) = &cr.keyword {
         return Some(format!("kw:{}|{}", kw.match_type, kw.text));
@@ -331,8 +459,8 @@ fn campaign_criterion_key(cr: &JsonCampaignCriterion) -> Option<String> {
     if let Some(p) = &cr.proximity {
         return Some(format!(
             "prox:{}:{}:{:.6}:{}",
-            p.geo_point.latitude_in_micro_degrees,
-            p.geo_point.longitude_in_micro_degrees,
+            (p.latitude * 1_000_000.0).round() as i64,
+            (p.longitude * 1_000_000.0).round() as i64,
             p.radius,
             p.radius_units,
         ));

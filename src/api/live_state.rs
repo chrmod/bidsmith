@@ -39,6 +39,7 @@ const QUERIES: &[(&str, &str)] = &[
           campaign.status,
           campaign.advertising_channel_type,
           campaign.campaign_budget,
+          campaign.contains_eu_political_advertising,
           campaign.manual_cpc.enhanced_cpc_enabled,
           campaign.network_settings.target_google_search,
           campaign.network_settings.target_search_network,
@@ -108,6 +109,47 @@ const QUERIES: &[(&str, &str)] = &[
         FROM campaign_criterion
         WHERE campaign_criterion.type IN (KEYWORD, LOCATION, LANGUAGE, PROXIMITY)
           AND campaign_criterion.status != 'REMOVED'",
+    ),
+    (
+        "conversion_action",
+        "SELECT
+          conversion_action.resource_name,
+          conversion_action.id,
+          conversion_action.name,
+          conversion_action.type,
+          conversion_action.category,
+          conversion_action.status,
+          conversion_action.counting_type,
+          conversion_action.click_through_lookback_window_days,
+          conversion_action.view_through_lookback_window_days,
+          conversion_action.value_settings.default_value,
+          conversion_action.value_settings.default_currency_code,
+          conversion_action.value_settings.always_use_default_value
+        FROM conversion_action
+        WHERE conversion_action.status != 'REMOVED'",
+    ),
+    (
+        "call_asset",
+        "SELECT
+          asset.resource_name,
+          asset.id,
+          asset.call_asset.country_code,
+          asset.call_asset.phone_number,
+          asset.call_asset.call_conversion_reporting_state,
+          asset.call_asset.call_conversion_action
+        FROM asset
+        WHERE asset.type = CALL",
+    ),
+    (
+        "customer_asset",
+        "SELECT
+          customer_asset.resource_name,
+          customer_asset.asset,
+          customer_asset.field_type,
+          customer_asset.status
+        FROM customer_asset
+        WHERE customer_asset.field_type = CALL
+          AND customer_asset.status != 'REMOVED'",
     ),
 ];
 

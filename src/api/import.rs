@@ -4,8 +4,10 @@ use hcl_edit::structure::{Attribute, Block, Structure};
 
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupCriterion, JsonBudget,
-    JsonCampaign, JsonCampaignCriterion, JsonGeoPoint, JsonKeyword, JsonLanguage, JsonLocation,
-    JsonManualCpc, JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset,
+    JsonCallAsset, JsonCampaign, JsonCampaignCriterion, JsonConversionAction,
+    JsonCustomerAsset, JsonKeyword, JsonLanguage, JsonLocation, JsonManualCpc,
+    JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset,
+    JsonValueSettings,
 };
 use crate::diagnostics::Diag;
 use crate::parser::ParsedFile;
@@ -26,6 +28,9 @@ pub fn import_files(files: &[ParsedFile]) -> Result<ImportResult, Vec<Diag>> {
         ad_group_ads: Vec::new(),
         ad_group_criteria: Vec::new(),
         campaign_criteria: Vec::new(),
+        conversion_actions: Vec::new(),
+        call_assets: Vec::new(),
+        customer_assets: Vec::new(),
     };
     let mut skipped: Vec<(String, String)> = Vec::new();
 
@@ -64,8 +69,23 @@ pub fn import_files(files: &[ParsedFile]) -> Result<ImportResult, Vec<Diag>> {
                                 .map(|x| input.ad_group_criteria.push(x)),
                         ),
                         "google_ads_campaign_criterion" => emit(
-                            import_campaign_criterion(f, b, &address)
-                                .map(|x| input.campaign_criteria.push(x)),
+                            import_campaign_criterion(f, b, &address).map(|xs| {
+                                for x in xs {
+                                    input.campaign_criteria.push(x);
+                                }
+                            }),
+                        ),
+                        "google_ads_conversion_action" => emit(
+                            import_conversion_action(f, b, &address)
+                                .map(|x| input.conversion_actions.push(x)),
+                        ),
+                        "google_ads_call_asset" => emit(
+                            import_call_asset(f, b, &address)
+                                .map(|x| input.call_assets.push(x)),
+                        ),
+                        "google_ads_customer_asset" => emit(
+                            import_customer_asset(f, b, &address)
+                                .map(|x| input.customer_assets.push(x)),
                         ),
                         other => {
                             skipped.push((address, other.to_string()));
@@ -160,6 +180,7 @@ fn import_campaign(file: &ParsedFile, block: &Block, address: &str) -> Result<Js
     let mut status = None;
     let mut channel = None;
     let mut budget_ref = None;
+    let mut eu_political = None;
     let mut manual_cpc = None;
     let mut network_settings = None;
 
@@ -170,6 +191,7 @@ fn import_campaign(file: &ParsedFile, block: &Block, address: &str) -> Result<Js
                 "status" => status = expect_string_owned(a),
                 "advertising_channel_type" => channel = expect_string_owned(a),
                 "campaign_budget" => budget_ref = extract_resource_ref(&a.value),
+                "contains_eu_political_advertising" => eu_political = expect_string_owned(a),
                 _ => {}
             },
             Structure::Block(b) => match b.ident.as_str() {
@@ -190,6 +212,7 @@ fn import_campaign(file: &ParsedFile, block: &Block, address: &str) -> Result<Js
         status,
         advertising_channel_type: channel,
         campaign_budget: budget,
+        contains_eu_political_advertising: eu_political,
         manual_cpc,
         network_settings,
     })
@@ -415,7 +438,7 @@ fn import_campaign_criterion(
     file: &ParsedFile,
     block: &Block,
     address: &str,
-) -> Result<JsonCampaignCriterion, Diag> {
+) -> Result<Vec<JsonCampaignCriterion>, Diag> {
     let mut campaign_ref = None;
     let mut status = None;
     let mut negative = None;
@@ -423,6 +446,7 @@ fn import_campaign_criterion(
     let mut location = None;
     let mut language = None;
     let mut proximity = None;
+    let mut bulk_negatives: Vec<JsonKeyword> = Vec::new();
 
     for s in block.body.iter() {
         match s {
@@ -434,6 +458,11 @@ fn import_campaign_criterion(
             },
             Structure::Block(b) => match b.ident.as_str() {
                 "keyword" => keyword = import_keyword(b),
+                "negative_keyword" => {
+                    if let Some(kw) = import_keyword(b) {
+                        bulk_negatives.push(kw);
+                    }
+                }
                 "location" => location = import_location(b),
                 "language" => language = import_language(b),
                 "proximity" => proximity = import_proximity(b),
@@ -443,7 +472,34 @@ fn import_campaign_criterion(
     }
 
     let campaign = campaign_ref.ok_or_else(|| missing(file, block, address, "campaign"))?;
-    Ok(JsonCampaignCriterion {
+
+    if !bulk_negatives.is_empty() {
+        if keyword.is_some() || location.is_some() || language.is_some() || proximity.is_some() {
+            return Err(Diag::new(
+                file.src.clone(),
+                span_of(block.ident.span()),
+                format!(
+                    "{address} mixes negative_keyword blocks with a single-criterion form; pick one (a container resource is negatives-only)"
+                ),
+            ));
+        }
+        let mut out = Vec::with_capacity(bulk_negatives.len());
+        for (i, kw) in bulk_negatives.into_iter().enumerate() {
+            out.push(JsonCampaignCriterion {
+                id: format!("{address}.negatives[{i}]"),
+                campaign: campaign.clone(),
+                status: status.clone(),
+                negative: Some(true),
+                keyword: Some(kw),
+                location: None,
+                language: None,
+                proximity: None,
+            });
+        }
+        return Ok(out);
+    }
+
+    Ok(vec![JsonCampaignCriterion {
         id: address.to_string(),
         campaign,
         status,
@@ -452,7 +508,7 @@ fn import_campaign_criterion(
         location,
         language,
         proximity,
-    })
+    }])
 }
 
 fn import_keyword(block: &Block) -> Option<JsonKeyword> {
@@ -501,39 +557,155 @@ fn import_language(block: &Block) -> Option<JsonLanguage> {
     })
 }
 
-fn import_proximity(block: &Block) -> Option<JsonProximity> {
-    let mut radius = None;
-    let mut units = None;
-    let mut lat = None;
-    let mut lng = None;
+fn import_conversion_action(
+    file: &ParsedFile,
+    block: &Block,
+    address: &str,
+) -> Result<JsonConversionAction, Diag> {
+    let mut name = None;
+    let mut ty = None;
+    let mut category = None;
+    let mut status = None;
+    let mut counting_type = None;
+    let mut click_lookback = None;
+    let mut view_lookback = None;
+    let mut value_settings = None;
+
     for s in block.body.iter() {
         match s {
             Structure::Attribute(a) => match a.key.as_str() {
-                "radius" => radius = expect_f64(a),
-                "radius_units" => units = expect_string_owned(a),
+                "name" => name = expect_string_owned(a),
+                "type" => ty = expect_string_owned(a),
+                "category" => category = expect_string_owned(a),
+                "status" => status = expect_string_owned(a),
+                "counting_type" => counting_type = expect_string_owned(a),
+                "click_through_lookback_window_days" => click_lookback = expect_i64(a),
+                "view_through_lookback_window_days" => view_lookback = expect_i64(a),
                 _ => {}
             },
-            Structure::Block(b) if b.ident.as_str() == "geo_point" => {
-                for s in b.body.iter() {
-                    if let Structure::Attribute(a) = s {
+            Structure::Block(b) if b.ident.as_str() == "value_settings" => {
+                let mut vs = JsonValueSettings {
+                    default_value: None,
+                    default_currency_code: None,
+                    always_use_default_value: None,
+                };
+                for st in b.body.iter() {
+                    if let Structure::Attribute(a) = st {
                         match a.key.as_str() {
-                            "latitude_in_micro_degrees" => lat = expect_i64(a),
-                            "longitude_in_micro_degrees" => lng = expect_i64(a),
+                            "default_value" => vs.default_value = expect_f64(a),
+                            "default_currency_code" => {
+                                vs.default_currency_code = expect_string_owned(a)
+                            }
+                            "always_use_default_value" => {
+                                vs.always_use_default_value = expect_bool(a)
+                            }
                             _ => {}
                         }
                     }
                 }
+                value_settings = Some(vs);
             }
             _ => {}
         }
     }
+
+    let name = name.ok_or_else(|| missing(file, block, address, "name"))?;
+    let ty = ty.ok_or_else(|| missing(file, block, address, "type"))?;
+    let category = category.ok_or_else(|| missing(file, block, address, "category"))?;
+    Ok(JsonConversionAction {
+        id: address.to_string(),
+        name,
+        ty,
+        category,
+        status,
+        counting_type,
+        click_through_lookback_window_days: click_lookback,
+        view_through_lookback_window_days: view_lookback,
+        value_settings,
+    })
+}
+
+fn import_call_asset(
+    file: &ParsedFile,
+    block: &Block,
+    address: &str,
+) -> Result<JsonCallAsset, Diag> {
+    let mut country_code = None;
+    let mut phone_number = None;
+    let mut reporting_state = None;
+    let mut action_ref = None;
+
+    for s in block.body.iter() {
+        if let Structure::Attribute(a) = s {
+            match a.key.as_str() {
+                "country_code" => country_code = expect_string_owned(a),
+                "phone_number" => phone_number = expect_string_owned(a),
+                "call_conversion_reporting_state" => reporting_state = expect_string_owned(a),
+                "call_conversion_action" => action_ref = extract_resource_ref(&a.value),
+                _ => {}
+            }
+        }
+    }
+    let country_code = country_code.ok_or_else(|| missing(file, block, address, "country_code"))?;
+    let phone_number = phone_number.ok_or_else(|| missing(file, block, address, "phone_number"))?;
+    Ok(JsonCallAsset {
+        id: address.to_string(),
+        country_code,
+        phone_number,
+        call_conversion_reporting_state: reporting_state,
+        call_conversion_action: action_ref,
+    })
+}
+
+fn import_customer_asset(
+    file: &ParsedFile,
+    block: &Block,
+    address: &str,
+) -> Result<JsonCustomerAsset, Diag> {
+    let mut asset_ref = None;
+    let mut field_type = None;
+    let mut status = None;
+    for s in block.body.iter() {
+        if let Structure::Attribute(a) = s {
+            match a.key.as_str() {
+                "asset" => asset_ref = extract_resource_ref(&a.value),
+                "field_type" => field_type = expect_string_owned(a),
+                "status" => status = expect_string_owned(a),
+                _ => {}
+            }
+        }
+    }
+    let asset = asset_ref.ok_or_else(|| missing(file, block, address, "asset"))?;
+    let field_type = field_type.ok_or_else(|| missing(file, block, address, "field_type"))?;
+    Ok(JsonCustomerAsset {
+        id: address.to_string(),
+        asset,
+        field_type,
+        status,
+    })
+}
+
+fn import_proximity(block: &Block) -> Option<JsonProximity> {
+    let mut radius = None;
+    let mut units = None;
+    let mut latitude = None;
+    let mut longitude = None;
+    for s in block.body.iter() {
+        if let Structure::Attribute(a) = s {
+            match a.key.as_str() {
+                "latitude" => latitude = expect_f64(a),
+                "longitude" => longitude = expect_f64(a),
+                "radius" => radius = expect_f64(a),
+                "radius_units" => units = expect_string_owned(a),
+                _ => {}
+            }
+        }
+    }
     Some(JsonProximity {
+        latitude: latitude?,
+        longitude: longitude?,
         radius: radius?,
         radius_units: units?,
-        geo_point: JsonGeoPoint {
-            latitude_in_micro_degrees: lat?,
-            longitude_in_micro_degrees: lng?,
-        },
     })
 }
 

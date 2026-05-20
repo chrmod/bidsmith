@@ -16,6 +16,7 @@
       "status": "PAUSED",
       "advertising_channel_type": "SEARCH",
       "campaign_budget": "1001",
+      "contains_eu_political_advertising": "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING",
       "manual_cpc": { "enhanced_cpc_enabled": false },
       "network_settings": {
         "target_google_search": true,
@@ -44,6 +45,16 @@
         "text": "summer deals",
         "match_type": "PHRASE"
       }
+    },
+    {
+      "id": "5002",
+      "ad_group": "3001",
+      "status": "ENABLED",
+      "cpc_bid_micros": 3500000,
+      "keyword": {
+        "text": "summer sale",
+        "match_type": "EXACT"
+      }
     }
   ],
   "campaign_criteria": [
@@ -66,17 +77,57 @@
       }
     },
     {
+      "id": "6004",
+      "campaign": "2001",
+      "status": "ENABLED",
+      "language": {
+        "language_constant": "languageConstants/1030"
+      }
+    },
+    {
       "id": "6003",
       "campaign": "2001",
       "status": "ENABLED",
       "proximity": {
+        "latitude": 52.229675,
+        "longitude": 21.012228,
         "radius": 15,
-        "radius_units": "KILOMETERS",
-        "geo_point": {
-          "latitude_in_micro_degrees": 52229675,
-          "longitude_in_micro_degrees": 21012228
-        }
+        "radius_units": "KILOMETERS"
       }
+    }
+  ],
+  "conversion_actions": [
+    {
+      "id": "7001",
+      "name": "Summer Lead",
+      "type": "WEBPAGE",
+      "category": "SUBMIT_LEAD_FORM",
+      "status": "ENABLED",
+      "counting_type": "ONE_PER_CLICK",
+      "click_through_lookback_window_days": 30,
+      "view_through_lookback_window_days": 1,
+      "value_settings": {
+        "default_value": 1,
+        "default_currency_code": "USD",
+        "always_use_default_value": true
+      }
+    }
+  ],
+  "call_assets": [
+    {
+      "id": "8001",
+      "country_code": "US",
+      "phone_number": "5551234567",
+      "call_conversion_reporting_state": "USE_RESOURCE_LEVEL_CALL_CONVERSION_ACTION",
+      "call_conversion_action": "7001"
+    }
+  ],
+  "customer_assets": [
+    {
+      "id": "9001",
+      "asset": "8001",
+      "field_type": "CALL",
+      "status": "ENABLED"
     }
   ],
   "ad_group_ads": [

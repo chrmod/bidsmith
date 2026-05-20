@@ -14,6 +14,17 @@ const STATUS_AWARE: &[&str] = &[
 
 const MIN_HEADLINES: usize = 3;
 const MIN_DESCRIPTIONS: usize = 2;
+const MAX_HEADLINE_LEN: usize = 30;
+const MAX_DESCRIPTION_LEN: usize = 90;
+const MAX_PATH_LEN: usize = 15;
+
+const SUSPICIOUS_LANGUAGE_CONSTANTS: &[(&str, &str, &str)] = &[
+    (
+        "languageConstants/1045",
+        "Afar",
+        "did you mean languageConstants/1030 (Polish)?",
+    ),
+];
 
 pub fn lint_files(files: &[ParsedFile]) -> Vec<Diag> {
     let mut diags = Vec::new();
@@ -55,11 +66,87 @@ fn lint_resource(file: &ParsedFile, block: &Block, diags: &mut Vec<Diag>) {
             }
         }
     }
+
+    if ty == "google_ads_campaign_criterion" {
+        if let Some(lang_block) = find_block(&block.body, "language") {
+            lint_language(file, lang_block, &address, diags);
+        }
+    }
+}
+
+fn lint_language(file: &ParsedFile, block: &Block, address: &str, diags: &mut Vec<Diag>) {
+    let Some(constant_attr) = find_attr(&block.body, "language_constant") else {
+        return;
+    };
+    let Some(value) = constant_attr.value.as_str() else {
+        return;
+    };
+    for (constant, name, hint) in SUSPICIOUS_LANGUAGE_CONSTANTS {
+        if value == *constant {
+            diags.push(Diag::warning(
+                file.src.clone(),
+                span_of(constant_attr.value.span()),
+                format!(
+                    "language_constant '{value}' in {address} is {name}, a rarely-targeted language — {hint}"
+                ),
+            ));
+        }
+    }
 }
 
 fn lint_rsa(file: &ParsedFile, rsa: &Block, address: &str, diags: &mut Vec<Diag>) {
-    lint_rsa_block(file, rsa, address, "headline", MIN_HEADLINES, diags);
-    lint_rsa_block(file, rsa, address, "description", MIN_DESCRIPTIONS, diags);
+    lint_rsa_block(
+        file,
+        rsa,
+        address,
+        "headline",
+        MIN_HEADLINES,
+        MAX_HEADLINE_LEN,
+        diags,
+    );
+    lint_rsa_block(
+        file,
+        rsa,
+        address,
+        "description",
+        MIN_DESCRIPTIONS,
+        MAX_DESCRIPTION_LEN,
+        diags,
+    );
+    lint_rsa_paths(file, rsa, address, diags);
+}
+
+fn lint_rsa_paths(file: &ParsedFile, rsa: &Block, address: &str, diags: &mut Vec<Diag>) {
+    for name in ["path1", "path2"] {
+        let Some(attr) = find_attr(&rsa.body, name) else {
+            continue;
+        };
+        let Some(value) = attr.value.as_str() else {
+            continue;
+        };
+        if value.chars().count() > MAX_PATH_LEN {
+            diags.push(Diag::warning(
+                file.src.clone(),
+                span_of(attr.value.span()),
+                format!(
+                    "{name} in {address} is {len} characters; Google Ads truncates at {MAX_PATH_LEN}",
+                    len = value.chars().count(),
+                ),
+            ));
+        }
+        if !value
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            diags.push(Diag::warning(
+                file.src.clone(),
+                span_of(attr.value.span()),
+                format!(
+                    "{name} in {address} contains characters outside [a-z0-9-]; Google Ads display URLs only render lowercase letters, digits, and hyphens"
+                ),
+            ));
+        }
+    }
 }
 
 fn lint_rsa_block(
@@ -68,6 +155,7 @@ fn lint_rsa_block(
     address: &str,
     label: &str,
     minimum: usize,
+    max_len: usize,
     diags: &mut Vec<Diag>,
 ) {
     let blocks: Vec<&Block> = rsa
@@ -104,6 +192,16 @@ fn lint_rsa_block(
                 span_of(text_attr.key.span()),
                 format!(
                     "{label}[{idx}] in {address} looks like a phone number; Google Ads policy disallows phone numbers in ad copy (use call extensions)"
+                ),
+            ));
+        }
+        let char_count = text.chars().count();
+        if char_count > max_len {
+            diags.push(Diag::warning(
+                file.src.clone(),
+                span_of(text_attr.value.span()),
+                format!(
+                    "{label}[{idx}] in {address} is {char_count} characters; Google Ads rejects {label}s over {max_len}"
                 ),
             ));
         }

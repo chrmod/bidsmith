@@ -7,7 +7,7 @@ mod schema;
 
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(name = "bidsmith", version, about = "Declarative tooling for Google Ads")]
@@ -84,6 +84,24 @@ enum Cmd {
     },
     /// Pull live state into .bid files
     Refresh,
+    /// Run a GAQL query against the live Google Ads account (read-only)
+    Query {
+        /// GAQL query string (e.g. `SELECT campaign.name FROM campaign`)
+        query: String,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = QueryFormat::Table)]
+        format: QueryFormat,
+        /// Dump the outgoing request and raw API response
+        #[arg(long)]
+        verbose: bool,
+    },
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum QueryFormat {
+    Table,
+    Json,
+    Tsv,
 }
 
 fn main() -> ExitCode {
@@ -116,5 +134,13 @@ fn main() -> ExitCode {
             "refresh",
             "Will pull live Google Ads state into .bid files.",
         ),
+        Cmd::Query { query, format, verbose } => {
+            let fmt = match format {
+                QueryFormat::Table => commands::query::Format::Table,
+                QueryFormat::Json => commands::query::Format::Json,
+                QueryFormat::Tsv => commands::query::Format::Tsv,
+            };
+            commands::query::run(&query, fmt, verbose)
+        }
     }
 }
