@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  test:
+    name: build + test (ubuntu)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo build
+        run: cargo build --locked
+
+      - name: cargo test (offline)
+        run: cargo test --locked
+
+      - name: cargo build --features e2e
+        run: cargo build --locked --features e2e
+
+      - name: cargo test --features e2e --no-run
+        run: cargo test --locked --features e2e --no-run
+
+      - name: offline checklist (validate + fmt)
+        run: |
+          cargo run --quiet -- validate examples/basic
+          cargo run --quiet -- validate examples/multi
+          ! cargo run --quiet -- validate examples/broken
+          cargo run --quiet -- validate examples/lint
+          cargo run --quiet -- fmt --check examples/basic
+          cargo run --quiet -- fmt --check examples/multi
+          cargo run --quiet -- fmt --check examples/lint
+          cargo run --quiet -- fmt --check tests/fixtures/e2e.bid
+          cargo run --quiet -- export --from-json examples/exports/basic.json -o /tmp/basic.bid
+          cargo run --quiet -- validate /tmp/basic.bid
+          cargo run --quiet -- export --from-gads-search-response examples/exports/raw.json -o /tmp/raw.bid
+          cargo run --quiet -- validate /tmp/raw.bid
+          cargo run --quiet -- fmt --check /tmp/raw.bid
