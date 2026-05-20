@@ -42,3 +42,27 @@ start here" in ROADMAP.md unless the user redirects.
   README.md "Commands" section.
 - Settle an open decision → move it from ROADMAP.md "Open decisions"
   to DECISIONS.md "Locked decisions" with a one-line rationale.
+
+## Cutting a release
+
+The Homebrew formula lives in a separate tap repo (`chrmod/homebrew-tap`,
+cloned alongside this repo at `../homebrew-tap/`). Every release needs a
+matching formula bump there — `brew upgrade` won't pick up new binaries
+until the tap is pushed.
+
+1. Bump `version` in `Cargo.toml`, run `cargo build --release` so
+   `Cargo.lock` updates.
+2. Commit, push `main`, then `git tag vX.Y.Z && git push origin vX.Y.Z` —
+   `.github/workflows/release.yml` builds four binaries and publishes the
+   GitHub Release.
+3. Once the workflow is green, run `./scripts/bump-formula.sh X.Y.Z` —
+   downloads the release assets, hashes them, regenerates
+   `homebrew/bidsmith.rb`.
+4. Copy that file into `../homebrew-tap/Formula/bidsmith.rb`, commit
+   (`bidsmith X.Y.Z`), push.
+5. Verify with `brew upgrade chrmod/tap/bidsmith` (or `brew install` on a
+   fresh box).
+
+Binaries are unsigned; the formula's `install` block ad-hoc signs on the
+user's machine (`codesign --force --sign -`). The `chrmod/bidsmith` repo
+must stay **public** — Homebrew downloads release assets anonymously.
