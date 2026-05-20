@@ -1,0 +1,77 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Package
+        working-directory: target/${{ matrix.target }}/release
+        run: |
+          tar czf "bidsmith-${{ matrix.target }}.tar.gz" bidsmith
+          shasum -a 256 "bidsmith-${{ matrix.target }}.tar.gz" > "bidsmith-${{ matrix.target }}.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bidsmith-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/bidsmith-${{ matrix.target }}.tar.gz
+            target/${{ matrix.target }}/release/bidsmith-${{ matrix.target }}.tar.gz.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Show SHA256s for formula bump
+        working-directory: dist
+        run: |
+          echo "## Paste into homebrew/bidsmith.rb"
+          for f in bidsmith-*.tar.gz; do
+            target="${f#bidsmith-}"
+            target="${target%.tar.gz}"
+            sha="$(shasum -a 256 "$f" | awk '{print $1}')"
+            printf '  %-32s sha256 "%s"\n' "$target" "$sha"
+          done
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            dist/bidsmith-*.tar.gz \
+            dist/bidsmith-*.tar.gz.sha256

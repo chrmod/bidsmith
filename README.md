@@ -74,6 +74,16 @@ When there's a problem, errors are source-mapped (`miette`-rendered):
    ╰────
 ```
 
+## Install
+
+```sh
+brew install chrmod/tap/bidsmith
+```
+
+The formula ad-hoc signs the binary at install time, so no Apple Developer
+ID or notarization is needed. Linux (`x86_64` / `aarch64`) is built by the
+same release pipeline.
+
 ## Build
 
 ```sh
