@@ -84,6 +84,19 @@ The formula ad-hoc signs the binary at install time, so no Apple Developer
 ID or notarization is needed. Linux (`x86_64` / `aarch64`) is built by the
 same release pipeline.
 
+## Claude Code skill
+
+This repo doubles as a Claude Code plugin. From inside Claude Code:
+
+```
+/plugin install bidsmith@chrmod/bidsmith
+```
+
+Once installed, agents auto-discover the skill when the conversation
+mentions bidsmith or edits `.bid` files. The skill covers the install
+flow, the command set, the `.bid` file shape, and the prompt-before-apply
+convention.
+
 ## Build
 
 ```sh

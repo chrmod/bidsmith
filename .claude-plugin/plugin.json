@@ -1,0 +1,12 @@
+{
+  "name": "bidsmith",
+  "description": "Claude Code skill for bidsmith — declarative Google Ads via .bid files",
+  "version": "0.1.0",
+  "author": {
+    "name": "Krzysztof Modras",
+    "url": "https://github.com/chrmod"
+  },
+  "homepage": "https://github.com/chrmod/bidsmith",
+  "repository": "https://github.com/chrmod/bidsmith",
+  "license": "MIT"
+}
