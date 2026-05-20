@@ -1,4 +1,5 @@
 use hcl_edit::Span;
+use hcl_edit::expr::Expression;
 use hcl_edit::structure::{Attribute, Block, Body, Structure};
 
 use crate::diagnostics::Diag;
@@ -167,45 +168,128 @@ fn lint_rsa_block(
         })
         .collect();
 
-    if blocks.len() < minimum {
+    let list_attr_name = match label {
+        "headline" => "headlines",
+        "description" => "descriptions",
+        _ => "",
+    };
+    let list_items: Vec<(Option<std::ops::Range<usize>>, Option<String>)> =
+        find_attr(&rsa.body, list_attr_name)
+            .map(|attr| collect_rsa_list_items(&attr.value))
+            .unwrap_or_default();
+
+    let total = blocks.len() + list_items.len();
+    if total < minimum {
         diags.push(Diag::warning(
             file.src.clone(),
             span_of(rsa.ident.span()),
             format!(
-                "responsive_search_ad in {address} has only {n} {label}{plural} — Google Ads requires at least {minimum}",
-                n = blocks.len(),
-                plural = if blocks.len() == 1 { "" } else { "s" },
+                "responsive_search_ad in {address} has only {total} {label}{plural} — Google Ads requires at least {minimum}",
+                plural = if total == 1 { "" } else { "s" },
             ),
         ));
     }
 
-    for (idx, b) in blocks.iter().enumerate() {
+    let mut idx = 0;
+    for b in blocks.iter() {
         let Some(text_attr) = find_attr(&b.body, "text") else {
+            idx += 1;
             continue;
         };
         let Some(text) = text_attr.value.as_str() else {
+            idx += 1;
             continue;
         };
-        if looks_like_phone(text) {
-            diags.push(Diag::warning(
-                file.src.clone(),
-                span_of(text_attr.key.span()),
-                format!(
-                    "{label}[{idx}] in {address} looks like a phone number; Google Ads policy disallows phone numbers in ad copy (use call extensions)"
-                ),
-            ));
-        }
-        let char_count = text.chars().count();
-        if char_count > max_len {
-            diags.push(Diag::warning(
-                file.src.clone(),
-                span_of(text_attr.value.span()),
-                format!(
-                    "{label}[{idx}] in {address} is {char_count} characters; Google Ads rejects {label}s over {max_len}"
-                ),
-            ));
-        }
+        lint_rsa_text(
+            file,
+            address,
+            label,
+            idx,
+            text,
+            max_len,
+            span_of(text_attr.key.span()),
+            span_of(text_attr.value.span()),
+            diags,
+        );
+        idx += 1;
     }
+    for (span, text) in &list_items {
+        let Some(text) = text else {
+            idx += 1;
+            continue;
+        };
+        let s = span_of(span.clone());
+        lint_rsa_text(
+            file,
+            address,
+            label,
+            idx,
+            text,
+            max_len,
+            s.clone(),
+            s,
+            diags,
+        );
+        idx += 1;
+    }
+}
+
+fn lint_rsa_text(
+    file: &ParsedFile,
+    address: &str,
+    label: &str,
+    idx: usize,
+    text: &str,
+    max_len: usize,
+    key_span: std::ops::Range<usize>,
+    value_span: std::ops::Range<usize>,
+    diags: &mut Vec<Diag>,
+) {
+    if looks_like_phone(text) {
+        diags.push(Diag::warning(
+            file.src.clone(),
+            key_span,
+            format!(
+                "{label}[{idx}] in {address} looks like a phone number; Google Ads policy disallows phone numbers in ad copy (use call extensions)"
+            ),
+        ));
+    }
+    let char_count = text.chars().count();
+    if char_count > max_len {
+        diags.push(Diag::warning(
+            file.src.clone(),
+            value_span,
+            format!(
+                "{label}[{idx}] in {address} is {char_count} characters; Google Ads rejects {label}s over {max_len}"
+            ),
+        ));
+    }
+}
+
+fn collect_rsa_list_items(
+    expr: &Expression,
+) -> Vec<(Option<std::ops::Range<usize>>, Option<String>)> {
+    let Expression::Array(arr) = expr else {
+        return Vec::new();
+    };
+    arr.iter()
+        .map(|item| match item {
+            Expression::String(s) => (item.span(), Some(s.as_str().to_string())),
+            Expression::Object(obj) => {
+                let mut text = None;
+                for (key, value) in obj.iter() {
+                    let Some(ident) = key.as_ident() else { continue };
+                    if ident.as_str() == "text" {
+                        if let Expression::String(s) = value.expr() {
+                            text = Some(s.as_str().to_string());
+                        }
+                    }
+                }
+                (item.span(), text)
+            }
+            _ => (item.span(), None),
+        })
+        .collect()
 }
 
 fn looks_like_phone(s: &str) -> bool {

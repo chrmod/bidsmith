@@ -24,8 +24,18 @@ talks to the Google Ads API yet.
 
 Resource coverage today: `provider "google_ads"`,
 `google_ads_campaign_budget`, `google_ads_campaign` (SEARCH with
-`manual_cpc` / `network_settings`), `google_ads_ad_group`. See
-[ROADMAP.md](ROADMAP.md) for what's queued next.
+`manual_cpc` / `network_settings`), `google_ads_ad_group`,
+`google_ads_ad_group_ad` (with `responsive_search_ad`, including a
+list-attribute form for `headlines` / `descriptions`),
+`google_ads_ad_group_criterion` (single keyword *or* bulk
+`keyword {}` / `negative_keyword {}` sub-blocks),
+`google_ads_campaign_criterion` (keyword / location / language /
+proximity, plus bulk `negative_keyword {}` sub-blocks),
+`google_ads_shared_set` and `google_ads_campaign_shared_set` for
+reusable negative-keyword lists shared across campaigns,
+`google_ads_conversion_action`, `google_ads_call_asset`,
+`google_ads_customer_asset`. See [ROADMAP.md](ROADMAP.md) for
+what's queued next.
 
 ## Example
 
@@ -73,6 +83,62 @@ When there's a problem, errors are source-mapped (`miette`-rendered):
  9 │ }
    ╰────
 ```
+
+### Compact forms for repetitive resources
+
+Real campaigns accumulate dozens of keywords and negatives. Prefer the
+bulk and list-attribute forms — they're equivalent to the one-resource-
+per-keyword shape but a lot shorter:
+
+```hcl
+resource "google_ads_ad_group_criterion" "warszawa_phrases" {
+  ad_group = google_ads_ad_group.warszawa.id
+  status   = "ENABLED"
+
+  keyword { text = "klimatyzacja Warszawa",          match_type = "PHRASE" }
+  keyword { text = "montaż klimatyzacji Warszawa",   match_type = "PHRASE" }
+  keyword { text = "klimatyzator inwerterowy Wwa",   match_type = "PHRASE" }
+}
+
+resource "google_ads_shared_set" "competitor_brands" {
+  name   = "Klima — competitor brands"
+  status = "ENABLED"
+
+  negative_keyword { text = "samsung", match_type = "BROAD" }
+  negative_keyword { text = "lg",      match_type = "BROAD" }
+  negative_keyword { text = "daikin",  match_type = "BROAD" }
+}
+
+resource "google_ads_campaign_shared_set" "warszawa_brands" {
+  campaign   = google_ads_campaign.warszawa.id
+  shared_set = google_ads_shared_set.competitor_brands.id
+}
+
+resource "google_ads_ad_group_ad" "warszawa_rsa" {
+  ad_group = google_ads_ad_group.warszawa.id
+
+  ad {
+    final_urls = ["https://example.com/warszawa/"]
+
+    responsive_search_ad {
+      headlines = [
+        { text = "Klimatyzacja Warszawa", pin = "HEADLINE_1" },
+        "Cicha praca, niski prąd",
+        { text = "Bezpłatna wycena", pin = "HEADLINE_3" },
+      ]
+
+      descriptions = [
+        "Montaż klimatyzacji split i multi w Warszawie.",
+        "Działamy w Warszawie i okolicach.",
+      ]
+    }
+  }
+}
+```
+
+See [`examples/bulk/main.bid`](examples/bulk/main.bid) for the full
+campaign — re-encoding a 1025-line one-resource-per-keyword campaign
+in these forms gives 177 lines.
 
 ## Install
 
@@ -193,6 +259,8 @@ bidsmith/
 └── examples/
     ├── basic/main.bid
     ├── broken/             # schema and syntax errors for testing
+    ├── bulk/main.bid       # bulk-keyword + shared-set + RSA-list forms
+    ├── lint/               # valid syntax that trips every lint rule
     ├── multi/              # two files in one dir with colliding bare
     │   ├── nadarzyn.bid    # criterion names; resolved via the
     │   └── warszawa.bid    # file-stem module prefix

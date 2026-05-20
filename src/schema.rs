@@ -17,6 +17,7 @@ pub enum FieldType {
     Enum(&'static [&'static str]),
     Ref(&'static [&'static str]),
     List(Box<FieldType>),
+    RsaAssetList,
 }
 
 impl FieldType {
@@ -96,6 +97,10 @@ const CALL_CONVERSION_REPORTING_STATE: &[&str] = &[
     "USE_ACCOUNT_LEVEL_CALL_CONVERSION_ACTION",
     "USE_RESOURCE_LEVEL_CALL_CONVERSION_ACTION",
 ];
+const SHARED_SET_TYPE: &[&str] = &["NEGATIVE_KEYWORDS", "ACCOUNT_LEVEL_NEGATIVE_KEYWORDS"];
+const SHARED_SET_STATUS: &[&str] = &["ENABLED", "REMOVED"];
+const CAMPAIGN_SHARED_SET_STATUS: &[&str] = &["ENABLED", "REMOVED"];
+
 const ASSET_FIELD_TYPE: &[&str] = &[
     "HEADLINE",
     "DESCRIPTION",
@@ -260,7 +265,23 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                     attr("negative", FieldType::Bool, false),
                     attr("cpc_bid_micros", FieldType::Integer, false),
                 ],
-                blocks: vec![keyword_block()],
+                blocks: vec![
+                    keyword_block(),
+                    NestedBlockSchema {
+                        name: "negative_keyword",
+                        schema: BlockSchema {
+                            attributes: vec![
+                                attr("text", FieldType::String, true),
+                                attr(
+                                    "match_type",
+                                    FieldType::Enum(KEYWORD_MATCH_TYPE),
+                                    true,
+                                ),
+                            ],
+                            blocks: vec![],
+                        },
+                    },
+                ],
             },
         );
 
@@ -362,6 +383,8 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                                 attributes: vec![
                                     attr("path1", FieldType::String, false),
                                     attr("path2", FieldType::String, false),
+                                    attr("headlines", FieldType::RsaAssetList, false),
+                                    attr("descriptions", FieldType::RsaAssetList, false),
                                 ],
                                 blocks: vec![
                                     rsa_asset_block("headline"),
@@ -467,6 +490,55 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                     attr(
                         "call_conversion_action",
                         FieldType::Ref(&["google_ads_conversion_action"]),
+                        false,
+                    ),
+                ],
+                blocks: vec![],
+            },
+        );
+
+        m.insert(
+            "google_ads_shared_set",
+            BlockSchema {
+                attributes: vec![
+                    attr("name", FieldType::String, true),
+                    attr("type", FieldType::Enum(SHARED_SET_TYPE), false),
+                    attr("status", FieldType::Enum(SHARED_SET_STATUS), false),
+                ],
+                blocks: vec![NestedBlockSchema {
+                    name: "negative_keyword",
+                    schema: BlockSchema {
+                        attributes: vec![
+                            attr("text", FieldType::String, true),
+                            attr(
+                                "match_type",
+                                FieldType::Enum(KEYWORD_MATCH_TYPE),
+                                true,
+                            ),
+                        ],
+                        blocks: vec![],
+                    },
+                }],
+            },
+        );
+
+        m.insert(
+            "google_ads_campaign_shared_set",
+            BlockSchema {
+                attributes: vec![
+                    attr(
+                        "campaign",
+                        FieldType::Ref(&["google_ads_campaign"]),
+                        true,
+                    ),
+                    attr(
+                        "shared_set",
+                        FieldType::Ref(&["google_ads_shared_set"]),
+                        true,
+                    ),
+                    attr(
+                        "status",
+                        FieldType::Enum(CAMPAIGN_SHARED_SET_STATUS),
                         false,
                     ),
                 ],
@@ -897,6 +969,21 @@ fn validate_value(
                 ),
             )),
         },
+        FieldType::RsaAssetList => match expr {
+            Expression::Array(arr) => {
+                for item in arr.iter() {
+                    validate_rsa_asset_item(file, item, diags);
+                }
+            }
+            other => diags.push(Diag::new(
+                file.src.clone(),
+                span,
+                format!(
+                    "expected list of strings or {{ text, pin? }} objects, got {}",
+                    describe_expr(other)
+                ),
+            )),
+        },
         FieldType::Ref(targets) => {
             let Expression::Traversal(t) = expr else {
                 diags.push(Diag::new(
@@ -995,6 +1082,89 @@ fn describe_field_type(ty: &FieldType) -> String {
         FieldType::Enum(values) => format!("one of [{}]", values.join(", ")),
         FieldType::Ref(targets) => format!("reference to {}", join_or(targets)),
         FieldType::List(inner) => format!("list of {}", describe_field_type(inner)),
+        FieldType::RsaAssetList => "list of strings or { text, pin? } objects".to_string(),
+    }
+}
+
+fn validate_rsa_asset_item(file: &ParsedFile, expr: &Expression, diags: &mut Vec<Diag>) {
+    let span = span_of(expr.span());
+    match expr {
+        Expression::String(_) => {}
+        Expression::Object(obj) => {
+            let mut has_text = false;
+            for (key, value) in obj.iter() {
+                let Some(ident) = key.as_ident() else {
+                    diags.push(Diag::new(
+                        file.src.clone(),
+                        span.clone(),
+                        "RSA asset object keys must be identifiers ('text' or 'pin')".to_string(),
+                    ));
+                    continue;
+                };
+                match ident.as_str() {
+                    "text" => {
+                        has_text = true;
+                        if !matches!(value.expr(), Expression::String(_)) {
+                            diags.push(Diag::new(
+                                file.src.clone(),
+                                span_of(value.expr().span()),
+                                format!(
+                                    "RSA asset 'text' must be a string, got {}",
+                                    describe_expr(value.expr())
+                                ),
+                            ));
+                        }
+                    }
+                    "pin" => match value.expr() {
+                        Expression::String(s) => {
+                            let v = s.as_str();
+                            if !RSA_PIN.iter().any(|&x| x == v) {
+                                diags.push(Diag::new(
+                                    file.src.clone(),
+                                    span_of(value.expr().span()),
+                                    format!(
+                                        "invalid pin \"{v}\"; expected one of [{}]",
+                                        RSA_PIN.join(", ")
+                                    ),
+                                ));
+                            }
+                        }
+                        other => diags.push(Diag::new(
+                            file.src.clone(),
+                            span_of(value.expr().span()),
+                            format!(
+                                "RSA asset 'pin' must be a string, got {}",
+                                describe_expr(other)
+                            ),
+                        )),
+                    },
+                    other => {
+                        diags.push(Diag::new(
+                            file.src.clone(),
+                            span.clone(),
+                            format!(
+                                "unknown key '{other}' in RSA asset object; allowed: text, pin"
+                            ),
+                        ));
+                    }
+                }
+            }
+            if !has_text {
+                diags.push(Diag::new(
+                    file.src.clone(),
+                    span,
+                    "RSA asset object is missing required key 'text'".to_string(),
+                ));
+            }
+        }
+        other => diags.push(Diag::new(
+            file.src.clone(),
+            span,
+            format!(
+                "expected RSA asset (string or {{ text, pin? }} object), got {}",
+                describe_expr(other)
+            ),
+        )),
     }
 }
 

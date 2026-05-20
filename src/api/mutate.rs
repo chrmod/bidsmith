@@ -5,8 +5,8 @@ use serde_json::{Map, Value, json};
 use crate::api::diff::{Action, DiffReport};
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupCriterion, JsonBudget,
-    JsonCallAsset, JsonCampaign, JsonCampaignCriterion, JsonConversionAction,
-    JsonCustomerAsset, JsonResponsiveSearchAd, JsonRsaAsset,
+    JsonCallAsset, JsonCampaign, JsonCampaignCriterion, JsonCampaignSharedSet,
+    JsonConversionAction, JsonCustomerAsset, JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedSet,
 };
 
 pub struct PlanOperation {
@@ -52,6 +52,8 @@ pub fn build_mutate_with_diff(
             "conversion_action" => "conversionActions",
             "call_asset" => "assets",
             "customer_asset" => "customerAssets",
+            "shared_set" => "sharedSets",
+            "campaign_shared_set" => "campaignSharedSets",
             _ => continue,
         };
         if let Some(live_id) = d.action.live_id() {
@@ -100,6 +102,25 @@ pub fn build_mutate_with_diff(
                         .unwrap_or("0");
                     format!(
                         "customers/{customer_id}/{segment}/{parent_id}~{criterion_segment}"
+                    )
+                }
+                "campaign_shared_set" => {
+                    let css = input
+                        .campaign_shared_sets
+                        .iter()
+                        .find(|c| c.id == d.address);
+                    let parent_addr = css.map(|c| c.campaign.as_str()).unwrap_or("");
+                    let parent_id = refs
+                        .get(parent_addr)
+                        .and_then(|rn| rn.rsplit('/').next())
+                        .unwrap_or("0");
+                    let set_addr = css.map(|c| c.shared_set.as_str()).unwrap_or("");
+                    let set_id = refs
+                        .get(set_addr)
+                        .and_then(|rn| rn.rsplit('/').next())
+                        .unwrap_or("0");
+                    format!(
+                        "customers/{customer_id}/{segment}/{parent_id}~{set_id}"
                     )
                 }
                 _ => temp_rn(customer_id, segment, next),
@@ -291,6 +312,74 @@ pub fn build_mutate_with_diff(
                 }
             }));
             operations.push(PlanOperation { address: a.id.clone(), kind: "customer_asset" });
+        }
+    }
+
+    for s in &input.shared_sets {
+        let rn = refs.get(&s.id).expect("shared_set rn");
+        if create_set.contains(&s.id) {
+            mutate_ops.push(json!({
+                "sharedSetOperation": { "create": shared_set_create(s, rn) }
+            }));
+            operations.push(PlanOperation { address: s.id.clone(), kind: "shared_set" });
+            for (i, kw) in s.negative_keywords.iter().enumerate() {
+                let crit_rn = format!(
+                    "customers/{customer_id}/sharedCriteria/{idx}~{i}",
+                    idx = rn.rsplit('/').next().unwrap_or("0"),
+                    i = i,
+                );
+                mutate_ops.push(json!({
+                    "sharedCriterionOperation": {
+                        "create": shared_criterion_create(rn, &crit_rn, kw)
+                    }
+                }));
+                operations.push(PlanOperation {
+                    address: format!("{}.keywords[{i}]", s.id),
+                    kind: "shared_criterion",
+                });
+            }
+        } else if let Some(fields) = update_set.get(&s.id) {
+            mutate_ops.push(json!({
+                "sharedSetOperation": {
+                    "update": shared_set_update_body(s, rn, fields),
+                    "updateMask": fields.join(","),
+                }
+            }));
+            operations.push(PlanOperation { address: s.id.clone(), kind: "shared_set" });
+        }
+    }
+
+    for cs in &input.campaign_shared_sets {
+        let rn = refs.get(&cs.id).expect("campaign_shared_set rn");
+        if create_set.contains(&cs.id) {
+            let camp_rn = match resolve(&refs, &cs.campaign, &cs.id, "campaign", &mut errors) {
+                Some(s) => s,
+                None => continue,
+            };
+            let set_rn = match resolve(&refs, &cs.shared_set, &cs.id, "shared_set", &mut errors) {
+                Some(s) => s,
+                None => continue,
+            };
+            mutate_ops.push(json!({
+                "campaignSharedSetOperation": {
+                    "create": campaign_shared_set_create(cs, rn, &camp_rn, &set_rn)
+                }
+            }));
+            operations.push(PlanOperation {
+                address: cs.id.clone(),
+                kind: "campaign_shared_set",
+            });
+        } else if let Some(fields) = update_set.get(&cs.id) {
+            mutate_ops.push(json!({
+                "campaignSharedSetOperation": {
+                    "update": campaign_shared_set_update_body(cs, rn, fields),
+                    "updateMask": fields.join(","),
+                }
+            }));
+            operations.push(PlanOperation {
+                address: cs.id.clone(),
+                kind: "campaign_shared_set",
+            });
         }
     }
 
@@ -831,6 +920,87 @@ fn customer_asset_update_body(
     for f in fields {
         if f == "status" {
             if let Some(s) = &a.status {
+                m.insert("status".into(), Value::String(s.clone()));
+            }
+        }
+    }
+    Value::Object(m)
+}
+
+fn shared_set_create(s: &JsonSharedSet, resource_name: &str) -> Value {
+    let mut m = Map::new();
+    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
+    m.insert("name".into(), Value::String(s.name.clone()));
+    let ty = s.ty.clone().unwrap_or_else(|| "NEGATIVE_KEYWORDS".to_string());
+    m.insert("type".into(), Value::String(ty));
+    if let Some(st) = &s.status {
+        m.insert("status".into(), Value::String(st.clone()));
+    }
+    Value::Object(m)
+}
+
+fn shared_set_update_body(s: &JsonSharedSet, resource_name: &str, fields: &[String]) -> Value {
+    let mut m = Map::new();
+    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
+    for f in fields {
+        match f.as_str() {
+            "status" => {
+                if let Some(st) = &s.status {
+                    m.insert("status".into(), Value::String(st.clone()));
+                }
+            }
+            "type" => {
+                if let Some(t) = &s.ty {
+                    m.insert("type".into(), Value::String(t.clone()));
+                }
+            }
+            _ => {}
+        }
+    }
+    Value::Object(m)
+}
+
+fn shared_criterion_create(
+    shared_set_rn: &str,
+    resource_name: &str,
+    kw: &crate::commands::export::JsonKeyword,
+) -> Value {
+    let mut m = Map::new();
+    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
+    m.insert("sharedSet".into(), Value::String(shared_set_rn.to_string()));
+    let mut keyword = Map::new();
+    keyword.insert("text".into(), Value::String(kw.text.clone()));
+    keyword.insert("matchType".into(), Value::String(kw.match_type.clone()));
+    m.insert("keyword".into(), Value::Object(keyword));
+    Value::Object(m)
+}
+
+fn campaign_shared_set_create(
+    cs: &JsonCampaignSharedSet,
+    resource_name: &str,
+    campaign_rn: &str,
+    shared_set_rn: &str,
+) -> Value {
+    let mut m = Map::new();
+    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
+    m.insert("campaign".into(), Value::String(campaign_rn.to_string()));
+    m.insert("sharedSet".into(), Value::String(shared_set_rn.to_string()));
+    if let Some(st) = &cs.status {
+        m.insert("status".into(), Value::String(st.clone()));
+    }
+    Value::Object(m)
+}
+
+fn campaign_shared_set_update_body(
+    cs: &JsonCampaignSharedSet,
+    resource_name: &str,
+    fields: &[String],
+) -> Value {
+    let mut m = Map::new();
+    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
+    for f in fields {
+        if f == "status" {
+            if let Some(s) = &cs.status {
                 m.insert("status".into(), Value::String(s.clone()));
             }
         }

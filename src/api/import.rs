@@ -4,10 +4,10 @@ use hcl_edit::structure::{Attribute, Block, Structure};
 
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupCriterion, JsonBudget,
-    JsonCallAsset, JsonCampaign, JsonCampaignCriterion, JsonConversionAction,
-    JsonCustomerAsset, JsonKeyword, JsonLanguage, JsonLocation, JsonManualCpc,
-    JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset,
-    JsonValueSettings,
+    JsonCallAsset, JsonCampaign, JsonCampaignCriterion, JsonCampaignSharedSet,
+    JsonConversionAction, JsonCustomerAsset, JsonKeyword, JsonLanguage, JsonLocation,
+    JsonManualCpc, JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset,
+    JsonSharedSet, JsonValueSettings,
 };
 use crate::diagnostics::Diag;
 use crate::parser::ParsedFile;
@@ -53,6 +53,8 @@ pub fn import_files(files: &[ParsedFile]) -> Result<ImportResult, Vec<Diag>> {
         conversion_actions: Vec::new(),
         call_assets: Vec::new(),
         customer_assets: Vec::new(),
+        shared_sets: Vec::new(),
+        campaign_shared_sets: Vec::new(),
     };
     let mut skipped: Vec<(String, String)> = Vec::new();
 
@@ -91,8 +93,11 @@ pub fn import_files(files: &[ParsedFile]) -> Result<ImportResult, Vec<Diag>> {
                             import_ad_group_ad(&ctx, b, &address).map(|x| input.ad_group_ads.push(x)),
                         ),
                         "google_ads_ad_group_criterion" => emit(
-                            import_ad_group_criterion(&ctx, b, &address)
-                                .map(|x| input.ad_group_criteria.push(x)),
+                            import_ad_group_criterion(&ctx, b, &address).map(|xs| {
+                                for x in xs {
+                                    input.ad_group_criteria.push(x);
+                                }
+                            }),
                         ),
                         "google_ads_campaign_criterion" => emit(
                             import_campaign_criterion(&ctx, b, &address).map(|xs| {
@@ -112,6 +117,14 @@ pub fn import_files(files: &[ParsedFile]) -> Result<ImportResult, Vec<Diag>> {
                         "google_ads_customer_asset" => emit(
                             import_customer_asset(&ctx, b, &address)
                                 .map(|x| input.customer_assets.push(x)),
+                        ),
+                        "google_ads_shared_set" => emit(
+                            import_shared_set(&ctx, b, &address)
+                                .map(|x| input.shared_sets.push(x)),
+                        ),
+                        "google_ads_campaign_shared_set" => emit(
+                            import_campaign_shared_set(&ctx, b, &address)
+                                .map(|x| input.campaign_shared_sets.push(x)),
                         ),
                         other => {
                             skipped.push((address, other.to_string()));
@@ -380,6 +393,8 @@ fn import_rsa(block: &Block) -> JsonResponsiveSearchAd {
             Structure::Attribute(a) => match a.key.as_str() {
                 "path1" => path1 = expect_string_owned(a),
                 "path2" => path2 = expect_string_owned(a),
+                "headlines" => headlines.extend(import_rsa_asset_list(&a.value)),
+                "descriptions" => descriptions.extend(import_rsa_asset_list(&a.value)),
                 _ => {}
             },
             Structure::Block(b) => match b.ident.as_str() {
@@ -406,6 +421,38 @@ fn import_rsa(block: &Block) -> JsonResponsiveSearchAd {
     }
 }
 
+fn import_rsa_asset_list(value: &Expression) -> Vec<JsonRsaAsset> {
+    let Expression::Array(arr) = value else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|item| match item {
+            Expression::String(s) => Some(JsonRsaAsset {
+                text: s.as_str().to_string(),
+                pin: None,
+            }),
+            Expression::Object(obj) => {
+                let mut text = None;
+                let mut pin = None;
+                for (key, val) in obj.iter() {
+                    let Some(ident) = key.as_ident() else { continue };
+                    match (ident.as_str(), val.expr()) {
+                        ("text", Expression::String(s)) => {
+                            text = Some(s.as_str().to_string());
+                        }
+                        ("pin", Expression::String(s)) => {
+                            pin = Some(s.as_str().to_string());
+                        }
+                        _ => {}
+                    }
+                }
+                Some(JsonRsaAsset { text: text?, pin })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 fn import_rsa_asset(block: &Block) -> Option<JsonRsaAsset> {
     let mut text = None;
     let mut pin = None;
@@ -425,12 +472,13 @@ fn import_ad_group_criterion(
     ctx: &Ctx,
     block: &Block,
     address: &str,
-) -> Result<JsonAdGroupCriterion, Diag> {
+) -> Result<Vec<JsonAdGroupCriterion>, Diag> {
     let mut ad_group_ref = None;
     let mut status = None;
     let mut negative = None;
     let mut cpc = None;
-    let mut keyword = None;
+    let mut keywords: Vec<JsonKeyword> = Vec::new();
+    let mut negative_keywords: Vec<JsonKeyword> = Vec::new();
 
     for s in block.body.iter() {
         match s {
@@ -441,23 +489,75 @@ fn import_ad_group_criterion(
                 "cpc_bid_micros" => cpc = expect_i64(a),
                 _ => {}
             },
-            Structure::Block(b) if b.ident.as_str() == "keyword" => {
-                keyword = import_keyword(b);
-            }
-            _ => {}
+            Structure::Block(b) => match b.ident.as_str() {
+                "keyword" => {
+                    if let Some(kw) = import_keyword(b) {
+                        keywords.push(kw);
+                    }
+                }
+                "negative_keyword" => {
+                    if let Some(kw) = import_keyword(b) {
+                        negative_keywords.push(kw);
+                    }
+                }
+                _ => {}
+            },
         }
     }
 
     let ad_group = ad_group_ref.ok_or_else(|| missing(ctx.file, block, address, "ad_group"))?;
-    let keyword = keyword.ok_or_else(|| missing(ctx.file, block, address, "keyword"))?;
-    Ok(JsonAdGroupCriterion {
+
+    let bulk = negative_keywords.len() + keywords.len() > 1 || !negative_keywords.is_empty();
+
+    if bulk {
+        if negative == Some(true) && !negative_keywords.is_empty() {
+            return Err(Diag::new(
+                ctx.file.src.clone(),
+                span_of(block.ident.span()),
+                format!(
+                    "{address} sets negative = true alongside negative_keyword blocks; drop the attribute (the blocks are already negative)"
+                ),
+            ));
+        }
+        let mut out: Vec<JsonAdGroupCriterion> = Vec::new();
+        for (i, kw) in keywords.into_iter().enumerate() {
+            out.push(JsonAdGroupCriterion {
+                id: format!("{address}.keywords[{i}]"),
+                ad_group: ad_group.clone(),
+                status: status.clone(),
+                negative,
+                cpc_bid_micros: cpc,
+                keyword: kw,
+            });
+        }
+        for (i, kw) in negative_keywords.into_iter().enumerate() {
+            out.push(JsonAdGroupCriterion {
+                id: format!("{address}.negatives[{i}]"),
+                ad_group: ad_group.clone(),
+                status: status.clone(),
+                negative: Some(true),
+                cpc_bid_micros: None,
+                keyword: kw,
+            });
+        }
+        if out.is_empty() {
+            return Err(missing(ctx.file, block, address, "keyword"));
+        }
+        return Ok(out);
+    }
+
+    let keyword = keywords
+        .into_iter()
+        .next()
+        .ok_or_else(|| missing(ctx.file, block, address, "keyword"))?;
+    Ok(vec![JsonAdGroupCriterion {
         id: address.to_string(),
         ad_group,
         status,
         negative,
         cpc_bid_micros: cpc,
         keyword,
-    })
+    }])
 }
 
 fn import_campaign_criterion(
@@ -707,6 +807,68 @@ fn import_customer_asset(
         id: address.to_string(),
         asset,
         field_type,
+        status,
+    })
+}
+
+fn import_shared_set(
+    ctx: &Ctx,
+    block: &Block,
+    address: &str,
+) -> Result<JsonSharedSet, Diag> {
+    let mut name = None;
+    let mut ty = None;
+    let mut status = None;
+    let mut negative_keywords: Vec<JsonKeyword> = Vec::new();
+    for s in block.body.iter() {
+        match s {
+            Structure::Attribute(a) => match a.key.as_str() {
+                "name" => name = expect_string_owned(a),
+                "type" => ty = expect_string_owned(a),
+                "status" => status = expect_string_owned(a),
+                _ => {}
+            },
+            Structure::Block(b) if b.ident.as_str() == "negative_keyword" => {
+                if let Some(kw) = import_keyword(b) {
+                    negative_keywords.push(kw);
+                }
+            }
+            _ => {}
+        }
+    }
+    let name = name.ok_or_else(|| missing(ctx.file, block, address, "name"))?;
+    Ok(JsonSharedSet {
+        id: address.to_string(),
+        name,
+        ty,
+        status,
+        negative_keywords,
+    })
+}
+
+fn import_campaign_shared_set(
+    ctx: &Ctx,
+    block: &Block,
+    address: &str,
+) -> Result<JsonCampaignSharedSet, Diag> {
+    let mut campaign_ref = None;
+    let mut shared_set_ref = None;
+    let mut status = None;
+    for s in block.body.iter() {
+        let Structure::Attribute(a) = s else { continue };
+        match a.key.as_str() {
+            "campaign" => campaign_ref = extract_resource_ref(&a.value).map(|r| ctx.resolve_ref(&r)),
+            "shared_set" => shared_set_ref = extract_resource_ref(&a.value).map(|r| ctx.resolve_ref(&r)),
+            "status" => status = expect_string_owned(a),
+            _ => {}
+        }
+    }
+    let campaign = campaign_ref.ok_or_else(|| missing(ctx.file, block, address, "campaign"))?;
+    let shared_set = shared_set_ref.ok_or_else(|| missing(ctx.file, block, address, "shared_set"))?;
+    Ok(JsonCampaignSharedSet {
+        id: address.to_string(),
+        campaign,
+        shared_set,
         status,
     })
 }

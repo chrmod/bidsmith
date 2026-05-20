@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use crate::commands::export::{
     ExportInput, JsonAdGroup, JsonAdGroupAd, JsonAdGroupCriterion, JsonBudget, JsonCallAsset,
-    JsonCampaign, JsonCampaignCriterion, JsonConversionAction, JsonCustomerAsset,
+    JsonCampaign, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
+    JsonCustomerAsset, JsonSharedSet,
 };
 
 #[derive(Debug, Clone)]
@@ -250,6 +251,52 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
 
     let _ = conversion_match;
 
+    let mut shared_set_match: HashMap<String, String> = HashMap::new();
+    let live_shared_sets: HashMap<&str, &JsonSharedSet> = live
+        .shared_sets
+        .iter()
+        .map(|s| (s.name.as_str(), s))
+        .collect();
+    for d in &declared.shared_sets {
+        let action = match live_shared_sets.get(d.name.as_str()) {
+            Some(l) => {
+                shared_set_match.insert(d.id.clone(), l.id.clone());
+                action_for_match(l.id.clone(), diff_shared_set(d, l))
+            }
+            None => Action::Create,
+        };
+        diffs.push(ResourceDiff {
+            address: d.id.clone(),
+            kind: "shared_set",
+            action,
+        });
+    }
+
+    let live_campaign_shared_sets: HashMap<(String, String), &JsonCampaignSharedSet> = live
+        .campaign_shared_sets
+        .iter()
+        .map(|s| ((s.campaign.clone(), s.shared_set.clone()), s))
+        .collect();
+    for d in &declared.campaign_shared_sets {
+        let action = match (
+            campaign_match.get(&d.campaign),
+            shared_set_match.get(&d.shared_set),
+        ) {
+            (Some(c_id), Some(s_id)) => {
+                match live_campaign_shared_sets.get(&(c_id.clone(), s_id.clone())) {
+                    Some(l) => action_for_match(l.id.clone(), diff_campaign_shared_set(d, l)),
+                    None => Action::Create,
+                }
+            }
+            _ => Action::Create,
+        };
+        diffs.push(ResourceDiff {
+            address: d.id.clone(),
+            kind: "campaign_shared_set",
+            action,
+        });
+    }
+
     let mut noop_count = 0;
     let mut create_count = 0;
     let mut update_count = 0;
@@ -439,6 +486,25 @@ fn diff_call_asset(_d: &JsonCallAsset, _l: &JsonCallAsset) -> Vec<String> {
 }
 
 fn diff_customer_asset(d: &JsonCustomerAsset, l: &JsonCustomerAsset) -> Vec<String> {
+    let mut c = Vec::new();
+    if d.status != l.status {
+        c.push("status".into());
+    }
+    c
+}
+
+fn diff_shared_set(d: &JsonSharedSet, l: &JsonSharedSet) -> Vec<String> {
+    let mut c = Vec::new();
+    if d.status != l.status {
+        c.push("status".into());
+    }
+    if d.ty != l.ty && d.ty.is_some() {
+        c.push("type".into());
+    }
+    c
+}
+
+fn diff_campaign_shared_set(d: &JsonCampaignSharedSet, l: &JsonCampaignSharedSet) -> Vec<String> {
     let mut c = Vec::new();
     if d.status != l.status {
         c.push("status".into());

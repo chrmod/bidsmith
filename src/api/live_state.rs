@@ -151,6 +151,38 @@ const QUERIES: &[(&str, &str)] = &[
         WHERE customer_asset.field_type = CALL
           AND customer_asset.status != 'REMOVED'",
     ),
+    (
+        "shared_set",
+        "SELECT
+          shared_set.resource_name,
+          shared_set.id,
+          shared_set.name,
+          shared_set.type,
+          shared_set.status
+        FROM shared_set
+        WHERE shared_set.status != 'REMOVED'",
+    ),
+    (
+        "shared_criterion",
+        "SELECT
+          shared_criterion.resource_name,
+          shared_criterion.shared_set,
+          shared_criterion.criterion_id,
+          shared_criterion.keyword.text,
+          shared_criterion.keyword.match_type
+        FROM shared_criterion
+        WHERE shared_criterion.type = KEYWORD",
+    ),
+    (
+        "campaign_shared_set",
+        "SELECT
+          campaign_shared_set.resource_name,
+          campaign_shared_set.campaign,
+          campaign_shared_set.shared_set,
+          campaign_shared_set.status
+        FROM campaign_shared_set
+        WHERE campaign_shared_set.status != 'REMOVED'",
+    ),
 ];
 
 pub fn fetch(client: &Client, access_token: &str) -> Result<ExportInput, LiveStateError> {

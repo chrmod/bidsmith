@@ -27,6 +27,10 @@ pub struct ExportInput {
     pub call_assets: Vec<JsonCallAsset>,
     #[serde(default)]
     pub customer_assets: Vec<JsonCustomerAsset>,
+    #[serde(default)]
+    pub shared_sets: Vec<JsonSharedSet>,
+    #[serde(default)]
+    pub campaign_shared_sets: Vec<JsonCampaignSharedSet>,
 }
 
 #[derive(Deserialize)]
@@ -212,6 +216,27 @@ pub struct JsonCustomerAsset {
 }
 
 #[derive(Deserialize)]
+pub struct JsonSharedSet {
+    pub id: String,
+    pub name: String,
+    #[serde(default, rename = "type")]
+    pub ty: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub negative_keywords: Vec<JsonKeyword>,
+}
+
+#[derive(Deserialize)]
+pub struct JsonCampaignSharedSet {
+    pub id: String,
+    pub campaign: String,
+    pub shared_set: String,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub struct JsonResponsiveSearchAd {
     pub headlines: Vec<JsonRsaAsset>,
     pub descriptions: Vec<JsonRsaAsset>,
@@ -310,6 +335,10 @@ fn filter_removed(input: &mut ExportInput) {
         .conversion_actions
         .retain(|c| !is_removed(&c.status));
     input.customer_assets.retain(|a| !is_removed(&a.status));
+    input.shared_sets.retain(|s| !is_removed(&s.status));
+    input
+        .campaign_shared_sets
+        .retain(|s| !is_removed(&s.status));
 }
 
 fn load_flat_json(path: &str) -> Result<ExportInput, ExitCode> {
@@ -343,6 +372,7 @@ fn render(input: &ExportInput) -> String {
     let mut ad_group_addr: HashMap<String, String> = HashMap::new();
     let mut conversion_action_addr: HashMap<String, String> = HashMap::new();
     let mut call_asset_addr: HashMap<String, String> = HashMap::new();
+    let mut shared_set_addr: HashMap<String, String> = HashMap::new();
 
     write_provider(&mut out, input);
 
@@ -408,6 +438,28 @@ fn render(input: &ExportInput) -> String {
         let base = criterion_base(c);
         let name = names.allocate("google_ads_campaign_criterion", &slugify(&base));
         write_campaign_criterion(&mut out, &name, c, &campaign_addr);
+    }
+
+    for s in &input.shared_sets {
+        let name = names.allocate("google_ads_shared_set", &slugify(&s.name));
+        shared_set_addr.insert(s.id.clone(), format!("google_ads_shared_set.{name}"));
+        write_shared_set(&mut out, &name, s);
+    }
+
+    for s in &input.campaign_shared_sets {
+        let base = match (
+            campaign_addr
+                .get(&s.campaign)
+                .and_then(|a| a.strip_prefix("google_ads_campaign.")),
+            shared_set_addr
+                .get(&s.shared_set)
+                .and_then(|a| a.strip_prefix("google_ads_shared_set.")),
+        ) {
+            (Some(c), Some(ss)) => format!("{c}_{ss}"),
+            _ => slugify(&s.id),
+        };
+        let name = names.allocate("google_ads_campaign_shared_set", &slugify(&base));
+        write_campaign_shared_set(&mut out, &name, s, &campaign_addr, &shared_set_addr);
     }
 
     while out.ends_with("\n\n\n") {
@@ -721,6 +773,51 @@ fn write_customer_asset(
     write_attr(out, 1, "field_type", &fmt_string(&a.field_type));
     if let Some(s) = &a.status {
         write_attr(out, 1, "status", &fmt_string(s));
+    }
+    out.push_str("}\n\n");
+}
+
+fn write_shared_set(out: &mut String, name: &str, s: &JsonSharedSet) {
+    let _ = writeln!(out, "resource \"google_ads_shared_set\" \"{name}\" {{");
+    write_attr(out, 1, "name", &fmt_string(&s.name));
+    if let Some(t) = &s.ty {
+        write_attr(out, 1, "type", &fmt_string(t));
+    }
+    if let Some(st) = &s.status {
+        write_attr(out, 1, "status", &fmt_string(st));
+    }
+    for kw in &s.negative_keywords {
+        out.push_str("\n  negative_keyword {\n");
+        write_attr(out, 2, "text", &fmt_string(&kw.text));
+        write_attr(out, 2, "match_type", &fmt_string(&kw.match_type));
+        out.push_str("  }\n");
+    }
+    out.push_str("}\n\n");
+}
+
+fn write_campaign_shared_set(
+    out: &mut String,
+    name: &str,
+    s: &JsonCampaignSharedSet,
+    campaign_addr: &HashMap<String, String>,
+    shared_set_addr: &HashMap<String, String>,
+) {
+    let _ = writeln!(
+        out,
+        "resource \"google_ads_campaign_shared_set\" \"{name}\" {{"
+    );
+    let campaign_ref = match campaign_addr.get(&s.campaign) {
+        Some(addr) => format!("{addr}.id"),
+        None => format!("\"<unresolved campaign {}>\"", s.campaign),
+    };
+    write_attr(out, 1, "campaign", &campaign_ref);
+    let shared_set_ref = match shared_set_addr.get(&s.shared_set) {
+        Some(addr) => format!("{addr}.id"),
+        None => format!("\"<unresolved shared_set {}>\"", s.shared_set),
+    };
+    write_attr(out, 1, "shared_set", &shared_set_ref);
+    if let Some(st) = &s.status {
+        write_attr(out, 1, "status", &fmt_string(st));
     }
     out.push_str("}\n\n");
 }
