@@ -74,10 +74,10 @@ enum Cmd {
     Apply {
         /// .bid file or directory to apply
         path: Option<String>,
-        /// Required to actually mutate. Without it, apply runs as a dry run
-        /// (validateOnly) and prints what would change.
-        #[arg(long)]
-        confirm: bool,
+        /// Skip the interactive confirmation prompt and apply immediately
+        /// after the validateOnly plan is shown. Required for non-TTY runs.
+        #[arg(long = "auto-approve")]
+        auto_approve: bool,
         /// Dump the outgoing request body and raw API response
         #[arg(long)]
         verbose: bool,
@@ -109,8 +109,8 @@ fn main() -> ExitCode {
         Cmd::Plan { path, whoami, read_live, verbose } => {
             commands::plan::run(path.as_deref(), whoami, read_live, verbose)
         }
-        Cmd::Apply { path, confirm, verbose } => {
-            commands::apply::run(path.as_deref(), confirm, verbose)
+        Cmd::Apply { path, auto_approve, verbose } => {
+            commands::apply::run(path.as_deref(), auto_approve, verbose)
         }
         Cmd::Refresh => commands::stub(
             "refresh",

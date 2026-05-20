@@ -4,7 +4,7 @@
 
 - [DECISIONS.md](DECISIONS.md) — locked choices and current state. Treat
   as authoritative; do not relitigate (language, syntax, state model,
-  `--confirm` gating, etc.).
+  `--auto-approve` gating, etc.).
 - [ROADMAP.md](ROADMAP.md) — open decisions and "Next session: start
   here" priority list. The phases and priorities are speculative —
   feel free to revise if a real requirement contradicts them.

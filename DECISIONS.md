@@ -38,8 +38,11 @@ resource type, any file layout, modules, schema validation.
   is deterministic. Engine behavior must not depend on a model version.
 - **Plan = live validate**: use Google Ads API's `validate_only` flag
   for free server-side validation (auth, references, policy, length).
-- **Apply requires `--confirm`**: codify the dry-run + `--confirm`
-  pattern from `rezolutnie/ads`. Never auto-apply.
+- **Apply shows the plan first, then prompts**: terraform-shaped flow.
+  `apply` always runs the validateOnly diff first, displays it, and
+  asks for a literal `yes` before mutating. `--auto-approve` skips the
+  prompt (and is required when stdin is not a TTY). Never auto-apply
+  silently.
 - **Module distribution**: Git refs
   (`source = "github.com/org/repo//path?ref=v1"`). No central registry
   in v1.
@@ -70,11 +73,13 @@ resource type, any file layout, modules, schema validation.
   cascade, computes scalar field-level drift, and sends one
   `googleAds:mutate` batch with `validateOnly=true` containing
   CREATE+UPDATE ops for only the diffs.
-- **Apply = same pipeline, `validateOnly=false`, `--confirm` gate**.
-  Without `--confirm`, `apply` runs as a dry run (same output as
-  `plan`). Never auto-apply. Mutates are sent in dependency order
-  (budgets → campaigns → ad_groups → ads → criteria) inside one
-  atomic batch.
+- **Apply = plan + prompt + real mutate**. `apply` runs the same
+  prepare stage as `plan` (parse → import → fetch live → diff), prints
+  the diff with validateOnly outcomes, then either prompts for `yes`
+  on a TTY or honours `--auto-approve`. Only the second POST sets
+  `validateOnly=false`. Mutates are sent in dependency order (budgets
+  → campaigns → ad_groups → ads → criteria) inside one atomic batch.
+  If validateOnly rejects anything, the real mutate is skipped.
 
 ## Current state
 
@@ -103,7 +108,7 @@ bidsmith/
 │   └── commands/
 │       ├── mod.rs        # module declarations + small shared helpers
 │       ├── adapt.rs      # SearchStream JSON → ExportInput (used by export + live_state)
-│       ├── apply.rs      # plan pipeline with --confirm gate flipping validateOnly off
+│       ├── apply.rs      # prepare + plan display + prompt + real mutate (--auto-approve skips the prompt)
 │       ├── export.rs     # render .bid from a JSON source description
 │       ├── fmt.rs        # canonical re-emitter (in-place / --check)
 │       ├── plan.rs       # parse + validate + import + diff + validateOnly batch
@@ -167,8 +172,10 @@ Verified locally:
   update, 97 unchanged. (no API call needed)` once the .bid is
   in-sync with live. Editing any scalar in the file produces a
   single `~ update (field)  ok` row + 96 no-ops on the next run.
-- `bidsmith apply` without `--confirm` is a dry run; with `--confirm`
-  flips `validateOnly: false` and mutates the live account.
+- `bidsmith apply` shows the validateOnly diff first, then prompts
+  `Apply these changes? Only 'yes' will be accepted to approve.`
+  before flipping `validateOnly: false` and mutating. `--auto-approve`
+  skips the prompt (required when stdin is not a TTY).
 
 Validator covers (so far):
 - `google_ads_campaign_budget`, `google_ads_campaign` (SEARCH with
@@ -200,7 +207,7 @@ Validator covers (so far):
 | `validate` | partial | Syntax + schema + references + lint warnings (local only) |
 | `export`   | partial | Render a fmt-canonical `.bid` file from flat bidsmith JSON (`--from-json`) or raw Google Ads SearchStream JSON (`--from-gads-search-response`); drops REMOVED resources unless `--include-removed`; `--login-customer-id` / `--customer-id` (or env vars `GOOGLE_ADS_LOGIN_CUSTOMER_ID` / `GOOGLE_ADS_CUSTOMER_ID`) override the provider block |
 | `plan`     | partial | Diff `.bid` vs live (name-matched, scalar-level), validateOnly batch via googleAds:mutate; emits `+ create` / `~ update` / `no-op` per resource |
-| `apply`    | partial | Same pipeline as `plan` but mutates for real when `--confirm` is set; without `--confirm` runs as dry run. Does not yet write `bidsmith:address=…` labels or detect removals (state-tracking is the v2 follow-up) |
+| `apply`    | partial | Shows the validateOnly diff first, then prompts for `yes` (or skips the prompt with `--auto-approve`) before mutating. Refuses to prompt when stdin is not a TTY. Does not yet write `bidsmith:address=…` labels or detect removals (state-tracking is the v2 follow-up) |
 | `refresh`  | stub    | Import live state into `.bid` files                  |
 | `init`     | —       | (later) Bootstrap project skeleton                   |
 | `graph`    | —       | (later) Visualize resource graph                     |

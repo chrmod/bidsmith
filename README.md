@@ -19,7 +19,7 @@ talks to the Google Ads API yet.
 | `export`   | partial | Render a `.bid` from a JSON description (testing aid)         |
 | `fmt`      | stub    | Canonicalize `.bid` files                                     |
 | `plan`     | stub    | Diff `.bid` vs. live, validate-only via API                   |
-| `apply`    | stub    | Reconcile the live account with `.bid` (gated by `--confirm`) |
+| `apply`    | partial | Show the plan, prompt for `yes`, then mutate (`--auto-approve` skips the prompt) |
 | `refresh`  | stub    | Pull live state into `.bid`                                   |
 
 Resource coverage today: `provider "google_ads"`,

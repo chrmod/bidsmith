@@ -88,8 +88,10 @@ declared HCL against live labeled state. Local cache is rebuildable.
   no-ops into the output
 
 **Phase 3 — Apply**
-- ✅ `apply <path>` (dry run) and `apply <path> --confirm` (mutate).
-  Same pipeline as `plan` with validateOnly flipped.
+- ✅ `apply <path>` shows the validateOnly diff, prompts for `yes`,
+  then mutates. `--auto-approve` skips the prompt (required for
+  non-TTY runs). Same prepare stage as `plan`; validateOnly errors
+  short-circuit before the prompt.
 - ⏳ Write `bidsmith:address=...` labels on created/updated resources
   (state tracking via Google Ads Label + CampaignLabel / AdGroupLabel
   / AdGroupAdLabel / AdGroupCriterionLabel associations)

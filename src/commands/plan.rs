@@ -5,6 +5,7 @@ use std::process::ExitCode;
 use serde_json::Value;
 
 use crate::api::{auth, client, diff, import, live_state, mutate};
+use crate::commands::export::ExportInput;
 use crate::diagnostics::Diag;
 use crate::parser::{ParsedFile, parse_file};
 use crate::schema::validate_files;
@@ -22,11 +23,32 @@ pub fn run(path: Option<&str>, whoami: bool, read_live: bool, verbose: bool) -> 
         return ExitCode::from(2);
     };
 
-    run_pipeline(path, /* validate_only */ true, verbose, "plan")
+    let prepared = match prepare(path, "plan") {
+        Ok(Some(p)) => p,
+        Ok(None) => return ExitCode::SUCCESS,
+        Err(code) => return code,
+    };
+
+    execute(&prepared, /* validate_only */ true, verbose, DisplayMode::PerResource)
 }
 
-pub fn run_apply(path: &str, validate_only: bool, verbose: bool) -> ExitCode {
-    run_pipeline(path, validate_only, verbose, "apply")
+/// State produced by the parse/import/diff stages, ready to be sent through
+/// `googleAds:mutate` one or more times (e.g. validateOnly then real).
+pub struct Prepared {
+    pub label: &'static str,
+    pub client: client::Client,
+    pub token: auth::AccessToken,
+    pub imported: import::ImportResult,
+    pub report: diff::DiffReport,
+    pub width: usize,
+}
+
+pub enum DisplayMode {
+    /// Print each resource's diff row with its API outcome, then a summary.
+    PerResource,
+    /// Print only errors and a final one-line summary (used for the real-mutate
+    /// pass of `apply`, where the user has already seen the diff).
+    Summary,
 }
 
 fn run_read_live(verbose: bool) -> ExitCode {
@@ -74,11 +96,14 @@ fn run_read_live(verbose: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run_pipeline(path: &str, validate_only: bool, verbose: bool, label: &str) -> ExitCode {
-    let parsed = match load_and_validate(path) {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+/// Parse, validate, import, fetch live state, and compute the diff.
+///
+/// Returns `Ok(Some(Prepared))` when there is at least one declared resource
+/// to act on. Returns `Ok(None)` when the .bid declares nothing recognised —
+/// the caller's job is just to exit successfully; the user-facing message has
+/// already been printed. Returns `Err(code)` for any fatal stage.
+pub fn prepare(path: &str, label: &'static str) -> Result<Option<Prepared>, ExitCode> {
+    let parsed = load_and_validate(path)?;
 
     let mut imported = match import::import_files(&parsed) {
         Ok(v) => v,
@@ -87,7 +112,7 @@ fn run_pipeline(path: &str, validate_only: bool, verbose: bool, label: &str) -> 
                 let report = miette::Report::new(d);
                 eprintln!("{report:?}");
             }
-            return ExitCode::from(1);
+            return Err(ExitCode::from(1));
         }
     };
 
@@ -105,19 +130,17 @@ fn run_pipeline(path: &str, validate_only: bool, verbose: bool, label: &str) -> 
                 imported.skipped.len()
             );
         }
-        return ExitCode::SUCCESS;
+        return Ok(None);
     }
 
     let client = match client::Client::from_env() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("{label}: {e}");
-            return ExitCode::from(1);
+            return Err(ExitCode::from(1));
         }
     };
 
-    // The customer_id we POST against (from env) is authoritative for the
-    // request URL and any resourceName inside the body — they must match.
     imported.input.customer_id = client.customer_id.clone();
     if let Some(login) = &client.login_customer_id {
         imported.input.login_customer_id = Some(login.clone());
@@ -127,7 +150,7 @@ fn run_pipeline(path: &str, validate_only: bool, verbose: bool, label: &str) -> 
         Ok(t) => t,
         Err(e) => {
             eprintln!("{label}: {e}");
-            return ExitCode::from(1);
+            return Err(ExitCode::from(1));
         }
     };
 
@@ -139,7 +162,7 @@ fn run_pipeline(path: &str, validate_only: bool, verbose: bool, label: &str) -> 
         Ok(s) => s,
         Err(e) => {
             eprintln!("{label}: live-state fetch failed: {e}");
-            return ExitCode::from(1);
+            return Err(ExitCode::from(1));
         }
     };
 
@@ -151,13 +174,37 @@ fn run_pipeline(path: &str, validate_only: bool, verbose: bool, label: &str) -> 
         .max()
         .unwrap_or(0)
         .max(40);
-    let title = if label == "apply" { "Apply" } else { "Plan" };
+
+    Ok(Some(Prepared {
+        label,
+        client,
+        token,
+        imported,
+        report,
+        width,
+    }))
+}
+
+/// Build the mutate body for `prepared.report` and POST it. Display behaviour
+/// is controlled by `display` — see [`DisplayMode`].
+pub fn execute(
+    prepared: &Prepared,
+    validate_only: bool,
+    verbose: bool,
+    display: DisplayMode,
+) -> ExitCode {
+    let report = &prepared.report;
+    let width = prepared.width;
+    let label = prepared.label;
 
     if report.create_count == 0 && report.update_count == 0 {
-        for d in &report.diffs {
-            println!("{addr:<width$}  no-op", addr = d.address, width = width);
+        if matches!(display, DisplayMode::PerResource) {
+            for d in &report.diffs {
+                println!("{addr:<width$}  no-op", addr = d.address, width = width);
+            }
+            println!();
         }
-        println!();
+        let title = summary_title(validate_only);
         println!(
             "{title}: 0 to create, 0 to update, {} unchanged. (no API call needed)",
             report.noop_count,
@@ -165,30 +212,30 @@ fn run_pipeline(path: &str, validate_only: bool, verbose: bool, label: &str) -> 
         return ExitCode::SUCCESS;
     }
 
-    // Build the mutate body (CREATEs for unmatched, UPDATEs for drifted)
-    let plan_body = match mutate::build_mutate_with_diff(&imported.input, &report, validate_only) {
-        Ok(b) => b,
-        Err(errs) => {
-            for e in errs {
-                eprintln!("{label}: {} — {}", e.address, e.message);
+    let plan_body =
+        match mutate::build_mutate_with_diff(&prepared.imported.input, report, validate_only) {
+            Ok(b) => b,
+            Err(errs) => {
+                for e in errs {
+                    eprintln!("{label}: {} — {}", e.address, e.message);
+                }
+                return ExitCode::from(1);
             }
-            return ExitCode::from(1);
-        }
-    };
+        };
 
     if verbose {
         let mode = if validate_only { "validateOnly" } else { "real apply" };
         eprintln!(
             "{label}: POST /{}/customers/{}/googleAds:mutate ({} op(s), {mode})",
             client::api_version(),
-            client.customer_id,
+            prepared.client.customer_id,
             plan_body.operations.len(),
         );
         eprintln!("--- request body ---");
         eprintln!("{}", serde_json::to_string_pretty(&plan_body.body).unwrap_or_default());
     }
 
-    let response = match client.googleads_mutate(&token.token, &plan_body.body) {
+    let response = match prepared.client.googleads_mutate(&prepared.token.token, &plan_body.body) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("{label}: {e}");
@@ -201,7 +248,6 @@ fn run_pipeline(path: &str, validate_only: bool, verbose: bool, label: &str) -> 
         eprintln!("{}", response.body_raw);
     }
 
-    // Index errors by op address for merged output
     let mut errors_by_address: HashMap<String, Vec<&str>> = HashMap::new();
     let parsed_errors = extract_google_ads_errors(&response.body);
     let success = response.status >= 200 && response.status < 300;
@@ -251,14 +297,22 @@ fn run_pipeline(path: &str, validate_only: bool, verbose: bool, label: &str) -> 
                 rejected += 1;
             }
         }
-        println!(
-            "{addr:<width$}  {verb}{detail}{outcome}",
-            addr = d.address,
-            width = width,
-        );
+        let printable = matches!(display, DisplayMode::PerResource)
+            || (matches!(display, DisplayMode::Summary)
+                && errors_by_address.contains_key(&d.address));
+        if printable {
+            println!(
+                "{addr:<width$}  {verb}{detail}{outcome}",
+                addr = d.address,
+                width = width,
+            );
+        }
     }
 
-    println!();
+    if matches!(display, DisplayMode::PerResource) {
+        println!();
+    }
+    let title = summary_title(validate_only);
     if validate_only {
         println!(
             "{title}: {} to create, {} to update, {} unchanged. ({} accepted, {} rejected)",
@@ -271,8 +325,6 @@ fn run_pipeline(path: &str, validate_only: bool, verbose: bool, label: &str) -> 
         );
     }
 
-    // Surface unattributed errors so they're not silently dropped (e.g. top-level
-    // GoogleAdsFailure errors not tied to a specific operation).
     let unattributed: Vec<_> = parsed_errors
         .iter()
         .filter(|e| {
@@ -301,6 +353,22 @@ fn run_pipeline(path: &str, validate_only: bool, verbose: bool, label: &str) -> 
     } else {
         ExitCode::SUCCESS
     }
+}
+
+fn summary_title(validate_only: bool) -> &'static str {
+    if validate_only { "Plan" } else { "Apply" }
+}
+
+/// Convenience: returns `true` iff the prepared diff would touch anything.
+pub fn has_pending_changes(prepared: &Prepared) -> bool {
+    prepared.report.create_count > 0 || prepared.report.update_count > 0
+}
+
+/// Reference to the underlying ExportInput, exposed so apply can print
+/// pre-prompt context (e.g. customer id) without re-routing through `client`.
+#[allow(dead_code)]
+pub fn declared_input(prepared: &Prepared) -> &ExportInput {
+    &prepared.imported.input
 }
 
 struct GoogleAdsErrorEntry {
