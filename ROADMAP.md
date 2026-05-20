@@ -124,19 +124,19 @@ declared HCL against live labeled state. Local cache is rebuildable.
 Phases 1 and 2 are done; Phase 3 has its CREATE/UPDATE half landed.
 Priority order for what closes the most user-facing gaps:
 
-1. **`pull` verb + live round-trip e2e test**. Promote
-   `examples/trial/dump_campaign.py` to a Rust subcommand
-   `bidsmith pull -o <path>` that runs the same SearchStream queries
-   `plan --read-live` already issues and writes the raw API JSON to
-   disk (no adapter step). Then wire the loop
+1. **Live round-trip e2e test**. The `pull` verb landed — it runs
+   the same SearchStream queries `plan --read-live` issues and writes
+   the raw API JSON in the shape `export --from-gads-search-response`
+   consumes (`bidsmith pull -o dump.json`). The remaining piece is the
+   test loop itself: wire
    `apply → pull → export --from-gads-search-response → plan` as an
    opt-in `cargo test --features e2e` (or `bidsmith self-test --live`)
    that asserts the final `plan` reports `0 to create, 0 to update`
-   against a dedicated Google Ads **test manager account**. This is
-   the highest-value test the project can have: Google Ads itself is
-   the oracle, the read path uses real bytes off the wire, and the
-   write path is exercised end-to-end without invented mock
-   assumptions. Details and design notes in
+   against a dedicated Google Ads **test manager account**. Highest-
+   value test the project can have: Google Ads itself is the oracle,
+   the read path uses real bytes off the wire, and the write path is
+   exercised end-to-end without invented mock assumptions. Details and
+   design notes in
    [§ `pull` verb + live round-trip e2e](#pull-verb--live-round-trip-e2e)
    below.
 2. **Phase 3 v2 — labels + removal**. Write
@@ -174,8 +174,11 @@ Smaller follow-ups that can ride along:
 
 ## `pull` verb + live round-trip e2e
 
-> Status: not started. Design notes — adjust freely once the first
-> attempt hits real Google Ads behavior.
+> Status: `pull` shipped (signature `run(output, verbose)`); e2e test
+> still to write. The `--customer-id` / `--campaign-id` scoping flags
+> in the original sketch below were skipped for v1 — the verb dumps
+> everything for the customer in env, matching what `plan --read-live`
+> reads. Add scoping flags when there's a concrete need.
 
 ### Why
 

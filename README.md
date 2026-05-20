@@ -20,6 +20,7 @@ talks to the Google Ads API yet.
 | `fmt`      | stub    | Canonicalize `.bid` files                                     |
 | `plan`     | stub    | Diff `.bid` vs. live, validate-only via API                   |
 | `apply`    | partial | Show the plan, prompt for `yes`, then mutate (`--auto-approve` skips the prompt) |
+| `pull`     | partial | Dump the live account as raw SearchStream JSON (round-trips through `export --from-gads-search-response`) |
 | `refresh`  | stub    | Pull live state into `.bid`                                   |
 
 Resource coverage today: `provider "google_ads"`,
@@ -179,6 +180,7 @@ Release binary is ~1.3 MB. Requires Rust 1.89+.
 ```sh
 bidsmith validate [path]                         # file or directory; default "."
 bidsmith export --from-json file.json [-o out]   # stdout if -o omitted
+bidsmith pull -o dump.json                       # raw SearchStream JSON from live
 bidsmith fmt | plan | apply | refresh            # not yet implemented
 ```
 

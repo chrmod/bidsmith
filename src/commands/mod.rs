@@ -3,6 +3,7 @@ pub mod apply;
 pub mod export;
 pub mod fmt;
 pub mod plan;
+pub mod pull;
 pub mod query;
 pub mod validate;
 

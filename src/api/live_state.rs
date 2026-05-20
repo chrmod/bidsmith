@@ -185,7 +185,7 @@ const QUERIES: &[(&str, &str)] = &[
     ),
 ];
 
-pub fn fetch(client: &Client, access_token: &str) -> Result<ExportInput, LiveStateError> {
+pub fn fetch_raw(client: &Client, access_token: &str) -> Result<Vec<Value>, LiveStateError> {
     let mut all_batches: Vec<Value> = Vec::new();
     for (label, query) in QUERIES {
         let response = client.search_stream(access_token, query)?;
@@ -202,6 +202,11 @@ pub fn fetch(client: &Client, access_token: &str) -> Result<ExportInput, LiveSta
             all_batches.push(response.body.clone());
         }
     }
-    let mega = Value::Array(all_batches).to_string();
+    Ok(all_batches)
+}
+
+pub fn fetch(client: &Client, access_token: &str) -> Result<ExportInput, LiveStateError> {
+    let batches = fetch_raw(client, access_token)?;
+    let mega = Value::Array(batches).to_string();
     adapt::from_search_response(&mega).map_err(LiveStateError::Adapter)
 }
