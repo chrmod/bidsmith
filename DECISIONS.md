@@ -223,14 +223,18 @@ Validator covers (so far):
   match_type, optional per-keyword `cpc_bid_micros`; also accepts a
   bulk form where repeating `keyword {}` and/or `negative_keyword {}`
   sub-blocks in one resource expand into N individual criteria at
-  import time),
+  import time — the `negative` attribute is inferred from the block
+  shape, so `keyword {}` defaults `negative = false` and
+  `negative_keyword {}` is always `negative = true` without writing
+  the attribute explicitly),
   `google_ads_campaign_criterion` (single negative keyword, location,
   language, proximity with flat `latitude` / `longitude` in decimal
   degrees plus `radius` + `radius_units`; the adapter rounds to the
   API's micro-degree integers at the wire boundary), plus a bulk
   syntactic-sugar form where repeating `negative_keyword { text,
   match_type }` sub-blocks in one resource expand into N individual
-  negative criteria at import time,
+  negative criteria at import time (same `negative`-from-block-shape
+  inference as ad-group criteria),
   `google_ads_shared_set` (named negative-keyword set with a bulk
   `negative_keyword { text, match_type }` sub-block form; type
   defaults to `NEGATIVE_KEYWORDS` at mutate time),
@@ -265,7 +269,7 @@ Validator covers (so far):
 |------------|---------|------------------------------------------------------|
 | `fmt`      | partial | Canonicalize `.bid` files (in-place; `--check` for CI) |
 | `validate` | partial | Syntax + schema + references + lint warnings (local only) |
-| `export`   | partial | Render a fmt-canonical `.bid` file from flat bidsmith JSON (`--from-json`) or raw Google Ads SearchStream JSON (`--from-gads-search-response`); drops REMOVED resources unless `--include-removed`; `--login-customer-id` / `--customer-id` (or env vars `GOOGLE_ADS_LOGIN_CUSTOMER_ID` / `GOOGLE_ADS_CUSTOMER_ID`) override the provider block |
+| `export`   | partial | Render a fmt-canonical `.bid` file from flat bidsmith JSON (`--from-json`) or raw Google Ads SearchStream JSON (`--from-gads-search-response`); always emits the compact form (one `google_ads_ad_group_criterion` per `(ad_group, match_type)` group with N `keyword {}` sub-blocks, one negatives resource per ad-group / campaign with N `negative_keyword {}` sub-blocks, RSAs as `headlines = [...]` / `descriptions = [...]` lists); drops REMOVED resources unless `--include-removed`; `--login-customer-id` / `--customer-id` (or env vars `GOOGLE_ADS_LOGIN_CUSTOMER_ID` / `GOOGLE_ADS_CUSTOMER_ID`) override the provider block |
 | `plan`     | partial | Diff `.bid` vs live (name-matched, scalar-level), validateOnly batch via googleAds:mutate; emits `+ create` / `~ update` / `no-op` per resource |
 | `apply`    | partial | Shows the validateOnly diff first, then prompts for `yes` (or skips the prompt with `--auto-approve`) before mutating. Refuses to prompt when stdin is not a TTY. Does not yet write `bidsmith:address=…` labels or detect removals (state-tracking is the v2 follow-up) |
 | `refresh`  | stub    | Import live state into `.bid` files                  |

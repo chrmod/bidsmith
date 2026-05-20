@@ -424,17 +424,19 @@ fn render(input: &ExportInput) -> String {
         write_ad_group_ad(&mut out, &name, a, &ad_group_addr);
     }
 
-    for c in &input.ad_group_criteria {
-        let base = format!(
-            "{}_{}",
-            c.keyword.match_type.to_ascii_lowercase(),
-            c.keyword.text
-        );
+    for group in group_ad_group_criteria(&input.ad_group_criteria) {
+        let base = ad_group_criterion_group_base(&group, &ad_group_addr);
         let name = names.allocate("google_ads_ad_group_criterion", &slugify(&base));
-        write_ad_group_criterion(&mut out, &name, c, &ad_group_addr);
+        write_ad_group_criterion_group(&mut out, &name, &group, &ad_group_addr);
     }
 
-    for c in &input.campaign_criteria {
+    let (negative_groups, singletons) = partition_campaign_criteria(&input.campaign_criteria);
+    for group in negative_groups {
+        let base = campaign_negative_group_base(&group, &campaign_addr);
+        let name = names.allocate("google_ads_campaign_criterion", &slugify(&base));
+        write_campaign_negative_group(&mut out, &name, &group, &campaign_addr);
+    }
+    for c in singletons {
         let base = criterion_base(c);
         let name = names.allocate("google_ads_campaign_criterion", &slugify(&base));
         write_campaign_criterion(&mut out, &name, c, &campaign_addr);
@@ -588,31 +590,17 @@ fn write_ad_group_ad(
     write_attr(out, 2, "final_urls", &fmt_string_list(&a.ad.final_urls));
     if let Some(rsa) = &a.ad.responsive_search_ad {
         out.push_str("\n    responsive_search_ad {\n");
-        for (i, h) in rsa.headlines.iter().enumerate() {
-            if i > 0 {
-                out.push('\n');
-            }
-            write_rsa_asset(out, 3, "headline", h);
+        if !rsa.headlines.is_empty() {
+            write_attr(out, 3, "headlines", &fmt_rsa_asset_list(&rsa.headlines));
         }
-        if !rsa.headlines.is_empty() && !rsa.descriptions.is_empty() {
-            out.push('\n');
+        if !rsa.descriptions.is_empty() {
+            write_attr(out, 3, "descriptions", &fmt_rsa_asset_list(&rsa.descriptions));
         }
-        for (i, d) in rsa.descriptions.iter().enumerate() {
-            if i > 0 {
-                out.push('\n');
-            }
-            write_rsa_asset(out, 3, "description", d);
+        if let Some(p) = &rsa.path1 {
+            write_attr(out, 3, "path1", &fmt_string(p));
         }
-        if rsa.path1.is_some() || rsa.path2.is_some() {
-            if !rsa.headlines.is_empty() || !rsa.descriptions.is_empty() {
-                out.push('\n');
-            }
-            if let Some(p) = &rsa.path1 {
-                write_attr(out, 3, "path1", &fmt_string(p));
-            }
-            if let Some(p) = &rsa.path2 {
-                write_attr(out, 3, "path2", &fmt_string(p));
-            }
+        if let Some(p) = &rsa.path2 {
+            write_attr(out, 3, "path2", &fmt_string(p));
         }
         out.push_str("    }\n");
     }
@@ -620,31 +608,163 @@ fn write_ad_group_ad(
     out.push_str("}\n\n");
 }
 
-fn write_ad_group_criterion(
+type AdGroupCriterionKey = (String, bool, Option<String>, Option<i64>, Option<String>);
+
+fn group_ad_group_criteria(
+    items: &[JsonAdGroupCriterion],
+) -> Vec<Vec<&JsonAdGroupCriterion>> {
+    let mut groups: Vec<Vec<&JsonAdGroupCriterion>> = Vec::new();
+    let mut index: HashMap<AdGroupCriterionKey, usize> = HashMap::new();
+    for c in items {
+        let neg = c.negative.unwrap_or(false);
+        let match_type_key = if neg {
+            None
+        } else {
+            Some(c.keyword.match_type.clone())
+        };
+        let key = (
+            c.ad_group.clone(),
+            neg,
+            c.status.clone(),
+            c.cpc_bid_micros,
+            match_type_key,
+        );
+        let idx = match index.get(&key) {
+            Some(&i) => i,
+            None => {
+                let i = groups.len();
+                index.insert(key, i);
+                groups.push(Vec::new());
+                i
+            }
+        };
+        groups[idx].push(c);
+    }
+    groups
+}
+
+fn ad_group_criterion_group_base(
+    group: &[&JsonAdGroupCriterion],
+    ad_group_addr: &HashMap<String, String>,
+) -> String {
+    let first = group[0];
+    let ag_slug = ad_group_addr
+        .get(&first.ad_group)
+        .and_then(|s| s.strip_prefix("google_ads_ad_group."))
+        .unwrap_or(&first.ad_group);
+    if first.negative.unwrap_or(false) {
+        format!("{ag_slug}_negatives")
+    } else {
+        format!(
+            "{ag_slug}_{}",
+            first.keyword.match_type.to_ascii_lowercase()
+        )
+    }
+}
+
+fn write_ad_group_criterion_group(
     out: &mut String,
     name: &str,
-    c: &JsonAdGroupCriterion,
+    group: &[&JsonAdGroupCriterion],
     ad_group_addr: &HashMap<String, String>,
 ) {
+    let first = group[0];
     let _ = writeln!(
         out,
         "resource \"google_ads_ad_group_criterion\" \"{name}\" {{"
     );
-    let ag_ref = match ad_group_addr.get(&c.ad_group) {
+    let ag_ref = match ad_group_addr.get(&first.ad_group) {
         Some(addr) => format!("{addr}.id"),
-        None => format!("\"<unresolved ad_group {}>\"", c.ad_group),
+        None => format!("\"<unresolved ad_group {}>\"", first.ad_group),
     };
     write_attr(out, 1, "ad_group", &ag_ref);
-    if let Some(s) = &c.status {
+    if let Some(s) = &first.status {
         write_attr(out, 1, "status", &fmt_string(s));
     }
-    if let Some(neg) = c.negative {
-        write_attr(out, 1, "negative", &neg.to_string());
-    }
-    if let Some(cpc) = c.cpc_bid_micros {
+    if let Some(cpc) = first.cpc_bid_micros {
         write_attr(out, 1, "cpc_bid_micros", &cpc.to_string());
     }
-    write_keyword(out, &c.keyword);
+    let block_name = if first.negative.unwrap_or(false) {
+        "negative_keyword"
+    } else {
+        "keyword"
+    };
+    for c in group {
+        out.push('\n');
+        let _ = writeln!(out, "  {block_name} {{");
+        write_attr(out, 2, "text", &fmt_string(&c.keyword.text));
+        write_attr(out, 2, "match_type", &fmt_string(&c.keyword.match_type));
+        out.push_str("  }\n");
+    }
+    out.push_str("}\n\n");
+}
+
+fn partition_campaign_criteria(
+    items: &[JsonCampaignCriterion],
+) -> (Vec<Vec<&JsonCampaignCriterion>>, Vec<&JsonCampaignCriterion>) {
+    let mut groups: Vec<Vec<&JsonCampaignCriterion>> = Vec::new();
+    let mut index: HashMap<(String, Option<String>), usize> = HashMap::new();
+    let mut singletons: Vec<&JsonCampaignCriterion> = Vec::new();
+    for c in items {
+        let is_negative_keyword = c.negative.unwrap_or(false) && c.keyword.is_some();
+        if is_negative_keyword {
+            let key = (c.campaign.clone(), c.status.clone());
+            let idx = match index.get(&key) {
+                Some(&i) => i,
+                None => {
+                    let i = groups.len();
+                    index.insert(key, i);
+                    groups.push(Vec::new());
+                    i
+                }
+            };
+            groups[idx].push(c);
+        } else {
+            singletons.push(c);
+        }
+    }
+    (groups, singletons)
+}
+
+fn campaign_negative_group_base(
+    group: &[&JsonCampaignCriterion],
+    campaign_addr: &HashMap<String, String>,
+) -> String {
+    let first = group[0];
+    let camp_slug = campaign_addr
+        .get(&first.campaign)
+        .and_then(|s| s.strip_prefix("google_ads_campaign."))
+        .unwrap_or(&first.campaign);
+    format!("{camp_slug}_negatives")
+}
+
+fn write_campaign_negative_group(
+    out: &mut String,
+    name: &str,
+    group: &[&JsonCampaignCriterion],
+    campaign_addr: &HashMap<String, String>,
+) {
+    let first = group[0];
+    let _ = writeln!(
+        out,
+        "resource \"google_ads_campaign_criterion\" \"{name}\" {{"
+    );
+    let camp_ref = match campaign_addr.get(&first.campaign) {
+        Some(addr) => format!("{addr}.id"),
+        None => format!("\"<unresolved campaign {}>\"", first.campaign),
+    };
+    write_attr(out, 1, "campaign", &camp_ref);
+    if let Some(s) = &first.status {
+        write_attr(out, 1, "status", &fmt_string(s));
+    }
+    for c in group {
+        if let Some(kw) = &c.keyword {
+            out.push_str("\n  negative_keyword {\n");
+            write_attr(out, 2, "text", &fmt_string(&kw.text));
+            write_attr(out, 2, "match_type", &fmt_string(&kw.match_type));
+            out.push_str("  }\n");
+        }
+    }
     out.push_str("}\n\n");
 }
 
@@ -665,9 +785,6 @@ fn write_campaign_criterion(
     write_attr(out, 1, "campaign", &camp_ref);
     if let Some(s) = &c.status {
         write_attr(out, 1, "status", &fmt_string(s));
-    }
-    if let Some(neg) = c.negative {
-        write_attr(out, 1, "negative", &neg.to_string());
     }
     if let Some(kw) = &c.keyword {
         write_keyword(out, kw);
@@ -882,19 +999,25 @@ fn criterion_base(c: &JsonCampaignCriterion) -> String {
     c.id.clone()
 }
 
-fn write_rsa_asset(out: &mut String, indent: usize, kind: &str, asset: &JsonRsaAsset) {
-    for _ in 0..indent {
-        out.push_str("  ");
+fn fmt_rsa_asset_list(assets: &[JsonRsaAsset]) -> String {
+    let mut out = String::from("[");
+    for (i, asset) in assets.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        match &asset.pin {
+            None => out.push_str(&fmt_string(&asset.text)),
+            Some(pin) => {
+                out.push_str("{ text = ");
+                out.push_str(&fmt_string(&asset.text));
+                out.push_str(", pin = ");
+                out.push_str(&fmt_string(pin));
+                out.push_str(" }");
+            }
+        }
     }
-    let _ = writeln!(out, "{kind} {{");
-    write_attr(out, indent + 1, "text", &fmt_string(&asset.text));
-    if let Some(p) = &asset.pin {
-        write_attr(out, indent + 1, "pin", &fmt_string(p));
-    }
-    for _ in 0..indent {
-        out.push_str("  ");
-    }
-    out.push_str("}\n");
+    out.push(']');
+    out
 }
 
 fn fmt_string_list(items: &[String]) -> String {
