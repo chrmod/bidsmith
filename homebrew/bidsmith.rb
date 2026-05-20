@@ -1,7 +1,7 @@
 class Bidsmith < Formula
   desc "Declarative, AI-friendly tooling for Google Ads campaigns"
   homepage "https://github.com/chrmod/bidsmith"
-  version "0.1.0"
+  version "0.1.1"
   license "MIT"
 
   on_macos do
