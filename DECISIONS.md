@@ -34,6 +34,17 @@ resource type, any file layout, modules, schema validation.
   "search-campaign-per-city" baked into core — that's a community module.
 - **No `.tfstate`**: state lives on Google Ads as labels on managed
   resources.
+- **Files are modules**: each `.bid` file's basename (slugified file
+  stem) is its implicit module name. Resource addresses are
+  `<module>.<type>.<name>`. Two files in one directory can each declare
+  `google_ads_campaign_criterion.broad_wikipedia` without conflict —
+  they live in different modules. References resolve same-module first
+  and fall back to a global search; cross-module matches are accepted
+  if exactly one resource matches and rejected as `ambiguous reference`
+  otherwise. Display strips the module prefix when every diff line is
+  in the same module so single-file projects keep their bare
+  `<type>.<name>` UX. This is the foundation for explicit `module`
+  blocks in Phase 5.
 - **AI is outside the engine**: skills/agents author and review; engine
   is deterministic. Engine behavior must not depend on a model version.
 - **Plan = live validate**: use Google Ads API's `validate_only` flag
@@ -120,6 +131,9 @@ bidsmith/
     │   └── syntax.bid          # parse error
     ├── lint/
     │   └── warnings.bid        # valid syntax/schema but trips every lint rule
+    ├── multi/                  # two campaigns in one dir with colliding bare
+    │   ├── nadarzyn.bid        # criterion names — addresses disambiguate via
+    │   └── warszawa.bid        # the file-stem module prefix
     ├── exports/
     │   ├── basic.json          # flat bidsmith input for `export --from-json`
     │   └── raw.json            # SearchStream-shaped input for `export --from-gads-search-response`
@@ -133,6 +147,10 @@ Verified locally:
 - `cargo build --release` → ~4 MB binary (the jump from ~1.5 MB is
   the reqwest + rustls TLS stack added for the live API client)
 - `cargo run -- validate examples/basic` → `OK: 1 file(s) valid.`
+- `cargo run -- validate examples/multi` → `OK: 2 file(s) valid.` —
+  both files declare `google_ads_campaign_criterion.broad_wikipedia`
+  and `…broad_olx`; the file-stem module prefix
+  (`nadarzyn.…` vs `warszawa.…`) makes the addresses unique.
 - `cargo run -- validate examples/broken` → exit 1 with 11 errors and
   5 warnings (parse failure, type mismatch, enum violation, dangling
   reference, unknown attribute at two depths, unknown resource type,

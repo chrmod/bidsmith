@@ -75,6 +75,36 @@ Cross-references use `<type>.<name>.id`. Resources currently supported:
 (`10000000` = 10 currency units). `status` for campaigns and ad groups:
 `ENABLED` | `PAUSED` | `REMOVED`.
 
+## Files are modules
+
+Each `.bid` file's basename is its implicit module name. The full
+address of a resource is `<module>.<type>.<name>`. Two files in one
+directory can each declare `google_ads_campaign_criterion.broad_wikipedia`
+without conflict — they live in different modules
+(`nadarzyn.google_ads_…` vs. `warszawa.google_ads_…`).
+
+References inside a file resolve same-module first, then fall back to a
+global search across all files:
+- 0 matches → `reference to undeclared resource '<addr>'`.
+- 1 match (in some other module) → resolved.
+- 2+ matches → `ambiguous reference to '<addr>'; declared in modules
+  [a, b] — rename one of the resources so each is unique within its
+  module`.
+
+Practical implications:
+- Per-campaign dumps coexist in one directory with no manual
+  namespacing. The typical loop is `for c in $campaigns; do bidsmith
+  export --from-gads-search-response /tmp/$c.json -o
+  ads-bid/$c.bid; done && bidsmith validate ads-bid/`.
+- Account-scoped resources (`google_ads_conversion_action`,
+  `google_ads_call_asset`, `google_ads_customer_asset`) belong in their
+  own file and are referenced cross-module from each campaign file.
+  Don't duplicate them per campaign — that creates ambiguity and a
+  diff that wants to create N copies.
+- `plan` / `apply` display strips the module prefix when every diff
+  line is in the same module, so single-file projects keep their bare
+  `<type>.<name>` UX.
+
 ## Authoring workflow
 
 1. Edit `.bid` files.
@@ -92,8 +122,14 @@ managed resources carry a `bidsmith:address=<addr>` label, which is how
 
 - The `.bid` file extension is provisional but stable for now.
 - One `provider "google_ads"` block per repository/directory.
-- Resource addresses (`<type>.<name>`) are stable identifiers — renaming
-  a resource means Google Ads sees a delete + create.
+- Resource addresses are stable identifiers; renaming a resource means
+  Google Ads sees a delete + create. The full address is
+  `<module>.<type>.<name>` (module = file basename), but inside the
+  file you write `<type>.<name>` and the same form is used in
+  references.
+- Renaming a `.bid` file is also a rename of its module, which
+  reshuffles every fully-qualified address inside it — treat it like a
+  resource rename, not a no-op refactor.
 - Validation errors are batched: fix everything `validate` reports in one
   pass rather than running it after each edit.
 

@@ -105,8 +105,12 @@ declared HCL against live labeled state. Local cache is rebuildable.
   API client). Grow the renderer once; both commands consume it.
 
 **Phase 5 — Modules**
-- `module "x" { source = "..." for_each = ... }`
-- Local + GitHub source resolution
+- ✅ Files-as-modules: each `.bid` file's basename is its implicit
+  module name; addresses are `<module>.<type>.<name>`; references
+  resolve same-module first, then globally with an ambiguity guard.
+- `module "x" { source = "..." for_each = ... }` — explicit module
+  blocks layered on top of the implicit one.
+- Local + GitHub source resolution.
 
 **Phase 6 — AI integration**
 - `.claude/skills/` — `/add-campaign`, `/review-search-terms`,

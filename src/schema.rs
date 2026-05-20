@@ -518,44 +518,95 @@ fn provider_schemas() -> &'static HashMap<&'static str, BlockSchema> {
 
 struct ResourceDecl {
     file: String,
+    module: String,
+}
+
+#[derive(Default)]
+pub struct ResourceRegistry {
+    by_qualified: HashMap<String, ResourceDecl>,
+    by_short: HashMap<String, Vec<String>>,
+}
+
+impl ResourceRegistry {
+    pub fn qualified(module: &str, ty: &str, name: &str) -> String {
+        format!("{module}.{ty}.{name}")
+    }
+
+    fn short(ty: &str, name: &str) -> String {
+        format!("{ty}.{name}")
+    }
+
+    pub fn resolve(&self, module: &str, ty: &str, name: &str) -> Resolution<'_> {
+        let qualified = Self::qualified(module, ty, name);
+        if self.by_qualified.contains_key(&qualified) {
+            return Resolution::Found(qualified);
+        }
+        let short = Self::short(ty, name);
+        match self.by_short.get(&short).map(Vec::as_slice).unwrap_or(&[]) {
+            [] => Resolution::Missing,
+            [only] => Resolution::Found(Self::qualified(only, ty, name)),
+            many => Resolution::Ambiguous(many),
+        }
+    }
+
+    pub fn build(files: &[ParsedFile]) -> (Self, Vec<Diag>) {
+        let mut registry = ResourceRegistry::default();
+        let mut diags = Vec::new();
+        for f in files {
+            for s in f.body.iter() {
+                let Structure::Block(b) = s else { continue };
+                if b.ident.as_str() != "resource" || b.labels.len() != 2 {
+                    continue;
+                }
+                let ty = b.labels[0].as_str();
+                let name = b.labels[1].as_str();
+                let qualified = Self::qualified(&f.module, ty, name);
+                if let Some(prev) = registry.by_qualified.get(&qualified) {
+                    let short = Self::short(ty, name);
+                    let extra = if prev.module == f.module {
+                        String::new()
+                    } else {
+                        format!(" (module '{}')", f.module)
+                    };
+                    diags.push(Diag::new(
+                        f.src.clone(),
+                        block_span(b),
+                        format!(
+                            "duplicate resource '{short}'{extra} (also declared at {})",
+                            prev.file
+                        ),
+                    ));
+                    continue;
+                }
+                registry.by_qualified.insert(
+                    qualified,
+                    ResourceDecl {
+                        file: f.path.display().to_string(),
+                        module: f.module.clone(),
+                    },
+                );
+                registry
+                    .by_short
+                    .entry(Self::short(ty, name))
+                    .or_default()
+                    .push(f.module.clone());
+            }
+        }
+        (registry, diags)
+    }
+}
+
+pub enum Resolution<'a> {
+    Found(String),
+    Missing,
+    Ambiguous(&'a [String]),
 }
 
 pub fn validate_files(files: &[ParsedFile]) -> Vec<Diag> {
-    let mut diags = Vec::new();
-    let mut resources: HashMap<String, ResourceDecl> = HashMap::new();
+    let (registry, mut diags) = ResourceRegistry::build(files);
 
     for f in files {
-        for s in f.body.iter() {
-            let Structure::Block(b) = s else { continue };
-            if b.ident.as_str() != "resource" || b.labels.len() != 2 {
-                continue;
-            }
-            let ty = b.labels[0].as_str();
-            let name = b.labels[1].as_str();
-            let address = format!("{ty}.{name}");
-            if let Some(prev) = resources.get(&address) {
-                diags.push(Diag::new(
-                    f.src.clone(),
-                    block_span(b),
-                    format!(
-                        "duplicate resource '{address}' (also declared at {})",
-                        prev.file
-                    ),
-                ));
-                continue;
-            }
-            resources.insert(
-                address,
-                ResourceDecl {
-                    file: f.path.display().to_string(),
-                },
-            );
-        }
-    }
-    let _ = &resources;
-
-    for f in files {
-        validate_top_level(f, &resources, &mut diags);
+        validate_top_level(f, &registry, &mut diags);
     }
 
     diags.sort_by(|a, b| {
@@ -566,7 +617,7 @@ pub fn validate_files(files: &[ParsedFile]) -> Vec<Diag> {
 
 fn validate_top_level(
     file: &ParsedFile,
-    resources: &HashMap<String, ResourceDecl>,
+    registry: &ResourceRegistry,
     diags: &mut Vec<Diag>,
 ) {
     for s in file.body.iter() {
@@ -582,8 +633,8 @@ fn validate_top_level(
                 ));
             }
             Structure::Block(b) => match b.ident.as_str() {
-                "provider" => validate_provider(file, b, resources, diags),
-                "resource" => validate_resource(file, b, resources, diags),
+                "provider" => validate_provider(file, b, registry, diags),
+                "resource" => validate_resource(file, b, registry, diags),
                 other => {
                     diags.push(Diag::new(
                         file.src.clone(),
@@ -601,7 +652,7 @@ fn validate_top_level(
 fn validate_provider(
     file: &ParsedFile,
     block: &Block,
-    resources: &HashMap<String, ResourceDecl>,
+    registry: &ResourceRegistry,
     diags: &mut Vec<Diag>,
 ) {
     if block.labels.len() != 1 {
@@ -633,7 +684,7 @@ fn validate_provider(
         &block.body,
         schema,
         &format!("provider.{provider_name}"),
-        resources,
+        registry,
         diags,
     );
 }
@@ -641,7 +692,7 @@ fn validate_provider(
 fn validate_resource(
     file: &ParsedFile,
     block: &Block,
-    resources: &HashMap<String, ResourceDecl>,
+    registry: &ResourceRegistry,
     diags: &mut Vec<Diag>,
 ) {
     if block.labels.len() != 2 {
@@ -674,7 +725,7 @@ fn validate_resource(
         &block.body,
         schema,
         &format!("{ty}.{name}"),
-        resources,
+        registry,
         diags,
     );
 }
@@ -685,7 +736,7 @@ fn validate_body(
     body: &Body,
     schema: &BlockSchema,
     address: &str,
-    resources: &HashMap<String, ResourceDecl>,
+    registry: &ResourceRegistry,
     diags: &mut Vec<Diag>,
 ) {
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -710,7 +761,7 @@ fn validate_body(
                     ));
                     continue;
                 };
-                validate_value(file, &a.value, &attr_schema.ty, resources, diags);
+                validate_value(file, &a.value, &attr_schema.ty, registry, diags);
             }
             Structure::Block(b) => {
                 let bname = b.ident.as_str();
@@ -735,7 +786,7 @@ fn validate_body(
                     &b.body,
                     &sub_schema.schema,
                     &format!("{address}.{bname}"),
-                    resources,
+                    registry,
                     diags,
                 );
             }
@@ -757,7 +808,7 @@ fn validate_value(
     file: &ParsedFile,
     expr: &Expression,
     ty: &FieldType,
-    resources: &HashMap<String, ResourceDecl>,
+    registry: &ResourceRegistry,
     diags: &mut Vec<Diag>,
 ) {
     let span = span_of(expr.span());
@@ -833,7 +884,7 @@ fn validate_value(
         FieldType::List(inner) => match expr {
             Expression::Array(arr) => {
                 for item in arr.iter() {
-                    validate_value(file, item, inner, resources, diags);
+                    validate_value(file, item, inner, registry, diags);
                 }
             }
             other => diags.push(Diag::new(
@@ -894,12 +945,27 @@ fn validate_value(
                 return;
             }
             let address = format!("{ref_type}.{ref_name}");
-            if !resources.contains_key(&address) {
-                diags.push(Diag::new(
-                    file.src.clone(),
-                    span,
-                    format!("reference to undeclared resource '{address}'"),
-                ));
+            match registry.resolve(&file.module, ref_type, ref_name) {
+                Resolution::Found(_) => {}
+                Resolution::Missing => {
+                    diags.push(Diag::new(
+                        file.src.clone(),
+                        span,
+                        format!("reference to undeclared resource '{address}'"),
+                    ));
+                }
+                Resolution::Ambiguous(modules) => {
+                    let mut sorted: Vec<&str> = modules.iter().map(String::as_str).collect();
+                    sorted.sort();
+                    diags.push(Diag::new(
+                        file.src.clone(),
+                        span,
+                        format!(
+                            "ambiguous reference to '{address}'; declared in modules [{}] — rename one of the resources so each is unique within its module",
+                            sorted.join(", ")
+                        ),
+                    ));
+                }
             }
         }
     }
