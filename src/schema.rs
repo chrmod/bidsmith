@@ -552,17 +552,29 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
         );
 
         m.insert(
+            "google_ads_shared_criterion",
+            BlockSchema {
+                attributes: vec![attr(
+                    "shared_set",
+                    FieldType::RefOrResourceName(&["google_ads_shared_set"]),
+                    true,
+                )],
+                blocks: vec![keyword_block()],
+            },
+        );
+
+        m.insert(
             "google_ads_campaign_shared_set",
             BlockSchema {
                 attributes: vec![
                     attr(
                         "campaign",
-                        FieldType::Ref(&["google_ads_campaign"]),
+                        FieldType::RefOrResourceName(&["google_ads_campaign"]),
                         true,
                     ),
                     attr(
                         "shared_set",
-                        FieldType::Ref(&["google_ads_shared_set"]),
+                        FieldType::RefOrResourceName(&["google_ads_shared_set"]),
                         true,
                     ),
                     attr(

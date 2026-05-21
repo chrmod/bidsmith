@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::commands::export::{
     ExportInput, JsonAdGroup, JsonAdGroupAd, JsonAdGroupCriterion, JsonBudget, JsonCallAsset,
     JsonCampaign, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
-    JsonCustomerAsset, JsonSharedSet,
+    JsonCustomerAsset, JsonSharedCriterion, JsonSharedSet,
 };
 
 #[derive(Debug, Clone)]
@@ -268,6 +268,46 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         diffs.push(ResourceDiff {
             address: d.id.clone(),
             kind: "shared_set",
+            action,
+        });
+    }
+
+    let live_shared_criteria: HashMap<(String, String, String), &JsonSharedCriterion> = live
+        .shared_criteria
+        .iter()
+        .map(|c| {
+            (
+                (
+                    c.shared_set.clone(),
+                    c.keyword.match_type.clone(),
+                    c.keyword.text.clone(),
+                ),
+                c,
+            )
+        })
+        .collect();
+    for d in &declared.shared_criteria {
+        let live_set_id = shared_set_match.get(&d.shared_set).cloned().or_else(|| {
+            if d.shared_set.starts_with("customers/") {
+                d.shared_set.rsplit('/').next().map(str::to_string)
+            } else {
+                None
+            }
+        });
+        let action = match live_set_id {
+            Some(set_id) => match live_shared_criteria.get(&(
+                set_id,
+                d.keyword.match_type.clone(),
+                d.keyword.text.clone(),
+            )) {
+                Some(l) => action_for_match(l.id.clone(), Vec::new()),
+                None => Action::Create,
+            },
+            None => Action::Create,
+        };
+        diffs.push(ResourceDiff {
+            address: d.id.clone(),
+            kind: "shared_criterion",
             action,
         });
     }

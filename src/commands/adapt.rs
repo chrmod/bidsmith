@@ -668,7 +668,8 @@ impl AdapterState {
         let customer_id = self
             .customer_id
             .ok_or_else(|| "could not determine customer_id from any resourceName".to_string())?;
-        let shared_sets = self
+        let mut shared_criteria_out: Vec<crate::commands::export::JsonSharedCriterion> = Vec::new();
+        let shared_sets: Vec<JsonSharedSet> = self
             .shared_sets
             .into_values()
             .map(|s| {
@@ -679,6 +680,13 @@ impl AdapterState {
                     status,
                 } = s;
                 let keywords = self.shared_criteria.remove(&id).unwrap_or_default();
+                for (i, kw) in keywords.iter().enumerate() {
+                    shared_criteria_out.push(crate::commands::export::JsonSharedCriterion {
+                        id: format!("{id}~{i}"),
+                        shared_set: id.clone(),
+                        keyword: kw.clone(),
+                    });
+                }
                 JsonSharedSet {
                     id,
                     name,
@@ -701,6 +709,7 @@ impl AdapterState {
             call_assets: self.call_assets.into_values().collect(),
             customer_assets: self.customer_assets.into_values().collect(),
             shared_sets,
+            shared_criteria: shared_criteria_out,
             campaign_shared_sets: self.campaign_shared_sets.into_values().collect(),
         })
     }

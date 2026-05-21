@@ -7,7 +7,7 @@ use crate::commands::export::{
     JsonCallAsset, JsonCampaign, JsonCampaignCriterion, JsonCampaignSharedSet,
     JsonConversionAction, JsonCustomerAsset, JsonKeyword, JsonLanguage, JsonLocation,
     JsonManualCpc, JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset,
-    JsonSharedSet, JsonValueSettings,
+    JsonSharedCriterion, JsonSharedSet, JsonValueSettings,
 };
 use crate::diagnostics::Diag;
 use crate::parser::ParsedFile;
@@ -54,6 +54,7 @@ pub fn import_files(files: &[ParsedFile]) -> Result<ImportResult, Vec<Diag>> {
         call_assets: Vec::new(),
         customer_assets: Vec::new(),
         shared_sets: Vec::new(),
+        shared_criteria: Vec::new(),
         campaign_shared_sets: Vec::new(),
     };
     let mut skipped: Vec<(String, String)> = Vec::new();
@@ -119,8 +120,21 @@ pub fn import_files(files: &[ParsedFile]) -> Result<ImportResult, Vec<Diag>> {
                                 .map(|x| input.customer_assets.push(x)),
                         ),
                         "google_ads_shared_set" => emit(
-                            import_shared_set(&ctx, b, &address)
-                                .map(|x| input.shared_sets.push(x)),
+                            import_shared_set(&ctx, b, &address).map(|mut x| {
+                                for (i, kw) in x.negative_keywords.iter().enumerate() {
+                                    input.shared_criteria.push(JsonSharedCriterion {
+                                        id: format!("{address}~{i}"),
+                                        shared_set: address.clone(),
+                                        keyword: kw.clone(),
+                                    });
+                                }
+                                x.negative_keywords.clear();
+                                input.shared_sets.push(x);
+                            }),
+                        ),
+                        "google_ads_shared_criterion" => emit(
+                            import_shared_criterion(&ctx, b, &address)
+                                .map(|x| input.shared_criteria.push(x)),
                         ),
                         "google_ads_campaign_shared_set" => emit(
                             import_campaign_shared_set(&ctx, b, &address)
@@ -852,6 +866,40 @@ fn import_shared_set(
     })
 }
 
+fn import_shared_criterion(
+    ctx: &Ctx,
+    block: &Block,
+    address: &str,
+) -> Result<JsonSharedCriterion, Diag> {
+    let mut shared_set_ref = None;
+    let mut keyword: Option<JsonKeyword> = None;
+    for s in block.body.iter() {
+        match s {
+            Structure::Attribute(a) => {
+                if a.key.as_str() == "shared_set" {
+                    shared_set_ref = extract_resource_ref(&a.value)
+                        .map(|r| ctx.resolve_ref(&r))
+                        .or_else(|| expect_string_owned(a));
+                }
+            }
+            Structure::Block(b) if b.ident.as_str() == "keyword" => {
+                if let Some(kw) = import_keyword(b) {
+                    keyword = Some(kw);
+                }
+            }
+            _ => {}
+        }
+    }
+    let shared_set =
+        shared_set_ref.ok_or_else(|| missing(ctx.file, block, address, "shared_set"))?;
+    let keyword = keyword.ok_or_else(|| missing(ctx.file, block, address, "keyword"))?;
+    Ok(JsonSharedCriterion {
+        id: address.to_string(),
+        shared_set,
+        keyword,
+    })
+}
+
 fn import_campaign_shared_set(
     ctx: &Ctx,
     block: &Block,
@@ -863,8 +911,16 @@ fn import_campaign_shared_set(
     for s in block.body.iter() {
         let Structure::Attribute(a) = s else { continue };
         match a.key.as_str() {
-            "campaign" => campaign_ref = extract_resource_ref(&a.value).map(|r| ctx.resolve_ref(&r)),
-            "shared_set" => shared_set_ref = extract_resource_ref(&a.value).map(|r| ctx.resolve_ref(&r)),
+            "campaign" => {
+                campaign_ref = extract_resource_ref(&a.value)
+                    .map(|r| ctx.resolve_ref(&r))
+                    .or_else(|| expect_string_owned(a));
+            }
+            "shared_set" => {
+                shared_set_ref = extract_resource_ref(&a.value)
+                    .map(|r| ctx.resolve_ref(&r))
+                    .or_else(|| expect_string_owned(a));
+            }
             "status" => status = expect_string_owned(a),
             _ => {}
         }

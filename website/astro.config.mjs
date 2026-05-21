@@ -133,6 +133,7 @@ export default defineConfig({
               label: 'Shared resources',
               items: [
                 { label: 'google_ads_shared_set', slug: 'resources/google_ads_shared_set' },
+                { label: 'google_ads_shared_criterion', slug: 'resources/google_ads_shared_criterion' },
                 { label: 'google_ads_campaign_shared_set', slug: 'resources/google_ads_campaign_shared_set' },
               ],
             },

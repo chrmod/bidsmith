@@ -30,6 +30,8 @@ pub struct ExportInput {
     #[serde(default)]
     pub shared_sets: Vec<JsonSharedSet>,
     #[serde(default)]
+    pub shared_criteria: Vec<JsonSharedCriterion>,
+    #[serde(default)]
     pub campaign_shared_sets: Vec<JsonCampaignSharedSet>,
 }
 
@@ -142,7 +144,7 @@ pub struct JsonCampaignCriterion {
     pub proximity: Option<JsonProximity>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct JsonKeyword {
     pub text: String,
     pub match_type: String,
@@ -225,6 +227,13 @@ pub struct JsonSharedSet {
     pub status: Option<String>,
     #[serde(default)]
     pub negative_keywords: Vec<JsonKeyword>,
+}
+
+#[derive(Deserialize)]
+pub struct JsonSharedCriterion {
+    pub id: String,
+    pub shared_set: String,
+    pub keyword: JsonKeyword,
 }
 
 #[derive(Deserialize)]

@@ -1,0 +1,70 @@
+---
+title: google_ads_shared_criterion
+description: A single negative keyword inside a shared set, declared as its own resource.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_shared_criterion'];
+export const keyword = resource.blocks.find((b) => b.name === 'keyword');
+
+A **shared criterion** is a single negative keyword that belongs to a
+[`google_ads_shared_set`](./google_ads_shared_set/). It exists as a
+separate resource so each keyword can be added, removed, or paused
+independently — handy when a list grows past a handful of entries.
+
+<Aside type="tip">
+  You can populate a shared set with `negative_keyword` blocks directly
+  inside [`google_ads_shared_set`](./google_ads_shared_set/) or with
+  separate `google_ads_shared_criterion` resources. Both styles end up
+  as the same shared-set criteria on the live account; pick whichever
+  reads better for the size of your list.
+</Aside>
+
+## Example
+
+A shared list of value-seeker negatives, declared as separate
+criteria:
+
+```hcl
+resource "google_ads_shared_set" "value_seekers" {
+  name = "Value-seeker negatives"
+  type = "NEGATIVE_KEYWORDS"
+}
+
+resource "google_ads_shared_criterion" "neg_free" {
+  shared_set = google_ads_shared_set.value_seekers.id
+  keyword {
+    text       = "free"
+    match_type = "BROAD"
+  }
+}
+
+resource "google_ads_shared_criterion" "neg_diy" {
+  shared_set = google_ads_shared_set.value_seekers.id
+  keyword {
+    text       = "diy"
+    match_type = "BROAD"
+  }
+}
+```
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+## Nested blocks
+
+### `keyword`
+
+The keyword text and match type. Exactly one `keyword` block per
+shared criterion.
+
+<AttributeTable block={keyword} headingLevel={4} />
+
+## See also
+
+- [`google_ads_shared_set`](./google_ads_shared_set/) — the parent list.
+- [`google_ads_campaign_shared_set`](./google_ads_campaign_shared_set/) — link a shared set to a campaign.

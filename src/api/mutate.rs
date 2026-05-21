@@ -53,6 +53,7 @@ pub fn build_mutate_with_diff(
             "call_asset" => "assets",
             "customer_asset" => "customerAssets",
             "shared_set" => "sharedSets",
+            "shared_criterion" => "sharedCriteria",
             "campaign_shared_set" => "campaignSharedSets",
             _ => continue,
         };
@@ -110,17 +111,43 @@ pub fn build_mutate_with_diff(
                         .iter()
                         .find(|c| c.id == d.address);
                     let parent_addr = css.map(|c| c.campaign.as_str()).unwrap_or("");
-                    let parent_id = refs
-                        .get(parent_addr)
-                        .and_then(|rn| rn.rsplit('/').next())
-                        .unwrap_or("0");
+                    let parent_id = if parent_addr.starts_with("customers/") {
+                        parent_addr.rsplit('/').next().unwrap_or("0").to_string()
+                    } else {
+                        refs.get(parent_addr)
+                            .and_then(|rn| rn.rsplit('/').next())
+                            .unwrap_or("0")
+                            .to_string()
+                    };
                     let set_addr = css.map(|c| c.shared_set.as_str()).unwrap_or("");
-                    let set_id = refs
-                        .get(set_addr)
-                        .and_then(|rn| rn.rsplit('/').next())
-                        .unwrap_or("0");
+                    let set_id = if set_addr.starts_with("customers/") {
+                        set_addr.rsplit('/').next().unwrap_or("0").to_string()
+                    } else {
+                        refs.get(set_addr)
+                            .and_then(|rn| rn.rsplit('/').next())
+                            .unwrap_or("0")
+                            .to_string()
+                    };
                     format!(
                         "customers/{customer_id}/{segment}/{parent_id}~{set_id}"
+                    )
+                }
+                "shared_criterion" => {
+                    let sc = input
+                        .shared_criteria
+                        .iter()
+                        .find(|c| c.id == d.address);
+                    let set_addr = sc.map(|c| c.shared_set.as_str()).unwrap_or("");
+                    let set_id = if set_addr.starts_with("customers/") {
+                        set_addr.rsplit('/').next().unwrap_or("0").to_string()
+                    } else {
+                        refs.get(set_addr)
+                            .and_then(|rn| rn.rsplit('/').next())
+                            .unwrap_or("0")
+                            .to_string()
+                    };
+                    format!(
+                        "customers/{customer_id}/{segment}/{set_id}~{next}"
                     )
                 }
                 _ => temp_rn(customer_id, segment, next),
@@ -323,22 +350,6 @@ pub fn build_mutate_with_diff(
                 "sharedSetOperation": { "create": shared_set_create(s, rn) }
             }));
             operations.push(PlanOperation { address: s.id.clone(), kind: "shared_set" });
-            for (i, kw) in s.negative_keywords.iter().enumerate() {
-                let crit_rn = format!(
-                    "customers/{customer_id}/sharedCriteria/{idx}~{i}",
-                    idx = rn.rsplit('/').next().unwrap_or("0"),
-                    i = i,
-                );
-                mutate_ops.push(json!({
-                    "sharedCriterionOperation": {
-                        "create": shared_criterion_create(rn, &crit_rn, kw)
-                    }
-                }));
-                operations.push(PlanOperation {
-                    address: format!("{}.keywords[{i}]", s.id),
-                    kind: "shared_criterion",
-                });
-            }
         } else if let Some(fields) = update_set.get(&s.id) {
             mutate_ops.push(json!({
                 "sharedSetOperation": {
@@ -350,16 +361,51 @@ pub fn build_mutate_with_diff(
         }
     }
 
+    for (i, c) in input.shared_criteria.iter().enumerate() {
+        if !create_set.contains(&c.id) {
+            continue;
+        }
+        let set_rn = if c.shared_set.starts_with("customers/") {
+            c.shared_set.clone()
+        } else {
+            match resolve(&refs, &c.shared_set, &c.id, "shared_set", &mut errors) {
+                Some(s) => s,
+                None => continue,
+            }
+        };
+        let set_idx = set_rn.rsplit('/').next().unwrap_or("0");
+        let crit_rn = format!(
+            "customers/{customer_id}/sharedCriteria/{set_idx}~{i}",
+        );
+        mutate_ops.push(json!({
+            "sharedCriterionOperation": {
+                "create": shared_criterion_create(&set_rn, &crit_rn, &c.keyword)
+            }
+        }));
+        operations.push(PlanOperation {
+            address: c.id.clone(),
+            kind: "shared_criterion",
+        });
+    }
+
     for cs in &input.campaign_shared_sets {
         let rn = refs.get(&cs.id).expect("campaign_shared_set rn");
         if create_set.contains(&cs.id) {
-            let camp_rn = match resolve(&refs, &cs.campaign, &cs.id, "campaign", &mut errors) {
-                Some(s) => s,
-                None => continue,
+            let camp_rn = if cs.campaign.starts_with("customers/") {
+                cs.campaign.clone()
+            } else {
+                match resolve(&refs, &cs.campaign, &cs.id, "campaign", &mut errors) {
+                    Some(s) => s,
+                    None => continue,
+                }
             };
-            let set_rn = match resolve(&refs, &cs.shared_set, &cs.id, "shared_set", &mut errors) {
-                Some(s) => s,
-                None => continue,
+            let set_rn = if cs.shared_set.starts_with("customers/") {
+                cs.shared_set.clone()
+            } else {
+                match resolve(&refs, &cs.shared_set, &cs.id, "shared_set", &mut errors) {
+                    Some(s) => s,
+                    None => continue,
+                }
             };
             mutate_ops.push(json!({
                 "campaignSharedSetOperation": {

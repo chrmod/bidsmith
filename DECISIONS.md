@@ -274,14 +274,23 @@ Validator covers (so far):
   `google_ads_shared_set` (named negative-keyword set with a bulk
   `negative_keyword { text, match_type }` sub-block form; type
   defaults to `NEGATIVE_KEYWORDS` at mutate time),
+  `google_ads_shared_criterion` (a single negative keyword inside a
+  shared set, declared as its own top-level resource for fine-grained
+  add/remove diffs — equivalent at mutate time to a single
+  `negative_keyword` sub-block on the parent set),
   `google_ads_campaign_shared_set` (links a `google_ads_shared_set`
-  to a `google_ads_campaign`),
+  to a `google_ads_campaign`; both `campaign` and `shared_set` accept
+  either a typed reference or a literal Google Ads resource-name
+  string for gradual adoption),
   `google_ads_conversion_action`
   (`type`, `category`, lookback windows, optional `value_settings`
   sub-block with default value / currency / always-use flag),
   `google_ads_call_asset` (country code + phone number, optional
   `call_conversion_reporting_state` and reference to a
-  `google_ads_conversion_action`), `google_ads_customer_asset` (links
+  `google_ads_conversion_action` — the field also accepts a literal
+  Google Ads resource-name string so refreshes against accounts that
+  reference removed or out-of-scope conversion actions still
+  round-trip), `google_ads_customer_asset` (links
   a call asset to the account via `field_type = "CALL"`)
 - `provider "google_ads"` (`customer_id` required, `login_customer_id`
   optional — overridable via `--login-customer-id` / `--customer-id` on
