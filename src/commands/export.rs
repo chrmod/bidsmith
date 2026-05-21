@@ -317,14 +317,14 @@ pub fn run(
     }
 }
 
-fn canonicalize(raw: &str) -> String {
+pub fn canonicalize(raw: &str) -> String {
     match raw.parse::<hcl_edit::structure::Body>() {
         Ok(body) => crate::commands::fmt::format_body(&body),
         Err(_) => raw.to_string(),
     }
 }
 
-fn filter_removed(input: &mut ExportInput) {
+pub fn filter_removed(input: &mut ExportInput) {
     let is_removed = |s: &Option<String>| s.as_deref() == Some("REMOVED");
     input.campaigns.retain(|c| !is_removed(&c.status));
     input.ad_groups.retain(|g| !is_removed(&g.status));
@@ -361,6 +361,130 @@ fn load_gads_search_response(path: &str) -> Result<ExportInput, ExitCode> {
         eprintln!("failed to adapt {path}: {e}");
         ExitCode::from(1)
     })
+}
+
+pub fn render_split(input: &ExportInput) -> (String, String) {
+    let mut account = String::new();
+    let mut campaigns = String::new();
+    let mut names = NameAllocator::default();
+
+    let mut budget_addr: HashMap<String, String> = HashMap::new();
+    let mut campaign_addr: HashMap<String, String> = HashMap::new();
+    let mut ad_group_addr: HashMap<String, String> = HashMap::new();
+    let mut conversion_action_addr: HashMap<String, String> = HashMap::new();
+    let mut call_asset_addr: HashMap<String, String> = HashMap::new();
+    let mut shared_set_addr: HashMap<String, String> = HashMap::new();
+
+    write_provider(&mut account, input);
+
+    for c in &input.conversion_actions {
+        let name = names.allocate("google_ads_conversion_action", &slugify(&c.name));
+        conversion_action_addr
+            .insert(c.id.clone(), format!("google_ads_conversion_action.{name}"));
+        write_conversion_action(&mut account, &name, c);
+    }
+
+    for a in &input.call_assets {
+        let base = format!("call_{}_{}", a.country_code, a.phone_number);
+        let name = names.allocate("google_ads_call_asset", &slugify(&base));
+        call_asset_addr.insert(a.id.clone(), format!("google_ads_call_asset.{name}"));
+        write_call_asset(&mut account, &name, a, &conversion_action_addr);
+    }
+
+    for a in &input.customer_assets {
+        let base = call_asset_addr
+            .get(&a.asset)
+            .and_then(|addr| addr.strip_prefix("google_ads_call_asset."))
+            .map(|s| format!("link_{s}"))
+            .unwrap_or_else(|| slugify(&a.id));
+        let name = names.allocate("google_ads_customer_asset", &slugify(&base));
+        write_customer_asset(&mut account, &name, a, &call_asset_addr);
+    }
+
+    for s in &input.shared_sets {
+        let name = names.allocate("google_ads_shared_set", &slugify(&s.name));
+        shared_set_addr.insert(s.id.clone(), format!("google_ads_shared_set.{name}"));
+        write_shared_set(&mut account, &name, s);
+    }
+
+    let has_campaign_resources = !input.campaign_budgets.is_empty()
+        || !input.campaigns.is_empty()
+        || !input.ad_groups.is_empty()
+        || !input.ad_group_ads.is_empty()
+        || !input.ad_group_criteria.is_empty()
+        || !input.campaign_criteria.is_empty()
+        || !input.campaign_shared_sets.is_empty();
+
+    if has_campaign_resources {
+        write_provider(&mut campaigns, input);
+
+        for b in &input.campaign_budgets {
+            let name = names.allocate("google_ads_campaign_budget", &slugify(&b.name));
+            budget_addr.insert(b.id.clone(), format!("google_ads_campaign_budget.{name}"));
+            write_budget(&mut campaigns, &name, b);
+        }
+
+        for c in &input.campaigns {
+            let name = names.allocate("google_ads_campaign", &slugify(&c.name));
+            campaign_addr.insert(c.id.clone(), format!("google_ads_campaign.{name}"));
+            write_campaign(&mut campaigns, &name, c, &budget_addr);
+        }
+
+        for g in &input.ad_groups {
+            let name = names.allocate("google_ads_ad_group", &slugify(&g.name));
+            ad_group_addr.insert(g.id.clone(), format!("google_ads_ad_group.{name}"));
+            write_ad_group(&mut campaigns, &name, g, &campaign_addr);
+        }
+
+        for a in &input.ad_group_ads {
+            let base = ad_ad_base(a, &ad_group_addr);
+            let name = names.allocate("google_ads_ad_group_ad", &base);
+            write_ad_group_ad(&mut campaigns, &name, a, &ad_group_addr);
+        }
+
+        for group in group_ad_group_criteria(&input.ad_group_criteria) {
+            let base = ad_group_criterion_group_base(&group, &ad_group_addr);
+            let name = names.allocate("google_ads_ad_group_criterion", &slugify(&base));
+            write_ad_group_criterion_group(&mut campaigns, &name, &group, &ad_group_addr);
+        }
+
+        let (negative_groups, singletons) = partition_campaign_criteria(&input.campaign_criteria);
+        for group in negative_groups {
+            let base = campaign_negative_group_base(&group, &campaign_addr);
+            let name = names.allocate("google_ads_campaign_criterion", &slugify(&base));
+            write_campaign_negative_group(&mut campaigns, &name, &group, &campaign_addr);
+        }
+        for c in singletons {
+            let base = criterion_base(c);
+            let name = names.allocate("google_ads_campaign_criterion", &slugify(&base));
+            write_campaign_criterion(&mut campaigns, &name, c, &campaign_addr);
+        }
+
+        for s in &input.campaign_shared_sets {
+            let base = match (
+                campaign_addr
+                    .get(&s.campaign)
+                    .and_then(|a| a.strip_prefix("google_ads_campaign.")),
+                shared_set_addr
+                    .get(&s.shared_set)
+                    .and_then(|a| a.strip_prefix("google_ads_shared_set.")),
+            ) {
+                (Some(c), Some(ss)) => format!("{c}_{ss}"),
+                _ => slugify(&s.id),
+            };
+            let name = names.allocate("google_ads_campaign_shared_set", &slugify(&base));
+            write_campaign_shared_set(&mut campaigns, &name, s, &campaign_addr, &shared_set_addr);
+        }
+    }
+
+    while account.ends_with("\n\n\n") {
+        account.pop();
+    }
+    while campaigns.ends_with("\n\n\n") {
+        campaigns.pop();
+    }
+
+    (account, campaigns)
 }
 
 fn render(input: &ExportInput) -> String {
@@ -1105,5 +1229,114 @@ impl NameAllocator {
             }
             i += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::adapt::from_search_response;
+
+    const FULL_FIXTURE: &str = r#"[
+        {
+            "results": [
+                { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget A", "amountMicros": "5000000" } },
+                { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Camp A", "status": "ENABLED", "advertisingChannelType": "SEARCH", "campaignBudget": "customers/9/campaignBudgets/1001" } },
+                { "conversionAction": { "resourceName": "customers/9/conversionActions/3001", "id": "3001", "name": "Lead", "type": "WEBPAGE", "category": "SUBMIT_LEAD_FORM", "status": "ENABLED" } },
+                { "asset": { "resourceName": "customers/9/assets/4001", "id": "4001", "callAsset": { "countryCode": "PL", "phoneNumber": "510019081" } } },
+                { "customerAsset": { "resourceName": "customers/9/customerAssets/4001~CALL", "asset": "customers/9/assets/4001", "fieldType": "CALL", "status": "ENABLED" } }
+            ]
+        }
+    ]"#;
+
+    #[test]
+    fn render_split_separates_account_and_campaign_buckets() {
+        let input = from_search_response(FULL_FIXTURE).expect("adapter");
+        let (account, campaigns) = render_split(&input);
+
+        assert!(account.contains("google_ads_conversion_action"));
+        assert!(account.contains("google_ads_call_asset"));
+        assert!(account.contains("google_ads_customer_asset"));
+        assert!(!account.contains("resource \"google_ads_campaign\""));
+        assert!(!account.contains("google_ads_campaign_budget"));
+
+        assert!(campaigns.contains("resource \"google_ads_campaign\""));
+        assert!(campaigns.contains("google_ads_campaign_budget"));
+        assert!(!campaigns.contains("google_ads_conversion_action"));
+        assert!(!campaigns.contains("google_ads_call_asset"));
+        assert!(!campaigns.contains("google_ads_customer_asset"));
+
+        assert!(account.starts_with("provider \"google_ads\""));
+        assert!(campaigns.starts_with("provider \"google_ads\""));
+    }
+
+    #[test]
+    fn render_split_account_only_produces_no_campaigns_file() {
+        let raw = r#"[
+            {
+                "results": [
+                    { "conversionAction": { "resourceName": "customers/9/conversionActions/3001", "id": "3001", "name": "Lead", "type": "WEBPAGE", "category": "SUBMIT_LEAD_FORM" } }
+                ]
+            }
+        ]"#;
+        let input = from_search_response(raw).unwrap();
+        let (account, campaigns) = render_split(&input);
+        assert!(account.contains("google_ads_conversion_action"));
+        assert!(campaigns.is_empty(), "campaigns should be empty, got {campaigns:?}");
+    }
+
+    #[test]
+    fn render_split_emits_parseable_hcl2() {
+        let input = from_search_response(FULL_FIXTURE).expect("adapter");
+        let (account, campaigns) = render_split(&input);
+        let _: hcl_edit::structure::Body =
+            account.parse().expect("account.bid parses as HCL2");
+        let _: hcl_edit::structure::Body =
+            campaigns.parse().expect("campaigns.bid parses as HCL2");
+    }
+
+    #[test]
+    fn render_split_validates_as_a_directory() {
+        let raw = r#"[
+            {
+                "results": [
+                    { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget A", "amountMicros": "5000000" } },
+                    { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Camp A", "status": "ENABLED", "advertisingChannelType": "SEARCH", "campaignBudget": "customers/9/campaignBudgets/1001", "containsEuPoliticalAdvertising": "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING" } },
+                    { "sharedSet": { "resourceName": "customers/9/sharedSets/9001", "id": "9001", "name": "negs", "type": "NEGATIVE_KEYWORDS", "status": "ENABLED" } },
+                    { "campaignSharedSet": { "resourceName": "customers/9/campaignSharedSets/2001~9001", "campaign": "customers/9/campaigns/2001", "sharedSet": "customers/9/sharedSets/9001", "status": "ENABLED" } }
+                ]
+            }
+        ]"#;
+        let input = from_search_response(raw).expect("adapter");
+        let (account, campaigns) = render_split(&input);
+
+        let dir = std::env::temp_dir()
+            .join(format!("bidsmith-rs-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let account_path = dir.join("account.bid");
+        let campaigns_path = dir.join("campaigns.bid");
+        std::fs::write(&account_path, &account).unwrap();
+        std::fs::write(&campaigns_path, &campaigns).unwrap();
+
+        let parsed = vec![
+            crate::parser::parse_file(&account_path).expect("account parses"),
+            crate::parser::parse_file(&campaigns_path).expect("campaigns parses"),
+        ];
+        let diags = crate::schema::validate_files(&parsed);
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(
+            errors.is_empty(),
+            "validate_files produced errors:\n{}\n--- account.bid ---\n{}\n--- campaigns.bid ---\n{}",
+            errors
+                .iter()
+                .map(|d| format!("{}", d.message))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            account,
+            campaigns
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

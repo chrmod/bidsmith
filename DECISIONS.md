@@ -187,6 +187,14 @@ Verified locally:
   indent, single space around `=`, blank line between blocks but not
   within attribute runs, arrays wrap onto multiple lines when the
   single-line form exceeds 80 chars).
+- `cargo test` (offline) runs three `render_split` checks in
+  `src/commands/export.rs` that lock in the account-vs-campaign
+  bucket split.
+- `cargo run -- export --from-gads-search-response examples/exports/raw.json`
+  now also emits a `google_ads_conversion_action`, `google_ads_call_asset`,
+  and `google_ads_customer_asset` from the same dump, round-tripping
+  through `validate` and `fmt --check` cleanly. The fixture is the
+  offline CI's account-level smoke test.
 - `bidsmith plan --whoami` against a real `.env` exchanges the refresh
   token and prints `access token … expires_in: 3599s` plus the
   customer / login / developer-token envelope. No Google Ads API call
@@ -207,6 +215,16 @@ Verified locally:
   `Apply these changes? Only 'yes' will be accepted to approve.`
   before flipping `validateOnly: false` and mutating. `--auto-approve`
   skips the prompt (required when stdin is not a TTY).
+- `bidsmith refresh -d <DIR>` pulls live state and writes the split
+  pair `<DIR>/account.bid` (provider + conversion actions + call
+  assets + customer assets + shared sets) and `<DIR>/campaigns.bid`
+  (provider + budgets + campaigns + ad groups + RSAs + criteria +
+  campaign-shared-sets). `-o <FILE>` collapses both into one file;
+  no flag writes the concatenation to stdout. Bootstrap-only — it
+  overwrites existing files; reconcile-in-place needs the Phase 3
+  v2 labels first.
+- `cargo test` runs three offline unit tests in `commands::export`
+  that lock in the account-vs-campaign split (`render_split`).
 
 Validator covers (so far):
 - `google_ads_campaign_budget`, `google_ads_campaign` (SEARCH with
@@ -275,7 +293,7 @@ Validator covers (so far):
 | `plan`     | partial | Diff `.bid` vs live (name-matched, scalar-level), validateOnly batch via googleAds:mutate; emits `+ create` / `~ update` / `no-op` per resource |
 | `apply`    | partial | Shows the validateOnly diff first, then prompts for `yes` (or skips the prompt with `--auto-approve`) before mutating. Refuses to prompt when stdin is not a TTY. Does not yet write `bidsmith:address=…` labels or detect removals (state-tracking is the v2 follow-up) |
 | `pull`     | partial | Dump live state as raw SearchStream JSON (`-o PATH` or stdout). Reuses the same query list `plan --read-live` issues; output is the exact shape `export --from-gads-search-response` consumes, so the pair round-trips an account into a `.bid` |
-| `refresh`  | stub    | Import live state into `.bid` files                  |
+| `refresh`  | partial | Bootstrap-mode import of live state into `.bid` (no `-o`/`-d` → stdout, `-o PATH` → single file, `-d DIR` → split into `<DIR>/account.bid` for conversion actions / call assets / customer assets / shared sets and `<DIR>/campaigns.bid` for everything campaign-scoped). Reconcile-in-place against existing `.bid` and label-based matching wait on the Phase 3 v2 label work |
 | `query`    | partial | Read-only GAQL passthrough; `--format table` (default), `json`, or `tsv`; uses the same OAuth + customer envelope as `plan` / `apply` |
 | `init`     | —       | (later) Bootstrap project skeleton                   |
 | `graph`    | —       | (later) Visualize resource graph                     |

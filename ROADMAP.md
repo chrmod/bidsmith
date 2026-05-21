@@ -99,10 +99,18 @@ declared HCL against live labeled state. Local cache is rebuildable.
   entry → `- destroy`
 
 **Phase 4 — Refresh / Import**
-- `refresh`: regenerate `.bid` from labeled live resources
-- `import <address> <api-resource>`: adopt an unlabeled live resource
-- Shares the rendering layer with `export` (refresh = export + live
-  API client). Grow the renderer once; both commands consume it.
+- ✅ `refresh`: bootstrap-mode import that pulls live state and writes
+  it as a fmt-canonical `.bid`. Three output modes — stdout (default),
+  single file (`-o PATH`), or split (`-d DIR` → `account.bid` for
+  account-level resources, `campaigns.bid` for campaign-scoped).
+  Reuses `live_state::fetch` + the new `export::render_split`
+  renderer.
+- ⏳ Reconcile-in-place mode: match resources by
+  `bidsmith:address=` label (or `(resource_type, name)` for unlabeled
+  ones), update fields without overwriting unrelated blocks. Blocked
+  on Phase 3 v2 labels.
+- ⏳ `import <address> <api-resource>`: adopt an unlabeled live
+  resource into a specific `.bid` address.
 
 **Phase 5 — Modules**
 - ✅ Files-as-modules: each `.bid` file's basename is its implicit
@@ -147,17 +155,24 @@ Priority order for what closes the most user-facing gaps:
    (no more "matched by name" guessing), and emit `- destroy` rows
    for labeled live resources that no longer appear in `.bid`. Closes
    the lifecycle and makes adoption (`import`) and refresh tractable.
-3. **Phase 4 — refresh**. `bidsmith refresh -o <file>` walks labeled
-   live resources, runs them through the existing renderer, writes a
-   canonical `.bid`. Reuses `live_state.rs` + the renderer; the new
-   work is a label-driven filter plus a small CLI.
-4. **Account-scoped resource types**, unblocked by the W1 trial:
-   - `google_ads_asset` (especially `CallAsset` for the +PL phone)
-   - `google_ads_customer_asset` (wire account-level call assets)
-   - `google_ads_conversion_action` (Lead, Phone — referenced from
-     the account, not from a single campaign)
-   These let bidsmith own the policy fix in W1: move the literal
-   phone out of RSA copy into a proper Call asset.
+3. **Phase 4 v2 — reconcile-mode refresh**. The bootstrap-mode
+   `refresh` shipped — `bidsmith refresh -d <DIR>` writes
+   `account.bid` + `campaigns.bid` from live, and `-o <FILE>` /
+   no-flag stdout variants exist for one-file workflows. What's still
+   missing: matching live resources against an *existing* `.bid` and
+   updating fields in place instead of overwriting. That needs the
+   `bidsmith:address=` label plumbing from Phase 3 v2 to identify
+   managed resources without name guessing. Until then, bootstrap
+   refresh + `git diff` is the recovery loop.
+4. **Account-scoped resource types in the live pipeline**. The
+   schema, validator, renderer, adapter, and `live_state` queries
+   for `google_ads_conversion_action`, `google_ads_call_asset`, and
+   `google_ads_customer_asset` are all in place; offline CI exercises
+   them via `examples/exports/raw.json`. Outstanding work is the live
+   `apply` round-trip (needs the test manager account fixture to
+   include account-level resources), and operator-side adoption —
+   feeding bidsmith the Rezolutnie account's Lead/Phone conversion
+   actions and `+48 510 019 081` call asset via `refresh -d`.
 
 Smaller follow-ups that can ride along:
 

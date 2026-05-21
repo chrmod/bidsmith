@@ -92,7 +92,21 @@ enum Cmd {
         verbose: bool,
     },
     /// Pull live state into .bid files
-    Refresh,
+    Refresh {
+        /// Write everything to a single .bid file
+        #[arg(short = 'o', long, value_name = "PATH", conflicts_with = "dir")]
+        output: Option<String>,
+        /// Split account-level and campaign-scoped resources into
+        /// <DIR>/account.bid and <DIR>/campaigns.bid
+        #[arg(short = 'd', long, value_name = "DIR")]
+        dir: Option<String>,
+        /// Include resources whose status is REMOVED (default: drop them)
+        #[arg(long)]
+        include_removed: bool,
+        /// Print the outgoing request envelope
+        #[arg(long)]
+        verbose: bool,
+    },
     /// Run a GAQL query against the live Google Ads account (read-only)
     Query {
         /// GAQL query string (e.g. `SELECT campaign.name FROM campaign`)
@@ -153,9 +167,11 @@ fn main() -> ExitCode {
         Cmd::Pull { output, verbose } => {
             commands::pull::run(output.as_deref(), verbose)
         }
-        Cmd::Refresh => commands::stub(
-            "refresh",
-            "Will pull live Google Ads state into .bid files.",
+        Cmd::Refresh { output, dir, include_removed, verbose } => commands::refresh::run(
+            output.as_deref(),
+            dir.as_deref(),
+            include_removed,
+            verbose,
         ),
         Cmd::E2eCleanup { prefix, verbose } => {
             commands::e2e_cleanup::run(&prefix, verbose)
