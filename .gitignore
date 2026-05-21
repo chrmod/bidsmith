@@ -5,3 +5,4 @@
 .DS_Store
 .bidsmith/
 /docs/
+website/src/data/schema.json

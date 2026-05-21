@@ -4,6 +4,10 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
+    "gen-schema": "cargo run --manifest-path ../Cargo.toml --quiet -- schema --output src/data/schema.json",
+    "predev": "npm run gen-schema",
+    "prestart": "npm run gen-schema",
+    "prebuild": "npm run gen-schema",
     "dev": "astro dev",
     "start": "astro dev",
     "build": "astro build",
