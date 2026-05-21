@@ -1,0 +1,39 @@
+---
+title: google_ads_call_asset
+description: A phone number that can be attached to ads as a call extension.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_call_asset'];
+
+A **call asset** is a phone number that can be attached to your ads as
+a "call extension." It's the data side of the call; the link to the
+campaign or ad group is via [`google_ads_customer_asset`](./google_ads_customer_asset/).
+
+<Aside type="note">
+  Call assets are account-scoped. One asset can be linked to many
+  campaigns through `google_ads_customer_asset`.
+</Aside>
+
+## Example
+
+```hcl
+resource "google_ads_call_asset" "main_phone" {
+  country_code                     = "US"
+  phone_number                     = "5551234567"
+  call_conversion_reporting_state  = "USE_RESOURCE_LEVEL_CALL_CONVERSION_ACTION"
+  call_conversion_action           = google_ads_conversion_action.lead.id
+}
+```
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+## See also
+
+- [`google_ads_customer_asset`](./google_ads_customer_asset/) — links this asset to ads.
+- [`google_ads_conversion_action`](./google_ads_conversion_action/) — required if you're tracking calls as conversions.

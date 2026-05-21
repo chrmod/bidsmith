@@ -1,0 +1,42 @@
+---
+title: provider "google_ads"
+description: The provider block configures which Google Ads account bidsmith manages.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const provider = schema.providers['google_ads'];
+
+The **provider** block declares which Google Ads account bidsmith is
+operating against. Every `.bid` project needs exactly one `provider`
+block; convention is to put it at the top of your top-level
+`account.bid` (or in the first file of a single-file project).
+
+<Aside type="note">
+  The `customer_id` and `login_customer_id` you set here are *defaults*.
+  They can be overridden per-invocation with `--customer-id` /
+  `--login-customer-id` on `plan`, `apply`, and `export`, or via the
+  `GOOGLE_ADS_CUSTOMER_ID` / `GOOGLE_ADS_LOGIN_CUSTOMER_ID` environment
+  variables. The env vars are the recommended path — they keep account
+  IDs out of Git when that matters.
+</Aside>
+
+## Example
+
+```hcl
+provider "google_ads" {
+  customer_id       = "1234567890"
+  login_customer_id = "9876543210"
+}
+```
+
+## Schema
+
+<AttributeTable block={provider} headingLevel={3} />
+
+## See also
+
+- [Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/) — how to mint the credentials behind these IDs.
+- [Glossary: customer ID](/bidsmith/reference/glossary/#c) — what the 10-digit number means.

@@ -1,0 +1,77 @@
+---
+interface TypeShape {
+  type: 'string' | 'integer' | 'number' | 'boolean' | 'enum' | 'reference' | 'list' | 'rsa_asset_list';
+  values?: string[];
+  targets?: string[];
+  element?: TypeShape;
+}
+
+interface AttributeShape extends TypeShape {
+  name: string;
+  required: boolean;
+}
+
+interface Props {
+  attr: AttributeShape;
+}
+
+const { attr } = Astro.props;
+
+function plainTypeLabel(t: TypeShape): string {
+  switch (t.type) {
+    case 'string':
+      return 'String';
+    case 'integer':
+      return 'Integer';
+    case 'number':
+      return 'Number';
+    case 'boolean':
+      return 'Boolean';
+    case 'enum':
+      return 'String';
+    case 'list':
+      return 'List of ' + (t.element ? plainTypeLabel(t.element) : 'value');
+    case 'rsa_asset_list':
+      return 'List of strings or { text, pin } objects';
+    case 'reference':
+      return 'Reference';
+    default:
+      return String(t.type);
+  }
+}
+
+const isReference = attr.type === 'reference';
+const targets = attr.targets ?? [];
+const values = attr.type === 'enum' && attr.values ? attr.values : [];
+const label = plainTypeLabel(attr);
+---
+
+<li>
+  <code>{attr.name}</code>{' '}
+  <em>
+    (
+    {isReference ? (
+      <Fragment>
+        Reference to{' '}
+        {targets.map((t, i) => (
+          <span>
+            <code>{t}</code>{i < targets.length - 1 ? ' or ' : ''}
+          </span>
+        ))}
+      </Fragment>
+    ) : (
+      label
+    )}
+    )
+  </em>
+  {values.length > 0 && (
+    <Fragment>
+      {' '}One of:{' '}
+      {values.map((v, i) => (
+        <span>
+          <code>{v}</code>{i < values.length - 1 ? ', ' : ''}
+        </span>
+      ))}.
+    </Fragment>
+  )}
+</li>

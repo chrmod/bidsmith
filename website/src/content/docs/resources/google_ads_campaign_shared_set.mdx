@@ -1,0 +1,39 @@
+---
+title: google_ads_campaign_shared_set
+description: Links a shared negative-keyword list to a specific campaign.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_campaign_shared_set'];
+
+A **campaign shared set** is the join between a
+[`google_ads_campaign`](./google_ads_campaign/) and a
+[`google_ads_shared_set`](./google_ads_shared_set/) — it tells one
+campaign to apply one shared list.
+
+To attach the same list to N campaigns, declare N
+`google_ads_campaign_shared_set` resources.
+
+## Example
+
+Apply the `value_seekers` shared set to the summer search campaign:
+
+```hcl
+resource "google_ads_campaign_shared_set" "summer_value_seekers" {
+  campaign   = google_ads_campaign.summer_search.id
+  shared_set = google_ads_shared_set.value_seekers.id
+  status     = "ENABLED"
+}
+```
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+## See also
+
+- [`google_ads_campaign`](./google_ads_campaign/) — required reference.
+- [`google_ads_shared_set`](./google_ads_shared_set/) — the list being attached.

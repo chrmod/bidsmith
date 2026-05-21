@@ -1,0 +1,100 @@
+---
+title: google_ads_ad_group_criterion
+description: A keyword or negative keyword scoped to one ad group.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_ad_group_criterion'];
+export const keyword = resource.blocks.find((b) => b.name === 'keyword');
+export const negative_keyword = resource.blocks.find((b) => b.name === 'negative_keyword');
+
+An **ad-group criterion** is a keyword (positive or negative) scoped to
+one ad group. Positive keywords trigger your ads; negative keywords
+prevent them from showing on irrelevant searches.
+
+<Aside type="tip" title="Block vs. attribute form">
+  Bidsmith accepts two ways to mark a keyword as negative: either set
+  the `negative = true` attribute and use a `keyword` block, or use a
+  `negative_keyword` block (which sets negative for you). The
+  `negative_keyword` form is more readable and is the default in
+  bidsmith's own examples.
+</Aside>
+
+## Example
+
+A positive phrase-match keyword:
+
+```hcl
+resource "google_ads_ad_group_criterion" "kw_summer_deals" {
+  ad_group = google_ads_ad_group.summer_default.id
+  status   = "ENABLED"
+
+  keyword {
+    text       = "summer deals"
+    match_type = "PHRASE"
+  }
+}
+```
+
+A positive exact-match keyword with a custom bid:
+
+```hcl
+resource "google_ads_ad_group_criterion" "kw_summer_sale" {
+  ad_group       = google_ads_ad_group.summer_default.id
+  status         = "ENABLED"
+  cpc_bid_micros = 3500000
+
+  keyword {
+    text       = "summer sale"
+    match_type = "EXACT"
+  }
+}
+```
+
+A bulk list of negative keywords:
+
+```hcl
+resource "google_ads_ad_group_criterion" "summer_negatives" {
+  ad_group = google_ads_ad_group.summer_default.id
+  status   = "ENABLED"
+
+  negative_keyword {
+    text       = "free"
+    match_type = "BROAD"
+  }
+
+  negative_keyword {
+    text       = "diy"
+    match_type = "BROAD"
+  }
+}
+```
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+## Nested blocks
+
+### `keyword`
+
+A positive keyword. Repeat the block to add several keywords to one
+resource.
+
+<AttributeTable block={keyword} headingLevel={4} />
+
+### `negative_keyword`
+
+A negative keyword for this ad group. Same shape as `keyword`. Using
+this block implicitly marks the criterion as negative.
+
+<AttributeTable block={negative_keyword} headingLevel={4} />
+
+## See also
+
+- [`google_ads_ad_group`](./google_ads_ad_group/) — required parent.
+- [`google_ads_campaign_criterion`](./google_ads_campaign_criterion/) — campaign-level criteria (negatives, geo, language).
+- [`google_ads_shared_set`](./google_ads_shared_set/) — reusable negative lists across campaigns.

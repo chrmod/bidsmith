@@ -1,0 +1,48 @@
+---
+title: google_ads_campaign_budget
+description: Daily budget that one or more campaigns can spend against.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_campaign_budget'];
+
+A **campaign budget** caps how much one or more campaigns can spend per
+day. Every campaign references exactly one budget.
+
+<Aside type="tip" title="Micros, again">
+  `amount_micros` is in micros — one millionth of the account currency.
+  €50.00/day = `50_000_000`. The trailing six zeros are the tell.
+</Aside>
+
+## Example
+
+```hcl
+resource "google_ads_campaign_budget" "summer" {
+  name            = "Summer 2026"
+  amount_micros   = 50000000          # €50/day
+  delivery_method = "STANDARD"
+}
+```
+
+A budget shared by multiple campaigns:
+
+```hcl
+resource "google_ads_campaign_budget" "brand" {
+  name              = "Brand Protection"
+  amount_micros     = 200000000       # €200/day
+  delivery_method   = "STANDARD"
+  explicitly_shared = true
+}
+```
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+## See also
+
+- [`google_ads_campaign`](./google_ads_campaign/) — uses this budget.
+- [Tutorial: Launch a new search campaign](/bidsmith/tutorials/launch-search-campaign/) — sets up a budget end-to-end.

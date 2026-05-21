@@ -118,6 +118,12 @@ enum Cmd {
         #[arg(long)]
         verbose: bool,
     },
+    /// Dump the resource schema as JSON (drives doc generation, IDE tooling)
+    Schema {
+        /// Output file path (defaults to stdout)
+        #[arg(short = 'o', long, value_name = "PATH")]
+        output: Option<String>,
+    },
     /// (internal) Remove every resource whose name starts with --prefix.
     /// Used by the e2e test tier; not a public verb.
     #[command(name = "_e2e-cleanup", hide = true)]
@@ -173,6 +179,7 @@ fn main() -> ExitCode {
             include_removed,
             verbose,
         ),
+        Cmd::Schema { output } => commands::schema::run(output.as_deref()),
         Cmd::E2eCleanup { prefix, verbose } => {
             commands::e2e_cleanup::run(&prefix, verbose)
         }

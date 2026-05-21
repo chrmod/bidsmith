@@ -1,0 +1,75 @@
+---
+title: google_ads_campaign
+description: A single Google Ads campaign — the wrapper around ad groups, ads, and a budget.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_campaign'];
+export const manualCpc = resource.blocks.find((b) => b.name === 'manual_cpc');
+export const networkSettings = resource.blocks.find((b) => b.name === 'network_settings');
+
+A **campaign** is the top-level container in Google Ads. It holds one
+or more ad groups, points at a single budget, picks a channel (search,
+display, shopping, etc.), and decides where ads can show.
+
+<Aside type="caution">
+  New campaigns are created in whatever `status` you declare, but
+  bidsmith's convention is to ship `status = "PAUSED"` on the first
+  apply, verify the configuration in the Google Ads UI, and flip to
+  `"ENABLED"` in a follow-up PR. That two-step pattern is the safety
+  belt that catches typos before money moves.
+</Aside>
+
+## Example
+
+A search campaign with manual CPC bidding and Google-search-only targeting:
+
+```hcl
+resource "google_ads_campaign" "summer_search" {
+  name                     = "Summer 2026 — Search"
+  status                   = "PAUSED"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.summer.id
+
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+
+  network_settings {
+    target_google_search          = true
+    target_search_network         = false
+    target_content_network        = false
+    target_partner_search_network = false
+  }
+}
+```
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+## Nested blocks
+
+### manual_cpc
+
+The `manual_cpc` block configures manual CPC bidding (the simplest
+bidding strategy — you set the max CPC, Google honors it).
+
+<AttributeTable block={manualCpc} headingLevel={4} />
+
+### network_settings
+
+The `network_settings` block controls which Google networks ads can
+appear on.
+
+<AttributeTable block={networkSettings} headingLevel={4} />
+
+## See also
+
+- [`google_ads_campaign_budget`](./google_ads_campaign_budget/) — required reference.
+- [`google_ads_ad_group`](./google_ads_ad_group/) — child resources.
+- [`google_ads_campaign_criterion`](./google_ads_campaign_criterion/) — campaign-level negatives, geo targets, language targets.
+- [Tutorial: Launch a new search campaign](/bidsmith/tutorials/launch-search-campaign/).

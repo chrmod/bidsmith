@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
 
 use hcl_edit::Span;
 use hcl_edit::expr::{Expression, Traversal, TraversalOperator};
 use hcl_edit::structure::{Block, Body, Structure};
+use serde::Serialize;
 
 use crate::diagnostics::Diag;
 use crate::parser::ParsedFile;
@@ -1202,4 +1203,103 @@ fn block_span(b: &Block) -> std::ops::Range<usize> {
 
 fn span_of(s: Option<std::ops::Range<usize>>) -> std::ops::Range<usize> {
     s.unwrap_or(0..0)
+}
+
+#[derive(Serialize)]
+pub struct SchemaDoc {
+    pub version: &'static str,
+    pub providers: BTreeMap<&'static str, BlockDoc>,
+    pub resources: BTreeMap<&'static str, BlockDoc>,
+}
+
+#[derive(Serialize)]
+pub struct BlockDoc {
+    pub attributes: Vec<AttributeDoc>,
+    pub blocks: Vec<NestedBlockDoc>,
+}
+
+#[derive(Serialize)]
+pub struct AttributeDoc {
+    pub name: &'static str,
+    pub required: bool,
+    #[serde(flatten)]
+    pub ty: TypeDoc,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TypeDoc {
+    String,
+    Integer,
+    Number,
+    Boolean,
+    Enum { values: Vec<&'static str> },
+    Reference { targets: Vec<&'static str> },
+    List { element: Box<TypeDoc> },
+    RsaAssetList,
+}
+
+#[derive(Serialize)]
+pub struct NestedBlockDoc {
+    pub name: &'static str,
+    pub attributes: Vec<AttributeDoc>,
+    pub blocks: Vec<NestedBlockDoc>,
+}
+
+pub fn dump_schema() -> SchemaDoc {
+    let providers = provider_schemas()
+        .iter()
+        .map(|(&k, v)| (k, block_to_doc(v)))
+        .collect();
+    let resources = resource_schemas()
+        .iter()
+        .map(|(&k, v)| (k, block_to_doc(v)))
+        .collect();
+    SchemaDoc {
+        version: env!("CARGO_PKG_VERSION"),
+        providers,
+        resources,
+    }
+}
+
+fn block_to_doc(b: &BlockSchema) -> BlockDoc {
+    BlockDoc {
+        attributes: b.attributes.iter().map(attr_to_doc).collect(),
+        blocks: b.blocks.iter().map(nested_block_to_doc).collect(),
+    }
+}
+
+fn nested_block_to_doc(n: &NestedBlockSchema) -> NestedBlockDoc {
+    NestedBlockDoc {
+        name: n.name,
+        attributes: n.schema.attributes.iter().map(attr_to_doc).collect(),
+        blocks: n.schema.blocks.iter().map(nested_block_to_doc).collect(),
+    }
+}
+
+fn attr_to_doc(a: &AttributeSchema) -> AttributeDoc {
+    AttributeDoc {
+        name: a.name,
+        required: a.required,
+        ty: ty_to_doc(&a.ty),
+    }
+}
+
+fn ty_to_doc(ty: &FieldType) -> TypeDoc {
+    match ty {
+        FieldType::String => TypeDoc::String,
+        FieldType::Integer => TypeDoc::Integer,
+        FieldType::Number => TypeDoc::Number,
+        FieldType::Bool => TypeDoc::Boolean,
+        FieldType::Enum(values) => TypeDoc::Enum {
+            values: values.to_vec(),
+        },
+        FieldType::Ref(targets) => TypeDoc::Reference {
+            targets: targets.to_vec(),
+        },
+        FieldType::List(inner) => TypeDoc::List {
+            element: Box::new(ty_to_doc(inner)),
+        },
+        FieldType::RsaAssetList => TypeDoc::RsaAssetList,
+    }
 }

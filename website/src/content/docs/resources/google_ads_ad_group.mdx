@@ -1,0 +1,44 @@
+---
+title: google_ads_ad_group
+description: A bucket inside a campaign that groups keywords and ads together.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_ad_group'];
+
+An **ad group** is a bucket inside a campaign. It holds the keywords
+people search for and the ads that show in response. Every campaign
+needs at least one ad group; well-structured campaigns have several,
+each focused on a single theme.
+
+<Aside type="tip">
+  The conventional pattern is one ad group per theme — *"summer
+  deals"* in one group, *"black friday"* in another. That makes
+  per-ad-group bids (`cpc_bid_micros`) meaningful and reports
+  legible.
+</Aside>
+
+## Example
+
+```hcl
+resource "google_ads_ad_group" "summer_default" {
+  name           = "Summer — Default"
+  campaign       = google_ads_campaign.summer_search.id
+  status         = "ENABLED"
+  type           = "SEARCH_STANDARD"
+  cpc_bid_micros = 2000000             # €2.00 max CPC
+}
+```
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+## See also
+
+- [`google_ads_campaign`](./google_ads_campaign/) — required parent.
+- [`google_ads_ad_group_ad`](./google_ads_ad_group_ad/) — at least one ad per group.
+- [`google_ads_ad_group_criterion`](./google_ads_ad_group_criterion/) — keywords in this group.

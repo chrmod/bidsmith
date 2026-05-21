@@ -1,37 +1,99 @@
 ---
 title: Resource reference
-description: Every block type bidsmith understands, with required and optional fields.
+description: Every block type bidsmith understands, grouped by what it manages.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Coming soon">
-  One page per resource type, auto-generated from the bidsmith
-  schema so the reference cannot drift from the validator. Until
-  then, [`examples/basic/main.bid`](https://github.com/chrmod/bidsmith/blob/main/examples/basic/main.bid)
-  in the repo demonstrates every resource type with a working
-  configuration.
-</Aside>
+Every block bidsmith can read and write, grouped by what it manages.
+Each page lists every attribute (required, optional), every nested
+block, and every enum value — auto-generated from the bidsmith schema,
+so the docs cannot drift from the validator.
 
-## Resource types
+## Provider
 
-**Campaigns**
-- `google_ads_campaign`
-- `google_ads_campaign_budget`
+<LinkCard
+  title='provider "google_ads"'
+  description="Which Google Ads account bidsmith is operating against."
+  href="./provider/"
+/>
 
-**Ad groups and ads**
-- `google_ads_ad_group`
-- `google_ads_ad_group_ad`
+## Campaigns
 
-**Keywords and targeting**
-- `google_ads_ad_group_criterion`
-- `google_ads_campaign_criterion`
+<CardGrid>
+  <LinkCard
+    title="google_ads_campaign"
+    description="A single Google Ads campaign — the wrapper around ad groups, ads, and a budget."
+    href="./google_ads_campaign/"
+  />
+  <LinkCard
+    title="google_ads_campaign_budget"
+    description="Daily budget that one or more campaigns can spend against."
+    href="./google_ads_campaign_budget/"
+  />
+</CardGrid>
 
-**Conversion tracking**
-- `google_ads_conversion_action`
-- `google_ads_call_asset`
-- `google_ads_customer_asset`
+## Ad groups and ads
 
-**Shared resources**
-- `google_ads_shared_set`
-- `google_ads_campaign_shared_set`
+<CardGrid>
+  <LinkCard
+    title="google_ads_ad_group"
+    description="A bucket inside a campaign that groups keywords and ads together."
+    href="./google_ads_ad_group/"
+  />
+  <LinkCard
+    title="google_ads_ad_group_ad"
+    description="A single ad inside an ad group — typically a responsive search ad."
+    href="./google_ads_ad_group_ad/"
+  />
+</CardGrid>
+
+## Keywords and targeting
+
+<CardGrid>
+  <LinkCard
+    title="google_ads_ad_group_criterion"
+    description="A keyword or negative keyword scoped to one ad group."
+    href="./google_ads_ad_group_criterion/"
+  />
+  <LinkCard
+    title="google_ads_campaign_criterion"
+    description="Campaign-wide targeting — negative keywords, geo, language, proximity."
+    href="./google_ads_campaign_criterion/"
+  />
+</CardGrid>
+
+## Conversion tracking
+
+<CardGrid>
+  <LinkCard
+    title="google_ads_conversion_action"
+    description="A measurable event — form submit, phone call, purchase."
+    href="./google_ads_conversion_action/"
+  />
+  <LinkCard
+    title="google_ads_call_asset"
+    description="A phone number that can be attached to ads as a call extension."
+    href="./google_ads_call_asset/"
+  />
+  <LinkCard
+    title="google_ads_customer_asset"
+    description="Links an asset (e.g. a call extension) to all campaigns in the account."
+    href="./google_ads_customer_asset/"
+  />
+</CardGrid>
+
+## Shared resources
+
+<CardGrid>
+  <LinkCard
+    title="google_ads_shared_set"
+    description="A reusable list of negative keywords that can be attached to many campaigns."
+    href="./google_ads_shared_set/"
+  />
+  <LinkCard
+    title="google_ads_campaign_shared_set"
+    description="Links a shared negative-keyword list to a specific campaign."
+    href="./google_ads_campaign_shared_set/"
+  />
+</CardGrid>

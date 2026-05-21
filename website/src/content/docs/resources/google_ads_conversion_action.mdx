@@ -1,0 +1,64 @@
+---
+title: google_ads_conversion_action
+description: A measurable event — form submit, phone call, purchase — that you want Google Ads to track and optimize toward.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_conversion_action'];
+export const value_settings = resource.blocks.find((b) => b.name === 'value_settings');
+
+A **conversion action** is a measurable event you care about — a form
+submit, a phone call, a purchase. Conversion actions tell Google what
+to optimize toward and what to report on.
+
+<Aside type="note">
+  Conversion actions are account-scoped, not campaign-scoped. One
+  conversion action can be used by many campaigns. Define each one
+  once at the top of your `.bid` files (or in a dedicated
+  `account.bid`).
+</Aside>
+
+## Example
+
+A simple lead-form conversion with a fixed value:
+
+```hcl
+resource "google_ads_conversion_action" "lead" {
+  name                                = "Lead form submit"
+  type                                = "WEBPAGE"
+  category                            = "SUBMIT_LEAD_FORM"
+  status                              = "ENABLED"
+  counting_type                       = "ONE_PER_CLICK"
+  click_through_lookback_window_days  = 30
+  view_through_lookback_window_days   = 1
+
+  value_settings {
+    default_value             = 50
+    default_currency_code     = "EUR"
+    always_use_default_value  = true
+  }
+}
+```
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+## Nested blocks
+
+### `value_settings`
+
+Default monetary value Google assigns to each conversion.
+`always_use_default_value = true` overrides any per-conversion value
+sent at fire time (useful when the value is unknown until the lead is
+qualified).
+
+<AttributeTable block={value_settings} headingLevel={4} />
+
+## See also
+
+- [`google_ads_call_asset`](./google_ads_call_asset/) — links a phone number to a call-tracking conversion action.
+- [Google's conversion-tracking docs](https://support.google.com/google-ads/answer/1722022) — for choosing `type` and `category`.

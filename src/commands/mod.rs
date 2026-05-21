@@ -7,4 +7,5 @@ pub mod plan;
 pub mod pull;
 pub mod query;
 pub mod refresh;
+pub mod schema;
 pub mod validate;

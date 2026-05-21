@@ -64,7 +64,44 @@ export default defineConfig({
           label: 'Resource reference',
           collapsed: true,
           items: [
-            { label: '(coming soon)', slug: 'resources' },
+            { label: 'Overview', slug: 'resources' },
+            { label: 'provider "google_ads"', slug: 'resources/provider' },
+            {
+              label: 'Campaigns',
+              items: [
+                { label: 'google_ads_campaign', slug: 'resources/google_ads_campaign' },
+                { label: 'google_ads_campaign_budget', slug: 'resources/google_ads_campaign_budget' },
+              ],
+            },
+            {
+              label: 'Ad groups and ads',
+              items: [
+                { label: 'google_ads_ad_group', slug: 'resources/google_ads_ad_group' },
+                { label: 'google_ads_ad_group_ad', slug: 'resources/google_ads_ad_group_ad' },
+              ],
+            },
+            {
+              label: 'Keywords and targeting',
+              items: [
+                { label: 'google_ads_ad_group_criterion', slug: 'resources/google_ads_ad_group_criterion' },
+                { label: 'google_ads_campaign_criterion', slug: 'resources/google_ads_campaign_criterion' },
+              ],
+            },
+            {
+              label: 'Conversion tracking',
+              items: [
+                { label: 'google_ads_conversion_action', slug: 'resources/google_ads_conversion_action' },
+                { label: 'google_ads_call_asset', slug: 'resources/google_ads_call_asset' },
+                { label: 'google_ads_customer_asset', slug: 'resources/google_ads_customer_asset' },
+              ],
+            },
+            {
+              label: 'Shared resources',
+              items: [
+                { label: 'google_ads_shared_set', slug: 'resources/google_ads_shared_set' },
+                { label: 'google_ads_campaign_shared_set', slug: 'resources/google_ads_campaign_shared_set' },
+              ],
+            },
           ],
         },
         {

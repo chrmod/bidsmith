@@ -1,0 +1,68 @@
+---
+title: google_ads_shared_set
+description: A reusable list of negative keywords that can be attached to many campaigns.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_shared_set'];
+export const negative_keyword = resource.blocks.find((b) => b.name === 'negative_keyword');
+
+A **shared set** is a reusable list of negative keywords. Define it
+once, link it to multiple campaigns via
+[`google_ads_campaign_shared_set`](./google_ads_campaign_shared_set/),
+and edit it in one place when something changes.
+
+<Aside type="tip">
+  Shared sets are the right answer when more than one campaign needs
+  the same negative-keyword list. For one-off negatives that only
+  apply to a single campaign, use
+  [`google_ads_campaign_criterion`](./google_ads_campaign_criterion/)
+  with a `negative_keyword` block.
+</Aside>
+
+## Example
+
+A shared negative list of "free / DIY / used" terms:
+
+```hcl
+resource "google_ads_shared_set" "value_seekers" {
+  name   = "Value-seeker negatives"
+  type   = "NEGATIVE_KEYWORDS"
+  status = "ENABLED"
+
+  negative_keyword {
+    text       = "free"
+    match_type = "BROAD"
+  }
+
+  negative_keyword {
+    text       = "diy"
+    match_type = "BROAD"
+  }
+
+  negative_keyword {
+    text       = "used"
+    match_type = "BROAD"
+  }
+}
+```
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+## Nested blocks
+
+### `negative_keyword`
+
+A negative keyword in the shared set. Repeat the block to list many.
+
+<AttributeTable block={negative_keyword} headingLevel={4} />
+
+## See also
+
+- [`google_ads_campaign_shared_set`](./google_ads_campaign_shared_set/) — link this set to a campaign.
+- [`google_ads_campaign_criterion`](./google_ads_campaign_criterion/) — one-off campaign-scoped negatives.

@@ -1,0 +1,59 @@
+---
+import AttributeItem from './AttributeItem.astro';
+
+interface TypeShape {
+  type: string;
+  values?: string[];
+  targets?: string[];
+  element?: TypeShape;
+}
+
+interface AttributeShape extends TypeShape {
+  name: string;
+  required: boolean;
+}
+
+interface BlockShape {
+  attributes: AttributeShape[];
+  blocks: Array<{ name: string }>;
+}
+
+interface Props {
+  block: BlockShape;
+  headingLevel?: 3 | 4 | 5;
+}
+
+const { block, headingLevel = 4 } = Astro.props;
+const HeadingTag = `h${headingLevel}` as 'h3' | 'h4' | 'h5';
+
+const required = block.attributes.filter((a) => a.required);
+const optional = block.attributes.filter((a) => !a.required);
+const nested = block.blocks ?? [];
+const hasAnyAttributes = required.length + optional.length > 0;
+---
+
+{required.length > 0 && (
+  <Fragment>
+    <HeadingTag>Required</HeadingTag>
+    <ul>
+      {required.map((a) => <AttributeItem attr={a} />)}
+    </ul>
+  </Fragment>
+)}
+
+{optional.length > 0 && (
+  <Fragment>
+    <HeadingTag>Optional</HeadingTag>
+    <ul>
+      {optional.map((a) => <AttributeItem attr={a} />)}
+    </ul>
+  </Fragment>
+)}
+
+{nested.length > 0 && hasAnyAttributes && (
+  <p>
+    <small>Nested blocks documented below: {nested.map((b, i) => (
+      <span><code>{b.name}</code>{i < nested.length - 1 ? ', ' : ''}</span>
+    ))}.</small>
+  </p>
+)}

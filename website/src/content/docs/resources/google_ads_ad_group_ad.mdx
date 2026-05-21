@@ -1,0 +1,108 @@
+---
+title: google_ads_ad_group_ad
+description: A single ad inside an ad group — typically a responsive search ad.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_ad_group_ad'];
+export const ad = resource.blocks.find((b) => b.name === 'ad');
+export const rsa = ad.blocks.find((b) => b.name === 'responsive_search_ad');
+export const headline = rsa.blocks.find((b) => b.name === 'headline');
+export const description = rsa.blocks.find((b) => b.name === 'description');
+
+An **ad** is the creative that runs inside an ad group. Bidsmith
+currently supports **responsive search ads** (RSAs) — Google's
+recommended search ad format, where you supply 3–15 headlines and 2–4
+descriptions and Google permutes them at serve time.
+
+<Aside type="note">
+  Google requires a **minimum of 3 headlines and 2 descriptions** per
+  RSA. bidsmith's linter warns if you supply fewer.
+</Aside>
+
+## Example
+
+A responsive search ad with one pinned headline and one pinned
+description:
+
+```hcl
+resource "google_ads_ad_group_ad" "summer_default_rsa" {
+  ad_group = google_ads_ad_group.summer_default.id
+  status   = "ENABLED"
+
+  ad {
+    name       = "Summer RSA"
+    final_urls = ["https://example.com/summer"]
+
+    responsive_search_ad {
+      headline {
+        text = "Summer Deals 2026"
+        pin  = "HEADLINE_1"
+      }
+
+      headline {
+        text = "Save On Summer Gear"
+      }
+
+      headline {
+        text = "Free Shipping This Season"
+      }
+
+      description {
+        text = "Limited-time offers across our summer range."
+        pin  = "DESCRIPTION_1"
+      }
+
+      description {
+        text = "Order today, get it before July."
+      }
+
+      path1 = "summer"
+      path2 = "deals"
+    }
+  }
+}
+```
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+## Nested blocks
+
+### `ad`
+
+The wrapper around the actual creative. Bidsmith currently supports
+exactly one `ad` block per `google_ads_ad_group_ad`.
+
+<AttributeTable block={ad} headingLevel={4} />
+
+### `responsive_search_ad`
+
+A responsive search ad. Goes inside the `ad` block.
+
+<AttributeTable block={rsa} headingLevel={4} />
+
+#### `headline`
+
+A single headline asset. Repeat the block 3–15 times. `text` is the
+ad copy (≤ 30 characters); `pin` optionally locks the headline to a
+specific position (`HEADLINE_1`, `HEADLINE_2`, or `HEADLINE_3`).
+
+<AttributeTable block={headline} headingLevel={5} />
+
+#### `description`
+
+A single description asset. Repeat the block 2–4 times. `text` is the
+ad copy (≤ 90 characters); `pin` optionally locks the description to
+`DESCRIPTION_1` or `DESCRIPTION_2`.
+
+<AttributeTable block={description} headingLevel={5} />
+
+## See also
+
+- [`google_ads_ad_group`](./google_ads_ad_group/) — required parent.
+- [Tutorial: Launch a new search campaign](/bidsmith/tutorials/launch-search-campaign/) — includes a full RSA example.

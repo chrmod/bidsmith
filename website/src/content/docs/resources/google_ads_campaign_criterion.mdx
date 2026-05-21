@@ -1,0 +1,139 @@
+---
+title: google_ads_campaign_criterion
+description: Campaign-wide targeting — negative keywords, geo, language, proximity.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_campaign_criterion'];
+export const keyword = resource.blocks.find((b) => b.name === 'keyword');
+export const negative_keyword = resource.blocks.find((b) => b.name === 'negative_keyword');
+export const location = resource.blocks.find((b) => b.name === 'location');
+export const language = resource.blocks.find((b) => b.name === 'language');
+export const proximity = resource.blocks.find((b) => b.name === 'proximity');
+
+A **campaign criterion** is targeting that applies to a whole campaign:
+negative keywords (excluded across every ad group), geo targets (which
+locations your ads can show in), language targets, and proximity
+(latitude / longitude radius around a point).
+
+## Example
+
+Block negative keywords campaign-wide:
+
+```hcl
+resource "google_ads_campaign_criterion" "summer_negatives" {
+  campaign = google_ads_campaign.summer_search.id
+  status   = "ENABLED"
+
+  negative_keyword {
+    text       = "free"
+    match_type = "BROAD"
+  }
+
+  negative_keyword {
+    text       = "diy"
+    match_type = "BROAD"
+  }
+
+  negative_keyword {
+    text       = "used"
+    match_type = "BROAD"
+  }
+}
+```
+
+Target the United States (geo target constant `2840`):
+
+```hcl
+resource "google_ads_campaign_criterion" "summer_geo_us" {
+  campaign = google_ads_campaign.summer_search.id
+  status   = "ENABLED"
+
+  location {
+    geo_target_constant = "geoTargetConstants/2840"
+  }
+}
+```
+
+Target Polish-speaking users (language constant `1030`):
+
+```hcl
+resource "google_ads_campaign_criterion" "summer_lang_pl" {
+  campaign = google_ads_campaign.summer_search.id
+  status   = "ENABLED"
+
+  language {
+    language_constant = "languageConstants/1030"
+  }
+}
+```
+
+Show only within 15 km of central Warsaw:
+
+```hcl
+resource "google_ads_campaign_criterion" "summer_warsaw" {
+  campaign = google_ads_campaign.summer_search.id
+  status   = "ENABLED"
+
+  proximity {
+    latitude     = 52.229675
+    longitude    = 21.012228
+    radius       = 15
+    radius_units = "KILOMETERS"
+  }
+}
+```
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+## Nested blocks
+
+### `keyword`
+
+A positive keyword scoped to the entire campaign. Uncommon — usually
+keywords live at ad-group scope. Use this only if you genuinely want a
+keyword to apply across every ad group.
+
+<AttributeTable block={keyword} headingLevel={4} />
+
+### `negative_keyword`
+
+A negative keyword that excludes searches campaign-wide. Repeat the
+block to list many. The most common use of `google_ads_campaign_criterion`.
+
+<AttributeTable block={negative_keyword} headingLevel={4} />
+
+### `location`
+
+A geo target — restricts where your ads can show. Use Google's
+[geo target constants](https://developers.google.com/google-ads/api/data/geotargets)
+(e.g. `geoTargetConstants/2840` for the United States).
+
+<AttributeTable block={location} headingLevel={4} />
+
+### `language`
+
+A language target — restricts what user-language settings can see your
+ads. Use Google's
+[language constants](https://developers.google.com/google-ads/api/data/codes-formats#languages)
+(e.g. `languageConstants/1030` for Polish, `languageConstants/1000` for English).
+
+<AttributeTable block={language} headingLevel={4} />
+
+### `proximity`
+
+A circular radius target — ads only show to users within `radius` of
+the given (latitude, longitude). Use for hyperlocal campaigns.
+
+<AttributeTable block={proximity} headingLevel={4} />
+
+## See also
+
+- [`google_ads_campaign`](./google_ads_campaign/) — required parent.
+- [`google_ads_ad_group_criterion`](./google_ads_ad_group_criterion/) — ad-group-scoped criteria.
+- [`google_ads_shared_set`](./google_ads_shared_set/) — share negative lists across campaigns.

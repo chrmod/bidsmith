@@ -1,0 +1,41 @@
+---
+title: google_ads_customer_asset
+description: Links an asset (e.g. a call extension) to all campaigns in the account.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_customer_asset'];
+
+A **customer asset** links an asset — currently a call asset — to the
+entire account. Once linked, the asset can appear with any ad in the
+account that's eligible to show it.
+
+<Aside type="note">
+  Bidsmith currently supports call assets via `google_ads_call_asset`.
+  Other asset types (sitelinks, callouts, structured snippets, images,
+  videos, etc.) are planned — see the
+  [roadmap](https://github.com/chrmod/bidsmith/blob/main/ROADMAP.md).
+</Aside>
+
+## Example
+
+Link the `main_phone` call asset to every ad in the account:
+
+```hcl
+resource "google_ads_customer_asset" "main_phone_link" {
+  asset      = google_ads_call_asset.main_phone.id
+  field_type = "CALL"
+  status     = "ENABLED"
+}
+```
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+## See also
+
+- [`google_ads_call_asset`](./google_ads_call_asset/) — the typical `asset` reference.

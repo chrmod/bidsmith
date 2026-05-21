@@ -23,6 +23,7 @@ client speaks Google Ads REST against a real account.
 | `apply`    | partial | Show the plan, prompt for `yes`, then mutate (`--auto-approve` skips the prompt) |
 | `pull`     | partial | Dump the live account as raw SearchStream JSON (round-trips through `export --from-gads-search-response`) |
 | `refresh`  | partial | Bootstrap-pull live state into `.bid` (stdout, single `-o FILE`, or split `-d DIR` → `account.bid` + `campaigns.bid`) |
+| `schema`   | partial | Dump the resource schema as JSON (drives the docs site's auto-generated reference) |
 
 Resource coverage today: `provider "google_ads"`,
 `google_ads_campaign_budget`, `google_ads_campaign` (SEARCH with

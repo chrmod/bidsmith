@@ -295,6 +295,7 @@ Validator covers (so far):
 | `pull`     | partial | Dump live state as raw SearchStream JSON (`-o PATH` or stdout). Reuses the same query list `plan --read-live` issues; output is the exact shape `export --from-gads-search-response` consumes, so the pair round-trips an account into a `.bid` |
 | `refresh`  | partial | Bootstrap-mode import of live state into `.bid` (no `-o`/`-d` → stdout, `-o PATH` → single file, `-d DIR` → split into `<DIR>/account.bid` for conversion actions / call assets / customer assets / shared sets and `<DIR>/campaigns.bid` for everything campaign-scoped). Reconcile-in-place against existing `.bid` and label-based matching wait on the Phase 3 v2 label work |
 | `query`    | partial | Read-only GAQL passthrough; `--format table` (default), `json`, or `tsv`; uses the same OAuth + customer envelope as `plan` / `apply` |
+| `schema`   | partial | Dump the resource + provider schema as JSON (`-o PATH` or stdout). Powers the docs site's auto-generated reference under `website/src/content/docs/resources/`; `website/src/data/schema.json` is the committed snapshot and must be regenerated whenever `src/schema.rs` changes |
 | `init`     | —       | (later) Bootstrap project skeleton                   |
 | `graph`    | —       | (later) Visualize resource graph                     |
 | `import`   | —       | (later) Adopt an unlabeled existing resource         |

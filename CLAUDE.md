@@ -24,6 +24,9 @@ start here" in ROADMAP.md unless the user redirects.
   round-trips cleanly.
 - `cargo test --features e2e --no-run` should compile clean — keeps
   the opt-in e2e tier from rotting.
+- `cargo run --quiet -- schema` should print well-formed JSON. After
+  any schema change, regenerate the committed snapshot via
+  `cargo run --quiet -- schema --output website/src/data/schema.json`.
 
 ### Optional: live round-trip e2e
 
@@ -47,9 +50,18 @@ hidden `_e2e-cleanup` subcommand.
 
 ## Project-specific rules
 
-- **Lockstep rule**: any resource type added to `src/schema.rs` gets a
-  matching renderer in `src/commands/export.rs` in the same change.
-  Anything `validate` knows about, `export` should be able to produce.
+- **Lockstep rule (export)**: any resource type added to
+  `src/schema.rs` gets a matching renderer in
+  `src/commands/export.rs` in the same change. Anything `validate`
+  knows about, `export` should be able to produce.
+- **Lockstep rule (docs)**: any schema change in `src/schema.rs`
+  (new resource, new attribute, new enum value, new nested block)
+  ships with a regenerated `website/src/data/schema.json` in the
+  same commit. Run
+  `cargo run --quiet -- schema --output website/src/data/schema.json`.
+  The auto-generated reference pages under
+  `website/src/content/docs/resources/` consume this file directly,
+  so the docs cannot drift from the validator.
 - **No Google Ads API code yet** — that's Phase 2+. Don't pull in
   networking, auth, or gRPC dependencies without an explicit ask.
 - **User-facing errors with source locations**: use `Diag` from
@@ -88,15 +100,18 @@ website/src/content/docs/
 └── reference/glossary.mdx       # terse, externally-linked
 ```
 
-`recipes/`, `concepts/`, `commands/`, `resources/` are marked
-"coming soon" — flesh them out as features land.
+`recipes/`, `concepts/`, `commands/` are marked "coming soon" —
+flesh them out as features land. `resources/` is fully populated and
+auto-generated from `src/schema.rs` via `website/src/data/schema.json`
+and the `AttributeTable.astro` component.
 
 ## Things to update alongside code
 
-- Add resource → update DECISIONS.md "Validator covers" list **and**
-  the `website/src/content/docs/resources/` section (once the
-  auto-generation pipeline lands; in the meantime, mention the new
-  type in `website/src/content/docs/resources/index.mdx`).
+- Add resource → update DECISIONS.md "Validator covers" list,
+  regenerate `website/src/data/schema.json`, and add a hand-written
+  page under `website/src/content/docs/resources/<type>.mdx` (intro,
+  realistic example, `<AttributeTable>` reference, see-also links).
+  Wire the new page into `website/astro.config.mjs` sidebar.
 - Add CLI verb or change a flag → update DECISIONS.md verbs table,
   README.md "Commands" section, **and**
   `website/src/content/docs/commands/index.mdx` (plus per-verb page if
