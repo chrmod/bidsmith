@@ -1,0 +1,169 @@
+---
+title: Your first 10 minutes
+description: Clone a starter repo and run bidsmith plan and apply against a Google Ads test account.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+You've installed bidsmith, set up GitHub, and connected to Google Ads.
+This page is the smoke test that ties it all together — about ten
+minutes from here to seeing a campaign created from a `.bid` file.
+
+<Aside type="caution">
+  Run this against a **Google Ads test manager account**, not a live
+  account you care about. Test accounts are free, don't serve ads,
+  and can't spend money — perfect for trying bidsmith without risk.
+  See [Google's guide to test accounts](https://developers.google.com/google-ads/api/docs/best-practices/test-accounts).
+
+  If you only have a production account, that's fine — but use
+  `plan` (not `apply`) for this walkthrough so nothing changes.
+</Aside>
+
+## Step 1 — Get the example `.bid` file
+
+The bidsmith repository ships an `examples/basic/main.bid` that
+declares a minimal but realistic search campaign. Grab it:
+
+```sh
+git clone https://github.com/chrmod/bidsmith.git /tmp/bidsmith-tour
+cd /tmp/bidsmith-tour/examples/basic
+ls
+```
+
+You should see `main.bid`. Open it in your editor and read through —
+it's about 100 lines of plain text describing one budget, one
+campaign, one ad group, a few keywords, a conversion action, and an
+ad.
+
+## Step 2 — Validate the file
+
+`validate` checks that the file is well-formed, that every required
+field is set, and that every reference (e.g. "this ad group belongs
+to that campaign") resolves. It's local-only — doesn't touch the API.
+
+```sh
+bidsmith validate .
+```
+
+Expected output:
+
+```
+OK: 1 file(s) valid.
+```
+
+If you see errors, your local copy is corrupted somehow — re-clone
+the repo.
+
+## Step 3 — Format check
+
+`fmt --check` confirms the file is in canonical form (no trailing
+whitespace, consistent indentation, etc.). On the shipped examples
+this is always a no-op:
+
+```sh
+bidsmith fmt --check .
+```
+
+No output = success. (`fmt` without `--check` would rewrite the
+files in place.)
+
+## Step 4 — Preview the apply
+
+`plan` is the dry-run. It connects to Google Ads, fetches the
+current state, computes the diff, sends a `validateOnly` batch to
+the API, and shows you what would change.
+
+```sh
+bidsmith plan .
+```
+
+Expected output (against an empty test account):
+
+```
+Plan: 1 to create, 0 to update, 0 to destroy.
+
+  + google_ads_campaign_budget.example
+    name           = "Example budget"
+    amount_micros  = 5000000
+    delivery_method = "STANDARD"
+
+  + google_ads_campaign.example
+    name                     = "Example campaign"
+    status                   = "PAUSED"
+    advertising_channel_type = "SEARCH"
+    campaign_budget          = google_ads_campaign_budget.example
+    ...
+
+  (plus ad group, criteria, ad, conversion action)
+```
+
+<Aside type="note">
+  `plan` is read-only with respect to your account — it issues a
+  `validateOnly` request that Google validates but doesn't commit.
+  Running `plan` a hundred times in a row is safe.
+</Aside>
+
+## Step 5 — Apply (optional, only on a test account)
+
+If — and only if — you're against a **test account**, run:
+
+```sh
+bidsmith apply .
+```
+
+bidsmith will show the same plan as step 4 and prompt:
+
+```
+Do you want to perform these actions?
+  Type 'yes' to confirm.
+> 
+```
+
+Type `yes` and press Enter. bidsmith calls the Google Ads API and
+creates the resources.
+
+## Step 6 — Verify the second `plan` is a no-op
+
+This is the *idempotency* check. After apply, the live account
+should already match the `.bid` files. A second `plan` should report
+no changes:
+
+```sh
+bidsmith plan .
+```
+
+Expected output:
+
+```
+Plan: 0 to create, 0 to update, 0 to destroy.
+No changes. Live state matches .bid files.
+```
+
+If you see that, **bidsmith is fully working end-to-end**.
+
+## What just happened
+
+In about ten minutes you:
+
+1. Confirmed bidsmith reads the `.bid` syntax (`validate`, `fmt`).
+2. Confirmed bidsmith can authenticate against Google Ads (`plan`).
+3. Confirmed bidsmith can make changes (`apply`, if you ran it).
+4. Confirmed bidsmith is idempotent — the second `plan` is a no-op.
+
+That's the whole product loop. Every change you ever make follows the
+same shape: edit the file → validate → plan → apply.
+
+## Clean up (optional)
+
+If you applied against a test account and want to remove the example
+resources, the simplest way is the Google Ads UI: open the test
+account, find the "Example campaign," delete it. (A `bidsmith
+destroy` verb is on the roadmap; until then the UI is the cleanup
+path.)
+
+## Next up
+
+You're done with onboarding. Now go through the first real tutorial:
+
+[Launch a new search campaign](/bidsmith/tutorials/launch-search-campaign/) —
+the same loop you just ran, but with a campaign of your own.

@@ -1,0 +1,79 @@
+---
+title: What is bidsmith?
+description: A plain-English introduction to bidsmith for marketers.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**bidsmith manages Google Ads campaigns as code.** You write what your
+campaigns should look like in plain-text files, you keep those files in
+GitHub like any other shared document, and bidsmith makes Google Ads
+match.
+
+If you've used Google Ads Editor to bulk-edit campaigns, bidsmith
+solves the same problem — but with full history, peer review, and an
+undo button that actually works.
+
+## The shape of a typical day
+
+1. You want to launch a new search campaign for the summer promo.
+2. You make a branch in GitHub, edit a `.bid` file in any text editor,
+   describe the campaign, the ad group, the keywords, and the budget.
+3. You open a pull request. A teammate reviews the diff and approves.
+4. You run `bidsmith plan` — it tells you "I'm about to create 1
+   campaign, 1 ad group, 12 keywords, 1 budget. Continue?"
+5. You run `bidsmith apply` — bidsmith calls the Google Ads API and
+   makes the changes.
+6. Two weeks later someone asks "who paused that campaign?" — you check
+   the Git history and answer in five seconds.
+
+## What it is
+
+- A small command-line tool you run on your laptop.
+- A file format (`.bid`) that describes Google Ads campaigns, ad
+  groups, keywords, conversion actions, and shared keyword lists.
+- A way to preview every change (`plan`) before it touches the live
+  account (`apply`).
+- A way to pull your *existing* live campaigns down into `.bid` files
+  (`refresh`), so you can adopt bidsmith without starting from scratch.
+
+## What it isn't
+
+- **Not a replacement for the Google Ads UI.** Reporting, performance
+  inspection, recommendations, search-term reviews — those still
+  happen in Google Ads. bidsmith is for *configuration*, not analysis.
+- **Not magic.** bidsmith won't optimize bids for you, suggest
+  keywords, or write ad copy. It applies what you tell it to apply.
+- **Not for the web.** No SaaS dashboard, no login. The tool runs on
+  your laptop or in your CI pipeline. Your account credentials never
+  leave your machine.
+
+<Aside type="tip">
+  bidsmith borrows its mental model from [Terraform](https://www.terraform.io/),
+  the de-facto standard for managing cloud infrastructure as code. If a
+  developer on your team has used Terraform, the workflow will feel
+  identical. If not — that's fine, the next few pages walk you through
+  every step.
+</Aside>
+
+## The two-file mental model
+
+Two artifacts matter:
+
+- **Your `.bid` files** — what you *want* your account to look like.
+  Live in Git. Reviewable. Diffable. Reverting a change is a
+  `git revert`.
+- **The live Google Ads account** — what *is*. bidsmith reads it via
+  the Google Ads API.
+
+`bidsmith plan` is the comparison: "here's the diff between what you
+want and what's live." `bidsmith apply` is the reconciliation: "make
+the live account match the files."
+
+That's the whole product.
+
+## Ready?
+
+- [Compare bidsmith with Google Ads Editor](/bidsmith/welcome/vs-google-ads-editor/) — if you're evaluating which tool to use.
+- [How the workflow looks day-to-day](/bidsmith/welcome/workflow-overview/) — if you want a picture of the end-to-end flow before installing.
+- [Install bidsmith](/bidsmith/before-you-start/install/) — if you're ready to start.

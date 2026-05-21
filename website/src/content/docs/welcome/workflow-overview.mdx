@@ -1,0 +1,106 @@
+---
+title: How the workflow looks
+description: A bird's-eye view of how a bidsmith change flows from your laptop to Google Ads.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+This page is a picture, not a tutorial. It shows you what's involved
+end-to-end so you know what you're committing to before you install
+anything.
+
+## The flow
+
+<Steps>
+
+1. **Edit a `.bid` file** in any text editor — VS Code, Sublime,
+   even TextEdit. The file describes campaigns, ad groups, keywords,
+   budgets in plain text.
+
+2. **Commit and push to a branch** in your team's GitHub repo using
+   GitHub Desktop, the terminal, or VS Code's built-in Git tools.
+
+3. **Open a pull request.** A teammate reviews the change. The diff
+   is plain English — they can see exactly which budget you raised
+   or which keyword you added, with one-line resolution.
+
+4. **CI runs `bidsmith plan`** on the PR (optional, recommended). It
+   posts a comment showing the exact changes that would land in
+   Google Ads if the PR were applied.
+
+5. **Merge the PR.** The branch is now part of the canonical history.
+
+6. **Run `bidsmith apply`** from your laptop (or have CI run it for
+   you on merge). bidsmith calls the Google Ads API and makes the
+   live account match the merged `.bid` files.
+
+7. **Verify in the Google Ads UI** that the change is there. Move on
+   with your day.
+
+</Steps>
+
+## What lives where
+
+```
+your laptop                              GitHub                            Google Ads
+─────────────────                        ──────────────                    ──────────────
+.bid files (edited)  ─── git push ──►   .bid files (canon)
+                                              │
+                                              │  pull request
+                                              ▼
+                                         reviewed + merged
+                                              │
+                                              │
+bidsmith plan        ◄── git pull ───   .bid files (canon)
+bidsmith apply       ──────────────────────────────────────►   campaigns, ad groups,
+                                                                keywords, budgets
+```
+
+The `.bid` files in GitHub are the source of truth. Your laptop is
+where you edit and where you run `apply`. Google Ads is where the
+result shows up.
+
+## What you need on your laptop
+
+- The `bidsmith` command-line tool (one binary, installed via Homebrew
+  on Mac; Windows version coming soon).
+- A text editor — anything from TextEdit to VS Code works.
+- [GitHub Desktop](https://desktop.github.com/) is the easiest way to
+  use Git if you've never touched it. The terminal is also fine.
+- Google Ads API credentials — five environment variables you set up
+  once. See [Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/).
+
+## What you don't need
+
+- A development environment, an IDE, or any programming knowledge.
+- A server, a database, a Docker container, or any infrastructure.
+- A subscription to anything. bidsmith is open source and runs on your
+  laptop.
+- A new Google Ads account — bidsmith works with the account you
+  already have.
+
+## The team setup
+
+For a team using bidsmith, you need:
+
+- **One GitHub repository** that holds the `.bid` files. Usually
+  private. Everyone on the team has read+write access.
+- **One Google Ads OAuth client** that each team member uses to mint
+  their own refresh token. (Or: shared service-account-style
+  credentials, depending on your security policy.)
+- **Optional**: a GitHub Action that runs `bidsmith plan` on every PR
+  and posts the diff as a comment. Saves the reviewer from having to
+  pull the branch locally.
+
+<Aside type="tip">
+  If you're a one-person team right now, none of the team setup
+  matters. You can still use bidsmith — you just open PRs and merge
+  them yourself, or skip PRs and commit straight to `main`. The Git
+  history is still valuable even with one author.
+</Aside>
+
+## Ready to install?
+
+- [Install bidsmith](/bidsmith/before-you-start/install/) — about 2 minutes.
+- [Set up GitHub](/bidsmith/before-you-start/set-up-github/) — about 5 minutes if you've never used Git, instant if you have.
+- [Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/) — about 15 minutes, one-time.

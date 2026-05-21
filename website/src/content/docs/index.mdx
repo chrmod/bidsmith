@@ -1,0 +1,59 @@
+---
+title: bidsmith
+description: Manage Google Ads campaigns as code. Version-controlled, reviewable, replayable.
+template: splash
+hero:
+  tagline: Manage Google Ads campaigns as code. Version-controlled, reviewable, replayable.
+  actions:
+    - text: Get started
+      link: /bidsmith/before-you-start/install/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/chrmod/bidsmith
+      icon: external
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## Why bidsmith
+
+<CardGrid stagger>
+  <Card title="Every change is a pull request" icon="approve-check">
+    Edit a file, open a PR, get a teammate to review. No more "who paused
+    that campaign last Friday?" — Git tells you.
+  </Card>
+  <Card title="Preview before you spend" icon="magnifier">
+    `bidsmith plan` shows you exactly what will change in Google Ads before
+    a single euro moves. No surprises.
+  </Card>
+  <Card title="One source of truth" icon="document">
+    Your `.bid` files describe the campaigns you want. bidsmith makes
+    Google Ads match. Run it twice — the second run does nothing.
+  </Card>
+  <Card title="Designed for marketers" icon="rocket">
+    No SQL, no scripting, no API tokens to copy-paste every week. Edit
+    plain text files in any editor, commit, push, apply.
+  </Card>
+</CardGrid>
+
+## Where to next
+
+<CardGrid>
+  <Card title="New to bidsmith?" icon="open-book">
+    Start with [What is bidsmith?](/bidsmith/welcome/what-is-bidsmith/),
+    then walk through [installation](/bidsmith/before-you-start/install/).
+  </Card>
+  <Card title="Already installed?" icon="rocket">
+    Jump into the [first tutorial](/bidsmith/tutorials/launch-search-campaign/)
+    and ship a campaign end-to-end.
+  </Card>
+  <Card title="Comparing tools?" icon="puzzle">
+    Read [bidsmith vs Google Ads Editor](/bidsmith/welcome/vs-google-ads-editor/)
+    for a side-by-side.
+  </Card>
+  <Card title="Looking something up?" icon="information">
+    The [glossary](/bidsmith/reference/glossary/) is the place for "what
+    does X mean?" Reference docs for every block and command are coming.
+  </Card>
+</CardGrid>

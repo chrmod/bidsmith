@@ -186,6 +186,21 @@ Smaller follow-ups that can ride along:
 - Tighten `fmt` ↔ export alignment for non-bidsmith outputs (the
   internal renderer already pipes through fmt; external pretty-print
   use cases may want their own knobs).
+- `bidsmith auth` subcommand — walks the user through the Google Ads
+  OAuth dance (Cloud-Console client + OAuth-Playground refresh-token
+  exchange), opens a browser, captures the redirect, prints the five
+  env vars to paste into `~/.bidsmith/env` or shell config. Today's
+  manual flow is the single steepest onboarding cliff for
+  non-engineers; collapsing ~15 min of clicking down to one command
+  is the highest-leverage marketer-adoption fix. A hosted-helper
+  variant (`bidsmith.dev/auth`) is a follow-up if the local-browser
+  version proves not enough.
+- Windows binary distribution — `.exe` build via `cross` or
+  `cargo-dist`, plus a `scoop` or `winget` recipe to mirror the
+  Homebrew tap UX. Today's macOS + Linux targets cover engineers but
+  block marketers on Windows laptops; the docs site will mark
+  Windows as "coming soon" until this lands (with WSL as the
+  documented interim path).
 
 ## `pull` verb + live round-trip e2e
 

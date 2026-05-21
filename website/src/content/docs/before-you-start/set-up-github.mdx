@@ -1,0 +1,160 @@
+---
+title: Set up GitHub
+description: Create a GitHub account, install a Git client, and clone the repo where your .bid files will live.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+bidsmith stores your campaign configuration in **plain text files**.
+You keep those files in a **Git repository** on **GitHub** so that
+every change is reviewable, revertable, and visible to your team.
+
+If you're new to Git and GitHub, this page is the 10-minute version.
+If you're already comfortable with `git clone`, skip to the bottom
+section.
+
+## Step 1 — Create a GitHub account
+
+Go to [github.com](https://github.com) and sign up. Free is fine.
+
+If your team already has a GitHub organization, ask your admin to
+invite you to it before continuing.
+
+## Step 2 — Install a Git client
+
+You have two choices. Pick one.
+
+### GitHub Desktop (recommended for non-engineers)
+
+[Download GitHub Desktop](https://desktop.github.com/) and install it.
+Sign in with the GitHub account from step 1. The app handles
+authentication, cloning, branching, committing, and pushing through
+a point-and-click UI.
+
+The official [GitHub Desktop documentation](https://docs.github.com/en/desktop)
+covers everything else: creating a branch, committing changes, opening
+a pull request. You only need the first few pages.
+
+### Command line (if you're comfortable in a terminal)
+
+macOS and Linux usually have `git` pre-installed. Check:
+
+```sh
+git --version
+```
+
+If not, install it:
+
+```sh
+brew install git
+```
+
+Then authenticate with GitHub. The easiest way is to install
+[GitHub CLI](https://cli.github.com/):
+
+```sh
+brew install gh
+gh auth login
+```
+
+Follow the prompts. After this, `git` will use your GitHub credentials
+automatically.
+
+## Step 3 — Get a `.bid` repository
+
+You need a Git repository where your `.bid` files will live. Two
+common situations:
+
+### Your team already has one
+
+Get the URL from a teammate (it looks like
+`https://github.com/your-team/bidsmith-config`) and clone it.
+
+In **GitHub Desktop**: *File → Clone repository → URL*, paste the URL,
+pick a folder, click Clone.
+
+In a **terminal**:
+
+```sh
+git clone https://github.com/your-team/bidsmith-config.git
+cd bidsmith-config
+```
+
+### You're starting fresh
+
+Create a new repository on GitHub:
+
+<Steps>
+
+1. Click the **+** in the top-right of github.com → **New repository**.
+
+2. Pick a name like `bidsmith-config`. Mark it **Private** unless you
+   have a reason to make it public — Google Ads account IDs aren't
+   secret, but most teams prefer to keep them out of the public
+   internet anyway.
+
+3. **Tick "Add a README file"** so the repo isn't empty.
+
+4. Click **Create repository**.
+
+5. Clone it to your laptop using GitHub Desktop or `git clone` as
+   above.
+
+</Steps>
+
+You now have a folder on your laptop that's tracked by Git. Anything
+you put in it can be committed, pushed, reviewed, and reverted.
+
+## Step 4 — The PR workflow, in 30 seconds
+
+When you want to make a change to a `.bid` file, the rhythm is
+always the same:
+
+<Steps>
+
+1. **Make a branch.** In GitHub Desktop: *Branch → New branch*. Name
+   it something like `add-summer-search-campaign`. (Branches are
+   safe scratchpads — nothing you do on a branch affects anyone else
+   until you merge it.)
+
+2. **Edit files.** Open the cloned folder in your editor, change
+   what you want.
+
+3. **Commit.** In GitHub Desktop: write a short summary in the
+   "Summary" box (e.g. *"Add summer search campaign"*) and click
+   **Commit to add-summer-search-campaign**.
+
+4. **Push.** Click **Push origin**. Your branch now exists on
+   GitHub.
+
+5. **Open a pull request.** GitHub Desktop offers a button; or visit
+   github.com, click the **Pull requests** tab, and create one from
+   your branch.
+
+6. **Get reviewed.** A teammate looks at the diff, leaves comments
+   or approves.
+
+7. **Merge.** Click the green **Merge** button on the PR page.
+
+</Steps>
+
+GitHub's [Hello World tutorial](https://docs.github.com/en/get-started/quickstart/hello-world)
+walks through this same flow with screenshots, on a toy repository,
+in about ten minutes. Worth doing once before you start editing
+real `.bid` files.
+
+## Next up
+
+[Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/) —
+the one-time OAuth setup so bidsmith can read and write your
+account.
+
+## Skipping ahead
+
+Already comfortable with Git and GitHub? You only need:
+
+1. A repository with read+write access.
+2. It cloned locally where you can `cd` into it.
+3. A clean working tree (`git status` reports nothing to commit).
+
+That's enough to follow the rest of the docs.

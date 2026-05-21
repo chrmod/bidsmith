@@ -1,0 +1,241 @@
+---
+title: Glossary
+description: Terse one-line definitions of terms used throughout the bidsmith documentation, with links to canonical sources.
+---
+
+A lookup table. Each entry is one or two sentences; deeper background
+is linked. Sorted alphabetically.
+
+## A
+
+**Access token** — A short-lived (≈1 hour) credential bidsmith mints
+on every run by exchanging your refresh token. You don't manage
+these directly. See [Google's OAuth 2.0 overview](https://developers.google.com/identity/protocols/oauth2).
+
+**Ad group** — A bucket inside a campaign that holds keywords and
+ads. One campaign has many ad groups; one ad group has many keywords
+and at least one ad. In bidsmith, declared as a `google_ads_ad_group`
+block.
+
+**Apply** — The bidsmith verb that takes the planned changes and
+sends them to the Google Ads API. Always preceded by a `plan` and
+a `yes` prompt. See [Plan and apply](#p).
+
+**Attribute** — A field inside a `.bid` block, e.g. `name`, `status`,
+`amount_micros`. Each resource type has its own set of required and
+optional attributes.
+
+## B
+
+**`.bid` file** — A plain-text file describing Google Ads resources
+in HCL syntax. bidsmith reads `.bid` files; the Google Ads API
+doesn't know about them.
+
+**Block** — A `{ … }` group inside a `.bid` file. Top-level blocks
+declare resources (`resource "google_ads_campaign" "x" { … }`);
+nested blocks declare configuration sub-sections (`manual_cpc { … }`).
+
+**Branch** — A separate line of development in Git. You make a
+branch, edit `.bid` files on it, open a PR, and merge it back to
+`main`. See [GitHub's intro to branches](https://docs.github.com/en/get-started/quickstart/github-flow#following-github-flow).
+
+## C
+
+**Campaign** — The top-level Google Ads container. Holds a budget, a
+bidding strategy, ad groups, and campaign-level criteria like
+negative keywords and geo targets. In bidsmith, a
+`google_ads_campaign` block.
+
+**Conventional commits** — A commit-message convention bidsmith does
+**not** require. Commits are prose; their goal is to explain the why.
+
+**Conversion action** — A measurable event you care about — a form
+submit, a phone call, a purchase. In bidsmith, a
+`google_ads_conversion_action` block.
+
+**CPC** — Cost-per-click. Manual CPC means *you* set the maximum bid;
+automated strategies let Google decide.
+
+**Customer ID** — The 10-digit number identifying your Google Ads
+account. bidsmith reads it from `GOOGLE_ADS_CUSTOMER_ID`. No dashes.
+
+## D
+
+**Developer token** — A token issued by your Google Ads manager
+account that authorizes API access. Set as `GOOGLE_ADS_DEVELOPER_TOKEN`.
+See [Obtain a developer token](https://developers.google.com/google-ads/api/docs/get-started/dev-token).
+
+**Drift** — When the live Google Ads account no longer matches your
+`.bid` files (because someone edited the UI directly, or a previous
+apply only partially succeeded). `bidsmith plan` surfaces drift as
+`~ update` rows.
+
+## E
+
+**Env var (environment variable)** — A value stored in your shell
+environment, available to any command you run. bidsmith reads five
+of them for Google Ads credentials. See
+[Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/#step-5--save-the-env-vars).
+
+## F
+
+**`fmt`** — bidsmith verb that rewrites `.bid` files in canonical
+form (normalized whitespace, consistent quoting, attributes in a
+stable order). `fmt --check` is non-destructive and useful in CI.
+
+## G
+
+**Git** — The version-control tool every modern team uses. See
+[GitHub's Git basics](https://docs.github.com/en/get-started/using-git/about-git).
+
+**GitHub** — The hosted Git provider bidsmith targets for PR review,
+deployments, and team collaboration. See
+[GitHub Hello World](https://docs.github.com/en/get-started/quickstart/hello-world).
+
+**GitHub Desktop** — A GUI Git client. The easiest path if you don't
+want to use a terminal for Git operations. See
+[GitHub Desktop docs](https://docs.github.com/en/desktop).
+
+## H
+
+**HCL** — HashiCorp Configuration Language, the syntax `.bid` files
+use. Familiar to anyone who's used Terraform. See the
+[HCL specification](https://github.com/hashicorp/hcl) for the formal
+grammar.
+
+**Headline** (RSA) — One of several short snippets of ad copy in a
+responsive search ad. Google permutes headlines and descriptions at
+serve time. Max 30 characters; minimum 3 required per ad.
+
+## I
+
+**Idempotent** — A property where running an operation twice has the
+same effect as running it once. `bidsmith apply` is idempotent —
+applying the same `.bid` files twice does nothing the second time.
+
+## L
+
+**Lint** — A non-blocking warning bidsmith emits during `validate`.
+Examples: missing `status` on a campaign, fewer than 3 headlines on
+an RSA, suspicious phone-number-shaped text. Doesn't fail the build;
+shows up in the output.
+
+**Login customer ID** — The Google Ads manager account ID, set in
+`GOOGLE_ADS_LOGIN_CUSTOMER_ID`. Required if you're managing a
+sub-account via an MCC.
+
+## M
+
+**Manager account (MCC)** — A Google Ads "My Client Center" account
+that oversees one or more sub-accounts. Issues developer tokens, holds
+shared credentials. See
+[About manager accounts](https://support.google.com/google-ads/answer/6139186).
+
+**Match type** — How Google decides whether a search query matches
+your keyword. Three values: `EXACT`, `PHRASE`, `BROAD`. See
+[About keyword matching](https://support.google.com/google-ads/answer/7478529).
+
+**MCC** — See *Manager account*.
+
+**Micros** — One millionth of the account currency. €1.00 =
+1,000,000 micros. Used for `amount_micros` (budgets) and
+`cpc_bid_micros` (bids).
+
+**Module** — In bidsmith, the basename of a `.bid` file. The file
+`black-friday.bid` defines a module called `black-friday`; resources
+inside it have addresses like `black-friday.google_ads_campaign.search`.
+
+## O
+
+**OAuth** — The authorization protocol bidsmith uses to talk to
+Google Ads. You do an OAuth dance once to get a refresh token, then
+bidsmith handles the rest. See
+[Google's OAuth 2.0 overview](https://developers.google.com/identity/protocols/oauth2).
+
+**OAuth Playground** — A Google-hosted web app that walks you through
+the OAuth flow to mint a refresh token. See
+[oauthplayground.com](https://developers.google.com/oauthplayground/).
+
+## P
+
+**Plan** — bidsmith verb that previews the difference between your
+`.bid` files and the live account. Read-only; safe to run any number
+of times.
+
+**Pull / pull request (PR)** — A GitHub feature for reviewing a
+branch before merging it. Open a PR, get reviewers, address comments,
+merge. The unit of collaboration in a bidsmith workflow. See
+[About pull requests](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-pull-requests).
+
+**`pull` (bidsmith verb)** — Dumps the live Google Ads account as
+raw API JSON. Useful as a fixture source and as the read side of the
+end-to-end test loop. Not the same as `git pull`.
+
+## R
+
+**Reference** — In bidsmith, a value like
+`google_ads_campaign.search.id` that points to another resource.
+The validator checks every reference resolves.
+
+**`refresh`** — bidsmith verb that reads the live account and writes
+it back as `.bid` files. Used to bootstrap from an existing account,
+or to capture state after someone edited the UI directly.
+
+**Refresh token** — A long-lived credential (no expiry, but
+revocable) that bidsmith exchanges for short-lived access tokens.
+Treat like a password. Set as `GOOGLE_ADS_REFRESH_TOKEN`.
+
+**Resource** — A single managed entity — a campaign, a budget, a
+keyword, etc. Each `resource` block in a `.bid` file declares one.
+
+**Resource name** (Google Ads sense) — The full
+`customers/X/campaigns/Y` path the Google Ads API uses to identify
+resources. Distinct from bidsmith's local address
+(`module.type.name`).
+
+**Responsive search ad (RSA)** — Google's modern ad format, where
+you supply 3–15 headlines and 2–4 descriptions and Google permutes
+them. Declared in bidsmith as
+`google_ads_ad_group_ad → ad → responsive_search_ad`.
+
+## S
+
+**Schema** — bidsmith's internal definition of what fields each
+resource type accepts. Drives validation, formatting, planning.
+Single source of truth; see `src/schema.rs` in the repo.
+
+**Shared set** — A Google Ads negative-keyword list that can be
+attached to multiple campaigns. Declared as a `google_ads_shared_set`
+block; linked via `google_ads_campaign_shared_set`.
+
+**SearchStream** — The Google Ads API's streaming query endpoint.
+bidsmith uses it under the hood to fetch live account state.
+
+## T
+
+**Terminal** — The command-line application on your laptop. On Mac,
+"Terminal" comes pre-installed (Spotlight → "Terminal"); on Windows,
+use Windows Terminal inside WSL. See Apple's
+[Terminal User Guide](https://support.apple.com/guide/terminal/welcome/mac).
+
+**Test account / test manager account** — A non-serving Google Ads
+account flagged at MCC creation time. Can't run ads, can't spend
+money — the recommended way to try bidsmith. See
+[Test accounts](https://developers.google.com/google-ads/api/docs/best-practices/test-accounts).
+
+## V
+
+**`validate`** — bidsmith verb that checks syntax, schema, and
+references in local `.bid` files. Doesn't touch the API. Run it
+before committing.
+
+**`validateOnly`** — A flag bidsmith passes to the Google Ads API
+during `plan`. Tells Google "check whether this would work, but
+don't commit it." Powers the dry-run safety guarantee.
+
+## W
+
+**WSL** — Windows Subsystem for Linux. Lets you run Linux inside
+Windows; the current path for using bidsmith on Windows until native
+binaries ship. See
+[Microsoft's WSL guide](https://learn.microsoft.com/en-us/windows/wsl/install).

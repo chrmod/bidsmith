@@ -1,0 +1,409 @@
+---
+title: Launch a new search campaign
+description: Build a Google Ads search campaign in bidsmith from scratch — branch, write, plan, apply, verify.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+In this tutorial you'll launch a new search campaign for a fictional
+**Black Friday 2026** promotion. You'll define the budget, the
+campaign, an ad group, a handful of keywords, and one responsive
+search ad. You'll preview the change, open a pull request, merge it,
+and apply.
+
+End to end: about 30 minutes the first time, five minutes once it's
+muscle memory.
+
+<Aside type="caution">
+  This tutorial creates a real campaign in the Google Ads account
+  configured via `GOOGLE_ADS_CUSTOMER_ID`. We'll keep it `PAUSED`
+  throughout, so it can't spend money — but use a test account if
+  you have one. See [Your first 10 minutes](/bidsmith/before-you-start/first-ten-minutes/#step-1--get-the-example-bid-file)
+  for context on test accounts.
+</Aside>
+
+## Before you begin
+
+Confirm the setup from the onboarding pages still works:
+
+```sh
+bidsmith --version
+bidsmith plan --whoami
+```
+
+Both should succeed. If not, revisit [Install](/bidsmith/before-you-start/install/)
+and [Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/).
+
+You should also be `cd`-ed into your `bidsmith-config` Git
+repository — the one you set up in
+[Set up GitHub](/bidsmith/before-you-start/set-up-github/).
+
+## Step 1 — Make a branch
+
+Never edit `main` directly. Make a branch named after the change:
+
+```sh
+git checkout -b black-friday-2026
+```
+
+Or, in GitHub Desktop: **Branch → New branch → black-friday-2026**.
+
+## Step 2 — Create the `.bid` file
+
+Inside your repo, create a new file called `black-friday-2026.bid`.
+The file's basename becomes the **module name** for everything in it,
+so when bidsmith refers to your resources later, it'll prefix them as
+`black-friday-2026.<type>.<name>`.
+
+Open it in your editor and start with a budget:
+
+```hcl
+resource "google_ads_campaign_budget" "main" {
+  name            = "Black Friday 2026"
+  amount_micros   = 50000000          # €50/day in micros
+  delivery_method = "STANDARD"
+}
+```
+
+<Aside type="tip" title="What are micros?">
+  Google Ads expresses currency amounts in **micros** — one millionth
+  of the account currency. €1.00 = 1,000,000 micros. €50.00 =
+  50,000,000 micros. This trips people up constantly; the trailing
+  six zeros are the giveaway.
+</Aside>
+
+## Step 3 — Add the campaign
+
+Below the budget, add the campaign. Note how the campaign
+**references** the budget you just defined:
+
+```hcl
+resource "google_ads_campaign" "search" {
+  name                     = "Black Friday 2026 — Search"
+  status                   = "PAUSED"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.main.id
+
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+
+  network_settings {
+    target_google_search          = true
+    target_search_network         = false
+    target_content_network        = false
+    target_partner_search_network = false
+  }
+}
+```
+
+Two things to notice:
+
+- `campaign_budget = google_ads_campaign_budget.main.id` is how
+  bidsmith links resources together. You can read it as "the budget
+  named `main` that we defined above."
+- `status = "PAUSED"` means the campaign won't serve ads when we
+  apply it. We'll flip to `ENABLED` in a follow-up PR once we've
+  confirmed everything looks right.
+
+## Step 4 — Add an ad group
+
+```hcl
+resource "google_ads_ad_group" "default" {
+  name           = "Default"
+  campaign       = google_ads_campaign.search.id
+  status         = "ENABLED"
+  type           = "SEARCH_STANDARD"
+  cpc_bid_micros = 2000000            # €2.00 max CPC
+}
+```
+
+The ad group references the campaign by its bidsmith address —
+`google_ads_campaign.search.id`. The pattern is the same every time:
+`<resource_type>.<your_name>.id`.
+
+## Step 5 — Add keywords
+
+Keywords in Google Ads are called **ad group criteria** under the
+hood. You add positive keywords (the searches you want to show on)
+and negative keywords (the searches you want to *not* show on).
+
+Three positives:
+
+```hcl
+resource "google_ads_ad_group_criterion" "kw_black_friday_deals" {
+  ad_group   = google_ads_ad_group.default.id
+  status     = "ENABLED"
+
+  keyword {
+    text       = "black friday deals"
+    match_type = "PHRASE"
+  }
+}
+
+resource "google_ads_ad_group_criterion" "kw_black_friday_sale" {
+  ad_group       = google_ads_ad_group.default.id
+  status         = "ENABLED"
+  cpc_bid_micros = 3500000             # €3.50 — higher bid for this one
+
+  keyword {
+    text       = "black friday sale"
+    match_type = "EXACT"
+  }
+}
+
+resource "google_ads_ad_group_criterion" "kw_cyber_monday" {
+  ad_group   = google_ads_ad_group.default.id
+  status     = "ENABLED"
+
+  keyword {
+    text       = "cyber monday"
+    match_type = "BROAD"
+  }
+}
+```
+
+And one **campaign-level negative** block that excludes search terms
+you never want to show on:
+
+```hcl
+resource "google_ads_campaign_criterion" "negatives" {
+  campaign = google_ads_campaign.search.id
+  status   = "ENABLED"
+
+  negative_keyword {
+    text       = "free"
+    match_type = "BROAD"
+  }
+
+  negative_keyword {
+    text       = "diy"
+    match_type = "BROAD"
+  }
+
+  negative_keyword {
+    text       = "used"
+    match_type = "BROAD"
+  }
+}
+```
+
+<Aside type="note">
+  Three match types: `EXACT` (matches the exact phrase, give or take
+  close variants), `PHRASE` (matches when the query contains the
+  phrase), `BROAD` (matches related searches more loosely). Pick
+  intentionally — broad keywords need more negatives to stay
+  on-target.
+</Aside>
+
+## Step 6 — Add one responsive search ad
+
+Every ad group needs at least one ad. Add a responsive search ad
+(RSA) with three headlines and two descriptions — that's the
+required minimum.
+
+```hcl
+resource "google_ads_ad_group_ad" "default_rsa" {
+  ad_group = google_ads_ad_group.default.id
+  status   = "ENABLED"
+
+  ad {
+    name       = "Black Friday RSA"
+    final_urls = ["https://example.com/black-friday"]
+
+    responsive_search_ad {
+      headline {
+        text = "Black Friday Deals 2026"
+        pin  = "HEADLINE_1"
+      }
+
+      headline {
+        text = "Save Big This Weekend"
+      }
+
+      headline {
+        text = "Free Shipping On All Orders"
+      }
+
+      description {
+        text = "Limited-time offers across our entire catalogue."
+        pin  = "DESCRIPTION_1"
+      }
+
+      description {
+        text = "Order today, get it before December."
+      }
+
+      path1 = "black-friday"
+      path2 = "2026"
+    }
+  }
+}
+```
+
+The `pin` field locks a headline or description to a specific
+position. Use it sparingly — Google's RSA optimizer works better when
+you give it room to permute.
+
+## Step 7 — Validate
+
+Save the file. Now check it parses cleanly:
+
+```sh
+bidsmith validate .
+```
+
+Expected:
+
+```
+OK: 1 file(s) valid.
+```
+
+If you see errors, bidsmith prints the exact line and column with
+a hint about what's wrong. Common stumbles:
+
+- **Forgot a closing `}`** — bidsmith points at the line where the
+  block should have ended.
+- **Typo in an enum value** (`"EXAKT"` instead of `"EXACT"`) — bidsmith
+  lists the allowed values.
+- **Referenced a resource that doesn't exist** (`google_ads_ad_group.deafult.id`)
+  — bidsmith suggests near-matches.
+
+Fix and re-run until you see `OK`.
+
+## Step 8 — Format
+
+`fmt` normalizes whitespace and indentation. Run it:
+
+```sh
+bidsmith fmt .
+```
+
+It rewrites your file in canonical form. The diff is usually small
+or empty; this keeps the codebase tidy across editors.
+
+## Step 9 — Preview the apply
+
+```sh
+bidsmith plan .
+```
+
+Expected output (abbreviated):
+
+```
+Plan: 9 to create, 0 to update, 0 to destroy.
+
+  + black-friday-2026.google_ads_campaign_budget.main
+  + black-friday-2026.google_ads_campaign.search
+  + black-friday-2026.google_ads_ad_group.default
+  + black-friday-2026.google_ads_ad_group_criterion.kw_black_friday_deals
+  + black-friday-2026.google_ads_ad_group_criterion.kw_black_friday_sale
+  + black-friday-2026.google_ads_ad_group_criterion.kw_cyber_monday
+  + black-friday-2026.google_ads_campaign_criterion.negatives
+  + black-friday-2026.google_ads_ad_group_ad.default_rsa
+```
+
+If `plan` reports any errors from the Google Ads API (e.g.
+"invalid bid range," "headline too long"), fix the `.bid` file and
+re-run.
+
+## Step 10 — Commit and open a pull request
+
+```sh
+git add black-friday-2026.bid
+git commit -m "Add Black Friday 2026 search campaign (PAUSED)"
+git push -u origin black-friday-2026
+```
+
+Open github.com, click **Compare & pull request**, write a one-line
+description ("Launching Black Friday 2026 search, paused for now"),
+click **Create pull request**.
+
+Tag a teammate for review. Their job is to:
+
+- Eyeball the keywords (are they the right matches?).
+- Sanity-check the budget (€50/day reasonable for this campaign?).
+- Confirm the ad copy is on-brand (no typos in headlines).
+- Confirm `status = "PAUSED"` (we don't want money flowing on the
+  first apply).
+
+When they approve, **merge** the PR.
+
+## Step 11 — Apply
+
+Pull the merged main branch back to your laptop and apply:
+
+```sh
+git checkout main
+git pull
+bidsmith apply .
+```
+
+bidsmith shows the same plan and prompts:
+
+```
+Do you want to perform these actions?
+  Type 'yes' to confirm.
+> 
+```
+
+Type `yes`. bidsmith calls the Google Ads API and creates the
+resources.
+
+## Step 12 — Verify
+
+Open Google Ads in your browser. Navigate to the **Campaigns** view.
+
+You should see **Black Friday 2026 — Search** listed, status
+**Paused**, with one ad group, three keywords, three negatives, and
+one RSA. The ad will be in *eligible* or *under review* status —
+that's normal, Google reviews every new ad.
+
+Confirm:
+
+- The budget is €50/day.
+- The keywords look right.
+- The RSA headlines are in the right order.
+
+## Step 13 — A second `plan` is a no-op
+
+This is the proof that bidsmith is in sync with reality:
+
+```sh
+bidsmith plan .
+```
+
+Expected:
+
+```
+Plan: 0 to create, 0 to update, 0 to destroy.
+No changes. Live state matches .bid files.
+```
+
+If you see this, **the campaign is fully under bidsmith management.**
+Every future change to it goes through the same loop: edit the
+`.bid` file, branch, PR, review, merge, apply.
+
+## Going live
+
+When you're ready to actually run the campaign, open a second PR
+that flips `status = "PAUSED"` to `status = "ENABLED"` in
+`black-friday-2026.bid`. Same review process. Same `plan` / `apply`.
+
+That's the whole flow. Every change — bid adjustments, new
+keywords, paused ad groups, expanded budgets — works exactly the
+same way.
+
+## What to learn next
+
+- The Core concepts pages explain *why* bidsmith is shaped this way —
+  the plan/apply lifecycle, modules, references, drift detection.
+  *(Coming soon.)*
+- The How-to recipes section is a cookbook of "how do I…?" answers:
+  bulk-add keywords from a spreadsheet, pause everything for the
+  holidays, etc. *(Coming soon.)*
+- The Resource reference documents every block and every field with
+  required/optional/default annotations. *(Coming soon.)*
+
+In the meantime, the [glossary](/bidsmith/reference/glossary/) is the
+single best lookup if a term in this tutorial was unfamiliar.

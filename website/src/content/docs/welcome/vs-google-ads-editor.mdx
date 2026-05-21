@@ -1,0 +1,86 @@
+---
+title: bidsmith vs Google Ads Editor
+description: When to reach for bidsmith, when to stay in Google Ads Editor.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Both tools let you bulk-edit Google Ads without clicking through the
+web UI one field at a time. They solve overlapping problems, and most
+teams will use both. Here's how they compare.
+
+## The side-by-side
+
+| | **Google Ads Editor** | **bidsmith** |
+|---|---|---|
+| **Source of truth** | Your last download. Gets stale the moment someone else edits the account. | A Git repository everyone shares. Always current. |
+| **History** | You see your own pending changes. Past edits are gone once posted. | Every change is a Git commit. Years of history, searchable. |
+| **Review before posting** | You see your own diff. Nobody else does. | Open a pull request. Teammates review and comment before anything ships. |
+| **Undo** | Undo a pending change locally. Once posted, the only undo is editing manually. | `git revert <commit>` → `bidsmith apply`. Five seconds. |
+| **Concurrent edits** | First one to post wins; the other has to re-download and reconcile by hand. | Git merges the edits. Conflicts are visible and resolvable. |
+| **Bulk find-and-replace** | Excellent. The UI is the strongest part of the Editor. | Works — it's just text, so any editor's find-and-replace does it. Slightly less ergonomic for ad-hoc bulk edits. |
+| **Reporting and inspection** | Limited. Use the web UI. | Not at all. Use the web UI. |
+| **Search-term reports, recommendations, audit insights** | Read-only views in the Editor; rich in the web UI. | Not bidsmith's job. Use the web UI. |
+| **Reproducibility** | A posted change is a snapshot in time. There's no way to ask "what did this account look like in March?" | Yes — every state the account has been in is a Git commit you can check out. |
+| **Automation / CI** | Not designed for it. | First-class. Run `bidsmith plan` in a GitHub Action on every PR. |
+| **Learning curve** | Familiar Google Ads vocabulary, dropdown menus, point-and-click. | New file format and a few terminal commands. Steeper for one person; flatter for a team of five. |
+| **Works offline** | Yes. | Editing and `validate` yes. `plan` and `apply` need the Google Ads API. |
+
+## When to use what
+
+**Reach for Google Ads Editor when:**
+
+- You're doing a one-time bulk edit and don't need a record of who/why.
+- You're inspecting performance, search-terms, recommendations.
+- You're new to the account and want to poke around interactively.
+- You're the only one editing the account and changes are infrequent.
+
+**Reach for bidsmith when:**
+
+- More than one person edits the same account.
+- You need an audit trail ("who set that bid, and why?").
+- You want a teammate to review a change before it goes live.
+- You want a CI pipeline to run `plan` on every PR and catch mistakes.
+- You're managing five, ten, or fifty similar campaigns and want to
+  generate them from a template instead of duplicating in the UI.
+- You ever need to roll back a change cleanly.
+
+## They're not mutually exclusive
+
+Most teams will:
+
+- Use **bidsmith** for the *config* of their account — campaigns, ad
+  groups, keywords, budgets, shared sets, conversion actions.
+- Use **the Google Ads web UI** for everything else — reports,
+  recommendations, search-term review, day-to-day monitoring.
+- Use **Google Ads Editor** for one-off exploratory bulk edits, then
+  run `bidsmith refresh` afterwards to bring the changes back into
+  Git.
+
+<Aside type="note">
+  bidsmith's `refresh` command pulls the current state of your account
+  down into `.bid` files. It's how you adopt bidsmith without rewriting
+  anything from scratch — and how you reconcile if someone makes an
+  edit outside of Git that you want to capture.
+</Aside>
+
+## What about the API directly?
+
+If you're a developer and you'd happily write Python scripts that call
+the Google Ads API — you can. But that's exactly the gap bidsmith
+fills:
+
+- Your scripts have no diff between "what I want" and "what's there."
+  You write imperative code: *create this, update that.* bidsmith is
+  declarative: *here's what should exist.*
+- Your scripts have no built-in plan/apply preview. bidsmith does.
+- Your scripts aren't reviewable as a clean diff in a PR. A `.bid`
+  file is.
+
+bidsmith is what you'd build if you wrote those scripts five times and
+got tired of writing them.
+
+## Next up
+
+- [How the workflow looks day-to-day](/bidsmith/welcome/workflow-overview/) — the end-to-end picture.
+- [Install bidsmith](/bidsmith/before-you-start/install/) — when you're ready to try it.

@@ -57,13 +57,54 @@ hidden `_e2e-cleanup` subcommand.
 - **`.bid` extension is provisional** but stable for now — don't rename
   it as part of unrelated work.
 
+## Docs site (`website/`)
+
+The user-facing documentation site lives in `website/` and is built
+with [Astro Starlight](https://starlight.astro.build/). Target audience
+is **marketers**, not engineers — tone is plain-language, examples are
+realistic campaigns (not `foo`/`bar`), and external links are preferred
+over in-house explainers for general concepts (Git, OAuth, terminal
+basics, HCL syntax).
+
+- Local dev: `cd website && npm install && npm run dev`.
+- Build: `npm run build` from inside `website/` — must complete clean
+  before merging changes that touch docs.
+- Deploy: `.github/workflows/docs.yml` rebuilds and pushes to
+  `gh-pages` on every push to `main` that changes `website/**`.
+- Live URL: `https://chrmod.github.io/bidsmith/`.
+
+Source-of-truth layout:
+
+```
+website/src/content/docs/
+├── index.mdx                    # splash home
+├── welcome/                     # what is bidsmith, vs editor, workflow
+├── before-you-start/            # install, github, google ads, first run
+├── tutorials/                   # end-to-end walkthroughs
+├── recipes/                     # short "how do I X" answers (mostly stubs)
+├── concepts/                    # plain-language explainers (stubs)
+├── commands/                    # CLI reference (stubs)
+├── resources/                   # auto-generated reference (stubs)
+└── reference/glossary.mdx       # terse, externally-linked
+```
+
+`recipes/`, `concepts/`, `commands/`, `resources/` are marked
+"coming soon" — flesh them out as features land.
+
 ## Things to update alongside code
 
-- Add resource → update DECISIONS.md "Validator covers" list.
-- Add CLI verb or change a flag → update DECISIONS.md verbs table and
-  README.md "Commands" section.
+- Add resource → update DECISIONS.md "Validator covers" list **and**
+  the `website/src/content/docs/resources/` section (once the
+  auto-generation pipeline lands; in the meantime, mention the new
+  type in `website/src/content/docs/resources/index.mdx`).
+- Add CLI verb or change a flag → update DECISIONS.md verbs table,
+  README.md "Commands" section, **and**
+  `website/src/content/docs/commands/index.mdx` (plus per-verb page if
+  one exists).
 - Settle an open decision → move it from ROADMAP.md "Open decisions"
   to DECISIONS.md "Locked decisions" with a one-line rationale.
+- User-visible behavior change → write a `website/src/content/docs/recipes/`
+  entry if it's something a marketer would search for ("how do I…?").
 
 ## Cutting a release
 

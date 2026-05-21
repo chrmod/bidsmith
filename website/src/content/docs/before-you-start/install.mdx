@@ -1,0 +1,128 @@
+---
+title: Install bidsmith
+description: Install the bidsmith command-line tool on macOS, Linux, or Windows.
+---
+
+import { Aside, Tabs, TabItem, Steps } from '@astrojs/starlight/components';
+
+bidsmith is a single command-line binary. Once installed you'll be
+able to run `bidsmith` from any terminal.
+
+<Tabs syncKey="os">
+  <TabItem label="macOS" icon="apple">
+
+The easiest path is [Homebrew](https://brew.sh). If you don't have
+Homebrew yet, install it first:
+
+```sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+Then install bidsmith from its tap:
+
+```sh
+brew install chrmod/tap/bidsmith
+```
+
+Confirm it worked:
+
+```sh
+bidsmith --version
+```
+
+You should see a version number like `bidsmith 0.5.0`.
+
+<Aside type="tip">
+  Homebrew handles upgrades for you. `brew upgrade chrmod/tap/bidsmith`
+  pulls the latest release. Run it once a month or whenever you see a
+  release announcement.
+</Aside>
+
+  </TabItem>
+  <TabItem label="Linux" icon="linux">
+
+The easiest path is [Homebrew on Linux](https://docs.brew.sh/Homebrew-on-Linux).
+If you don't have it yet:
+
+```sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+Then:
+
+```sh
+brew install chrmod/tap/bidsmith
+bidsmith --version
+```
+
+**Alternative — download the binary directly:** Visit the
+[releases page](https://github.com/chrmod/bidsmith/releases), grab
+the `bidsmith-linux-x86_64` (or `aarch64`) tarball, extract it, and
+move the binary onto your `$PATH`:
+
+```sh
+curl -L -o bidsmith.tar.gz \
+  https://github.com/chrmod/bidsmith/releases/latest/download/bidsmith-linux-x86_64.tar.gz
+tar -xzf bidsmith.tar.gz
+sudo mv bidsmith /usr/local/bin/
+bidsmith --version
+```
+
+  </TabItem>
+  <TabItem label="Windows" icon="seti:windows">
+
+<Aside type="caution">
+  Native Windows binaries are **coming soon** — tracked in the
+  [project roadmap](https://github.com/chrmod/bidsmith/blob/main/ROADMAP.md).
+  Until then, the documented path is WSL (Windows Subsystem for
+  Linux), which gives you a real Linux environment inside Windows in
+  a few minutes.
+</Aside>
+
+<Steps>
+
+1. **Install WSL.** Open PowerShell as Administrator and run:
+
+   ```powershell
+   wsl --install
+   ```
+
+   This installs Ubuntu by default. Reboot when prompted. On first
+   boot Ubuntu will ask you to pick a Linux username and password.
+   See Microsoft's [WSL install guide](https://learn.microsoft.com/en-us/windows/wsl/install)
+   for screenshots and troubleshooting.
+
+2. **Open Ubuntu** from the Start menu. You're now in a Linux
+   terminal that lives inside Windows.
+
+3. **Follow the Linux instructions** above. Install Homebrew, then
+   `brew install chrmod/tap/bidsmith`.
+
+4. **Use bidsmith from Ubuntu.** Your `.bid` files can live anywhere —
+   inside the Linux filesystem (faster) or on your Windows
+   filesystem under `/mnt/c/Users/<you>/...` (more convenient if
+   you also edit them in VS Code on Windows).
+
+</Steps>
+
+  </TabItem>
+</Tabs>
+
+## Did it work?
+
+If `bidsmith --version` printed a version, you're done with this page.
+
+If you saw `command not found` or similar:
+
+- **macOS / Linux**: open a new terminal window. Homebrew adds itself
+  to your shell config, but the change only applies to terminals
+  opened after the install.
+- **Windows / WSL**: same — close Ubuntu and reopen it.
+- Still stuck? Double-check `brew --version` works. If Homebrew
+  itself isn't found, re-run the Homebrew install command from the
+  top of this page.
+
+## Next up
+
+[Set up GitHub](/bidsmith/before-you-start/set-up-github/) — you'll
+need a Git repository to store your `.bid` files.

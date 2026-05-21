@@ -1,0 +1,25 @@
+---
+title: Command reference
+description: Every bidsmith subcommand, every flag, every exit code.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Coming soon">
+  Per-command pages with full flag tables, exit codes, environment
+  variables, and worked examples. Until then, every command supports
+  `bidsmith <command> --help` for inline reference.
+</Aside>
+
+## Subcommands
+
+| Verb | Purpose |
+|---|---|
+| `validate` | Check syntax, schema, references locally. |
+| `fmt` | Rewrite `.bid` files in canonical form (or `--check`). |
+| `plan` | Preview the diff between `.bid` files and live account. |
+| `apply` | Apply the diff to Google Ads (with confirmation prompt). |
+| `refresh` | Pull live account state down into `.bid` files. |
+| `pull` | Dump raw Google Ads JSON for fixtures and tests. |
+| `export` | Render `.bid` files from JSON input. |
+| `query` | Run a Google Ads GAQL query (read-only passthrough). |
