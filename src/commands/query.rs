@@ -25,7 +25,7 @@ pub fn run(query: &str, format: Format, verbose: bool) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let token = match auth::exchange_refresh_token() {
+    let token = match auth::get_access_token() {
         Ok(t) => t,
         Err(e) => {
             eprintln!("query: {e}");

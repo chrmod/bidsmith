@@ -49,6 +49,7 @@ export default defineConfig({
             { label: 'Move a keyword between match types', slug: 'recipes/change-keyword-match-type' },
             { label: 'Roll back a bad change', slug: 'recipes/roll-back-a-bad-change' },
             { label: 'Audit who changed what, when', slug: 'recipes/audit-who-changed-what' },
+            { label: 'Cut Google Ads API quota usage', slug: 'recipes/reduce-api-calls' },
           ],
         },
         {

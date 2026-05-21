@@ -17,7 +17,7 @@ the next step.
 ## Synopsis
 
 ```sh
-bidsmith plan [PATH] [--whoami] [--read-live] [--verbose]
+bidsmith plan [PATH] [--refresh-state] [--offline] [--whoami] [--read-live] [--verbose]
 ```
 
 ## Arguments
@@ -30,6 +30,8 @@ bidsmith plan [PATH] [--whoami] [--read-live] [--verbose]
 
 | Flag | Description |
 |---|---|
+| `--refresh-state` | Ignore any cached live state and refetch from the API. The fresh fetch is then written back to the cache. Use when you suspect the cache is out of date. |
+| `--offline` | Diff against the cached live state without contacting Google Ads at all — no OAuth, no SearchStream, no validateOnly mutate. Errors if no fresh cache exists. See [Cut Google Ads API quota usage](/bidsmith/recipes/reduce-api-calls/). |
 | `--whoami` | Exchange the refresh token for an access token and print the result. Doesn't touch Google Ads. Useful for confirming credentials. |
 | `--read-live` | Print a summary of the live account state (resource counts per type). Doesn't require `.bid` files. Useful for debugging. |
 | `--verbose` | Print the outgoing API request envelope and the raw response. Useful when something looks wrong. |

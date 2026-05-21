@@ -16,7 +16,7 @@ do (modulo Google's own consistency guarantees).
 ## Synopsis
 
 ```sh
-bidsmith apply [PATH] [--auto-approve] [--verbose]
+bidsmith apply [PATH] [--auto-approve] [--refresh-state] [--verbose]
 ```
 
 ## Arguments
@@ -30,6 +30,7 @@ bidsmith apply [PATH] [--auto-approve] [--verbose]
 | Flag | Description |
 |---|---|
 | `--auto-approve` | Skip the interactive `yes` prompt. **Required** when stdin is not a TTY (CI, cron, scripts). |
+| `--refresh-state` | Ignore any cached live state and refetch from the API before computing the diff. The cache is invalidated after a successful apply regardless. See [Cut Google Ads API quota usage](/bidsmith/recipes/reduce-api-calls/). |
 | `--verbose` | Print the outgoing API request envelope and the raw response. |
 
 ## Environment variables

@@ -66,6 +66,15 @@ enum Cmd {
         /// required, no diff, no mutate). Useful for debugging.
         #[arg(long)]
         read_live: bool,
+        /// Ignore any cached live state for this customer and refetch from the
+        /// API. The fresh fetch is then written back to the cache.
+        #[arg(long = "refresh-state", conflicts_with = "offline")]
+        refresh_state: bool,
+        /// Diff against the cached live state without contacting Google Ads.
+        /// Errors if no fresh cache exists — run `bidsmith pull` first to
+        /// warm it. Skips OAuth and the validateOnly mutate too.
+        #[arg(long)]
+        offline: bool,
         /// Dump the outgoing request body and raw API response
         #[arg(long)]
         verbose: bool,
@@ -78,6 +87,10 @@ enum Cmd {
         /// after the validateOnly plan is shown. Required for non-TTY runs.
         #[arg(long = "auto-approve")]
         auto_approve: bool,
+        /// Ignore any cached live state for this customer and refetch from the
+        /// API. The fresh fetch is then written back to the cache.
+        #[arg(long = "refresh-state")]
+        refresh_state: bool,
         /// Dump the outgoing request body and raw API response
         #[arg(long)]
         verbose: bool,
@@ -164,12 +177,22 @@ fn main() -> ExitCode {
             customer_id.as_deref(),
         ),
         Cmd::Fmt { path, check } => commands::fmt::run(&path, check),
-        Cmd::Plan { path, whoami, read_live, verbose } => {
-            commands::plan::run(path.as_deref(), whoami, read_live, verbose)
+        Cmd::Plan { path, whoami, read_live, refresh_state, offline, verbose } => {
+            commands::plan::run(
+                path.as_deref(),
+                whoami,
+                read_live,
+                refresh_state,
+                offline,
+                verbose,
+            )
         }
-        Cmd::Apply { path, auto_approve, verbose } => {
-            commands::apply::run(path.as_deref(), auto_approve, verbose)
-        }
+        Cmd::Apply { path, auto_approve, refresh_state, verbose } => commands::apply::run(
+            path.as_deref(),
+            auto_approve,
+            refresh_state,
+            verbose,
+        ),
         Cmd::Pull { output, verbose } => {
             commands::pull::run(output.as_deref(), verbose)
         }

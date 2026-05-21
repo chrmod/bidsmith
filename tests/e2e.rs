@@ -21,6 +21,11 @@ fn live_round_trip() {
         "BIDSMITH_E2E_CUSTOMER_ID must be set to a dedicated Google Ads test manager account",
     );
 
+    // Disable the project-folder cache for every bidsmith subprocess so the
+    // round-trip exercises the live API on each step instead of replaying a
+    // previous run's snapshot.
+    std::env::set_var("BIDSMITH_NO_CACHE", "1");
+
     let run_id = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock before unix epoch")

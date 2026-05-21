@@ -1,0 +1,213 @@
+---
+title: Cut Google Ads API quota usage
+description: How bidsmith caches live state, how to bypass the cache when you need fresh data, and how to plan fully offline.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+If you're getting `RESOURCE_EXHAUSTED` errors from Google Ads, or
+just hitting your daily-operations limit in tight authoring loops,
+this page is for you.
+
+## What bidsmith already does
+
+Every `plan` or `apply` writes the live state it pulls from Google
+Ads to `.bidsmith/cache/live-state.json` in your project, along with
+the OAuth access token in `.bidsmith/cache/token.json`. The next
+`plan` or `apply` within the cache window reuses both — no
+SearchStream queries, no OAuth round-trip.
+
+The defaults:
+
+- **Live-state cache TTL**: 15 minutes.
+- **Access-token cache**: reused until 60 seconds before its
+  server-issued expiry (typically ~1 hour).
+- **After every successful `apply`**: the live-state cache is
+  invalidated automatically, so the next `plan` starts from real
+  data.
+- **`.bidsmith/` is gitignored** by default — nothing to commit.
+
+When the cache is used, bidsmith prints a banner so you always know
+which mode you're in:
+
+```
+plan: using cached live state from 4m12s ago (--refresh-state to refetch).
+```
+
+If you don't see that line, the live API was contacted.
+
+## When to bust the cache
+
+You normally don't need to. The 15-minute TTL is short enough that
+genuinely stale data is rare, and `apply` invalidates the cache on
+success. But you might want a fresh fetch if:
+
+- Someone edited the account in the Google Ads UI mid-session.
+- You're chasing a "this looks wrong" diff and want to rule out
+  stale state.
+- You're about to apply something high-stakes and want a final
+  confirmation against live.
+
+```sh
+bidsmith plan --refresh-state .
+bidsmith apply --refresh-state .
+```
+
+`--refresh-state` skips the read but still writes the result back to
+the cache, so subsequent invocations get fresh data for free.
+
+## Planning fully offline
+
+`bidsmith plan --offline` reads the cache only and prints the diff
+without any network call — no SearchStream, no OAuth, no
+validateOnly mutate. Useful for:
+
+- Tight authoring loops where each `plan` would cost an
+  operations-quota mutate.
+- Offline work (planes, trains, sketchy hotel Wi-Fi).
+- CI pre-flight on every PR push, with a nightly cache refresh job
+  doing the actual `pull`.
+
+```sh
+# Warm the cache once.
+bidsmith pull -o /dev/null   # or just run any plan
+
+# Iterate locally.
+bidsmith plan --offline .
+# … edit .bid …
+bidsmith plan --offline .
+# … edit .bid …
+bidsmith plan --offline .
+
+# When you're ready, do a real plan against live and apply.
+bidsmith plan .
+bidsmith apply .
+```
+
+The offline summary is clearly marked so you don't confuse it with a
+server-validated plan:
+
+```
+Plan: 3 to create, 1 to update, 12 unchanged. (offline — diff only, not server-validated)
+```
+
+If the cache is missing or older than the TTL, `--offline` errors
+out with a hint to run `bidsmith pull` (or just one normal `plan`)
+to warm it.
+
+<Aside type="caution" title="Offline plans don't catch every error">
+  `--offline` shows what bidsmith *would send* — it can't see policy
+  violations, character-length limits the server enforces but the
+  client doesn't, or "this campaign you thought existed was deleted".
+  Always run a real `plan` (or rely on `apply`'s built-in
+  validateOnly pass) before mutating.
+</Aside>
+
+## Tuning the TTL
+
+```sh
+# Default: 900 seconds (15 minutes).
+BIDSMITH_CACHE_TTL_SECS=3600 bidsmith plan .   # 1-hour TTL
+BIDSMITH_CACHE_TTL_SECS=60 bidsmith plan .     # 1-minute TTL
+```
+
+A longer TTL is fine on single-author accounts where bidsmith is the
+only thing touching Google Ads. Keep it short on shared accounts
+where someone might edit in the UI between your invocations.
+
+## Bypassing the cache entirely
+
+```sh
+BIDSMITH_NO_CACHE=1 bidsmith plan .
+```
+
+Disables both caches (live-state and OAuth) for that invocation —
+no reads, no writes. Equivalent to `bidsmith` before the cache
+existed. Useful for debugging "is the cache lying to me?" without
+deleting cache files by hand.
+
+## The pull-once, plan-many pattern
+
+For long authoring sessions:
+
+<Steps>
+
+1. **Warm the cache once at the start.**
+
+   ```sh
+   bidsmith pull -o /tmp/snapshot.json
+   ```
+
+   `pull` always fetches fresh from the API and also writes the
+   `.bidsmith/cache/live-state.json` as a side effect, so the next
+   `plan` is cache-served.
+
+2. **Iterate with `--offline`.** Zero API calls per cycle.
+
+   ```sh
+   bidsmith plan --offline .
+   ```
+
+3. **Switch to a live plan when you're satisfied.** This is the one
+   that calls validateOnly to catch server-side issues:
+
+   ```sh
+   bidsmith plan .
+   ```
+
+4. **Apply** when the live plan looks right:
+
+   ```sh
+   bidsmith apply .
+   ```
+
+   `apply` clears the cache on success, so the next session starts
+   clean.
+
+</Steps>
+
+A 10-edit authoring loop with this pattern costs ~3 API calls
+(1 initial pull + 1 final live plan + 1 apply mutate) instead of
+~40 (each `plan` would otherwise issue 12 SearchStream reads + 1
+validateOnly mutate).
+
+## CI patterns
+
+A common quota-killer is `bidsmith plan` on every PR push.
+Suggested wiring:
+
+- **Nightly job** that runs `bidsmith pull -o cache/snapshot.json`
+  and commits the snapshot to a side branch (or stores it as a CI
+  artifact / S3 object).
+- **PR job** that downloads the snapshot, drops it into
+  `.bidsmith/cache/live-state.json`, and runs
+  `bidsmith plan --offline`. Zero API calls per PR.
+- **Merge-to-main job** that runs a real `bidsmith plan` once, then
+  `bidsmith apply --auto-approve` — that's the only place the real
+  API is contacted.
+
+The snapshot can be regenerated more often than nightly if your
+account changes frequently; the only cost is one round of
+SearchStream queries.
+
+## Where the cache lives
+
+Everything in `.bidsmith/cache/`:
+
+| File              | Contents                                            | Lifetime                      |
+|-------------------|-----------------------------------------------------|-------------------------------|
+| `live-state.json` | Raw SearchStream batches keyed by customer + version | TTL (default 15 min)          |
+| `token.json`      | OAuth access token + expiry (mode `0600`)            | ~1 hour, server-issued        |
+
+Both files are JSON, both are gitignored, both are safe to delete by
+hand — `rm -rf .bidsmith/cache/` is a valid "reset everything"
+command.
+
+## See also
+
+- [`bidsmith plan`](/bidsmith/commands/plan/) — the verb that
+  benefits most from the cache.
+- [`bidsmith pull`](/bidsmith/commands/pull/) — the explicit
+  cache-warming command.
+- [Plan and apply](/bidsmith/concepts/plan-and-apply/) — the
+  underlying loop the cache speeds up.

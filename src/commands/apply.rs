@@ -1,15 +1,21 @@
 use std::io::{BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
+use crate::api::live_state;
 use crate::commands::plan;
 
-pub fn run(path: Option<&str>, auto_approve: bool, verbose: bool) -> ExitCode {
+pub fn run(
+    path: Option<&str>,
+    auto_approve: bool,
+    refresh_state: bool,
+    verbose: bool,
+) -> ExitCode {
     let Some(path) = path else {
         eprintln!("apply: provide a .bid file or directory.");
         return ExitCode::from(2);
     };
 
-    let prepared = match plan::prepare(path, "apply") {
+    let prepared = match plan::prepare(path, "apply", refresh_state, /* offline */ false) {
         Ok(Some(p)) => p,
         Ok(None) => return ExitCode::SUCCESS,
         Err(code) => return code,
@@ -64,12 +70,14 @@ pub fn run(path: Option<&str>, auto_approve: bool, verbose: bool) -> ExitCode {
 
     eprintln!();
     eprintln!("apply: mutating Google Ads (no undo from bidsmith)...");
-    plan::execute(
+    let code = plan::execute(
         &prepared,
         /* validate_only */ false,
         verbose,
         plan::DisplayMode::Summary,
-    )
+    );
+    live_state::invalidate_cache();
+    code
 }
 
 fn prompt_for_yes() -> std::io::Result<bool> {

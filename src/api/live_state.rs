@@ -1,6 +1,7 @@
 use serde_json::Value;
 
-use crate::api::client::{ApiError, Client};
+use crate::api::cache;
+use crate::api::client::{self, ApiError, Client};
 use crate::commands::adapt;
 use crate::commands::export::ExportInput;
 
@@ -205,8 +206,68 @@ pub fn fetch_raw(client: &Client, access_token: &str) -> Result<Vec<Value>, Live
     Ok(all_batches)
 }
 
-pub fn fetch(client: &Client, access_token: &str) -> Result<ExportInput, LiveStateError> {
-    let batches = fetch_raw(client, access_token)?;
+fn adapt_batches(batches: Vec<Value>) -> Result<ExportInput, LiveStateError> {
     let mega = Value::Array(batches).to_string();
     adapt::from_search_response(&mega).map_err(LiveStateError::Adapter)
+}
+
+/// How the cache should be consulted during a fetch.
+pub enum CacheMode {
+    /// Read cache if fresh, else fetch and write cache. Default for plan/apply.
+    ReadWrite,
+    /// Always fetch fresh; still write the result to cache. `--refresh-state`.
+    RefreshWrite,
+    /// Bypass cache entirely (no read, no write).
+    Bypass,
+}
+
+pub struct FetchOutcome {
+    pub state: ExportInput,
+}
+
+pub fn fetch_with_cache(
+    client: &Client,
+    access_token: &str,
+    mode: CacheMode,
+    label: &str,
+) -> Result<FetchOutcome, LiveStateError> {
+    let env_off = cache::disabled_by_env();
+    let effective_mode = if env_off { CacheMode::Bypass } else { mode };
+    let cache_dir = cache::project_cache_dir();
+    let api_v = client::api_version();
+    let login = client.login_customer_id.as_deref();
+
+    if matches!(effective_mode, CacheMode::ReadWrite) {
+        if let Some(hit) = cache::load_live_state(
+            &cache_dir,
+            &client.customer_id,
+            login,
+            &api_v,
+            cache::live_state_ttl_secs(),
+        ) {
+            eprintln!(
+                "{label}: using cached live state from {} ago (--refresh-state to refetch).",
+                cache::format_age(hit.age_secs),
+            );
+            let state = adapt_batches(hit.batches)?;
+            return Ok(FetchOutcome { state });
+        }
+    }
+
+    eprintln!(
+        "{label}: fetching live state from customers/{}...",
+        client.customer_id,
+    );
+    let batches = fetch_raw(client, access_token)?;
+
+    if !matches!(effective_mode, CacheMode::Bypass) {
+        let _ = cache::save_live_state(&cache_dir, &client.customer_id, login, &api_v, &batches);
+    }
+
+    let state = adapt_batches(batches)?;
+    Ok(FetchOutcome { state })
+}
+
+pub fn invalidate_cache() {
+    cache::invalidate_live_state(&cache::project_cache_dir());
 }

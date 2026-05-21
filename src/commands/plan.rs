@@ -4,18 +4,30 @@ use std::process::ExitCode;
 
 use serde_json::Value;
 
+use crate::api::live_state::CacheMode;
 use crate::api::{auth, client, diff, import, live_state, mutate};
 use crate::commands::export::ExportInput;
 use crate::diagnostics::Diag;
 use crate::parser::{ParsedFile, parse_file};
 use crate::schema::validate_files;
 
-pub fn run(path: Option<&str>, whoami: bool, read_live: bool, verbose: bool) -> ExitCode {
+pub fn run(
+    path: Option<&str>,
+    whoami: bool,
+    read_live: bool,
+    refresh_state: bool,
+    offline: bool,
+    verbose: bool,
+) -> ExitCode {
     if whoami {
         return run_whoami();
     }
     if read_live {
-        return run_read_live(verbose);
+        if offline {
+            eprintln!("plan: --offline is not supported with --read-live (which exists to inspect a fresh fetch)");
+            return ExitCode::from(2);
+        }
+        return run_read_live(refresh_state, verbose);
     }
 
     let Some(path) = path else {
@@ -23,7 +35,7 @@ pub fn run(path: Option<&str>, whoami: bool, read_live: bool, verbose: bool) -> 
         return ExitCode::from(2);
     };
 
-    let prepared = match prepare(path, "plan") {
+    let prepared = match prepare(path, "plan", refresh_state, offline) {
         Ok(Some(p)) => p,
         Ok(None) => return ExitCode::SUCCESS,
         Err(code) => return code,
@@ -34,10 +46,13 @@ pub fn run(path: Option<&str>, whoami: bool, read_live: bool, verbose: bool) -> 
 
 /// State produced by the parse/import/diff stages, ready to be sent through
 /// `googleAds:mutate` one or more times (e.g. validateOnly then real).
+///
+/// `client` and `token` are `None` in offline mode — `execute` then prints
+/// the diff without contacting the API.
 pub struct Prepared {
     pub label: &'static str,
-    pub client: client::Client,
-    pub token: auth::AccessToken,
+    pub client: Option<client::Client>,
+    pub token: Option<auth::AccessToken>,
     pub imported: import::ImportResult,
     pub report: diff::DiffReport,
     pub width: usize,
@@ -64,7 +79,7 @@ pub enum DisplayMode {
     Summary,
 }
 
-fn run_read_live(verbose: bool) -> ExitCode {
+fn run_read_live(refresh_state: bool, verbose: bool) -> ExitCode {
     let client = match client::Client::from_env() {
         Ok(c) => c,
         Err(e) => {
@@ -72,7 +87,7 @@ fn run_read_live(verbose: bool) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let token = match auth::exchange_refresh_token() {
+    let token = match auth::get_access_token() {
         Ok(t) => t,
         Err(e) => {
             eprintln!("plan: {e}");
@@ -81,19 +96,15 @@ fn run_read_live(verbose: bool) -> ExitCode {
     };
 
     let _ = verbose;
-    eprintln!(
-        "plan: fetching live state from customers/{} (via /{}/googleAds:searchStream)...",
-        client.customer_id,
-        client::api_version(),
-    );
-
-    let state = match live_state::fetch(&client, &token.token) {
-        Ok(s) => s,
+    let mode = if refresh_state { CacheMode::RefreshWrite } else { CacheMode::ReadWrite };
+    let outcome = match live_state::fetch_with_cache(&client, &token.token, mode, "plan") {
+        Ok(o) => o,
         Err(e) => {
             eprintln!("plan: live-state fetch failed: {e}");
             return ExitCode::from(1);
         }
     };
+    let state = outcome.state;
 
     println!("live state (customer {}):", state.customer_id);
     println!("  campaign_budgets    : {}", state.campaign_budgets.len());
@@ -115,7 +126,12 @@ fn run_read_live(verbose: bool) -> ExitCode {
 /// to act on. Returns `Ok(None)` when the .bid declares nothing recognised —
 /// the caller's job is just to exit successfully; the user-facing message has
 /// already been printed. Returns `Err(code)` for any fatal stage.
-pub fn prepare(path: &str, label: &'static str) -> Result<Option<Prepared>, ExitCode> {
+pub fn prepare(
+    path: &str,
+    label: &'static str,
+    refresh_state: bool,
+    offline: bool,
+) -> Result<Option<Prepared>, ExitCode> {
     let parsed = load_and_validate(path)?;
 
     let mut imported = match import::import_files(&parsed) {
@@ -146,39 +162,56 @@ pub fn prepare(path: &str, label: &'static str) -> Result<Option<Prepared>, Exit
         return Ok(None);
     }
 
-    let client = match client::Client::from_env() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{label}: {e}");
-            return Err(ExitCode::from(1));
+    let live = if offline {
+        match load_live_from_cache(label, &mut imported.input) {
+            Ok(input) => input,
+            Err(code) => return Err(code),
         }
+    } else {
+        let client = match client::Client::from_env() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("{label}: {e}");
+                return Err(ExitCode::from(1));
+            }
+        };
+
+        imported.input.customer_id = client.customer_id.clone();
+        if let Some(login) = &client.login_customer_id {
+            imported.input.login_customer_id = Some(login.clone());
+        }
+
+        let token = match auth::get_access_token() {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("{label}: {e}");
+                return Err(ExitCode::from(1));
+            }
+        };
+
+        let mode = if refresh_state { CacheMode::RefreshWrite } else { CacheMode::ReadWrite };
+        let outcome = match live_state::fetch_with_cache(&client, &token.token, mode, label) {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("{label}: live-state fetch failed: {e}");
+                return Err(ExitCode::from(1));
+            }
+        };
+        let live = outcome.state;
+
+        return Ok(Some(build_prepared(label, Some(client), Some(token), imported, live)));
     };
 
-    imported.input.customer_id = client.customer_id.clone();
-    if let Some(login) = &client.login_customer_id {
-        imported.input.login_customer_id = Some(login.clone());
-    }
+    Ok(Some(build_prepared(label, None, None, imported, live)))
+}
 
-    let token = match auth::exchange_refresh_token() {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("{label}: {e}");
-            return Err(ExitCode::from(1));
-        }
-    };
-
-    eprintln!(
-        "{label}: fetching live state from customers/{}...",
-        client.customer_id,
-    );
-    let live = match live_state::fetch(&client, &token.token) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("{label}: live-state fetch failed: {e}");
-            return Err(ExitCode::from(1));
-        }
-    };
-
+fn build_prepared(
+    label: &'static str,
+    client: Option<client::Client>,
+    token: Option<auth::AccessToken>,
+    imported: import::ImportResult,
+    live: ExportInput,
+) -> Prepared {
     let report = diff::diff(&imported.input, &live);
     let modules: std::collections::HashSet<&str> =
         report.diffs.iter().map(|d| module_of(&d.address)).collect();
@@ -190,8 +223,7 @@ pub fn prepare(path: &str, label: &'static str) -> Result<Option<Prepared>, Exit
         .max()
         .unwrap_or(0)
         .max(40);
-
-    Ok(Some(Prepared {
+    Prepared {
         label,
         client,
         token,
@@ -199,7 +231,53 @@ pub fn prepare(path: &str, label: &'static str) -> Result<Option<Prepared>, Exit
         report,
         width,
         strip_module,
-    }))
+    }
+}
+
+fn load_live_from_cache(
+    label: &'static str,
+    declared: &mut ExportInput,
+) -> Result<ExportInput, ExitCode> {
+    use crate::api::cache;
+    let customer_id = match std::env::var("GOOGLE_ADS_CUSTOMER_ID") {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            eprintln!(
+                "{label}: --offline still needs GOOGLE_ADS_CUSTOMER_ID set so we can \
+                 find the right cache entry."
+            );
+            return Err(ExitCode::from(1));
+        }
+    };
+    let login = std::env::var("GOOGLE_ADS_LOGIN_CUSTOMER_ID")
+        .ok()
+        .filter(|s| !s.is_empty());
+    declared.customer_id = customer_id.clone();
+    declared.login_customer_id = login.clone();
+
+    let cache_dir = cache::project_cache_dir();
+    let api_v = client::api_version();
+    let ttl = cache::live_state_ttl_secs();
+    let hit = match cache::load_live_state(&cache_dir, &customer_id, login.as_deref(), &api_v, ttl)
+    {
+        Some(h) => h,
+        None => {
+            eprintln!(
+                "{label}: no fresh cached live state for customers/{customer_id}. \
+                 Run `bidsmith pull` (or `bidsmith plan` without --offline) to warm the cache.",
+            );
+            return Err(ExitCode::from(1));
+        }
+    };
+    eprintln!(
+        "{label}: using cached live state from {} ago (offline — no API call).",
+        cache::format_age(hit.age_secs),
+    );
+    let mega = Value::Array(hit.batches).to_string();
+    crate::commands::adapt::from_search_response(&mega).map_err(|e| {
+        eprintln!("{label}: cached live state failed to re-adapt: {e}");
+        ExitCode::from(1)
+    })
 }
 
 /// Build the mutate body for `prepared.report` and POST it. Display behaviour
@@ -234,6 +312,10 @@ pub fn execute(
         return ExitCode::SUCCESS;
     }
 
+    let Some((client, token)) = prepared.client.as_ref().zip(prepared.token.as_ref()) else {
+        return display_offline_diff(prepared, validate_only);
+    };
+
     let plan_body =
         match mutate::build_mutate_with_diff(&prepared.imported.input, report, validate_only) {
             Ok(b) => b,
@@ -250,14 +332,14 @@ pub fn execute(
         eprintln!(
             "{label}: POST /{}/customers/{}/googleAds:mutate ({} op(s), {mode})",
             client::api_version(),
-            prepared.client.customer_id,
+            client.customer_id,
             plan_body.operations.len(),
         );
         eprintln!("--- request body ---");
         eprintln!("{}", serde_json::to_string_pretty(&plan_body.body).unwrap_or_default());
     }
 
-    let response = match prepared.client.googleads_mutate(&prepared.token.token, &plan_body.body) {
+    let response = match client.googleads_mutate(&token.token, &plan_body.body) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("{label}: {e}");
@@ -379,6 +461,33 @@ pub fn execute(
 
 fn summary_title(validate_only: bool) -> &'static str {
     if validate_only { "Plan" } else { "Apply" }
+}
+
+fn display_offline_diff(prepared: &Prepared, validate_only: bool) -> ExitCode {
+    let report = &prepared.report;
+    let width = prepared.width;
+    let strip = prepared.strip_module;
+    for d in &report.diffs {
+        let (verb, detail): (&str, String) = match &d.action {
+            diff::Action::NoOp { .. } => ("no-op", String::new()),
+            diff::Action::Create => ("+ create", String::new()),
+            diff::Action::Update { changed_fields, .. } => {
+                ("~ update", format!(" ({})", changed_fields.join(", ")))
+            }
+        };
+        println!(
+            "{addr:<width$}  {verb}{detail}",
+            addr = display_address(&d.address, strip),
+            width = width,
+        );
+    }
+    println!();
+    let title = summary_title(validate_only);
+    println!(
+        "{title}: {} to create, {} to update, {} unchanged. (offline — diff only, not server-validated)",
+        report.create_count, report.update_count, report.noop_count,
+    );
+    ExitCode::SUCCESS
 }
 
 /// Convenience: returns `true` iff the prepared diff would touch anything.

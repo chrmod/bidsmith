@@ -33,7 +33,15 @@ resource type, any file layout, modules, schema validation.
   `google_ads_ad_group`, …). No opinionated abstractions like
   "search-campaign-per-city" baked into core — that's a community module.
 - **No `.tfstate`**: state lives on Google Ads as labels on managed
-  resources.
+  resources. The project-folder `.bidsmith/cache/` is a *read cache*
+  (last SearchStream batches + last OAuth access token), not a state
+  file — bidsmith never trusts it as ground truth. It exists purely to
+  reduce API/quota usage on tight authoring loops. Default TTL 15 min
+  for live state; access tokens reuse their server-issued expiry. Bust
+  via `--refresh-state` (plan/apply), or `BIDSMITH_NO_CACHE=1` for a
+  full bypass. Cache directory is gitignored; token file is written
+  mode `0600`. A successful `apply` invalidates the live-state cache
+  so the next `plan` starts from fresh data.
 - **Files are modules**: each `.bid` file's basename (slugified file
   stem) is its implicit module name. Resource addresses are
   `<module>.<type>.<name>`. Two files in one directory can each declare
@@ -211,6 +219,14 @@ Verified locally:
   update, 97 unchanged. (no API call needed)` once the .bid is
   in-sync with live. Editing any scalar in the file produces a
   single `~ update (field)  ok` row + 96 no-ops on the next run.
+- `cargo test` runs the three offline `render_split` checks plus a
+  cache round-trip suite (`api::cache::tests::*`) covering token
+  fingerprint mismatch, near-expiry skew, live-state TTL eviction, and
+  `invalidate_live_state`.
+- `bidsmith plan --offline path/to/.bid` reads `.bidsmith/cache/`
+  only, prints the diff with `(offline — diff only, not server-
+  validated)` summary, and makes zero API calls. Errors if no fresh
+  cache exists, pointing the user at `bidsmith pull` to warm it.
 - `bidsmith apply` shows the validateOnly diff first, then prompts
   `Apply these changes? Only 'yes' will be accepted to approve.`
   before flipping `validateOnly: false` and mutating. `--auto-approve`
@@ -290,8 +306,8 @@ Validator covers (so far):
 | `fmt`      | partial | Canonicalize `.bid` files (in-place; `--check` for CI) |
 | `validate` | partial | Syntax + schema + references + lint warnings (local only) |
 | `export`   | partial | Render a fmt-canonical `.bid` file from flat bidsmith JSON (`--from-json`) or raw Google Ads SearchStream JSON (`--from-gads-search-response`); always emits the compact form (one `google_ads_ad_group_criterion` per `(ad_group, match_type)` group with N `keyword {}` sub-blocks, one negatives resource per ad-group / campaign with N `negative_keyword {}` sub-blocks, RSAs as `headlines = [...]` / `descriptions = [...]` lists); drops REMOVED resources unless `--include-removed`; `--login-customer-id` / `--customer-id` (or env vars `GOOGLE_ADS_LOGIN_CUSTOMER_ID` / `GOOGLE_ADS_CUSTOMER_ID`) override the provider block |
-| `plan`     | partial | Diff `.bid` vs live (name-matched, scalar-level), validateOnly batch via googleAds:mutate; emits `+ create` / `~ update` / `no-op` per resource |
-| `apply`    | partial | Shows the validateOnly diff first, then prompts for `yes` (or skips the prompt with `--auto-approve`) before mutating. Refuses to prompt when stdin is not a TTY. Does not yet write `bidsmith:address=…` labels or detect removals (state-tracking is the v2 follow-up) |
+| `plan`     | partial | Diff `.bid` vs live (name-matched, scalar-level), validateOnly batch via googleAds:mutate; emits `+ create` / `~ update` / `no-op` per resource. Reuses cached SearchStream batches from `.bidsmith/cache/` when fresh (15-min TTL); `--refresh-state` forces a re-pull; `--offline` skips OAuth and the validateOnly mutate, diffing against the cache only (errors if no fresh cache) |
+| `apply`    | partial | Shows the validateOnly diff first, then prompts for `yes` (or skips the prompt with `--auto-approve`) before mutating. Refuses to prompt when stdin is not a TTY. Reuses the same cached live state as `plan`; invalidates the cache after a successful real mutate. Does not yet write `bidsmith:address=…` labels or detect removals (state-tracking is the v2 follow-up) |
 | `pull`     | partial | Dump live state as raw SearchStream JSON (`-o PATH` or stdout). Reuses the same query list `plan --read-live` issues; output is the exact shape `export --from-gads-search-response` consumes, so the pair round-trips an account into a `.bid` |
 | `refresh`  | partial | Bootstrap-mode import of live state into `.bid` (no `-o`/`-d` → stdout, `-o PATH` → single file, `-d DIR` → split into `<DIR>/account.bid` for conversion actions / call assets / customer assets / shared sets and `<DIR>/campaigns.bid` for everything campaign-scoped). Reconcile-in-place against existing `.bid` and label-based matching wait on the Phase 3 v2 label work |
 | `query`    | partial | Read-only GAQL passthrough; `--format table` (default), `json`, or `tsv`; uses the same OAuth + customer envelope as `plan` / `apply` |

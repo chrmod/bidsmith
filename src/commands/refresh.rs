@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+use crate::api::live_state::CacheMode;
 use crate::api::{auth, client, live_state};
 use crate::commands::export::{
     canonicalize, filter_removed, render_split, ExportInput,
@@ -24,7 +25,7 @@ pub fn run(
             return ExitCode::from(1);
         }
     };
-    let token = match auth::exchange_refresh_token() {
+    let token = match auth::get_access_token() {
         Ok(t) => t,
         Err(e) => {
             eprintln!("refresh: {e}");
@@ -38,20 +39,21 @@ pub fn run(
             client.customer_id,
             client::api_version(),
         );
-    } else {
-        eprintln!(
-            "refresh: fetching live state from customers/{}...",
-            client.customer_id,
-        );
     }
 
-    let mut input: ExportInput = match live_state::fetch(&client, &token.token) {
-        Ok(i) => i,
+    let outcome = match live_state::fetch_with_cache(
+        &client,
+        &token.token,
+        CacheMode::ReadWrite,
+        "refresh",
+    ) {
+        Ok(o) => o,
         Err(e) => {
             eprintln!("refresh: live-state fetch failed: {e}");
             return ExitCode::from(1);
         }
     };
+    let mut input: ExportInput = outcome.state;
     if !include_removed {
         filter_removed(&mut input);
     }

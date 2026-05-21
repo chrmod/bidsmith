@@ -19,8 +19,8 @@ client speaks Google Ads REST against a real account.
 | `validate` | partial | Parse `.bid`, check schema and references                     |
 | `export`   | partial | Render a `.bid` from a JSON description or a SearchStream JSON dump |
 | `fmt`      | partial | Canonicalize `.bid` files (in-place / `--check`)              |
-| `plan`     | partial | Diff `.bid` vs. live, validate-only via API                   |
-| `apply`    | partial | Show the plan, prompt for `yes`, then mutate (`--auto-approve` skips the prompt) |
+| `plan`     | partial | Diff `.bid` vs. live, validate-only via API. Reuses `.bidsmith/cache/` (15-min TTL); `--refresh-state` busts it; `--offline` skips the network entirely |
+| `apply`    | partial | Show the plan, prompt for `yes`, then mutate (`--auto-approve` skips the prompt). Invalidates the live-state cache on success |
 | `pull`     | partial | Dump the live account as raw SearchStream JSON (round-trips through `export --from-gads-search-response`) |
 | `refresh`  | partial | Bootstrap-pull live state into `.bid` (stdout, single `-o FILE`, or split `-d DIR` → `account.bid` + `campaigns.bid`) |
 | `schema`   | partial | Dump the resource schema as JSON (drives the docs site's auto-generated reference) |
