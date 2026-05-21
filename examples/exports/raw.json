@@ -127,6 +127,44 @@
             "matchType": "BROAD"
           }
         }
+      },
+      {
+        "conversionAction": {
+          "resourceName": "customers/1234567890/conversionActions/7001",
+          "id": "7001",
+          "name": "Summer Lead",
+          "type": "WEBPAGE",
+          "category": "SUBMIT_LEAD_FORM",
+          "status": "ENABLED",
+          "countingType": "ONE_PER_CLICK",
+          "clickThroughLookbackWindowDays": "30",
+          "viewThroughLookbackWindowDays": "1",
+          "valueSettings": {
+            "defaultValue": 1.0,
+            "defaultCurrencyCode": "USD",
+            "alwaysUseDefaultValue": true
+          }
+        }
+      },
+      {
+        "asset": {
+          "resourceName": "customers/1234567890/assets/8001",
+          "id": "8001",
+          "callAsset": {
+            "countryCode": "US",
+            "phoneNumber": "5550100",
+            "callConversionReportingState": "USE_RESOURCE_LEVEL_CALL_CONVERSION_ACTION",
+            "callConversionAction": "customers/1234567890/conversionActions/7001"
+          }
+        }
+      },
+      {
+        "customerAsset": {
+          "resourceName": "customers/1234567890/customerAssets/8001~CALL",
+          "asset": "customers/1234567890/assets/8001",
+          "fieldType": "CALL",
+          "status": "ENABLED"
+        }
       }
     ]
   }

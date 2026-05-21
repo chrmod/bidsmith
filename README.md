@@ -10,18 +10,19 @@ depends on a model version.
 
 ## Status
 
-Pre-alpha. Phase 1 (local parsing & validation) is partially done; nothing
-talks to the Google Ads API yet.
+Pre-alpha. Local parsing/validation (Phase 1), live `plan`
+(Phase 2), and `apply` (Phase 3, modulo labels) are landed; the live
+client speaks Google Ads REST against a real account.
 
 | Verb       | Status  | What it does                                                  |
 |------------|---------|---------------------------------------------------------------|
 | `validate` | partial | Parse `.bid`, check schema and references                     |
-| `export`   | partial | Render a `.bid` from a JSON description (testing aid)         |
-| `fmt`      | stub    | Canonicalize `.bid` files                                     |
-| `plan`     | stub    | Diff `.bid` vs. live, validate-only via API                   |
+| `export`   | partial | Render a `.bid` from a JSON description or a SearchStream JSON dump |
+| `fmt`      | partial | Canonicalize `.bid` files (in-place / `--check`)              |
+| `plan`     | partial | Diff `.bid` vs. live, validate-only via API                   |
 | `apply`    | partial | Show the plan, prompt for `yes`, then mutate (`--auto-approve` skips the prompt) |
 | `pull`     | partial | Dump the live account as raw SearchStream JSON (round-trips through `export --from-gads-search-response`) |
-| `refresh`  | stub    | Pull live state into `.bid`                                   |
+| `refresh`  | partial | Bootstrap-pull live state into `.bid` (stdout, single `-o FILE`, or split `-d DIR` → `account.bid` + `campaigns.bid`) |
 
 Resource coverage today: `provider "google_ads"`,
 `google_ads_campaign_budget`, `google_ads_campaign` (SEARCH with
@@ -181,7 +182,8 @@ Release binary is ~1.3 MB. Requires Rust 1.89+.
 bidsmith validate [path]                         # file or directory; default "."
 bidsmith export --from-json file.json [-o out]   # stdout if -o omitted
 bidsmith pull -o dump.json                       # raw SearchStream JSON from live
-bidsmith fmt | plan | apply | refresh            # not yet implemented
+bidsmith refresh -d ads-bid/                     # split account.bid + campaigns.bid from live
+bidsmith fmt | plan | apply                      # see verbs table above
 ```
 
 `validate` walks a directory recursively for `.bid` files (or accepts a
