@@ -1,5 +1,6 @@
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, Write};
+use std::path::Path;
 use std::process::ExitCode;
 
 use crate::schema::dump_schema;
@@ -25,6 +26,14 @@ pub fn run(output: Option<&str>) -> ExitCode {
             }
         }
         Some(path) => {
+            if let Some(parent) = Path::new(path).parent() {
+                if !parent.as_os_str().is_empty() {
+                    if let Err(e) = fs::create_dir_all(parent) {
+                        eprintln!("failed to create {}: {e}", parent.display());
+                        return ExitCode::from(1);
+                    }
+                }
+            }
             let result = File::create(path).and_then(|mut f| {
                 f.write_all(json.as_bytes())?;
                 f.write_all(b"\n")
