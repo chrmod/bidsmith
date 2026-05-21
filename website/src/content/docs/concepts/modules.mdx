@@ -1,0 +1,119 @@
+---
+title: Modules
+description: How files are organized into modules, and how that affects naming.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+In bidsmith, **each `.bid` file is implicitly a module.** The
+filename (without the `.bid` extension) is the module name. This
+matters because resource addresses include the module:
+
+A resource declared in `summer-2026.bid` as:
+
+```hcl
+resource "google_ads_campaign" "search" {
+  ...
+}
+```
+
+…has the full bidsmith address `summer-2026.google_ads_campaign.search`.
+
+You'll see this address in three places: `plan` and `apply` output,
+error messages, and (eventually) state labels stored on Google Ads
+itself.
+
+## Why it matters
+
+The module prefix lets you have two campaigns named `search` —
+one in `summer-2026.bid`, another in `black-friday-2026.bid` — and
+bidsmith can tell them apart:
+
+```
+summer-2026.google_ads_campaign.search
+black-friday-2026.google_ads_campaign.search
+```
+
+Without module prefixes you'd have to invent globally unique names
+like `summer_2026_search` and `black_friday_2026_search`. Module
+prefixes give you that for free.
+
+## Single-file projects
+
+If your project has exactly one file (`main.bid`), then every
+address is prefixed with `main`. In one-file projects you almost
+never see this — the prefix doesn't add information when there's
+only one possibility. bidsmith hides it from the output when every
+resource in a plan lives in the same module.
+
+## Multi-file projects
+
+Once you have more than one file, the prefix appears in output:
+
+```
+black-friday-2026.google_ads_campaign.search
+summer-2026.google_ads_campaign.search
+```
+
+This is intentional — it disambiguates which file the resource came
+from. If you find yourself squinting at the prefix in plan output,
+that's the prefix earning its keep.
+
+## How references work across modules
+
+When resource A in `summer-2026.bid` says:
+
+```hcl
+campaign_budget = google_ads_campaign_budget.summer.id
+```
+
+bidsmith resolves it like this:
+
+1. First, look for `google_ads_campaign_budget.summer` **in the same
+   module** (`summer-2026.bid`).
+2. If not found, search every other module.
+3. If exactly one match exists, use it.
+4. If multiple modules have a `google_ads_campaign_budget.summer`,
+   bidsmith refuses to guess — it raises an error and tells you
+   which modules have a candidate. Rename one of them or scope the
+   reference explicitly.
+
+<Aside type="tip">
+  In practice, the same-module-first rule means same-file references
+  always "just work." Cross-file references work when names are
+  globally unique — which they usually are if you name resources
+  descriptively.
+</Aside>
+
+## When to split files
+
+There's no rule. Some heuristics:
+
+- **One file per campaign.** Works well when campaigns are
+  long-lived and roughly independent (different products, different
+  markets).
+- **One file per market.** Works well when you run the same
+  campaigns in different countries.
+- **A dedicated `account.bid`** for things that span the whole
+  account: the `provider` block, conversion actions, shared negative
+  lists. Then per-campaign files for the campaigns themselves.
+- **Don't over-split.** A file with one resource in it is usually
+  too small. Combine related things.
+
+The right answer is whatever makes your `git diff` legible six
+months from now.
+
+## What about explicit module blocks?
+
+Terraform's `module "..." { source = ... }` lets you compose
+modules from external sources. **bidsmith doesn't ship that yet** —
+files-as-modules is what you get. Explicit module blocks are on the
+[roadmap](https://github.com/chrmod/bidsmith/blob/main/ROADMAP.md)
+as Phase 5.
+
+## Next
+
+- [References](/bidsmith/concepts/references/) — the mechanics of
+  resource-to-resource pointers.
+- [The .bid file](/bidsmith/concepts/bid-file/) — what's inside a
+  single file.

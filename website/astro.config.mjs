@@ -50,7 +50,14 @@ export default defineConfig({
           label: 'Core concepts',
           collapsed: true,
           items: [
-            { label: '(coming soon)', slug: 'concepts' },
+            { label: 'Overview', slug: 'concepts' },
+            { label: 'The .bid file', slug: 'concepts/bid-file' },
+            { label: 'Plan and apply', slug: 'concepts/plan-and-apply' },
+            { label: 'Modules', slug: 'concepts/modules' },
+            { label: 'References', slug: 'concepts/references' },
+            { label: 'Drift', slug: 'concepts/drift' },
+            { label: 'The GitHub flow for marketers', slug: 'concepts/github-flow' },
+            { label: 'Authentication', slug: 'concepts/authentication' },
           ],
         },
         {

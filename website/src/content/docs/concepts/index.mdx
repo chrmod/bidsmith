@@ -3,23 +3,63 @@ title: Core concepts
 description: Plain-language explainers for the ideas behind bidsmith.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Coming soon">
-  This section will explain the *why* behind bidsmith — the mental
-  model that makes the rest of the docs click. In the meantime,
-  [What is bidsmith?](/bidsmith/welcome/what-is-bidsmith/) and
-  [bidsmith vs Google Ads Editor](/bidsmith/welcome/vs-google-ads-editor/)
-  cover the basics.
-</Aside>
+If the [tutorials](/bidsmith/tutorials/launch-search-campaign/) showed
+you *how* to use bidsmith, these pages explain *why* it's shaped the
+way it is. Read them once and the rest of the docs will land
+faster.
 
-## Planned concept pages
+You don't need to read them in order; each page stands alone. If
+you only have time for two, read **The `.bid` file** and **Plan and
+apply** — those two concepts cover ~80% of bidsmith.
 
-- The `.bid` file — what it is, how it's organized
-- Plan and apply — the preview-before-mutating cycle
-- Modules — one file per campaign, or per market, or per channel
-- References — how resources point at each other
-- Drift — when the dashboard and your `.bid` file disagree
-- The GitHub flow for marketers
-- Authentication and credentials
-- The lint catalog
+## The basics
+
+<CardGrid>
+  <LinkCard
+    title="The .bid file"
+    description="What a .bid file is made of, and how a project is laid out."
+    href="./bid-file/"
+  />
+  <LinkCard
+    title="Plan and apply"
+    description="The preview-before-mutating loop that's bidsmith's safety belt."
+    href="./plan-and-apply/"
+  />
+</CardGrid>
+
+## How things connect
+
+<CardGrid>
+  <LinkCard
+    title="Modules"
+    description="Why each .bid file's name matters, and when to split into multiple files."
+    href="./modules/"
+  />
+  <LinkCard
+    title="References"
+    description="How resources point at each other — and how bidsmith catches typos for you."
+    href="./references/"
+  />
+</CardGrid>
+
+## When things get interesting
+
+<CardGrid>
+  <LinkCard
+    title="Drift"
+    description="What happens when the dashboard and your .bid file disagree."
+    href="./drift/"
+  />
+  <LinkCard
+    title="The GitHub flow for marketers"
+    description="Branch, pull request, review, merge — how a single change moves through your team."
+    href="./github-flow/"
+  />
+  <LinkCard
+    title="Authentication"
+    description="What bidsmith does with your Google credentials, and what it doesn't."
+    href="./authentication/"
+  />
+</CardGrid>

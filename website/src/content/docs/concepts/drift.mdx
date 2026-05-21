@@ -1,0 +1,120 @@
+---
+title: Drift
+description: When the dashboard and your .bid files disagree, and how to put them back in sync.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**Drift** is when the live Google Ads account no longer matches your
+`.bid` files. It happens when somebody (or something) edits the
+account outside of bidsmith — usually via the web UI, sometimes via
+Google Ads Editor, sometimes via an API script.
+
+Drift isn't necessarily bad. It's just a state. The question is what
+you do about it.
+
+## How you spot drift
+
+`bidsmith plan` shows it as `~ update` rows:
+
+```
+~ summer-2026.google_ads_campaign.search
+  status: "ENABLED" → "PAUSED"
+  ...
+```
+
+Read as: *"if you apply, bidsmith will change `status` from `PAUSED`
+to `ENABLED`, because that's what the file says."* In other words,
+bidsmith's plan always pulls reality back toward what's in the
+files. If somebody paused a campaign in the UI and your `.bid` file
+still says `"ENABLED"`, applying will re-enable it.
+
+This is the right default for a config-as-code tool. The files are
+the source of truth.
+
+## Two ways to react
+
+When you see drift in `plan`, you have a choice:
+
+### 1. Accept the drift — update the files
+
+If the UI edit was correct and intentional ("we genuinely meant to
+pause this campaign"), update the `.bid` file to match. Open a PR
+with `status = "PAUSED"`, get review, merge. The next `plan` will
+report no changes; drift is gone.
+
+This path teaches the team that bidsmith is the system of record:
+real changes go through `.bid` files, not the UI.
+
+### 2. Reject the drift — apply to restore the files' intent
+
+If the UI edit was a mistake ("we shouldn't have paused that"), run
+`bidsmith apply`. bidsmith will set the campaign back to `ENABLED`,
+matching the file.
+
+This path teaches the team that the UI is read-only-ish: ad-hoc
+edits get reverted.
+
+Both are valid. The team decides which is the norm. Most mature
+teams pick (1) until something goes wrong, then (2) for ten minutes
+to make a point, then (1) again.
+
+## What if you don't know which is right?
+
+Bring the drift into bidsmith first, *then* decide. Run:
+
+```sh
+bidsmith refresh --output reality.bid
+```
+
+`reality.bid` now contains a fmt-canonical render of the live
+account. `git diff` your current `.bid` files against `reality.bid`
+to see exactly what's different. Now you have a clear PR ("UI edits
+from last sprint") that the team can review and either accept or
+reject.
+
+<Aside type="tip">
+  `bidsmith refresh -d <DIR>` splits the output into
+  `account.bid` (account-scoped resources) and `campaigns.bid`
+  (everything campaign-scoped). Useful for larger accounts.
+</Aside>
+
+## Where drift comes from
+
+In practice:
+
+- **Manual UI edits** by team members who haven't onboarded onto
+  bidsmith yet. (The cure is onboarding, not policing.)
+- **Google Ads Editor bulk imports** that bypass the PR workflow.
+  Run `bidsmith refresh` after every Editor session.
+- **Google's automated changes.** Some Google features (auto-applied
+  recommendations, smart bidding nudges) silently change settings.
+  If you don't want them, turn off auto-apply in the Google Ads UI.
+- **A previous `apply` that half-succeeded.** Rare, since bidsmith
+  apply is atomic — but possible if Google's API was mid-deploy
+  during your run.
+
+## What drift detection doesn't (yet) catch
+
+bidsmith currently identifies managed resources by **name**.
+Resources that the UI created with the same name as something
+already in your `.bid` files get matched up; resources with new
+names get treated as separate entities and don't show as drift
+(they're just "stuff bidsmith doesn't manage").
+
+A **label-based** identity model is on the
+[roadmap](https://github.com/chrmod/bidsmith/blob/main/ROADMAP.md)
+— bidsmith will tag every resource it creates with a `bidsmith:address=…`
+label, and from then on identify them by label instead of name. That
+makes import/adoption and "destroy this thing I no longer want"
+both possible. Until then, the model is "stuff I created, plus stuff
+that happens to share names."
+
+## Next
+
+- [Plan and apply](/bidsmith/concepts/plan-and-apply/) — the safety
+  loop that surfaces drift.
+- [The .bid file](/bidsmith/concepts/bid-file/) — what gets compared
+  against reality.
+- [`bidsmith refresh`](/bidsmith/before-you-start/first-ten-minutes/#step-1--get-the-example-bid-file) —
+  the command for pulling drift into `.bid` files.

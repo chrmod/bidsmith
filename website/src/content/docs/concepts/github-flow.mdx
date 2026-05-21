@@ -1,0 +1,163 @@
+---
+title: The GitHub flow for marketers
+description: How a single change moves from your laptop, through review, to a live Google Ads account.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+This page describes the **collaboration workflow** bidsmith assumes:
+every change is a Git branch, every branch becomes a pull request,
+every PR is reviewed before it merges, and `apply` only runs against
+the merged `main` branch. If you've used GitHub for any kind of
+team workflow you already know this rhythm; this page is the
+bidsmith-specific framing.
+
+## Why a workflow at all?
+
+Without one, bidsmith is still useful for a single operator — you
+get plan/apply safety, version history, and a clean undo. But the
+*team* benefits — review, audit trail, no-step-on-each-other — only
+land when the team agrees on a workflow.
+
+The GitHub flow is the simplest workflow that delivers those
+benefits. It's also what every developer on the team already knows.
+Marketers learning it once unlocks a lifetime of "just do a PR."
+
+## The shape, in one diagram
+
+```
+main                ──A──B──C──D──E──F──
+                          │     │
+                          │     │
+your branch                ──X──Y      ← edited a .bid file
+                                 │
+                                 │
+                          pull request     ← teammate reviews
+                                 │
+                                 │
+main           ─────────────────────G──   ← merged
+                                    │
+                                    │
+                              apply runs here   ← live changes
+```
+
+Read top to bottom. The horizontal line is `main` — the canonical
+history. The vertical branch is yours. Your work lives outside
+`main` until somebody approves it. Once merged, somebody applies it
+(you, a teammate, or CI). Google Ads changes only then.
+
+## Step-by-step
+
+<Steps>
+
+1. **Pull the latest `main`** to your laptop. In GitHub Desktop:
+   *Branch → Pull*. In a terminal: `git checkout main && git pull`.
+
+2. **Make a branch** with a descriptive name. Use kebab-case;
+   include the purpose. Examples: `bump-summer-budget-to-100`,
+   `pause-q3-display-campaigns`, `add-cyber-monday-rsa`.
+
+3. **Edit `.bid` files** in your editor.
+
+4. **Validate locally**. `bidsmith validate .` to catch syntax and
+   schema errors before pushing. `bidsmith plan .` to see what
+   would change. Fix anything that looks wrong.
+
+5. **Commit**. Use a one-line message that explains *intent*, not
+   mechanics. Good: *"Raise summer budget to €100/day for the
+   weekend push"*. Less good: *"Update campaign_budget.amount_micros
+   to 100000000"*.
+
+6. **Push and open a PR**. The PR description should explain what's
+   changing and why. Include the output of `bidsmith plan .` if
+   the diff is non-obvious.
+
+7. **Get reviewed**. A teammate reads the diff, asks questions,
+   maybe requests changes. Iterate until they approve.
+
+8. **Merge**. The change is now part of canonical history.
+
+9. **Apply**. Either you (`git pull && bidsmith apply .` on your
+   laptop) or CI (a GitHub Action that runs apply on merge). The
+   change is live in Google Ads.
+
+</Steps>
+
+## Review etiquette
+
+Reviewing a bidsmith PR is reading three things:
+
+1. **The diff itself** — what changed, expressed in the language of
+   `.bid` files.
+2. **The PR description** — *why* it changed, in business terms.
+3. **The plan output** — what Google Ads will do if this merges.
+
+Useful comments to leave:
+
+- *"Why is this budget rising? Is it covered in the quarterly plan?"*
+- *"This negative keyword looks too broad — `free` would block
+  legitimate searches like `free shipping over €50`."*
+- *"This `--auto-approve` apply in CI looks risky — should it
+  require a manual approval gate?"*
+
+Things you don't need to comment on (the validator already catches):
+
+- Typos in resource type names.
+- Missing required fields.
+- References that don't resolve.
+
+If those things are wrong, `bidsmith validate` failed; you wouldn't
+be reviewing the PR yet.
+
+## Apply: who and when
+
+Three common patterns:
+
+### A. The author applies after merge
+
+After merging your own PR, you `git pull && bidsmith apply .` from
+your laptop. The team sees the apply happen in #bidsmith Slack (or
+wherever). Simplest setup, works for small teams.
+
+### B. CI applies on merge
+
+A GitHub Action runs `bidsmith apply --auto-approve .` whenever
+main moves. Zero manual steps after merge. Requires CI to have
+Google Ads credentials (a service-account-style refresh token,
+typically).
+
+### C. CI applies on a schedule
+
+Same as B but on a cron, not on merge. Smooths out bursts and
+batches changes. The lag between merge and apply is the tradeoff.
+
+Pick one. Be consistent. Document it in the repo's `README`.
+
+<Aside type="caution">
+  In pattern B and C, the team is implicitly trusting **every
+  merged PR**. Make sure the PR review bar is correspondingly high
+  — branch protection rules requiring 1+ approvals, status checks
+  passing, etc.
+</Aside>
+
+## When to break the flow
+
+Two cases where the flow is overkill:
+
+- **You're the only person on the project.** Skip PRs; commit
+  straight to `main`, apply locally. The Git history is still
+  useful. Re-introduce PRs the moment a teammate joins.
+- **You're prototyping in a test account.** A test-only `.bid`
+  project with no review process is fine. Just don't `apply` it
+  against production credentials.
+
+For anything against a production account that more than one person
+touches, the flow is worth its weight.
+
+## Next
+
+- [Authentication](/bidsmith/concepts/authentication/) — what
+  credentials CI needs in pattern B/C.
+- [Tutorial: Launch a new search campaign](/bidsmith/tutorials/launch-search-campaign/) — the flow walked through end-to-end.
+- [Set up GitHub](/bidsmith/before-you-start/set-up-github/) — for
+  team members who haven't used Git before.

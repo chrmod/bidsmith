@@ -1,0 +1,137 @@
+---
+title: Authentication
+description: What bidsmith does with your Google credentials on every run, and what it deliberately doesn't.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+bidsmith talks to the Google Ads API on your behalf. To do that it
+needs your credentials. This page explains what those credentials
+are, what bidsmith does with them on each run, and what it
+intentionally doesn't do.
+
+The one-time setup (registering OAuth client, minting a refresh
+token, finding your customer ID) is covered in
+[Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/).
+This page is about the runtime model.
+
+## The five environment variables
+
+Every bidsmith command that touches the API reads five env vars
+from the shell:
+
+| Variable | Role |
+|---|---|
+| `GOOGLE_ADS_DEVELOPER_TOKEN` | Authorizes API access. Issued by your manager account. |
+| `GOOGLE_ADS_CLIENT_ID` | Identifies the OAuth "app" — bidsmith on your machine. |
+| `GOOGLE_ADS_CLIENT_SECRET` | Paired with the client ID. |
+| `GOOGLE_ADS_REFRESH_TOKEN` | Long-lived credential bidsmith exchanges for short-lived access tokens. |
+| `GOOGLE_ADS_CUSTOMER_ID` | The 10-digit ID of the Google Ads account being managed. |
+
+Optionally:
+
+| Variable | Role |
+|---|---|
+| `GOOGLE_ADS_LOGIN_CUSTOMER_ID` | The manager account ID, if you're managing a sub-account via an MCC. |
+
+bidsmith reads these at command-start time, not at install time.
+They live in your shell config (`~/.zshrc`, `~/.bashrc`, a `.envrc`
+loaded by direnv, etc.), not in a bidsmith-specific file.
+
+## What happens on each run
+
+When you run `bidsmith plan` or `apply`:
+
+1. **Read the five env vars.** If any are missing, bidsmith exits
+   with a clear error message naming which one is unset.
+2. **Exchange the refresh token for an access token.** bidsmith
+   POSTs to Google's OAuth endpoint with the client ID, client
+   secret, and refresh token. Google returns a short-lived access
+   token (valid for ~1 hour).
+3. **Use the access token to make API calls.** Every Google Ads API
+   request bidsmith makes carries this access token in the
+   `Authorization` header.
+4. **Discard everything when the command exits.** The access token
+   is never written to disk.
+
+The refresh token *does* live on disk — in your shell config — but
+bidsmith doesn't read it from anywhere else.
+
+## What bidsmith doesn't do with your credentials
+
+- **No local credential cache.** bidsmith exchanges the refresh
+  token for an access token on every run. Yes, it's a redundant
+  network call. The simplicity of "no cache to invalidate, no
+  expiry to manage" is worth the cost.
+- **No phone-home or telemetry.** bidsmith makes API calls *only*
+  to Google Ads. No analytics, no error reporting, no version
+  checks.
+- **No credential storage outside env vars.** bidsmith never writes
+  to `~/.bidsmith/credentials` or similar. The env vars are the
+  only credential surface.
+- **No team-shared secrets.** Each team member runs their own
+  refresh token. Refresh tokens are tied to a Google user; sharing
+  them is bad for audit (you can't tell who applied what) and
+  brittle (if one person leaves and revokes their token, it stops
+  working for everyone).
+
+## CI / automation
+
+When `apply` runs in a GitHub Action or other automation, the env
+vars come from the platform's secret store. The values are
+exactly the same as on a laptop — same refresh token shape, same
+five vars.
+
+A few practical notes for CI:
+
+- **Use a dedicated service-style account.** Don't use your personal
+  refresh token in CI. Create a Google account for "bidsmith CI,"
+  grant it access to the relevant Google Ads accounts, mint a
+  refresh token for that account, and store *that* in your CI
+  secrets.
+- **Restrict secret scope.** GitHub Actions environment-level
+  secrets are better than repo-level secrets if you have separate
+  "production" and "staging" Google Ads accounts.
+- **`--auto-approve` is required.** CI has no terminal to prompt at.
+  `bidsmith apply --auto-approve .` is the runtime shape.
+
+## Rotating credentials
+
+If a refresh token leaks (committed to Git by accident, posted in
+Slack, etc.):
+
+1. **Revoke it immediately**. In Google: account.google.com →
+   Security → Third-party apps with account access → revoke
+   bidsmith.
+2. **Mint a new one**. Follow
+   [step 3 of Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/#step-3--mint-a-refresh-token).
+3. **Update your shell config** with the new token.
+4. **Update CI secrets** if applicable.
+
+The leaked token is invalid as soon as you revoke it. Your `.bid`
+files and Google Ads account are unaffected — only the credential
+itself was compromised.
+
+## The auth helper that's coming
+
+The OAuth dance to mint a refresh token is the steepest part of
+bidsmith onboarding. A `bidsmith auth` subcommand that automates it
+end-to-end (opens browser, captures redirect, prints env vars) is on
+the [roadmap](https://github.com/chrmod/bidsmith/blob/main/ROADMAP.md).
+Once that ships the five-variable shape stays the same — only how
+you get the values changes.
+
+<Aside type="tip" title="In the meantime">
+  If you onboard a new team member, the [Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/)
+  page is the canonical walkthrough. About 15 minutes from zero
+  credentials to a working `bidsmith plan --whoami`.
+</Aside>
+
+## Next
+
+- [Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/) — the
+  step-by-step setup guide.
+- [Plan and apply](/bidsmith/concepts/plan-and-apply/) — what
+  bidsmith does after authenticating.
+- [The GitHub flow for marketers](/bidsmith/concepts/github-flow/) — how
+  CI credentials fit into the workflow.

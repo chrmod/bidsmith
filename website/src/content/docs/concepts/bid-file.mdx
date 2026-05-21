@@ -1,0 +1,139 @@
+---
+title: The .bid file
+description: What a .bid file is made of, and how a bidsmith project is laid out on disk.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A **`.bid` file** is plain text that describes what your Google Ads
+account should look like. It's the source of truth bidsmith reads
+when you run `plan` and `apply`.
+
+The file format is **HCL** — the same configuration language
+Terraform uses. If you've never seen HCL before, it'll look familiar
+within an hour: blocks with curly braces, attributes inside them,
+and references between blocks.
+
+## Anatomy
+
+Every `.bid` file is built from two kinds of blocks:
+
+```hcl
+provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+resource "google_ads_campaign_budget" "summer" {
+  name            = "Summer 2026"
+  amount_micros   = 50000000
+  delivery_method = "STANDARD"
+}
+```
+
+**The `provider` block** says which account these files manage. You
+declare it exactly once per project. See
+[`provider "google_ads"`](/bidsmith/resources/provider/) for the
+attributes it accepts.
+
+**`resource` blocks** declare the things bidsmith manages —
+campaigns, ad groups, keywords, budgets, conversion actions, and so
+on. Each resource block has:
+
+- A **type** (the first quoted string after `resource`, e.g.
+  `google_ads_campaign_budget`). The type determines which fields
+  are valid; see the
+  [resource reference](/bidsmith/resources/) for every type bidsmith
+  understands.
+- A **local name** (the second quoted string — `summer` in the
+  example above). It's how *you* refer to this resource elsewhere
+  in your `.bid` files. Pick something short and descriptive. Google
+  doesn't see this name; it's a bidsmith-local identifier.
+- **Attributes** (key-value pairs inside the block — `name`,
+  `amount_micros`, etc.).
+- Sometimes **nested blocks** for sub-configuration
+  (`manual_cpc { … }`, `network_settings { … }`).
+
+## Project layout
+
+The simplest project is one file:
+
+```
+my-bidsmith-project/
+└── main.bid
+```
+
+Once you have more than ~5 campaigns, split it up. Common patterns:
+
+```
+my-bidsmith-project/
+├── account.bid           # provider + conversion actions + shared sets
+├── summer-2026.bid       # one campaign per file
+├── black-friday-2026.bid
+└── always-on-brand.bid
+```
+
+or by market:
+
+```
+my-bidsmith-project/
+├── account.bid
+├── us.bid
+├── pl.bid
+└── de.bid
+```
+
+bidsmith reads every `.bid` file in the directory (recursively) and
+treats them as one project. The file split is purely for *your*
+ergonomics; bidsmith doesn't care.
+
+<Aside type="tip">
+  Each file's basename becomes its **module name**, which matters for
+  how resources reference each other across files. Read
+  [Modules](/bidsmith/concepts/modules/) for the details.
+</Aside>
+
+## Comments
+
+HCL accepts three comment styles. Use them sparingly — the file
+itself should be self-documenting:
+
+```hcl
+# This is a comment.
+// So is this.
+/*
+  And multi-line comments look like this.
+*/
+```
+
+## Formatting
+
+bidsmith ships an opinionated formatter. Run it before committing to
+keep the project tidy:
+
+```sh
+bidsmith fmt .
+```
+
+In CI, use `bidsmith fmt --check .` to fail the build if anything
+isn't canonical.
+
+## What's not in a `.bid` file
+
+Things you might expect to be in a `.bid` file that **aren't**:
+
+- **Performance data** (impressions, clicks, conversions). Use Google
+  Ads' reporting; bidsmith manages configuration only.
+- **Account credentials.** Those live in environment variables. See
+  [Authentication](/bidsmith/concepts/authentication/).
+- **Time-bound state.** bidsmith doesn't track "this campaign was
+  launched on March 5" — Git history does, since your `.bid` files
+  are versioned.
+
+## Next
+
+- [Plan and apply](/bidsmith/concepts/plan-and-apply/) — what bidsmith
+  does with the files you write.
+- [Modules](/bidsmith/concepts/modules/) — what happens when you have
+  more than one file.
+- [Resource reference](/bidsmith/resources/) — every block type and
+  every field.

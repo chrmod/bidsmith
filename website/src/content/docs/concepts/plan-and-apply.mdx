@@ -1,0 +1,124 @@
+---
+title: Plan and apply
+description: The preview-before-mutating loop that catches mistakes before money moves.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+bidsmith never changes your Google Ads account silently. Every
+change goes through two steps: `plan` previews what would change,
+`apply` makes it happen. You always see the diff before anything
+mutates.
+
+This page explains what each step does under the hood and why the
+shape is what it is.
+
+## The big idea
+
+You declare what you *want* in `.bid` files. bidsmith fetches what
+*is* from Google Ads. It diffs the two and produces a **plan** — a
+list of changes that would make reality match the files. You read
+the plan, agree (or not), and only then does bidsmith make the
+changes.
+
+If your `.bid` files already match reality, the plan is empty.
+Running `apply` twice in a row does nothing the second time. This
+property is called **idempotency**, and it's what makes bidsmith
+safe to run from automation.
+
+## What `plan` does
+
+1. **Parse and validate** every `.bid` file. Same checks `bidsmith
+   validate` runs locally: syntax, schema, required fields,
+   references between resources. If anything fails, `plan` stops
+   here without ever touching the API.
+2. **Fetch live state** for every resource type via the Google Ads
+   API (read-only `SearchStream` queries). This is what your
+   account currently looks like.
+3. **Diff** the parsed `.bid` against the live state, matching
+   resources by name. Produces a list of three kinds of rows:
+   `+ create`, `~ update`, and no-op.
+4. **Validate-only mutate.** Send the proposed changes to Google
+   with the `validateOnly` flag set. Google checks the request
+   without committing anything, and reports any errors (e.g.
+   "headline too long," "invalid bid range"). bidsmith folds these
+   errors into the plan output.
+5. **Print the plan.** Exit successfully if everything is
+   well-formed; non-zero if Google rejected any operations.
+
+After `plan`, your account is unchanged. You can run it a hundred
+times in a row.
+
+## What `apply` does
+
+`apply` runs the same five steps as `plan`, then adds:
+
+6. **Prompt for confirmation.** Show the plan and ask you to type
+   the literal word `yes`. Anything else (or just `Enter`) aborts.
+7. **Real mutate.** Send the same request *without* the
+   `validateOnly` flag. Google commits the changes atomically.
+8. **Print the result.** Which resources were created, which were
+   updated.
+
+<Aside type="caution" title="Always read the plan">
+  The prompt is not a rubber stamp. Re-read the plan output before
+  typing `yes`. Look especially at `~ update` rows — they show
+  exactly which fields are about to change.
+</Aside>
+
+## When the prompt skips
+
+In a script or CI job, there's no human to type `yes`. Two options:
+
+- Pass `--auto-approve`. bidsmith trusts you and skips the prompt.
+- Pipe `yes` to stdin from your script. Less clean; `--auto-approve`
+  is preferred.
+
+If `apply` runs without a terminal (e.g. inside a GitHub Action)
+and you forgot `--auto-approve`, it exits with an error rather than
+silently continuing. This is intentional — apply should never
+default to "yes."
+
+## Validate-only is the safety belt
+
+Step 4 of `plan` is the most underrated feature. By the time
+bidsmith prompts you, Google has *already* validated the request.
+If a headline is too long, you see the error in `plan`, not after
+your campaign has half-applied and left things in a weird state.
+
+The validate-only mechanism is why `bidsmith plan` is more useful
+than `bidsmith validate` alone — the local validator catches typos,
+but only Google can catch "this bid is below the minimum for this
+market" or "this conversion type is no longer accepted."
+
+## The atomic-batch property
+
+`apply` sends all mutations in a single batch to Google Ads. The
+batch either fully commits or fully rejects — you don't end up
+half-applied. This matters when:
+
+- You're creating a campaign + budget + ad group + keywords in one
+  go. Either all of them show up in Google Ads, or none of them do.
+- You're updating ten campaigns at once. Same guarantee.
+
+If any single operation in the batch fails after `validateOnly`
+passed (rare — usually a race with a parallel edit in the UI),
+nothing is committed and bidsmith reports the error.
+
+## What if I want to undo?
+
+You don't undo at the bidsmith level — you undo at the **Git
+level**. `git revert` the commit that changed your `.bid` file, run
+`bidsmith apply` again, and reality reverts.
+
+This is the single biggest practical difference between bidsmith and
+clicking around in the Google Ads UI: in bidsmith, every change is a
+named commit you can roll back in seconds.
+
+## Next
+
+- [Drift](/bidsmith/concepts/drift/) — what happens when the
+  dashboard and your files disagree.
+- [Authentication](/bidsmith/concepts/authentication/) — what
+  bidsmith does with your credentials at each step.
+- [Tutorial: Launch a new search campaign](/bidsmith/tutorials/launch-search-campaign/) — the full loop end-to-end.

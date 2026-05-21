@@ -1,0 +1,129 @@
+---
+title: References
+description: How resources point at each other, and how bidsmith catches typos for you.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+When an ad group needs to belong to a campaign, you don't paste the
+campaign's Google ID into the ad group block. You write a
+**reference**:
+
+```hcl
+resource "google_ads_campaign" "search" {
+  name = "Summer 2026 Search"
+  ...
+}
+
+resource "google_ads_ad_group" "default" {
+  name     = "Default"
+  campaign = google_ads_campaign.search.id    # ← this is a reference
+  ...
+}
+```
+
+The string `google_ads_campaign.search.id` is bidsmith pointing at
+"the resource of type `google_ads_campaign` named `search`, give me
+its ID." At apply time bidsmith resolves the reference to the real
+Google Ads resource name (the `customers/12345/campaigns/67890`
+string Google generates), and uses that wherever the reference
+appears.
+
+## The three-part form
+
+References always have three dot-separated parts:
+
+```
+google_ads_campaign.search.id
+└──── type ─────┘ └name┘ └attr┘
+```
+
+- **Type**: the resource type (one of the
+  [resource reference](/bidsmith/resources/) entries).
+- **Name**: your bidsmith-local name for the resource (the second
+  quoted string in `resource "x" "y" {`).
+- **Attribute**: which attribute of the referenced resource to use.
+  Today, only `id` is meaningful — bidsmith doesn't yet expose
+  individual attributes of one resource to another.
+
+## Why references and not raw IDs
+
+Three reasons:
+
+1. **Resources don't have IDs until they're created.** Google
+   assigns the ID when you `apply` for the first time. References
+   are bidsmith's way of saying "wire these up after Google tells me
+   the ID."
+2. **References survive recreation.** If you delete and recreate a
+   campaign (different ID, same name), every ad group referring to
+   it continues to work — bidsmith re-resolves the reference at
+   apply time.
+3. **References are reviewable.** When you see
+   `campaign = google_ads_campaign.search.id` in a PR diff, you can
+   tell at a glance which campaign this ad group belongs to. A raw
+   ID like `customers/.../campaigns/9876543210` tells you nothing.
+
+## How bidsmith catches typos
+
+When you write a reference, bidsmith's validator checks at
+`plan`/`validate` time:
+
+- **Does the type exist?** If you write
+  `google_ads_compaign.search.id` (typo), validate fails with
+  "unknown resource type 'google_ads_compaign'."
+- **Does a resource with that name exist?** If you write
+  `google_ads_campaign.serach.id`, validate fails with "reference to
+  undeclared resource 'google_ads_campaign.serach'."
+- **Is the reference type allowed here?** Some attributes only
+  accept specific resource types. For example, an ad group's
+  `campaign` attribute only accepts a `google_ads_campaign`
+  reference — if you accidentally write
+  `google_ads_campaign_budget.summer.id`, validate catches it.
+
+You see all of these errors with **source locations** — the file
+name and exact line where the bad reference appears. Fix and re-run.
+
+## Cross-module references
+
+When a reference appears in `summer-2026.bid` that points at a
+resource declared in `account.bid`, bidsmith resolves it via the
+[module rules](/bidsmith/concepts/modules/): same-file first, then
+search every other file, then succeed if exactly one match exists.
+
+The 90% case is "I've named my resources distinctly across files,
+so cross-file references just work." The 10% case is a name
+collision, where bidsmith refuses to guess and asks you to rename
+one of them.
+
+## What references can't (yet) do
+
+A few things bidsmith doesn't currently support:
+
+- **Attribute access beyond `.id`.** You can't write
+  `google_ads_campaign.search.name` to copy a name from one resource
+  to another. Use the literal string in both places.
+- **Lists of references.** You can't write
+  `campaigns = [google_ads_campaign.a.id, google_ads_campaign.b.id]`.
+  Use a separate resource per relationship (e.g.
+  `google_ads_campaign_shared_set` to attach a shared set to many
+  campaigns means N separate `google_ads_campaign_shared_set`
+  resources, one per campaign).
+- **References from outside `.bid` files.** You can't reference a
+  resource that bidsmith doesn't manage. Use
+  [`bidsmith refresh`](/bidsmith/before-you-start/first-ten-minutes/) to
+  pull existing resources into `.bid` files first.
+
+<Aside type="tip">
+  If you're tempted to copy-paste Google IDs into your `.bid`
+  files, stop and consider whether you should be using `refresh` to
+  bring those resources under bidsmith management. References to
+  managed resources are safer and more maintainable than literal
+  IDs.
+</Aside>
+
+## Next
+
+- [Modules](/bidsmith/concepts/modules/) — how multi-file projects
+  resolve names across files.
+- [Drift](/bidsmith/concepts/drift/) — what happens when references
+  point at resources that have changed outside bidsmith.
