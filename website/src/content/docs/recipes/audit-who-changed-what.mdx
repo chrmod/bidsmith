@@ -1,0 +1,129 @@
+---
+title: Audit who changed what, when
+description: Use `git log` and `git blame` to answer "who paused that campaign?" in seconds.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Every change to a `.bid` file is a Git commit. Every commit has an
+author, a timestamp, and a message. That's the audit trail —
+no separate "audit log" feature is needed.
+
+This recipe is the cheat sheet for using Git as that audit trail.
+
+## Who paused this campaign?
+
+Open `git blame` on the file, search for the campaign:
+
+```sh
+git blame summer-2026.bid | grep -A 5 'resource "google_ads_campaign" "summer_search"'
+```
+
+Each line is prefixed with the commit SHA, the author, and the date
+of the last change to that line. The `status = "PAUSED"` line tells
+you when, who, and (via the commit message) why.
+
+If you'd rather use GitHub's UI:
+
+1. Open `summer-2026.bid` in the repo.
+2. Click **Blame** (top-right of the file view).
+3. Find the `status` line. The hover shows the commit message.
+
+## Who introduced this keyword?
+
+Same pattern — `git blame` on the `.bid` file, find the line with
+the keyword text:
+
+```sh
+git blame -L '/"summer sale"/,+5' summer-2026.bid
+```
+
+The `-L` flag scopes blame to the lines matching the regex. Useful
+when you don't want to scroll through a long file.
+
+## What changed in the last 24 hours?
+
+```sh
+git log --since="24 hours ago" --stat
+```
+
+Lists every commit in the last day with file-by-file change counts.
+Filter to a specific file:
+
+```sh
+git log --since="24 hours ago" --stat -- summer-2026.bid
+```
+
+## What changed between two dates?
+
+```sh
+git log --since="2026-05-01" --until="2026-05-15" --oneline
+```
+
+Useful for monthly reviews ("everything we changed in May").
+
+## Show me the diff for a specific commit
+
+```sh
+git show <SHA>
+```
+
+Or by URL: paste the GitHub commit URL into your browser. The diff
+view shows exactly which attributes changed and what they were
+before / after.
+
+## Who applied this change?
+
+Two different questions live under "who":
+
+- **Who edited the `.bid` file?** — `git blame` answers that. The
+  author is whoever's name is on the commit.
+- **Who ran `bidsmith apply`?** — that's not in Git. If you care,
+  log it yourself: a CI run logs its identity in the workflow log;
+  a local run is the person whose shell credentials it used.
+
+For the "who applied" question, the practical answer is: **don't
+let humans apply.** Use [pattern B or C from the GitHub flow
+guide](/bidsmith/concepts/github-flow/#apply-who-and-when) and let
+CI do it. Then "who applied" is always "the CI bot," and the real
+audit question is "who merged the PR" — which is in Git.
+
+## Combine with PR descriptions
+
+A `git blame` will tell you the commit message. If the PR
+description had richer context ("we raised the budget to support
+the launch event"), you can find it via:
+
+```sh
+gh pr list --search "<some keyword>"
+```
+
+…or paste the commit SHA into GitHub's URL: `https://github.com/<org>/<repo>/commit/<SHA>` — GitHub links the commit to the PR it merged via.
+
+<Aside type="tip">
+  The single biggest audit-quality win is **writing good commit
+  messages**. A `git blame` is only useful if the messages explain
+  *why*, not just *what*. "Raised summer budget to €100/day for the
+  weekend push" is useful in six months. "Update summer-2026.bid" is
+  not.
+</Aside>
+
+## What Git doesn't capture
+
+A few audit dimensions Git alone doesn't cover:
+
+- **Did Google reject any operations during apply?** Apply logs
+  live in your terminal scrollback or your CI logs, not in Git.
+  Save the apply output to a file if this matters.
+- **Was the change reviewed by a human?** Git tells you the author
+  and merger; GitHub's PR view tells you who left review comments.
+  The merger and author can be the same person — branch protection
+  rules (require 1+ approvals before merge) are how you enforce
+  separation.
+
+## See also
+
+- [The GitHub flow for marketers](/bidsmith/concepts/github-flow/) —
+  the broader context.
+- [Roll back a bad change](./roll-back-a-bad-change/) — what to do
+  when the audit reveals a mistake.

@@ -1,0 +1,134 @@
+---
+title: Roll back a bad change
+description: Use `git revert` + `bidsmith apply` to undo a change cleanly, with a clear audit trail.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+You shipped a change. Something's wrong — wrong bid, wrong keyword,
+wrong ad copy. You want it gone, fast, with a clear record of what
+happened.
+
+The combination of `git revert` and `bidsmith apply` is the right
+answer. It's three commands and two PRs (the broken one, the
+revert).
+
+## The five-minute fix
+
+<Steps>
+
+1. **Find the bad commit**. Use `git log` or the GitHub Commits
+   view. The commit message should make it obvious. Note the SHA.
+
+   ```sh
+   git log --oneline -20
+   ```
+
+2. **Make a revert branch**:
+
+   ```sh
+   git checkout main
+   git pull
+   git checkout -b revert-summer-budget-mistake
+   ```
+
+3. **Revert the commit**:
+
+   ```sh
+   git revert <SHA>
+   ```
+
+   This produces a *new* commit that's the inverse of the bad one.
+   Git opens an editor for the commit message — keep the default
+   ("Revert ...") or improve it ("Revert summer-budget bump — we
+   meant €50/day, not €500/day").
+
+4. **Verify the diff**:
+
+   ```sh
+   bidsmith plan .
+   ```
+
+   Expected: `~ update` rows showing the bad change being undone.
+   Read carefully — confirm this is what you want.
+
+5. **Push and PR**:
+
+   ```sh
+   git push -u origin revert-summer-budget-mistake
+   ```
+
+   Open the PR. In the description: what went wrong, and link the
+   commit being reverted.
+
+6. **Merge and apply** as soon as someone approves:
+
+   ```sh
+   git checkout main && git pull
+   bidsmith apply .
+   ```
+
+</Steps>
+
+Total time, if reviewers are around: 5–10 minutes.
+
+## Why a PR for a revert?
+
+Two reasons:
+
+- **The audit trail** is the whole point. A revert PR with a
+  description ("we meant €50/day, not €500/day") is exactly the
+  artifact you'll want to refer to in three months when somebody
+  asks "what happened that Tuesday?"
+- **Reviewer confirmation** catches the case where the bad commit
+  also did something good. Sometimes a commit raises a budget *and*
+  adds a useful negative keyword. The revert undoes both — a
+  reviewer might catch that and propose a partial fix.
+
+For genuine emergencies (the campaign is on fire, you have minutes,
+not hours), bypass the PR and apply the revert directly. The audit
+trail still exists in Git history; you just skipped the social step
+of review. Repair it after the fire is out by retroactively writing
+a postmortem PR or doc.
+
+<Aside type="caution">
+  Resist the urge to **edit the original commit** (force-push,
+  rewrite history). It works mechanically, but it destroys the
+  audit trail and makes the team's mental model harder. Adding a
+  revert commit is always cleaner than removing the original.
+</Aside>
+
+## When a revert isn't enough
+
+`git revert` produces a clean inverse when the bad commit's changes
+don't conflict with anything after it. If they do — e.g. someone
+else has since edited the same campaign — Git flags the conflict
+and asks you to resolve it manually.
+
+In that case:
+
+1. Resolve the conflict by hand (your editor + `git add` + `git
+   commit`).
+2. Re-run `bidsmith plan .` and confirm the diff is what you want.
+3. Continue with the PR.
+
+This is the same workflow as any other Git conflict. It's also rare
+on bidsmith projects because `.bid` files tend not to have a lot of
+parallel edits per region.
+
+## Partial reverts
+
+Sometimes the bad commit did three things and you only want to undo
+one. Don't `git revert` the whole thing — just edit the file
+manually, commit, PR. The Git history will show "added the bad
+change" and "removed the bad change," which is also a clean
+trail.
+
+## See also
+
+- [`bidsmith apply`](/bidsmith/commands/apply/) — what runs at the
+  end.
+- [Plan and apply](/bidsmith/concepts/plan-and-apply/) — why `plan`
+  is the safety belt for reverts.
+- [The GitHub flow for marketers](/bidsmith/concepts/github-flow/) —
+  the regular flow this recipe rides on top of.

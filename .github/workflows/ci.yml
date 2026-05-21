@@ -46,3 +46,13 @@ jobs:
           cargo run --quiet -- export --from-gads-search-response examples/exports/raw.json -o /tmp/raw.bid
           cargo run --quiet -- validate /tmp/raw.bid
           cargo run --quiet -- fmt --check /tmp/raw.bid
+
+      - name: schema.json is in sync with src/schema.rs
+        run: |
+          cargo run --quiet -- schema > /tmp/schema-fresh.json
+          if ! diff -u website/src/data/schema.json /tmp/schema-fresh.json; then
+            echo ""
+            echo "::error::website/src/data/schema.json is stale. Regenerate it with:"
+            echo "::error::  cargo run --quiet -- schema --output website/src/data/schema.json"
+            exit 1
+          fi

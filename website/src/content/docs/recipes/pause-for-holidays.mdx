@@ -1,0 +1,130 @@
+---
+title: Pause everything for the holidays
+description: Flip every campaign in your account to PAUSED via a single PR, then flip it back when you're ready.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+You want every paid-search campaign off during the company shutdown
+(or a quiet quarter, or a budget freeze). And you want the same
+state back, exactly, when the shutdown ends.
+
+This is the perfect bidsmith workflow: one PR pauses everything,
+one PR resumes everything, and the Git history records the exact
+date and reason.
+
+## The pause
+
+<Steps>
+
+1. **Make a branch**:
+
+   ```sh
+   git checkout -b pause-for-holidays-2026
+   ```
+
+2. **Flip the status** in every campaign block. In each `.bid` file
+   with a `google_ads_campaign`, find:
+
+   ```hcl
+   status = "ENABLED"
+   ```
+
+   and change it to:
+
+   ```hcl
+   status = "PAUSED"
+   ```
+
+   If your editor has find-and-replace across files, use it.
+   Otherwise:
+
+   ```sh
+   # Linux / macOS
+   sed -i '' 's/status = "ENABLED"/status = "PAUSED"/g' *.bid
+   ```
+
+3. **Plan to verify**:
+
+   ```sh
+   bidsmith plan .
+   ```
+
+   Expected: one `~ update` per campaign, all showing
+   `status: "ENABLED" → "PAUSED"`. Nothing else should change.
+
+4. **Commit + PR**:
+
+   ```sh
+   git add .
+   git commit -m "Pause all campaigns for the 2026 holiday shutdown"
+   git push -u origin pause-for-holidays-2026
+   ```
+
+   Open the PR. Reviewers can confirm the `plan` output in the PR
+   description matches what they expect.
+
+5. **Apply after merge**:
+
+   ```sh
+   git checkout main && git pull
+   bidsmith apply .
+   ```
+
+   Every campaign is now paused.
+
+</Steps>
+
+## The resume
+
+When you're ready to come back:
+
+```sh
+git revert <the pause commit>
+git push
+```
+
+…and apply. `git revert` produces the exact inverse change of the
+pause commit, so every campaign flips from `PAUSED` back to
+`ENABLED` — to its previous state, whatever that was per-campaign.
+
+That's the magic: you don't have to remember which campaigns were
+enabled and which were already paused before the holiday. Git knows.
+
+<Aside type="tip" title="Why not just flip in the UI?">
+  You can, of course. But then you have to manually track which
+  campaigns were already paused before the holiday, and bidsmith's
+  `plan` will show "drift" until you reconcile. The Git-driven
+  approach is one PR to pause, one PR to resume, and the history
+  documents the decision.
+</Aside>
+
+## Variations
+
+- **Pause a specific campaign type only** — change `status` only on
+  campaigns where `advertising_channel_type = "DISPLAY"` (or
+  whatever filter applies).
+- **Pause a specific market** — if you use the [one-file-per-market
+  pattern](/bidsmith/concepts/modules/), the find-and-replace only
+  needs to touch one file.
+- **Pause a budget instead** — set `amount_micros = 0` on a shared
+  budget. Cleaner if many campaigns share the same budget.
+
+## What this doesn't do
+
+`PAUSED` campaigns still **exist** in Google Ads — they just stop
+serving and stop spending. Their quality scores and learning state
+are preserved, which is what you want for a temporary shutdown.
+
+To actually delete campaigns, set `status = "REMOVED"` instead.
+That's irreversible (Google doesn't restore removed campaigns), so
+do it deliberately and not as part of a holiday pause.
+
+## See also
+
+- [`bidsmith apply`](/bidsmith/commands/apply/) — what runs once the
+  PR merges.
+- [Plan and apply](/bidsmith/concepts/plan-and-apply/) — why this
+  loop is safer than clicking through the UI.
+- [Roll back a bad change](./roll-back-a-bad-change/) — the same
+  `git revert` pattern for fixing mistakes.

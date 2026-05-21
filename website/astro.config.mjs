@@ -37,13 +37,18 @@ export default defineConfig({
           label: 'Tutorials',
           items: [
             { label: 'Launch a new search campaign', slug: 'tutorials/launch-search-campaign' },
+            { label: 'Import an existing campaign', slug: 'tutorials/import-existing-campaign' },
           ],
         },
         {
           label: 'How-to recipes',
           collapsed: true,
           items: [
-            { label: '(coming soon)', slug: 'recipes' },
+            { label: 'Overview', slug: 'recipes' },
+            { label: 'Pause everything for the holidays', slug: 'recipes/pause-for-holidays' },
+            { label: 'Move a keyword between match types', slug: 'recipes/change-keyword-match-type' },
+            { label: 'Roll back a bad change', slug: 'recipes/roll-back-a-bad-change' },
+            { label: 'Audit who changed what, when', slug: 'recipes/audit-who-changed-what' },
           ],
         },
         {

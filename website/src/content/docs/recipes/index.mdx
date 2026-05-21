@@ -1,34 +1,50 @@
 ---
 title: How-to recipes
-description: Short answers to common "how do I…?" questions.
+description: Short, copy-pasteable answers to common "how do I…?" questions.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Coming soon">
-  This section is being populated. Each recipe will be a short
-  answer to a single concrete question — *"How do I pause every
-  campaign for the holidays?"*, *"How do I bulk-add keywords from a
-  spreadsheet?"*, *"How do I move a keyword from broad to phrase
-  match?"* — with copy-pasteable `.bid` snippets and CLI commands.
+Each recipe is a single concrete answer to a single concrete
+question. Short, copy-pasteable, no theory. For the *why* behind
+these patterns, see [Core concepts](/bidsmith/concepts/).
 
-  In the meantime, the [first tutorial](/bidsmith/tutorials/launch-search-campaign/)
-  covers the most common flow end-to-end, and the
-  [glossary](/bidsmith/reference/glossary/) is the best lookup for
-  unfamiliar terms.
-</Aside>
+## Day-to-day operations
 
-## Planned recipes (suggestions welcome)
+<CardGrid>
+  <LinkCard
+    title="Pause everything for the holidays"
+    description="One PR pauses every campaign; git revert resumes them exactly."
+    href="./pause-for-holidays/"
+  />
+  <LinkCard
+    title="Move a keyword between match types"
+    description="Switch a keyword from broad to phrase (or exact) with a two-line diff."
+    href="./change-keyword-match-type/"
+  />
+  <LinkCard
+    title="Roll back a bad change"
+    description="git revert + bidsmith apply. Three commands, full audit trail."
+    href="./roll-back-a-bad-change/"
+  />
+  <LinkCard
+    title="Audit who changed what, when"
+    description="Git is the audit log. Cheat sheet for the questions you'll actually ask."
+    href="./audit-who-changed-what/"
+  />
+</CardGrid>
+
+## More coming
+
+This section grows from real questions. If you have a "how do I…?"
+that isn't here, [open an issue](https://github.com/chrmod/bidsmith/issues/new) —
+it's the fastest path to a recipe being written.
+
+A non-exhaustive list of recipes that are on the way:
 
 - Bulk-add keywords from a spreadsheet
-- Move a keyword from broad to phrase match
 - Set a different bid for one ad group
 - Schedule a budget change for next Monday
 - Find which campaigns reference a shared set
-- Audit who changed what, when (Git log)
-- Pause everything for the holidays
-- Roll back a bad change
-
-If you have a "how do I…?" question that isn't here, please
-[open an issue](https://github.com/chrmod/bidsmith/issues/new) — it's
-the fastest way to get a recipe written.
+- Import a single campaign (not a whole account) via `bidsmith refresh`
+- Run bidsmith from GitHub Actions on every merge

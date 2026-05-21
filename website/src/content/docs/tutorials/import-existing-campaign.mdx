@@ -1,0 +1,209 @@
+---
+title: Import an existing campaign
+description: Bring a campaign that's already running in Google Ads under bidsmith management with `refresh`.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+The [first tutorial](/bidsmith/tutorials/launch-search-campaign/) walked through
+launching a *new* campaign. This one covers the other common
+starting point: **you already have campaigns in Google Ads** and you
+want to bring them under bidsmith management without rewriting them
+by hand.
+
+The tool for this is [`bidsmith refresh`](/bidsmith/commands/refresh/).
+It reads the live account and writes fmt-canonical `.bid` files
+that describe exactly what's there. From that point on, every change
+goes through the normal plan/apply loop.
+
+End to end: about 20 minutes for a small account.
+
+## Before you begin
+
+The same setup as the [first tutorial](/bidsmith/tutorials/launch-search-campaign/#before-you-begin):
+
+```sh
+bidsmith --version
+bidsmith plan --whoami
+```
+
+Both should succeed. You should be `cd`-ed into your `bidsmith-config`
+Git repository.
+
+<Aside type="caution">
+  Run `refresh` against the account you actually want to manage —
+  the env var `GOOGLE_ADS_CUSTOMER_ID` selects it. Double-check
+  with `bidsmith plan --whoami` before going further.
+</Aside>
+
+## Step 1 — Make a branch
+
+Adoption is a real change to the repo, so it goes through the
+normal PR flow:
+
+```sh
+git checkout -b adopt-existing-campaigns
+```
+
+## Step 2 — Pull live state into `.bid` files
+
+Use the split-output mode so account-scoped things (conversion
+actions, shared sets, call assets) land in `account.bid` and
+campaigns land in `campaigns.bid`:
+
+```sh
+bidsmith refresh -d .
+```
+
+After this you'll have two new files in your repo:
+
+- `account.bid` — the `provider` block, conversion actions, shared
+  sets, call assets, customer assets.
+- `campaigns.bid` — campaigns, budgets, ad groups, ads, criteria.
+
+<Aside type="tip">
+  If your account is small (one or two campaigns), use
+  `bidsmith refresh -o everything.bid` instead and put it all in
+  one file. Split when the single-file form gets unwieldy.
+</Aside>
+
+## Step 3 — Inspect what got generated
+
+Open `account.bid` and `campaigns.bid` in your editor. Walk through
+the resources and confirm they look right.
+
+A few things to check:
+
+- **Names** — bidsmith uses the Google Ads `name` field as the bidsmith
+  local name (slugified). Make sure they're meaningful; rename now
+  if anything looks confusing.
+- **Removed resources** — by default `refresh` drops anything whose
+  `status` is `REMOVED`. If you want them in your files for
+  historical reasons, re-run with `--include-removed`.
+- **Budgets** — confirm `amount_micros` matches what the UI shows.
+  Remember: 1 EUR = 1,000,000 micros.
+- **Ad copy** — RSAs should have your real headlines and
+  descriptions. If something is missing, it might be a Google-side
+  asset bidsmith doesn't yet model — check the
+  [resource reference](/bidsmith/resources/) for what's supported.
+
+## Step 4 — Validate locally
+
+```sh
+bidsmith validate .
+```
+
+Should report `OK`. If not, something in the generated output
+disagrees with the schema; the error message tells you which file
+and line.
+
+## Step 5 — Run `plan`
+
+This is the moment of truth:
+
+```sh
+bidsmith plan .
+```
+
+Expected output:
+
+```
+Plan: 0 to create, 0 to update, 0 to destroy.
+No changes. Live state matches .bid files.
+```
+
+If you see `0 to create, 0 to update`, **bidsmith is now in sync
+with your live account.** The files match reality. You haven't
+changed anything in Google Ads.
+
+If you see some `~ update` rows, that's fine — it means a few
+fields didn't round-trip perfectly (this happens with some
+server-computed defaults). Read the diff:
+
+- If the change is innocuous (a default Google fills in that you
+  don't care about), edit your `.bid` file to match what the live
+  account shows, and re-run `plan` until it's empty.
+- If the change is something you don't want bidsmith to assert
+  (e.g. a `status` that you'd rather leave to Google to manage),
+  remove that attribute from the `.bid` file.
+
+## Step 6 — Commit and open a PR
+
+```sh
+git add account.bid campaigns.bid
+git commit -m "Adopt existing campaigns into bidsmith"
+git push -u origin adopt-existing-campaigns
+```
+
+Open a pull request on GitHub. The PR description should explain
+that this is the initial adoption — nothing in Google Ads is
+changing, just the repo is gaining a baseline.
+
+Have a teammate review the PR. The diff is going to be large (every
+existing campaign is "new" from Git's perspective), but the *intent*
+is small: "describe what's already there."
+
+Merge when approved.
+
+## Step 7 — Verify on `main`
+
+After merge, pull `main` and run `plan` once more to confirm
+nothing changed in transit:
+
+```sh
+git checkout main
+git pull
+bidsmith plan .
+```
+
+Should still report `0 to create, 0 to update`. **You're done.**
+
+## What changed
+
+Your Google Ads account is **exactly the same** as it was 20
+minutes ago. What's different is the repo: it now contains a
+faithful description of every campaign in the account.
+
+From here, every future change — bid adjustments, new keywords,
+paused campaigns, new RSAs — follows the [normal flow](/bidsmith/concepts/github-flow/):
+edit the `.bid` file, open a PR, get review, merge, apply.
+
+## What if I'm worried about applying the first time?
+
+A reasonable concern. To be extra cautious on your first real
+apply *after* adoption:
+
+1. Make a small, deliberate change (e.g. raise one budget by €1).
+2. `bidsmith plan .` should show exactly one `~ update` row.
+3. If anything else shows up, stop and investigate — you found
+   drift that adoption didn't capture, and you don't want to apply
+   blindly.
+4. If only the deliberate change shows up, `bidsmith apply .` and
+   verify in the UI.
+
+This dry-run pattern is worth doing on the first apply of any new
+adoption.
+
+## What's missing today
+
+Two things on the [roadmap](https://github.com/chrmod/bidsmith/blob/main/ROADMAP.md)
+make adoption smoother in the future:
+
+- **Reconcile-in-place mode** for `refresh` — re-running it against
+  an existing repo will update fields without overwriting unrelated
+  blocks. Gated on bidsmith's label-tracking work.
+- **`bidsmith import <address> <resource_name>`** — adopt a single
+  resource into a specific bidsmith address (not the whole
+  account). Also gated on labels.
+
+Until those land, bootstrap mode is the canonical path. It works
+fine for first-time adoption.
+
+## Next
+
+- [Plan and apply](/bidsmith/concepts/plan-and-apply/) — what the
+  loop will look like from here on.
+- [Drift](/bidsmith/concepts/drift/) — what to do when someone
+  edits the UI directly after adoption.
+- [`bidsmith refresh`](/bidsmith/commands/refresh/) — the command
+  reference, including the flags this tutorial skipped.
