@@ -19,7 +19,7 @@ pub enum LiveStateError {
     Adapter(String),
 }
 
-const QUERIES: &[(&str, &str)] = &[
+pub const QUERIES: &[(&str, &str)] = &[
     (
         "campaign_budget",
         "SELECT

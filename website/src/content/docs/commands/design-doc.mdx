@@ -1,0 +1,144 @@
+---
+title: bidsmith design-doc
+description: Generate the Google Ads API design document you attach to your Basic-Access application.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Google requires a design document with every Basic-Access (and
+Standard-Access) developer-token application. The document explains what
+your tool does, which API endpoints it calls, how often, how it handles
+credentials, and how it satisfies the API's Required Minimum
+Functionality (RMF). Reviewers read it carefully and reject submissions
+that are vague or obviously templated.
+
+`bidsmith design-doc` generates that document for you. The parts that
+describe **bidsmith itself** — the module list, the API endpoints, the
+GAQL queries, the RMF mapping, the safety model — are pulled from
+bidsmith's own source code, so the doc cannot drift from what the tool
+actually does. The parts that describe **your team** — applicant
+identity, why you need API access, who runs the tool — come from a
+TOML config you fill in.
+
+## Synopsis
+
+```sh
+bidsmith design-doc init   [--output design-doc.toml] [--force]
+bidsmith design-doc render [--config design-doc.toml] [--output design-doc.html]
+```
+
+## How to use it
+
+<Steps>
+
+1. **Generate the config template.**
+
+   ```sh
+   bidsmith design-doc init
+   ```
+
+   Writes `design-doc.toml` in the current directory. The file is
+   heavily commented — every field is documented inline.
+
+2. **Fill in the placeholders.** Open `design-doc.toml` in your
+   editor. Every field marked `<FILL IN …>` needs a real value before
+   the doc will render. The two most important fields are:
+
+   - `why_this_tool_exists` — three to five sentences describing
+     **your team's** specific use case. Reviewers reject submissions
+     where this reads like stock copy. Be concrete: real campaign
+     counts, real geographies, real review/audit needs.
+   - `who_uses_it_operators` — how many people on your team run
+     bidsmith, and against which manager account.
+
+3. **Render the HTML.**
+
+   ```sh
+   bidsmith design-doc render
+   ```
+
+   Writes `design-doc.html` in the current directory. Validation runs
+   first — if any required field is still empty or still contains a
+   `<FILL IN …>` placeholder, render exits non-zero and tells you
+   which.
+
+4. **Print to PDF.** Open `design-doc.html` in your browser, then
+   <kbd>⌘</kbd>+<kbd>P</kbd> (or <kbd>Ctrl</kbd>+<kbd>P</kbd>) →
+   **Save as PDF**. The template ships with print-tuned A4 CSS, so the
+   output looks the same in every browser.
+
+5. **Attach the PDF** to your Basic-Access application at
+   [Google Ads → Tools → API Center](https://ads.google.com/aw/apicenter).
+
+</Steps>
+
+## Flags
+
+### `init`
+
+| Flag | Description |
+|---|---|
+| `-o`, `--output FILE` | Output file path. Defaults to `design-doc.toml`. |
+| `--force` | Overwrite an existing file. Default: refuse to clobber. |
+
+### `render`
+
+| Flag | Description |
+|---|---|
+| `-c`, `--config FILE` | Input TOML config. Defaults to `design-doc.toml`. |
+| `-o`, `--output FILE` | Output HTML file. Use `-` for stdout. Defaults to `design-doc.html`. |
+
+## Environment variables
+
+None for the config or template, but the rendered doc reflects bidsmith's
+runtime API version. If you've set `BIDSMITH_API_VERSION` to override
+the default (`v22`), §4.1 of the rendered doc will show that override.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Successful render. |
+| `1` | TOML parse error, missing required field, invalid manager account ID, template error, or file write error. |
+
+## What gets auto-generated vs. user-supplied
+
+| Section of the doc | Source |
+|---|---|
+| §1 Executive summary (applicant references) | `applicant_legal_entity` from TOML |
+| §2.1 Why this tool exists | `why_this_tool_exists` from TOML |
+| §2.2 Operator population | `who_uses_it_operators` from TOML |
+| §3.1 Module list | Hardcoded in bidsmith source — kept in sync via the lockstep rule below |
+| §4.1 Endpoints + API version | `crate::api::client::api_version()` and the actual HTTP call sites |
+| §4.2 GAQL query list | `crate::api::live_state::QUERIES` — iterated, count derived |
+| §4.4 Frequency and volume | Stock estimates; override `volume_typical_per_day` / `volume_ceiling` in TOML if your usage differs |
+| §6 RMF mapping | Hardcoded — universal for any bidsmith user |
+| §7 Authentication | Universal description of bidsmith's OAuth flow |
+| §9 Safety properties | Universal — describes the plan/apply contract |
+| §11 Roadmap and current status | Hardcoded; reflects bidsmith's release status |
+| §12 Contact | `contact_name`, `contact_email`, `company_url` from TOML |
+
+<Aside type="caution" title="Don't reuse stock paragraphs verbatim">
+  The biggest reason API applications get rejected is that the design
+  doc reads like a template. The `why_this_tool_exists` field
+  specifically must describe your team's actual situation — campaign
+  counts, geographies, the workflow problem you're solving. Reviewers
+  will recognise generic copy on sight.
+</Aside>
+
+## Re-rendering for a follow-up application
+
+Check `design-doc.toml` into your `bidsmith-config` Git repo. If Google
+asks for a revised submission (e.g. after asking follow-up questions),
+edit the TOML, re-run `bidsmith design-doc render`, re-print the PDF.
+
+When bidsmith adds or changes API surface (new GAQL queries, a version
+bump), the next `render` automatically reflects it — you don't have to
+touch the TOML at all.
+
+## See also
+
+- [Apply for Basic API access](/bidsmith/before-you-start/apply-for-basic-access/) —
+  end-to-end walkthrough of the application process.
+- [Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/) —
+  what to do once your developer token is approved.

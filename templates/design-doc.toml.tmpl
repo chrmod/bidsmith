@@ -1,0 +1,94 @@
+# bidsmith design-doc config
+#
+# This file feeds `bidsmith design-doc render`, which produces an HTML design
+# document you can print to PDF and attach to a Google Ads API
+# Basic-Access (or Standard-Access) application.
+#
+# Fill in every field marked <FILL IN ...> before rendering. Google reviewers
+# reject obviously templated submissions, so put real numbers and real
+# sentences in §1 and §2.1 — describe your team's actual use case, not the
+# template's stock text.
+#
+# After editing, run:
+#
+#     bidsmith design-doc render
+#
+# That writes design-doc.html in the current directory. Open it in your
+# browser, print to PDF, attach to Google's form.
+
+# -----------------------------------------------------------------------------
+# Applicant identity
+# -----------------------------------------------------------------------------
+
+# Legal entity name as it appears on your Google Ads account.
+applicant_legal_entity = "<FILL IN: e.g. Acme Marketing GmbH>"
+
+# Your manager (MCC) account ID, 10 digits, no dashes.
+# Find it in Google Ads UI -> top-right of the manager account.
+manager_account_id = "<FILL IN: e.g. 1234567890>"
+
+# Optional display name for the manager account (shown in parentheses
+# after the ID on the cover page). Leave empty to omit.
+manager_account_name = ""
+
+# Person Google should contact about this application.
+contact_name = "<FILL IN: e.g. Jane Doe>"
+contact_email = "<FILL IN: jane.doe@example.com>"
+
+# Optional: your company website. Used as a link in the contact section.
+# Leave empty to omit.
+company_url = ""
+
+# -----------------------------------------------------------------------------
+# Tool identity (defaults match upstream bidsmith — only change if you forked)
+# -----------------------------------------------------------------------------
+
+# tool_name = "bidsmith"
+# source_repo_url = "https://github.com/chrmod/bidsmith"
+
+# -----------------------------------------------------------------------------
+# §2.1 — Why this tool exists (REWRITE in your own words)
+#
+# Three to five sentences describing why your team needs the Google Ads API
+# and what problem bidsmith solves for you. Don't reuse the stock paragraph.
+# Reviewers scan this and reject submissions where it reads like boilerplate.
+#
+# Use a blank line between paragraphs.
+# -----------------------------------------------------------------------------
+
+why_this_tool_exists = """
+<FILL IN: 3-5 sentences explaining your team's specific paid-search workflow,
+the scale you operate at, and why doing it through the Google Ads UI is
+painful enough to justify API access. Be concrete: mention real campaign
+counts, real geographies, real review/audit needs.>
+"""
+
+# -----------------------------------------------------------------------------
+# §2.2 — Who runs bidsmith
+#
+# One sentence describing your operator population. Example:
+#   "a small number (currently 1-2) of named employees who hold the OAuth
+#    refresh token and run bidsmith plan/apply from a workstation against
+#    the Acme MCC."
+# -----------------------------------------------------------------------------
+
+who_uses_it_operators = "<FILL IN: how many operators, what they do>"
+
+# -----------------------------------------------------------------------------
+# §4.4 — Frequency and volume (override defaults if your usage differs)
+# -----------------------------------------------------------------------------
+
+# volume_typical_per_day = "well under 1,000 operations"
+# volume_ceiling = "~5,000 operations"
+
+# -----------------------------------------------------------------------------
+# Optional: document date and closing note
+# -----------------------------------------------------------------------------
+
+# Defaults to today (YYYY-MM-DD). Override if you want to backdate.
+# document_date = "2026-01-15"
+
+# Optional paragraph rendered just before the contact section. Use it for
+# project status, smoke-test results, or anything else you want reviewers
+# to see last.
+# closing_note = ""

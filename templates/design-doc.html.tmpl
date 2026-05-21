@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{ tool_name }} — Google Ads API Design Document</title>
+<style>
+  @page { size: A4; margin: 22mm 20mm; }
+  html { font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 11pt; color: #1a1a1a; }
+  body { line-height: 1.5; }
+  h1 { font-size: 22pt; margin: 0 0 4pt 0; }
+  h2 { font-size: 14pt; margin-top: 22pt; margin-bottom: 4pt; border-bottom: 1px solid #ccc; padding-bottom: 2pt; page-break-after: avoid; }
+  h3 { font-size: 12pt; margin-top: 14pt; margin-bottom: 2pt; page-break-after: avoid; }
+  p { margin: 6pt 0; }
+  ul, ol { margin: 6pt 0; padding-left: 22pt; }
+  li { margin: 2pt 0; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 9.5pt; }
+  code { background: #f3f3f3; padding: 1pt 3pt; border-radius: 3pt; }
+  pre { background: #f7f7f7; padding: 8pt 10pt; border-radius: 4pt; border: 1px solid #e5e5e5; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; page-break-inside: avoid; }
+  pre code { background: transparent; padding: 0; }
+  table { width: 100%; border-collapse: collapse; margin: 8pt 0; font-size: 10pt; page-break-inside: avoid; }
+  th, td { border: 1px solid #ccc; padding: 4pt 6pt; text-align: left; vertical-align: top; }
+  th { background: #f0f0f0; font-weight: 600; }
+  .cover { text-align: left; margin-bottom: 14pt; }
+  .cover .subtitle { color: #666; font-size: 13pt; margin-top: 2pt; }
+  .meta { font-size: 10pt; color: #555; margin-top: 12pt; }
+  .meta div { margin: 1pt 0; }
+  .callout { background: #f5f9ff; border-left: 3px solid #3b82f6; padding: 8pt 12pt; margin: 8pt 0; page-break-inside: avoid; }
+  .ok { color: #0a7d3a; font-weight: 600; }
+  .pending { color: #b06000; font-weight: 600; }
+  .note { color: #555; font-style: italic; font-size: 10pt; }
+  .ascii { font-family: "SF Mono", Menlo, monospace; font-size: 9pt; white-space: pre; background: #f7f7f7; padding: 10pt; border-radius: 4pt; border: 1px solid #e5e5e5; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>{{ tool_name }}</h1>
+  <div class="subtitle">Google Ads API — Design Document for Basic Access Application</div>
+  <div class="meta">
+    <div><strong>Applicant:</strong> {{ applicant_legal_entity }}</div>
+    <div><strong>Manager Account:</strong> {{ manager_account_id }}{% if manager_account_name %} ({{ manager_account_name }}){% endif %}</div>
+    <div><strong>Tool name:</strong> {{ tool_name }}</div>
+    <div><strong>Source repository:</strong> {{ source_repo_url }}</div>
+    <div><strong>Contact:</strong> {{ contact_email }}</div>
+    <div><strong>Document date:</strong> {{ document_date }}</div>
+    <div><strong>{{ tool_name }} version:</strong> {{ bidsmith_version }}</div>
+  </div>
+</div>
+
+<h2>1. Executive summary</h2>
+
+<p>
+{{ tool_name }} is an internal, open-source command-line tool that lets {{ applicant_legal_entity }}
+manage its own Google Ads accounts declaratively from version-controlled <code>.bid</code> files.
+It is a &ldquo;Terraform for Google Ads&rdquo;: campaigns, ad groups, ads, keywords, budgets, and
+conversion actions are described in HCL2 source files; a <code>plan</code> step diffs that
+declaration against the live account using <code>validateOnly=true</code> mutates; an interactive
+<code>apply</code> step prints the diff, prompts the operator for explicit confirmation, and only
+then issues a real mutate.
+</p>
+
+<p>
+The tool is used <strong>only by {{ applicant_legal_entity }} to manage its own Google Ads
+accounts</strong>. It is not multi-tenant, does not authenticate end users, is not sold, and has
+no UI for outside users. End-user data is never read, written, or stored.
+</p>
+
+<h2>2. Background, scope, and intended users</h2>
+
+<h3>2.1 Why this tool exists</h3>
+
+{% for paragraph in why_this_tool_exists_paragraphs %}<p>{{ paragraph }}</p>
+{% endfor %}
+
+<h3>2.2 Who uses it</h3>
+
+<ul>
+  <li><strong>Operators</strong> — {{ who_uses_it_operators }}</li>
+  <li><strong>Reviewers</strong> — anyone with read access to the {{ tool_name }} Git repository.
+      Changes to <code>.bid</code> files are reviewed in pull requests the same way as
+      application code.</li>
+</ul>
+
+<h3>2.3 Who does <em>not</em> use it</h3>
+
+<ul>
+  <li>End users / consumers of {{ applicant_legal_entity }}&rsquo;s products. {{ tool_name }} does
+      not authenticate any end-user identity and has no public-facing interface.</li>
+  <li>Third-party advertisers. The tool only touches Google Ads customers under
+      {{ applicant_legal_entity }}&rsquo;s manager account. The OAuth credentials it carries are
+      {{ applicant_legal_entity }}&rsquo;s own; there is no &ldquo;manage someone else&rsquo;s
+      account&rdquo; feature.</li>
+  <li>Automated systems making spend changes without human approval. Every <code>apply</code>
+      requires an interactive <code>yes</code> on a TTY, or an explicit <code>--auto-approve</code>
+      flag in a controlled CI context.</li>
+</ul>
+
+<h2>3. System architecture</h2>
+
+<p>
+{{ tool_name }} is a single statically linked Rust binary (~4&nbsp;MB on macOS / Linux). It has
+no server component, no background daemons, and no persistent local state beyond the
+<code>.bid</code> files the operator edits and a small on-disk cache of the most recent live-state
+fetch (used to make <code>plan</code> fast; never includes credentials).
+</p>
+
+<div class="ascii">.bid files (HCL2)
+   |
+   v
+parser     -- hcl-edit AST, source spans preserved
+   |
+   v
+schema     -- typed resource graph, references resolved
+   |
+   v
+import     -- AST -> in-memory ExportInput  (deterministic, round-trips with renderer)
+   |
+   v
+live state -- googleAds:searchStream  (one read query per resource type)
+   |
+   v
+diff       -- declared vs. live, name-matched, scalar field-level
+   |
+   v
+plan       -- googleAds:mutate  with validateOnly=true   (no writes)
+   |
+   v
+apply      -- print diff -> prompt 'yes' -> googleAds:mutate with validateOnly=false</div>
+
+<p class="note">
+The boundary between read-only (everything down to and including <em>plan</em>) and write
+(only <em>apply</em>, only after explicit human confirmation) is the central safety property of
+the design.
+</p>
+
+<h3>3.1 Components</h3>
+
+<table>
+  <tr><th>Module</th><th>Responsibility</th></tr>
+  {% for m in modules %}<tr><td><code>{{ m.path }}</code></td><td>{{ m.description }}</td></tr>
+  {% endfor %}
+</table>
+
+<h2>4. Google Ads API usage</h2>
+
+<h3>4.1 Transport and endpoints</h3>
+
+<p>
+{{ tool_name }} uses the <strong>Google Ads REST API</strong> over HTTPS. The gRPC transport is
+intentionally <em>not</em> used — REST gives us curl-able endpoints, human-readable wire traffic
+for debugging, and no proto-compile step in the build. Endpoint version is pinned via the
+<code>BIDSMITH_API_VERSION</code> environment variable (currently <code>{{ api_version }}</code>).
+</p>
+
+<table>
+  <tr><th>Endpoint</th><th>Method</th><th>Used by</th><th>validateOnly</th></tr>
+  {% for e in endpoints %}<tr><td><code>{{ e.endpoint }}</code></td><td>{{ e.method }}</td><td>{{ e.used_by }}</td><td>{{ e.validate_only }}</td></tr>
+  {% endfor %}
+</table>
+
+<h3>4.2 Read patterns (GAQL)</h3>
+
+<p>
+Reads are issued via <code>googleAds:searchStream</code> with hand-written GAQL queries — one per
+resource type {{ tool_name }} models. There are {{ gaql_query_count }} fixed queries
+({% for q in gaql_queries %}<code>{{ q.label }}</code>{% if not loop.last %}, {% endif %}{% endfor %}).
+The <code>query</code> command additionally exposes a read-only GAQL passthrough for ad-hoc
+inspection.
+</p>
+
+<h3>4.3 Write patterns (mutate)</h3>
+
+<p>
+All writes go through <code>googleAds:mutate</code> in a single atomic batch per
+<code>apply</code> invocation. Operations are ordered by resource dependencies so each
+resource&rsquo;s parent exists before children are created. The exact same request body is sent
+twice in an interactive <code>apply</code>:
+</p>
+
+<ol>
+  <li>First with <code>validateOnly: true</code> — Google Ads validates auth, references, enums,
+      policy strings, and field-length constraints, but no resource is mutated. The result is
+      shown to the operator as the plan.</li>
+  <li>If, and only if, the operator types <code>yes</code> at the prompt, the same body is
+      re-sent with <code>validateOnly: false</code>. If validateOnly rejected anything, the real
+      mutate is <strong>skipped</strong>.</li>
+</ol>
+
+<h3>4.4 Frequency and volume</h3>
+
+<table>
+  <tr><th>Workload</th><th>Estimated calls/day</th></tr>
+  <tr><td>Interactive <code>plan</code> while authoring (peak)</td><td>~50 read + ~10 validateOnly mutate</td></tr>
+  <tr><td>Real <code>apply</code> (post-approval)</td><td>~1–5 mutate batches, one per landed PR</td></tr>
+  <tr><td>Read-only <code>query</code> for inspection</td><td>~20</td></tr>
+  <tr><td><strong>Typical day</strong></td><td><strong>{{ volume_typical_per_day }}</strong></td></tr>
+  <tr><td><strong>Hard ceiling we expect to reach</strong></td><td><strong>{{ volume_ceiling }}</strong></td></tr>
+</table>
+
+<h2>5. User workflow</h2>
+
+<p>
+Every interaction with the Google Ads API is initiated by a human operator running a CLI command
+on their own workstation. There is no scheduling, no webhook, no automated trigger.
+</p>
+
+<h3>5.1 Typical edit cycle</h3>
+
+<pre><code># 1. Operator edits a .bid file locally
+$ vim campaigns/eu_search.bid
+
+# 2. Local-only validation (no API call)
+$ {{ tool_name }} validate .
+OK: 4 file(s) valid.
+
+# 3. Plan: fetch live state + validateOnly mutate, show the diff
+$ {{ tool_name }} plan .
++ create  google_ads_campaign.summer_eu       (validateOnly: ok)
+~ update  google_ads_campaign.spring_eu  (status: ENABLED &rarr; PAUSED)  (ok)
+  no-op   95 resources unchanged
+Plan: 1 to create, 1 to update, 95 unchanged.
+
+# 4. Apply: print the same diff, prompt, then mutate
+$ {{ tool_name }} apply .
++ create  google_ads_campaign.summer_eu       (validateOnly: ok)
+~ update  google_ads_campaign.spring_eu  (status: ENABLED &rarr; PAUSED)  (ok)
+
+Apply these changes? Only 'yes' will be accepted to approve.
+&gt; yes
+Applied: 1 created, 1 updated.</code></pre>
+
+<h3>5.2 Refresh / read-back</h3>
+
+<p>
+Operators can also run <code>{{ tool_name }} refresh</code> to pull live account state back into
+<code>.bid</code> files (read-only, never mutates), <code>{{ tool_name }} pull</code> to dump live
+state as raw JSON, and <code>{{ tool_name }} query 'SELECT ... FROM campaign'</code> for ad-hoc
+GAQL inspection. All three are read-only paths.
+</p>
+
+<h2>6. Required Minimum Functionality (RMF) compliance</h2>
+
+<p>
+The Google Ads API RMF requires that any tool with write access exposes a minimum set of
+operations to its users. Because {{ tool_name }} is a CLI managing the operator&rsquo;s
+<em>own</em> account, the RMF surface is provided through the <code>.bid</code> source files and
+the <code>plan</code>/<code>apply</code>/<code>query</code> commands. The mapping:
+</p>
+
+<table>
+  <tr><th>RMF requirement</th><th>How {{ tool_name }} satisfies it</th></tr>
+  {% for r in rmf_table %}<tr><td>{{ r.requirement | safe }}</td><td>{{ r.satisfied_by | safe }}</td></tr>
+  {% endfor %}
+</table>
+
+<h2>7. Authentication and credential handling</h2>
+
+<h3>7.1 Credentials</h3>
+
+<p>
+{{ tool_name }} uses the standard Google Ads API credential set, supplied via environment
+variables:
+</p>
+
+<table>
+  <tr><th>Variable</th><th>Purpose</th></tr>
+  <tr><td><code>GOOGLE_ADS_DEVELOPER_TOKEN</code></td><td>The manager account&rsquo;s developer token.</td></tr>
+  <tr><td><code>GOOGLE_ADS_CLIENT_ID</code> / <code>GOOGLE_ADS_CLIENT_SECRET</code></td>
+      <td>OAuth 2.0 desktop-app client owned by {{ applicant_legal_entity }}&rsquo;s Google Cloud project.</td></tr>
+  <tr><td><code>GOOGLE_ADS_REFRESH_TOKEN</code></td><td>A refresh token issued to a named
+          {{ applicant_legal_entity }} employee for the <code>adwords</code> scope.</td></tr>
+  <tr><td><code>GOOGLE_ADS_LOGIN_CUSTOMER_ID</code></td><td>The manager (MCC) account ID
+          ({{ manager_account_id }}).</td></tr>
+  <tr><td><code>GOOGLE_ADS_CUSTOMER_ID</code></td><td>The specific sub-account to target.</td></tr>
+</table>
+
+<h3>7.2 Token exchange</h3>
+
+<p>
+On every invocation, {{ tool_name }} exchanges the refresh token for a short-lived access token
+via <code>https://oauth2.googleapis.com/token</code>. The access token lives only in process
+memory for the duration of the run; it is never written to disk and never logged. The refresh
+token is the only durable credential, and it lives in the operator&rsquo;s local shell
+configuration or a <code>.env</code>-style file outside version control.
+</p>
+
+<h3>7.3 Scope</h3>
+
+<p>
+The only OAuth scope requested is <code>{{ oauth_scope }}</code>. {{ tool_name }} does not
+request, store, or use any other Google scope (no Drive, Gmail, Calendar, Cloud Platform, etc.).
+</p>
+
+<h2>8. Data handling</h2>
+
+<ul>
+  <li><strong>What we read from Google Ads:</strong> our own account&rsquo;s configuration —
+      campaigns, ad groups, ads, keywords, budgets, conversion actions, assets, and reporting
+      metrics for those resources.</li>
+  <li><strong>What we write to Google Ads:</strong> declarative updates to the same resources,
+      originating from <code>.bid</code> files the operator authored.</li>
+  <li><strong>What we store locally:</strong> the <code>.bid</code> source files themselves (in
+      Git), the environment variables listed in §7.1 (in the operator&rsquo;s local environment),
+      and a small <code>.bidsmith/</code> on-disk cache of the most recent live-state read used
+      to make <code>plan</code> fast. The cache contains only account configuration already
+      visible to the operator; it never contains credentials.</li>
+  <li><strong>What we never touch:</strong> end-user PII, third-party advertiser data, Google
+      account information beyond what&rsquo;s needed for OAuth.</li>
+  <li><strong>Network egress:</strong> only to <code>oauth2.googleapis.com</code> and
+      <code>googleads.googleapis.com</code> over HTTPS.</li>
+</ul>
+
+<h2>9. Safety properties and audit trail</h2>
+
+<div class="callout">
+The single most important property of {{ tool_name }} is that <strong>no Google Ads resource is
+ever mutated without an explicit, interactive operator confirmation</strong> — or, in the narrow
+case of a CI invocation, without an explicit <code>--auto-approve</code> flag on a trusted,
+non-TTY environment.
+</div>
+
+<h3>9.1 Plan-before-apply</h3>
+
+<ul>
+  <li>Every <code>apply</code> internally runs the same prepare stage as <code>plan</code>:
+      parse &rarr; import &rarr; fetch live &rarr; diff &rarr; validateOnly mutate.</li>
+  <li>The validateOnly result is printed in full before any real mutate is attempted.</li>
+  <li>If validateOnly rejects any operation, the real mutate is <strong>skipped</strong> —
+      partial application is not possible.</li>
+  <li>The real mutate is gated on the operator typing literally <code>yes</code> at the prompt.
+      Any other input (including <code>y</code>, <code>Y</code>, <code>YES</code>) cancels.</li>
+  <li><code>apply</code> refuses to prompt when stdin is not a TTY; in that case
+      <code>--auto-approve</code> must be passed explicitly.</li>
+</ul>
+
+<h3>9.2 Atomicity</h3>
+
+<p>
+All operations in one apply go to <code>googleAds:mutate</code> as a single batch. Partial
+failure is not enabled, so either every operation in the batch succeeds or none of them are
+written.
+</p>
+
+<h3>9.3 Audit trail</h3>
+
+<ul>
+  <li>Every change to a <code>.bid</code> file is a Git commit reviewed in a pull request. The
+      operator who applied it is recorded in shell history and in their Git checkout.</li>
+  <li>The full request and response of every mutate can be dumped with <code>--verbose</code>,
+      and the corresponding Google Ads change-history view records the same operations under
+      the operator&rsquo;s identity.</li>
+</ul>
+
+<h3>9.4 Errors are source-mapped</h3>
+
+<p>
+Schema and parse errors render with file path, line number, and a source snippet (via the
+<code>miette</code> diagnostic library), so any policy violation surfaced by Google Ads&rsquo;
+validateOnly response can be traced straight back to the <code>.bid</code> line that caused it.
+</p>
+
+<h2>10. Open-source repository</h2>
+
+<p>
+The full source is published at <strong>{{ source_repo_url }}</strong> under the MIT license.
+Reviewers can inspect:
+</p>
+
+<ul>
+  <li><code>src/api/auth.rs</code> — OAuth handling, no logging of secrets.</li>
+  <li><code>src/api/client.rs</code> — every HTTP request {{ tool_name }} ever makes.</li>
+  <li><code>src/commands/apply.rs</code> — the prompt-before-mutate flow, exactly as described in §9.1.</li>
+  <li><code>src/api/mutate.rs</code> — how diffs are converted into mutate operations.</li>
+  <li><code>DECISIONS.md</code> — settled architectural choices with rationale, including the
+      locked plan/apply safety model.</li>
+</ul>
+
+<h2>11. Roadmap and current status</h2>
+
+<table>
+  <tr><th>Command</th><th>Status</th><th>Notes</th></tr>
+  {% for c in command_status %}<tr><td><code>{{ c.command }}</code></td><td class="{{ c.status_class }}">{{ c.status }}</td><td>{{ c.notes | safe }}</td></tr>
+  {% endfor %}
+</table>
+
+{% if closing_note %}<p>{{ closing_note }}</p>
+{% endif %}
+
+<h2>12. Contact</h2>
+
+<p>
+<strong>{{ contact_name }}</strong> &middot; {{ contact_email }}<br>
+{{ applicant_legal_entity }}{% if company_url %} &middot; <a href="{{ company_url }}">{{ company_url_label }}</a>{% endif %}<br>
+{{ tool_name }} source &middot; <a href="{{ source_repo_url }}">{{ source_repo_url_label }}</a>
+</p>
+
+</body>
+</html>

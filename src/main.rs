@@ -137,6 +137,9 @@ enum Cmd {
         #[arg(short = 'o', long, value_name = "PATH")]
         output: Option<String>,
     },
+    /// Generate the Google Ads API Basic-Access design document
+    #[command(name = "design-doc", subcommand)]
+    DesignDoc(DesignDocCmd),
     /// (internal) Remove every resource whose name starts with --prefix.
     /// Used by the e2e test tier; not a public verb.
     #[command(name = "_e2e-cleanup", hide = true)]
@@ -155,6 +158,28 @@ enum QueryFormat {
     Table,
     Json,
     Tsv,
+}
+
+#[derive(Subcommand)]
+enum DesignDocCmd {
+    /// Write a commented design-doc.toml template you can fill in
+    Init {
+        /// Output file path
+        #[arg(short = 'o', long, value_name = "PATH", default_value = "design-doc.toml")]
+        output: String,
+        /// Overwrite an existing file
+        #[arg(long)]
+        force: bool,
+    },
+    /// Read design-doc.toml + bidsmith internals, write design-doc.html
+    Render {
+        /// Input TOML config
+        #[arg(short = 'c', long, value_name = "PATH", default_value = "design-doc.toml")]
+        config: String,
+        /// Output HTML file (use `-` for stdout)
+        #[arg(short = 'o', long, value_name = "PATH", default_value = "design-doc.html")]
+        output: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -203,6 +228,14 @@ fn main() -> ExitCode {
             verbose,
         ),
         Cmd::Schema { output } => commands::schema::run(output.as_deref()),
+        Cmd::DesignDoc(sub) => match sub {
+            DesignDocCmd::Init { output, force } => {
+                commands::design_doc::run_init(&output, force)
+            }
+            DesignDocCmd::Render { config, output } => {
+                commands::design_doc::run_render(&config, &output)
+            }
+        },
         Cmd::E2eCleanup { prefix, verbose } => {
             commands::e2e_cleanup::run(&prefix, verbose)
         }

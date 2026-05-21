@@ -1,0 +1,126 @@
+---
+title: Apply for Basic API access
+description: Generate the design document Google requires, attach it to your developer-token application, wait for approval.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+To use bidsmith against a **production** Google Ads account, you need
+a developer token at **Basic Access** tier or above. Test-access
+tokens (the default when you first sign up) only work against Google
+Ads test accounts.
+
+The application is short, but Google requires a design document
+describing what your tool does. Reviewers read it carefully — vague
+or templated docs get rejected. bidsmith generates a fully-personalised
+design doc for you in two commands.
+
+<Aside type="tip" title="Do this first">
+  Basic-access approval can take a few business days. If you're new to
+  bidsmith, start the application <em>before</em> chasing OAuth
+  credentials and `.bid` files — your test-account setup can proceed
+  in parallel.
+</Aside>
+
+## Step 1 — Generate the design doc
+
+<Steps>
+
+1. **Initialise the config.**
+
+   ```sh
+   bidsmith design-doc init
+   ```
+
+   This writes `design-doc.toml` in the current directory — a
+   commented template with one field per personalisation point.
+
+2. **Fill in your specifics.** Open `design-doc.toml` in your editor.
+   Every field marked `<FILL IN …>` is required. The two that
+   reviewers focus on:
+
+   - `applicant_legal_entity` — the legal name on your Google Ads
+     account.
+   - `why_this_tool_exists` — three to five sentences describing
+     **your team's actual workflow**. Real campaign counts, real
+     geographies, real audit/review needs. Generic boilerplate is the
+     single biggest cause of rejection.
+
+3. **Render the HTML.**
+
+   ```sh
+   bidsmith design-doc render
+   ```
+
+   Writes `design-doc.html`. Validation runs first; if any required
+   field is still empty or still contains `<FILL IN …>`, the render
+   exits non-zero and tells you which.
+
+4. **Print to PDF.** Open `design-doc.html` in your browser, then
+   <kbd>⌘</kbd>+<kbd>P</kbd> (or <kbd>Ctrl</kbd>+<kbd>P</kbd>) →
+   **Save as PDF**. The HTML ships with A4 print CSS; the output
+   should look identical in any modern browser.
+
+</Steps>
+
+## Step 2 — Submit the application
+
+<Steps>
+
+1. Sign in to Google Ads using the account that owns your **manager
+   (MCC) account** — basic-access tokens are issued per MCC, not per
+   Google user.
+
+2. Open **Tools → API Center**. If you haven't requested a token
+   before, you'll see a "Sign up" form. Otherwise, your existing
+   token (probably in **Test Access**) is listed; click **Apply for
+   Basic Access**.
+
+3. Fill in Google's application form. The free-form **"How will you
+   use the Google Ads API?"** field can be a one-paragraph summary
+   pointing at the attached PDF; the PDF has the depth.
+
+4. Attach `design-doc.pdf` you just printed.
+
+5. Submit.
+
+</Steps>
+
+## Step 3 — Wait, and prepare for follow-ups
+
+Approval typically takes 1–5 business days. Google may email
+follow-up questions. The most common ones:
+
+| Question | Where the design doc answers it |
+|---|---|
+| "Who runs the tool?" | §2.2 — your `who_uses_it_operators` field. |
+| "What endpoints do you call?" | §4.1 endpoint table — auto-generated from bidsmith's source. |
+| "How do you protect against accidental mass updates?" | §9.1 plan-before-apply — the explicit `yes` prompt is the central safety property. |
+| "How do you store credentials?" | §7 — env vars only, access tokens process-memory only, no on-disk credential cache. |
+| "Do you re-sell or expose this to other advertisers?" | §2.3 — "Who does *not* use it." |
+
+If Google asks for a revised submission, edit `design-doc.toml`,
+re-run `bidsmith design-doc render`, re-print the PDF, and attach the
+new version. The auto-generated sections stay in sync automatically.
+
+## Step 4 — Once approved
+
+Move on to [Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/)
+for the OAuth setup. Your approved developer token is the value you'll
+put in `GOOGLE_ADS_DEVELOPER_TOKEN`.
+
+## What if I only manage test accounts?
+
+You don't need Basic Access. Test accounts work with the default
+test-tier token, and bidsmith's full feature set (plan, apply, refresh,
+query, pull) works against them. The application is only required for
+production accounts.
+
+## See also
+
+- [`bidsmith design-doc`](/bidsmith/commands/design-doc/) — full
+  reference for the generator command.
+- [Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/) —
+  what to set up after your token is approved.
+- [Authentication](/bidsmith/concepts/authentication/) — what bidsmith
+  does with your credentials at runtime.

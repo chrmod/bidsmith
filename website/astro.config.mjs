@@ -29,6 +29,7 @@ export default defineConfig({
           items: [
             { label: 'Install bidsmith', slug: 'before-you-start/install' },
             { label: 'Set up GitHub', slug: 'before-you-start/set-up-github' },
+            { label: 'Apply for Basic API access', slug: 'before-you-start/apply-for-basic-access' },
             { label: 'Connect to Google Ads', slug: 'before-you-start/connect-google-ads' },
             { label: 'Your first 10 minutes', slug: 'before-you-start/first-ten-minutes' },
           ],
@@ -78,6 +79,7 @@ export default defineConfig({
                 { label: 'bidsmith fmt', slug: 'commands/fmt' },
                 { label: 'bidsmith export', slug: 'commands/export' },
                 { label: 'bidsmith schema', slug: 'commands/schema' },
+                { label: 'bidsmith design-doc', slug: 'commands/design-doc' },
               ],
             },
             {

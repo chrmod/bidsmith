@@ -185,6 +185,7 @@ bidsmith export --from-json file.json [-o out]   # stdout if -o omitted
 bidsmith pull -o dump.json                       # raw SearchStream JSON from live
 bidsmith refresh -d ads-bid/                     # split account.bid + campaigns.bid from live
 bidsmith fmt | plan | apply                      # see verbs table above
+bidsmith design-doc init | render                # generate the Google Ads API Basic-Access doc
 ```
 
 `validate` walks a directory recursively for `.bid` files (or accepts a

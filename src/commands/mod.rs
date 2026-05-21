@@ -1,5 +1,6 @@
 pub mod adapt;
 pub mod apply;
+pub mod design_doc;
 pub mod e2e_cleanup;
 pub mod export;
 pub mod fmt;
