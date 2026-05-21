@@ -17,6 +17,7 @@ pub enum FieldType {
     Bool,
     Enum(&'static [&'static str]),
     Ref(&'static [&'static str]),
+    RefOrResourceName(&'static [&'static str]),
     List(Box<FieldType>),
     RsaAssetList,
 }
@@ -517,7 +518,7 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                     ),
                     attr(
                         "call_conversion_action",
-                        FieldType::Ref(&["google_ads_conversion_action"]),
+                        FieldType::RefOrResourceName(&["google_ads_conversion_action"]),
                         false,
                     ),
                 ],
@@ -1013,75 +1014,93 @@ fn validate_value(
             )),
         },
         FieldType::Ref(targets) => {
-            let Expression::Traversal(t) = expr else {
-                diags.push(Diag::new(
-                    file.src.clone(),
-                    span,
-                    format!(
-                        "expected reference to {}, got {}",
-                        join_or(targets),
-                        describe_expr(expr)
-                    ),
-                ));
-                return;
-            };
-            let Some(path) = extract_traversal_path(t) else {
-                diags.push(Diag::new(
-                    file.src.clone(),
-                    span,
-                    "unsupported reference expression (only `<type>.<name>.<attribute>` is allowed)"
-                        .to_string(),
-                ));
-                return;
-            };
-            if path.len() < 2 {
-                diags.push(Diag::new(
-                    file.src.clone(),
-                    span,
-                    format!(
-                        "incomplete reference '{}'; expected '<type>.<name>.<attribute>'",
-                        path.join(".")
-                    ),
-                ));
+            validate_ref(file, expr, span, targets, registry, diags, false);
+        }
+        FieldType::RefOrResourceName(targets) => {
+            if matches!(expr, Expression::String(_)) {
                 return;
             }
-            let ref_type = &path[0];
-            let ref_name = &path[1];
-            if !targets.iter().any(|&t| t == ref_type) {
-                diags.push(Diag::new(
-                    file.src.clone(),
-                    span,
-                    format!(
-                        "expected reference to {}, got reference to '{}'",
-                        join_or(targets),
-                        ref_type
-                    ),
-                ));
-                return;
-            }
-            let address = format!("{ref_type}.{ref_name}");
-            match registry.resolve(&file.module, ref_type, ref_name) {
-                Resolution::Found(_) => {}
-                Resolution::Missing => {
-                    diags.push(Diag::new(
-                        file.src.clone(),
-                        span,
-                        format!("reference to undeclared resource '{address}'"),
-                    ));
-                }
-                Resolution::Ambiguous(modules) => {
-                    let mut sorted: Vec<&str> = modules.iter().map(String::as_str).collect();
-                    sorted.sort();
-                    diags.push(Diag::new(
-                        file.src.clone(),
-                        span,
-                        format!(
-                            "ambiguous reference to '{address}'; declared in modules [{}] — rename one of the resources so each is unique within its module",
-                            sorted.join(", ")
-                        ),
-                    ));
-                }
-            }
+            validate_ref(file, expr, span, targets, registry, diags, true);
+        }
+    }
+}
+
+fn validate_ref(
+    file: &ParsedFile,
+    expr: &Expression,
+    span: std::ops::Range<usize>,
+    targets: &[&str],
+    registry: &ResourceRegistry,
+    diags: &mut Vec<Diag>,
+    allow_resource_name: bool,
+) {
+    let expected = if allow_resource_name {
+        format!("reference to {} or resource-name string", join_or(targets))
+    } else {
+        format!("reference to {}", join_or(targets))
+    };
+    let Expression::Traversal(t) = expr else {
+        diags.push(Diag::new(
+            file.src.clone(),
+            span,
+            format!("expected {expected}, got {}", describe_expr(expr)),
+        ));
+        return;
+    };
+    let Some(path) = extract_traversal_path(t) else {
+        diags.push(Diag::new(
+            file.src.clone(),
+            span,
+            "unsupported reference expression (only `<type>.<name>.<attribute>` is allowed)"
+                .to_string(),
+        ));
+        return;
+    };
+    if path.len() < 2 {
+        diags.push(Diag::new(
+            file.src.clone(),
+            span,
+            format!(
+                "incomplete reference '{}'; expected '<type>.<name>.<attribute>'",
+                path.join(".")
+            ),
+        ));
+        return;
+    }
+    let ref_type = &path[0];
+    let ref_name = &path[1];
+    if !targets.iter().any(|&t| t == ref_type) {
+        diags.push(Diag::new(
+            file.src.clone(),
+            span,
+            format!(
+                "expected {expected}, got reference to '{}'",
+                ref_type
+            ),
+        ));
+        return;
+    }
+    let address = format!("{ref_type}.{ref_name}");
+    match registry.resolve(&file.module, ref_type, ref_name) {
+        Resolution::Found(_) => {}
+        Resolution::Missing => {
+            diags.push(Diag::new(
+                file.src.clone(),
+                span,
+                format!("reference to undeclared resource '{address}'"),
+            ));
+        }
+        Resolution::Ambiguous(modules) => {
+            let mut sorted: Vec<&str> = modules.iter().map(String::as_str).collect();
+            sorted.sort();
+            diags.push(Diag::new(
+                file.src.clone(),
+                span,
+                format!(
+                    "ambiguous reference to '{address}'; declared in modules [{}] — rename one of the resources so each is unique within its module",
+                    sorted.join(", ")
+                ),
+            ));
         }
     }
 }
@@ -1109,6 +1128,10 @@ fn describe_field_type(ty: &FieldType) -> String {
         FieldType::Bool => "boolean".to_string(),
         FieldType::Enum(values) => format!("one of [{}]", values.join(", ")),
         FieldType::Ref(targets) => format!("reference to {}", join_or(targets)),
+        FieldType::RefOrResourceName(targets) => format!(
+            "reference to {} or resource-name string",
+            join_or(targets)
+        ),
         FieldType::List(inner) => format!("list of {}", describe_field_type(inner)),
         FieldType::RsaAssetList => "list of strings or { text, pin? } objects".to_string(),
     }
@@ -1262,6 +1285,7 @@ pub enum TypeDoc {
     Boolean,
     Enum { values: Vec<&'static str> },
     Reference { targets: Vec<&'static str> },
+    ReferenceOrResourceName { targets: Vec<&'static str> },
     List { element: Box<TypeDoc> },
     RsaAssetList,
 }
@@ -1322,6 +1346,9 @@ fn ty_to_doc(ty: &FieldType) -> TypeDoc {
             values: values.to_vec(),
         },
         FieldType::Ref(targets) => TypeDoc::Reference {
+            targets: targets.to_vec(),
+        },
+        FieldType::RefOrResourceName(targets) => TypeDoc::ReferenceOrResourceName {
             targets: targets.to_vec(),
         },
         FieldType::List(inner) => TypeDoc::List {

@@ -531,9 +531,7 @@ impl AdapterState {
             entry.call_conversion_reporting_state = Some(s.to_string());
         }
         if let Some(rn) = call.get("callConversionAction").and_then(Value::as_str) {
-            if let Some(id) = last_segment(rn) {
-                entry.call_conversion_action = Some(id.to_string());
-            }
+            entry.call_conversion_action = Some(rn.to_string());
         }
     }
 

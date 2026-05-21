@@ -284,6 +284,7 @@ pub fn build_mutate_with_diff(
         let rn = refs.get(&a.id).expect("call_asset rn");
         if create_set.contains(&a.id) {
             let action_rn = match a.call_conversion_action.as_ref() {
+                Some(addr) if addr.starts_with("customers/") => Some(addr.clone()),
                 Some(addr) => resolve(&refs, addr, &a.id, "call_conversion_action", &mut errors),
                 None => None,
             };

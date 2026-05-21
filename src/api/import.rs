@@ -769,7 +769,11 @@ fn import_call_asset(
                 "country_code" => country_code = expect_string_owned(a),
                 "phone_number" => phone_number = expect_string_owned(a),
                 "call_conversion_reporting_state" => reporting_state = expect_string_owned(a),
-                "call_conversion_action" => action_ref = extract_resource_ref(&a.value).map(|r| ctx.resolve_ref(&r)),
+                "call_conversion_action" => {
+                    action_ref = extract_resource_ref(&a.value)
+                        .map(|r| ctx.resolve_ref(&r))
+                        .or_else(|| expect_string_owned(a));
+                }
                 _ => {}
             }
         }

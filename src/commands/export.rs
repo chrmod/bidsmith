@@ -990,9 +990,13 @@ fn write_call_asset(
         write_attr(out, 1, "call_conversion_reporting_state", &fmt_string(s));
     }
     if let Some(action) = &a.call_conversion_action {
-        let action_ref = match conversion_action_addr.get(action) {
+        let bare_id = action.rsplit('/').next().unwrap_or(action);
+        let action_ref = match conversion_action_addr
+            .get(action)
+            .or_else(|| conversion_action_addr.get(bare_id))
+        {
             Some(addr) => format!("{addr}.id"),
-            None => format!("\"<unresolved conversion_action {action}>\""),
+            None => fmt_string(action),
         };
         write_attr(out, 1, "call_conversion_action", &action_ref);
     }
