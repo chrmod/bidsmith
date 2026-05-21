@@ -1,25 +1,79 @@
 ---
 title: Command reference
-description: Every bidsmith subcommand, every flag, every exit code.
+description: Every bidsmith CLI verb, every flag, every exit code.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Coming soon">
-  Per-command pages with full flag tables, exit codes, environment
-  variables, and worked examples. Until then, every command supports
-  `bidsmith <command> --help` for inline reference.
-</Aside>
+bidsmith is a single command-line binary. Every subcommand here is
+invoked as `bidsmith <verb> [flags]`. The verbs split into two
+groups: local commands that don't touch the API, and commands that
+read or write Google Ads via the API.
 
-## Subcommands
+## Local (no API)
 
-| Verb | Purpose |
-|---|---|
-| `validate` | Check syntax, schema, references locally. |
-| `fmt` | Rewrite `.bid` files in canonical form (or `--check`). |
-| `plan` | Preview the diff between `.bid` files and live account. |
-| `apply` | Apply the diff to Google Ads (with confirmation prompt). |
-| `refresh` | Pull live account state down into `.bid` files. |
-| `pull` | Dump raw Google Ads JSON for fixtures and tests. |
-| `export` | Render `.bid` files from JSON input. |
-| `query` | Run a Google Ads GAQL query (read-only passthrough). |
+<CardGrid>
+  <LinkCard
+    title="bidsmith validate"
+    description="Parse .bid files, check syntax, schema, references, lint warnings."
+    href="./validate/"
+  />
+  <LinkCard
+    title="bidsmith fmt"
+    description="Rewrite .bid files in canonical form, in place or as a check."
+    href="./fmt/"
+  />
+  <LinkCard
+    title="bidsmith export"
+    description="Render .bid files from a JSON description or a SearchStream dump."
+    href="./export/"
+  />
+  <LinkCard
+    title="bidsmith schema"
+    description="Dump the resource schema as JSON — drives docs and IDE tooling."
+    href="./schema/"
+  />
+</CardGrid>
+
+## API (reads or writes Google Ads)
+
+<CardGrid>
+  <LinkCard
+    title="bidsmith plan"
+    description="Preview the diff between .bid files and the live account."
+    href="./plan/"
+  />
+  <LinkCard
+    title="bidsmith apply"
+    description="Apply the diff to Google Ads after a confirmation prompt."
+    href="./apply/"
+  />
+  <LinkCard
+    title="bidsmith refresh"
+    description="Pull live state into .bid files (bootstrap or sync)."
+    href="./refresh/"
+  />
+  <LinkCard
+    title="bidsmith pull"
+    description="Dump raw Google Ads SearchStream JSON for fixtures and tests."
+    href="./pull/"
+  />
+  <LinkCard
+    title="bidsmith query"
+    description="Run a read-only GAQL query and print the result."
+    href="./query/"
+  />
+</CardGrid>
+
+## Common conventions
+
+- **Path argument** — `validate`, `fmt`, `plan`, `apply` accept an
+  optional path (file or directory). Defaults to `.` (the current
+  directory). If a directory, bidsmith walks it recursively for
+  `.bid` files.
+- **`--verbose`** — on API commands, prints the outgoing request and
+  raw response. Useful for debugging.
+- **Exit codes** — `0` on success, non-zero on any error. Error
+  messages go to stderr; normal output goes to stdout.
+- **Help** — `bidsmith --help` lists every verb; `bidsmith <verb>
+  --help` lists flags for one verb.

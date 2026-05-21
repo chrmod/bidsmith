@@ -1,0 +1,124 @@
+---
+title: bidsmith refresh
+description: Pull the live Google Ads account into .bid files. Bootstrap mode.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`refresh` pulls the live Google Ads account and writes its current
+state as fmt-canonical `.bid` files. It's how you adopt bidsmith
+without rewriting your existing account by hand, and how you
+re-sync after somebody edits the UI directly.
+
+Today's `refresh` is **bootstrap-mode** — it writes a clean snapshot
+of the live account. The future "reconcile-mode" (update specific
+fields in an existing `.bid` without overwriting unrelated blocks)
+is on the roadmap.
+
+## Synopsis
+
+```sh
+bidsmith refresh [--output FILE | --dir DIR] [--include-removed] [--verbose]
+```
+
+## Flags
+
+| Flag | Description |
+|---|---|
+| `-o`, `--output FILE` | Write everything to a single `.bid` file. Mutually exclusive with `--dir`. |
+| `-d`, `--dir DIR` | Split the output: `<DIR>/account.bid` for account-scoped resources, `<DIR>/campaigns.bid` for everything campaign-scoped. Mutually exclusive with `--output`. |
+| `--include-removed` | Include resources whose `status` is `REMOVED`. Default: drop them. |
+| `--verbose` | Print the outgoing API request envelope and raw response. |
+
+If neither `-o` nor `-d` is given, output goes to stdout.
+
+## Environment variables
+
+Same as [`bidsmith plan`](/bidsmith/commands/plan/).
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Successful refresh. |
+| `1` | Authentication failure, API error, file write error, or other. |
+
+## Examples
+
+### Print the account to stdout
+
+```sh
+bidsmith refresh
+```
+
+Dumps the current state as a single block of `.bid` text. Useful
+for piping into another tool or eyeballing what's there.
+
+### Write to one file
+
+```sh
+bidsmith refresh -o reality.bid
+```
+
+Single file with everything. Works well for small accounts.
+
+### Split into account- and campaign-scoped files
+
+```sh
+bidsmith refresh -d ads-bid/
+```
+
+Creates two files:
+
+- `ads-bid/account.bid` — the `provider` block, conversion actions,
+  shared sets, call assets, customer assets.
+- `ads-bid/campaigns.bid` — campaigns, budgets, ad groups, ads,
+  ad-group and campaign criteria.
+
+This is the recommended pattern for accounts with more than a
+handful of campaigns.
+
+### Capture drift before fixing it
+
+```sh
+bidsmith refresh -o reality.bid
+git diff reality.bid summer-2026.bid
+```
+
+`git diff` shows you exactly what's different between the live
+account and your `.bid` files. The output of `refresh` is the same
+canonical form `fmt` produces, so the diff is meaningful and
+minimal.
+
+<Aside type="tip">
+  After running `refresh`, the new `.bid` files are clean snapshots —
+  bidsmith doesn't try to merge them with anything that's already
+  there. For an existing project, write to a separate file (or a
+  separate directory) first, then compare and selectively copy
+  changes back into your real `.bid` files. The reconcile-in-place
+  mode that does this automatically is on the
+  [roadmap](https://github.com/chrmod/bidsmith/blob/main/ROADMAP.md).
+</Aside>
+
+## What gets pulled
+
+Every resource type bidsmith currently understands (see the
+[Resource reference](/bidsmith/resources/) for the full list).
+Internally, `refresh` uses the same `SearchStream` queries
+[`plan`](/bidsmith/commands/plan/) does — so anything `plan` sees
+as live state, `refresh` can capture.
+
+## What doesn't get pulled
+
+- **Performance data** — bidsmith manages configuration only.
+- **Resources outside the supported schema** — types not yet
+  modeled in `src/schema.rs` are silently ignored. The roadmap
+  tracks resource-type coverage.
+
+## See also
+
+- [`bidsmith pull`](/bidsmith/commands/pull/) — same data, raw API
+  JSON instead of `.bid` format.
+- [Drift](/bidsmith/concepts/drift/) — what to do after `refresh`
+  shows differences.
+- [Your first 10 minutes](/bidsmith/before-you-start/first-ten-minutes/) — refresh in the onboarding context.

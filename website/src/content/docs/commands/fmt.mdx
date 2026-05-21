@@ -1,0 +1,103 @@
+---
+title: bidsmith fmt
+description: Rewrite .bid files in canonical form. Idempotent. Use `--check` in CI.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`fmt` is bidsmith's opinionated formatter. It parses each `.bid`
+file, then re-emits it in canonical form: stable whitespace,
+consistent indentation, a stable attribute order, normalized
+quoting.
+
+Running `fmt` on a file that's already canonical is a no-op — the
+operation is idempotent.
+
+## Synopsis
+
+```sh
+bidsmith fmt [PATH] [--check]
+```
+
+## Arguments
+
+| Argument | Default | Description |
+|---|---|---|
+| `PATH` | `.` | File or directory to format. Directories are walked recursively for `.bid` files. |
+
+## Flags
+
+| Flag | Description |
+|---|---|
+| `--check` | Don't write any files. Exit `1` if any file would change. Use in CI. |
+
+## Environment variables
+
+None. `fmt` runs entirely offline.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | All files are canonical (or were rewritten to canonical). |
+| `1` | With `--check`: at least one file would change. Without `--check`: a parse error or I/O error. |
+
+## Examples
+
+### Format every `.bid` file in the current project
+
+```sh
+bidsmith fmt .
+```
+
+Rewrites files in place. Combine with `git diff` to see what
+changed.
+
+### Verify everything is canonical (CI)
+
+```sh
+bidsmith fmt --check .
+```
+
+Exit `0` if nothing would change. Exit `1` and list the affected
+files if they aren't canonical. Run as a status check on pull
+requests so no non-canonical files reach `main`.
+
+### Format one file
+
+```sh
+bidsmith fmt summer-2026.bid
+```
+
+## What "canonical" means
+
+bidsmith's canonical form is deterministic, not pretty-print. Given
+the same input it always produces the same output. Specifics:
+
+- **Two-space indentation** for nested blocks.
+- **`=` aligned** within an attribute block where it improves
+  readability.
+- **Attributes before nested blocks** within each block.
+- **Stable attribute order** within a resource — required first,
+  optional after, in the order the schema declares them.
+- **Compact forms** for things that have one (e.g. bulk
+  `keyword {}` sub-blocks in a single criterion resource; RSA
+  `headlines = [...]` list attributes when more concise than
+  per-headline blocks).
+
+The exact canonical form is whatever `bidsmith fmt` produces — it's
+not specified independently. If `fmt --check` passes, you're
+canonical.
+
+<Aside type="tip">
+  Most editors can run a formatter on save. If your editor supports
+  a "format on save" hook for HCL, point it at `bidsmith fmt
+  <current file>` and never think about formatting again.
+</Aside>
+
+## See also
+
+- [`bidsmith validate`](/bidsmith/commands/validate/) — parse and
+  schema-check before formatting.
+- [The .bid file](/bidsmith/concepts/bid-file/) — anatomy of the
+  thing being formatted.

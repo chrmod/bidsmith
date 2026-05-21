@@ -1,0 +1,130 @@
+---
+title: bidsmith plan
+description: Preview the difference between your .bid files and the live Google Ads account. Read-only.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`plan` is the dry run. It parses your `.bid` files, fetches live
+state via the Google Ads API, diffs the two, and shows you what
+would change — without changing anything. Safe to run any number of
+times.
+
+If `plan` is empty, your `.bid` files and the live account already
+match. If `plan` has rows, [`apply`](/bidsmith/commands/apply/) is
+the next step.
+
+## Synopsis
+
+```sh
+bidsmith plan [PATH] [--whoami] [--read-live] [--verbose]
+```
+
+## Arguments
+
+| Argument | Default | Description |
+|---|---|---|
+| `PATH` | `.` | File or directory containing `.bid` files. |
+
+## Flags
+
+| Flag | Description |
+|---|---|
+| `--whoami` | Exchange the refresh token for an access token and print the result. Doesn't touch Google Ads. Useful for confirming credentials. |
+| `--read-live` | Print a summary of the live account state (resource counts per type). Doesn't require `.bid` files. Useful for debugging. |
+| `--verbose` | Print the outgoing API request envelope and the raw response. Useful when something looks wrong. |
+
+## Environment variables
+
+| Variable | Required? | Notes |
+|---|---|---|
+| `GOOGLE_ADS_DEVELOPER_TOKEN` | yes | |
+| `GOOGLE_ADS_CLIENT_ID` | yes | |
+| `GOOGLE_ADS_CLIENT_SECRET` | yes | |
+| `GOOGLE_ADS_REFRESH_TOKEN` | yes | |
+| `GOOGLE_ADS_CUSTOMER_ID` | yes | The account to plan against. |
+| `GOOGLE_ADS_LOGIN_CUSTOMER_ID` | no | Set if you're managing a sub-account via an MCC. |
+| `BIDSMITH_API_VERSION` | no | Defaults to `v22`. Bump if you hit a "retired version" error. |
+
+See [Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/)
+for how to obtain these.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Plan completed (whether or not changes are pending). |
+| `1` | Local validation failed, authentication failed, Google rejected the validate-only request, or any other error. |
+
+## Examples
+
+### Standard plan
+
+```sh
+bidsmith plan .
+```
+
+Validates `.bid` files, fetches live state, diffs, prints the plan.
+
+### Confirm credentials work
+
+```sh
+bidsmith plan --whoami
+```
+
+Prints a short summary like:
+
+```
+Refresh token exchanged successfully.
+Access token expires in 3599 seconds.
+Customer ID: 1234567890
+```
+
+Useful as the first command to run after setting env vars.
+
+### See what's in the live account
+
+```sh
+bidsmith plan --read-live
+```
+
+Skips the diff and just prints a per-type count. Helpful when you're
+new to an account and want to know what's already there before
+writing `.bid` files.
+
+### Debug a confusing diff
+
+```sh
+bidsmith plan . --verbose
+```
+
+Prints the request body bidsmith sent and the response Google
+returned. Useful when bidsmith's interpretation of the diff doesn't
+match yours.
+
+## How the diff is computed
+
+1. Resources are matched between `.bid` and live by **name**.
+2. For each matched pair, bidsmith compares scalar attributes
+   field-by-field; any difference becomes a `~ update` row with
+   the before/after values.
+3. Resources in `.bid` with no live match become `+ create` rows.
+4. Resources in the live account with no `.bid` match are **not**
+   shown today — they're "stuff bidsmith doesn't manage." Label-based
+   matching (and `- destroy` rows) is on the roadmap.
+
+After producing the diff, bidsmith sends the create/update operations
+to Google's `googleAds:mutate` endpoint with `validateOnly=true`.
+Google checks them without committing. Any rejection
+("headline too long," "bid below minimum") shows up inline in the
+plan output.
+
+## See also
+
+- [`bidsmith apply`](/bidsmith/commands/apply/) — what to run when
+  the plan is what you want.
+- [`bidsmith validate`](/bidsmith/commands/validate/) — local checks
+  without the API.
+- [Plan and apply](/bidsmith/concepts/plan-and-apply/) — the
+  conceptual model.
+- [Drift](/bidsmith/concepts/drift/) — interpreting `~ update` rows.

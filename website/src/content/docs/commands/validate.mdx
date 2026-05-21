@@ -1,0 +1,99 @@
+---
+title: bidsmith validate
+description: Parse .bid files locally and report syntax, schema, reference, and lint errors.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`validate` parses every `.bid` file under the given path, checks that
+each one is syntactically valid, that every block matches the
+schema, that every reference resolves to a real resource, and that
+every lint rule passes. It's the fastest feedback loop in bidsmith
+— no network, no API, just local files.
+
+## Synopsis
+
+```sh
+bidsmith validate [PATH]
+```
+
+## Arguments
+
+| Argument | Default | Description |
+|---|---|---|
+| `PATH` | `.` | File or directory to validate. Directories are walked recursively for `.bid` files. |
+
+## Flags
+
+None beyond the standard `--help`.
+
+## Environment variables
+
+None. `validate` runs entirely offline.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | All files parsed and validated cleanly. Warnings (lint) don't change this. |
+| `1` | At least one parse or validation error, or `PATH` doesn't exist. |
+
+## Examples
+
+### Validate the current directory
+
+```sh
+bidsmith validate
+```
+
+Walks the current directory for `.bid` files and validates each.
+
+### Validate one file
+
+```sh
+bidsmith validate summer-2026.bid
+```
+
+### Validate before every commit
+
+Wire `bidsmith validate .` into a Git pre-commit hook (or a CI
+job) so broken `.bid` files never reach `main`.
+
+## What it catches
+
+- **Syntax errors** — unclosed braces, malformed assignments, etc.
+  Reported with source location (file, line, column).
+- **Unknown resource types** — `resource "google_ads_campagn" "x" {`
+  (typo). Suggests near-matches.
+- **Unknown attributes** — `delivery_methad = "STANDARD"` (typo).
+- **Type mismatches** — `amount_micros = "5"` when `amount_micros`
+  is `Integer`.
+- **Invalid enum values** — `match_type = "BROAD_PHRASE"` when
+  bidsmith knows of `EXACT` / `PHRASE` / `BROAD`.
+- **Missing required attributes** — e.g. a `google_ads_campaign`
+  with no `advertising_channel_type`.
+- **Dangling references** — `campaign = google_ads_campaign.serach.id`
+  when no resource is named `serach`.
+- **Ambiguous references** across modules — see
+  [Modules](/bidsmith/concepts/modules/).
+- **Duplicate resources** — same `(type, name)` declared twice.
+
+## What it doesn't catch
+
+`validate` runs offline, so it can't check anything that requires
+Google Ads' opinion:
+
+- Whether a campaign budget is below your account's minimum.
+- Whether a particular ad-group type is available for your channel.
+- Whether a conversion action category is currently accepted.
+
+Those land in [`bidsmith plan`](/bidsmith/commands/plan/), which
+forwards your `.bid` files to Google's `validateOnly` endpoint.
+
+## See also
+
+- [`bidsmith plan`](/bidsmith/commands/plan/) — the same checks plus
+  Google's server-side validation.
+- [`bidsmith fmt`](/bidsmith/commands/fmt/) — canonicalize files
+  after editing.
+- [The .bid file](/bidsmith/concepts/bid-file/) — what gets parsed.

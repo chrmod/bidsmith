@@ -64,7 +64,26 @@ export default defineConfig({
           label: 'Command reference',
           collapsed: true,
           items: [
-            { label: '(coming soon)', slug: 'commands' },
+            { label: 'Overview', slug: 'commands' },
+            {
+              label: 'Local',
+              items: [
+                { label: 'bidsmith validate', slug: 'commands/validate' },
+                { label: 'bidsmith fmt', slug: 'commands/fmt' },
+                { label: 'bidsmith export', slug: 'commands/export' },
+                { label: 'bidsmith schema', slug: 'commands/schema' },
+              ],
+            },
+            {
+              label: 'API',
+              items: [
+                { label: 'bidsmith plan', slug: 'commands/plan' },
+                { label: 'bidsmith apply', slug: 'commands/apply' },
+                { label: 'bidsmith refresh', slug: 'commands/refresh' },
+                { label: 'bidsmith pull', slug: 'commands/pull' },
+                { label: 'bidsmith query', slug: 'commands/query' },
+              ],
+            },
           ],
         },
         {

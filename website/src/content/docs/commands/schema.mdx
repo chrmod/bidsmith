@@ -1,0 +1,147 @@
+---
+title: bidsmith schema
+description: Dump bidsmith's resource schema as JSON. Powers the docs site's auto-generated reference.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`schema` prints the bidsmith resource schema — every resource type,
+every attribute, every enum value, every nested block — as
+structured JSON. It's the source of truth that powers the
+auto-generated [resource reference](/bidsmith/resources/) on this
+site and is useful as input to IDE plugins, lint rules in CI, or
+anything that needs to know what bidsmith understands.
+
+## Synopsis
+
+```sh
+bidsmith schema [--output FILE]
+```
+
+## Flags
+
+| Flag | Description |
+|---|---|
+| `-o`, `--output FILE` | Write to a file. Defaults to stdout. |
+
+## Environment variables
+
+None. `schema` runs entirely offline.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Successful dump. |
+| `1` | Serialization error or file write error (rare). |
+
+## Examples
+
+### Print to stdout
+
+```sh
+bidsmith schema
+```
+
+Useful for piping into `jq` for ad-hoc inspection:
+
+```sh
+bidsmith schema | jq '.resources | keys'
+```
+
+Returns the list of every resource type bidsmith currently knows:
+
+```json
+[
+  "google_ads_ad_group",
+  "google_ads_ad_group_ad",
+  "google_ads_ad_group_criterion",
+  "google_ads_call_asset",
+  "google_ads_campaign",
+  "google_ads_campaign_budget",
+  "google_ads_campaign_criterion",
+  "google_ads_campaign_shared_set",
+  "google_ads_conversion_action",
+  "google_ads_customer_asset",
+  "google_ads_shared_set"
+]
+```
+
+### Save to a file
+
+```sh
+bidsmith schema -o schema.json
+```
+
+Useful when feeding the schema to another tool.
+
+### Regenerate the docs site's snapshot
+
+```sh
+bidsmith schema --output website/src/data/schema.json
+```
+
+This is the canonical command for keeping the docs site's auto-generated
+reference in sync with `src/schema.rs`. Run it after any schema change.
+
+## Output shape
+
+```json
+{
+  "version": "0.5.0",
+  "providers": {
+    "google_ads": {
+      "attributes": [
+        { "name": "customer_id", "required": true, "type": "string" },
+        { "name": "login_customer_id", "required": false, "type": "string" }
+      ],
+      "blocks": []
+    }
+  },
+  "resources": {
+    "google_ads_campaign_budget": {
+      "attributes": [
+        { "name": "name", "required": true, "type": "string" },
+        { "name": "amount_micros", "required": true, "type": "integer" },
+        {
+          "name": "delivery_method",
+          "required": false,
+          "type": "enum",
+          "values": ["STANDARD", "ACCELERATED"]
+        },
+        { "name": "explicitly_shared", "required": false, "type": "boolean" }
+      ],
+      "blocks": []
+    }
+  }
+}
+```
+
+The `version` field is the bidsmith binary's `Cargo.toml` version
+— useful for tools that need to know which schema generation they're
+looking at.
+
+The `type` field on each attribute is one of:
+
+- `"string"`, `"integer"`, `"number"`, `"boolean"` — scalars.
+- `"enum"` with a `values` array of allowed strings.
+- `"reference"` with a `targets` array of resource types the
+  reference may point at.
+- `"list"` with a recursive `element` describing the list's element
+  type.
+- `"rsa_asset_list"` — the bespoke "list of strings or `{ text,
+  pin? }` objects" used for RSA `headlines` and `descriptions`.
+
+<Aside type="note">
+  When `src/schema.rs` changes, regenerate
+  `website/src/data/schema.json` in the same commit. The auto-generated
+  reference pages consume this snapshot directly. See the lockstep
+  rule in `CLAUDE.md`.
+</Aside>
+
+## See also
+
+- [Resource reference](/bidsmith/resources/) — the user-facing
+  surface this JSON powers.
+- [`bidsmith validate`](/bidsmith/commands/validate/) — uses the
+  same schema internally to check `.bid` files.

@@ -1,0 +1,88 @@
+---
+title: bidsmith pull
+description: Dump the live Google Ads account as raw SearchStream JSON.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`pull` dumps the live Google Ads account as the raw JSON Google's
+API returns. Unlike [`refresh`](/bidsmith/commands/refresh/), the
+output is **not** `.bid` text — it's the API payload, suitable as
+a test fixture, an input to [`export`](/bidsmith/commands/export/),
+or just a debugging snapshot.
+
+If you want `.bid` files, use `refresh`. If you want raw JSON, use
+`pull`.
+
+## Synopsis
+
+```sh
+bidsmith pull [--output FILE] [--verbose]
+```
+
+## Flags
+
+| Flag | Description |
+|---|---|
+| `-o`, `--output FILE` | Write to a file. Defaults to stdout. |
+| `--verbose` | Print the outgoing API request envelope. |
+
+## Environment variables
+
+Same as [`bidsmith plan`](/bidsmith/commands/plan/).
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Successful pull. |
+| `1` | Authentication failure, API error, file write error, or other. |
+
+## Examples
+
+### Dump the account to a file
+
+```sh
+bidsmith pull -o dump.json
+```
+
+Writes a JSON array of API response batches. The shape matches what
+`export --from-gads-search-response` consumes — the pair round-trips
+an account through bidsmith's renderer.
+
+### Pipe through another tool
+
+```sh
+bidsmith pull | jq '.[].results | length'
+```
+
+Useful for ad-hoc inspection. `pull` writes well-formed JSON to
+stdout when `-o` is absent.
+
+### Capture a snapshot for fixtures
+
+```sh
+bidsmith pull -o tests/fixtures/account-2026-05-21.json
+```
+
+The file is suitable as a regression-test input for offline
+rendering — `export --from-gads-search-response tests/fixtures/account-2026-05-21.json`
+should always produce the same `.bid`.
+
+## What's in the output
+
+A JSON array of "batches" — each batch is one response from a
+SearchStream call. Inside each batch, `results` is an array of
+resource records, each carrying the Google Ads resource name
+(`customers/.../campaigns/...`), the requested fields, and any
+nested objects.
+
+This is the same data [`plan --read-live`](/bidsmith/commands/plan/)
+fetches; `pull` differs only in that it serializes the raw bytes to
+disk instead of adapting them into bidsmith's internal types.
+
+## See also
+
+- [`bidsmith refresh`](/bidsmith/commands/refresh/) — same data,
+  rendered as `.bid` instead of raw JSON.
+- [`bidsmith export --from-gads-search-response`](/bidsmith/commands/export/) — round-trip a `pull` dump into a `.bid` file.

@@ -1,0 +1,117 @@
+---
+title: bidsmith export
+description: Render .bid files from a JSON description or a Google Ads SearchStream dump.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`export` is the offline renderer. It reads a JSON description of
+the campaigns you want, or a raw SearchStream dump from
+[`pull`](/bidsmith/commands/pull/), and writes a fmt-canonical
+`.bid` file. No API calls.
+
+Two input modes (mutually exclusive):
+
+- **`--from-json`** — a flat bidsmith-shaped JSON document. Useful
+  when generating `.bid` programmatically (e.g. from a spreadsheet
+  or a data warehouse).
+- **`--from-gads-search-response`** — raw SearchStream JSON. Used
+  by [`refresh`](/bidsmith/commands/refresh/) under the hood; useful
+  on its own for testing the renderer against a `pull` dump.
+
+## Synopsis
+
+```sh
+bidsmith export --from-json FILE       [flags]
+bidsmith export --from-gads-search-response FILE [flags]
+```
+
+## Flags
+
+| Flag | Description |
+|---|---|
+| `--from-json FILE` | Flat bidsmith JSON. See [`examples/exports/basic.json`](https://github.com/chrmod/bidsmith/blob/main/examples/exports/basic.json) for the shape. Mutually exclusive with `--from-gads-search-response`. |
+| `--from-gads-search-response FILE` | Raw Google Ads SearchStream JSON (the output of `bidsmith pull`). Mutually exclusive with `--from-json`. |
+| `-o`, `--output FILE` | Write to a file. Defaults to stdout. |
+| `--include-removed` | Include resources whose `status` is `REMOVED`. Default: drop them. |
+| `--login-customer-id ID` | Override the provider `login_customer_id` (MCC) in the output. |
+| `--customer-id ID` | Override the provider `customer_id` in the output. |
+
+## Environment variables
+
+None required. If `--login-customer-id` and `--customer-id` aren't
+provided, bidsmith falls back to `GOOGLE_ADS_LOGIN_CUSTOMER_ID` and
+`GOOGLE_ADS_CUSTOMER_ID` from the environment to fill in the
+`provider` block.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Successful render. |
+| `1` | Invalid input JSON, conflicting flags, file write error, or other. |
+
+## Examples
+
+### Render from a flat JSON description
+
+```sh
+bidsmith export --from-json campaign.json -o campaign.bid
+```
+
+Where `campaign.json` follows the flat bidsmith shape (see the
+example in the repo). The output is a fmt-canonical `.bid` file
+that [`validate`](/bidsmith/commands/validate/) accepts.
+
+### Round-trip a live account through the renderer
+
+```sh
+bidsmith pull -o /tmp/dump.json
+bidsmith export --from-gads-search-response /tmp/dump.json -o /tmp/roundtrip.bid
+bidsmith validate /tmp/roundtrip.bid
+```
+
+A useful integration test: the result of rendering a live dump
+should always parse cleanly.
+
+### Generate `.bid` from a script
+
+```sh
+python build_campaigns.py > generated.json
+bidsmith export --from-json generated.json -o generated.bid
+```
+
+Common pattern for teams that bulk-generate campaigns from internal
+data (product catalogs, market lists, etc.). The Python script
+writes JSON; bidsmith handles the HCL rendering.
+
+<Aside type="tip">
+  The flat JSON form is intentionally simple — easier to generate
+  than HCL. Use whatever scripting language is convenient, then let
+  `export` produce a canonical `.bid`. Validate the output to confirm
+  your generator's correct.
+</Aside>
+
+## Output shape
+
+The renderer emits the **compact form** of every resource type:
+
+- One `google_ads_ad_group_criterion` per `(ad_group, match_type)`
+  group, with N `keyword {}` sub-blocks (rather than N separate
+  resources).
+- One negatives resource per ad-group or campaign with N
+  `negative_keyword {}` sub-blocks.
+- RSAs as `headlines = [...]` / `descriptions = [...]` list
+  attributes when more concise than per-headline blocks.
+
+The output is always canonical — `bidsmith fmt --check` on the
+result is a no-op.
+
+## See also
+
+- [`bidsmith pull`](/bidsmith/commands/pull/) — produces the input
+  for `--from-gads-search-response`.
+- [`bidsmith refresh`](/bidsmith/commands/refresh/) — the same
+  renderer applied to a fresh live pull, in one step.
+- [`bidsmith validate`](/bidsmith/commands/validate/) — verify the
+  output is well-formed.

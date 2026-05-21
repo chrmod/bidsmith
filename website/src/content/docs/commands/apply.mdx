@@ -1,0 +1,128 @@
+---
+title: bidsmith apply
+description: Apply the diff to Google Ads after a confirmation prompt. Mutates.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`apply` is the mutator. It runs the same diff as
+[`plan`](/bidsmith/commands/plan/), shows it to you, prompts for
+confirmation, and only then sends the changes to Google Ads.
+
+It's idempotent: applying twice in a row does nothing the second
+time. It's atomic: either every operation commits, or none of them
+do (modulo Google's own consistency guarantees).
+
+## Synopsis
+
+```sh
+bidsmith apply [PATH] [--auto-approve] [--verbose]
+```
+
+## Arguments
+
+| Argument | Default | Description |
+|---|---|---|
+| `PATH` | `.` | File or directory containing `.bid` files. |
+
+## Flags
+
+| Flag | Description |
+|---|---|
+| `--auto-approve` | Skip the interactive `yes` prompt. **Required** when stdin is not a TTY (CI, cron, scripts). |
+| `--verbose` | Print the outgoing API request envelope and the raw response. |
+
+## Environment variables
+
+Same as [`bidsmith plan`](/bidsmith/commands/plan/). See
+[Authentication](/bidsmith/concepts/authentication/) for the full list.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Apply completed (whether or not anything changed). |
+| `1` | Local validation failed, authentication failed, Google rejected an operation, the user declined the prompt, or any other error. |
+
+## Examples
+
+### Interactive apply
+
+```sh
+bidsmith apply .
+```
+
+Prints the plan, prompts:
+
+```
+Do you want to perform these actions?
+  Type 'yes' to confirm.
+> 
+```
+
+Type `yes` and press Enter to commit. Anything else aborts (the
+account is not touched).
+
+### Apply from a script or CI
+
+```sh
+bidsmith apply --auto-approve .
+```
+
+Skips the prompt. Required for non-interactive runs — `apply`
+refuses to read `yes` from a non-TTY stdin, so omitting
+`--auto-approve` in CI is a hard error rather than a silent
+auto-confirm.
+
+<Aside type="caution">
+  Use `--auto-approve` only after you've reviewed the *upstream*
+  change. CI auto-apply on merge means every merged PR mutates Google
+  Ads — branch protection rules and PR review become your only
+  safety net.
+</Aside>
+
+### Debug an apply that's misbehaving
+
+```sh
+bidsmith apply . --verbose
+```
+
+Same as `plan --verbose` plus the real mutate.
+
+## What the prompt does
+
+The prompt is bidsmith's last line of defense between you and a bad
+change. It blocks until you type the literal three letters `yes`
+followed by Enter. Anything else aborts with no changes.
+
+This is intentional: a wrong key (`y`, `Yes`, accidental Enter)
+should not auto-commit. The prompt is meant to *make you re-read
+the plan* before agreeing.
+
+## What apply doesn't yet do
+
+Two known gaps, both on the
+[roadmap](https://github.com/chrmod/bidsmith/blob/main/ROADMAP.md):
+
+- **No label-based identity tracking.** bidsmith matches resources
+  by name. A future version will tag every managed resource with a
+  `bidsmith:address=…` label and match by that, making import and
+  removal both possible.
+- **No `- destroy` flow.** Resources removed from `.bid` files
+  aren't deleted from Google Ads — they're just "not managed
+  anymore." Combine with the labels work above to implement real
+  destroy semantics.
+
+For now, the practical pattern is: to remove a campaign, set its
+`status = "REMOVED"` in the `.bid` file rather than deleting the
+block.
+
+## See also
+
+- [`bidsmith plan`](/bidsmith/commands/plan/) — same diff, no mutate.
+- [Plan and apply](/bidsmith/concepts/plan-and-apply/) — the
+  conceptual model.
+- [The GitHub flow for marketers](/bidsmith/concepts/github-flow/) —
+  three patterns for who runs apply, and when.
+- [Authentication](/bidsmith/concepts/authentication/) — what apply
+  does with your credentials.

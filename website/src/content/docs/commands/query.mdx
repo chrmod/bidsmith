@@ -1,0 +1,120 @@
+---
+title: bidsmith query
+description: Run a read-only GAQL query against Google Ads and print the result.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`query` is a thin passthrough to Google Ads Query Language (GAQL).
+Pass it a query string; bidsmith authenticates, sends the query
+through `SearchStream`, and prints the result in your chosen
+format. No `.bid` files involved.
+
+Useful for ad-hoc questions ("what's the resource ID of the
+campaign named X?", "list every conversion action in the account")
+that don't fit the plan/apply loop.
+
+## Synopsis
+
+```sh
+bidsmith query "QUERY" [--format table|json|tsv] [--verbose]
+```
+
+## Arguments
+
+| Argument | Required? | Description |
+|---|---|---|
+| `QUERY` | yes | A GAQL query string (e.g. `SELECT campaign.id, campaign.name FROM campaign`). |
+
+## Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--format table\|json\|tsv` | `table` | Output format. `table` for terminals, `json` for piping into `jq`, `tsv` for spreadsheets. |
+| `--verbose` | — | Print the outgoing API request envelope and raw response. |
+
+## Environment variables
+
+Same as [`bidsmith plan`](/bidsmith/commands/plan/).
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Query ran successfully (zero rows is still success). |
+| `1` | Authentication failure, malformed query, API error, or other. |
+
+## Examples
+
+### Look up a campaign ID by name
+
+```sh
+bidsmith query "SELECT campaign.id, campaign.name FROM campaign WHERE campaign.name = 'Summer 2026 — Search'"
+```
+
+Prints a table:
+
+```
+campaign.id   campaign.name
+9876543210    Summer 2026 — Search
+```
+
+### List every conversion action
+
+```sh
+bidsmith query "SELECT conversion_action.id, conversion_action.name, conversion_action.category FROM conversion_action"
+```
+
+### Export to a spreadsheet
+
+```sh
+bidsmith query "SELECT ad_group.name, ad_group.cpc_bid_micros FROM ad_group" --format tsv > bids.tsv
+```
+
+`bids.tsv` opens cleanly in Excel / Sheets / Numbers.
+
+### Feed another tool
+
+```sh
+bidsmith query "SELECT campaign.id FROM campaign" --format json | jq -r '.results[].campaign.id'
+```
+
+JSON output makes `jq` post-processing easy.
+
+## What you can query
+
+Every Google Ads GAQL endpoint that's read-only. See
+[Google's GAQL reference](https://developers.google.com/google-ads/api/docs/query/overview)
+for the full grammar.
+
+A few useful starting queries:
+
+| Question | Query |
+|---|---|
+| All campaign names | `SELECT campaign.id, campaign.name FROM campaign` |
+| All ad groups in a campaign | `SELECT ad_group.name FROM ad_group WHERE campaign.id = 9876543210` |
+| All keywords | `SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type FROM keyword_view` |
+| Approval status of all RSAs | `SELECT ad_group_ad.policy_summary.approval_status, ad_group_ad.ad.name FROM ad_group_ad WHERE ad_group_ad.ad.type = 'RESPONSIVE_SEARCH_AD'` |
+
+## What `query` doesn't do
+
+- **No write queries.** GAQL is read-only by design — there's no
+  way to mutate via this endpoint. For changes, use
+  [`apply`](/bidsmith/commands/apply/).
+- **No `.bid` integration.** `query` doesn't read your `.bid` files
+  and doesn't help with the diff/apply loop. It's a standalone
+  inspection tool.
+
+<Aside type="tip">
+  `query` is the right tool for the "what's in the account right
+  now?" question. If the question is "what *would* change?",
+  [`plan`](/bidsmith/commands/plan/) is the answer. If the question
+  is "what does bidsmith model of the account look like?",
+  [`refresh`](/bidsmith/commands/refresh/) is the answer.
+</Aside>
+
+## See also
+
+- [`bidsmith plan --read-live`](/bidsmith/commands/plan/) — a
+  per-resource-type count of what's in the account.
+- [Google's GAQL grammar](https://developers.google.com/google-ads/api/docs/query/grammar).
