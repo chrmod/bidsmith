@@ -1,26 +1,30 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 
+use crate::commands::vars;
 use crate::diagnostics::Diag;
-use crate::parser::{parse_file, ParsedFile};
+use crate::program::{collect_bid_files, Program};
 use crate::schema::validate_files;
 
-pub fn run(target: &str) -> ExitCode {
+pub fn run(target: &str, cli_vars: &[String]) -> ExitCode {
+    let inputs = match vars::collect(cli_vars) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("validate: {e}");
+            return ExitCode::from(2);
+        }
+    };
     let target = Path::new(target);
     if !target.exists() {
         eprintln!("No such file or directory: {}", target.display());
         return ExitCode::from(1);
     }
 
-    let files: Vec<PathBuf> = if target.is_file() {
-        vec![target.to_path_buf()]
-    } else {
-        match collect_bid_files(target) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("{e}");
-                return ExitCode::from(1);
-            }
+    let files = match collect_bid_files(target) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::from(1);
         }
     };
 
@@ -29,28 +33,27 @@ pub fn run(target: &str) -> ExitCode {
         return ExitCode::from(1);
     }
 
-    let mut parsed: Vec<ParsedFile> = Vec::new();
-    let mut diags: Vec<Diag> = Vec::new();
-
-    for f in &files {
-        match parse_file(f) {
-            Ok(pf) => parsed.push(pf),
-            Err(d) => diags.push(d),
-        }
+    let top_input_count = files.len();
+    let loaded = Program::load(&files, inputs);
+    let program = loaded.program;
+    let mut diags: Vec<Diag> = loaded.diagnostics;
+    for scope in &program.scopes {
+        diags.extend(validate_files(&scope.files, &scope.inputs));
     }
-
-    diags.extend(validate_files(&parsed));
-    diags.extend(crate::lint::lint_files(&parsed));
+    for scope in &program.scopes {
+        diags.extend(crate::lint::lint_files(&scope.files));
+    }
 
     diags.sort_by(|a, b| {
         (a.src.name(), a.span.offset()).cmp(&(b.src.name(), b.span.offset()))
     });
 
+    let file_count: usize = program.scopes.iter().map(|s| s.files.len()).sum();
     let errors = diags.iter().filter(|d| d.is_error()).count();
     let warnings = diags.len() - errors;
 
     if diags.is_empty() {
-        println!("OK: {} file(s) valid.", parsed.len());
+        println!("OK: {} file(s) valid.", file_count);
         return ExitCode::SUCCESS;
     }
 
@@ -62,7 +65,7 @@ pub fn run(target: &str) -> ExitCode {
     if errors == 0 {
         println!(
             "OK: {} file(s) valid ({} warning{}).",
-            parsed.len(),
+            file_count,
             warnings,
             if warnings == 1 { "" } else { "s" }
         );
@@ -75,34 +78,8 @@ pub fn run(target: &str) -> ExitCode {
         if errors == 1 { "" } else { "s" },
         warnings,
         if warnings == 1 { "" } else { "s" },
-        files.len(),
-        if files.len() == 1 { "" } else { "s" }
+        top_input_count,
+        if top_input_count == 1 { "" } else { "s" }
     );
     ExitCode::from(1)
-}
-
-fn collect_bid_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut out = Vec::new();
-    walk(dir, &mut out).map_err(|e| format!("failed to walk {}: {e}", dir.display()))?;
-    out.sort();
-    Ok(out)
-}
-
-fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str.starts_with('.') || name_str == "node_modules" || name_str == "target" {
-            continue;
-        }
-        let path = entry.path();
-        let ft = entry.file_type()?;
-        if ft.is_dir() {
-            walk(&path, out)?;
-        } else if ft.is_file() && path.extension().and_then(|e| e.to_str()) == Some("bid") {
-            out.push(path);
-        }
-    }
-    Ok(())
 }

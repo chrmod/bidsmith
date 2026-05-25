@@ -10,3 +10,4 @@ pub mod query;
 pub mod refresh;
 pub mod schema;
 pub mod validate;
+pub mod vars;

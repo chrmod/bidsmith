@@ -1,0 +1,73 @@
+variable "city_name" {
+  type = string
+  description = "Human-readable city name used in the campaign label, e.g. \"Warsaw\"."
+}
+
+variable "latitude" {
+  type = number
+}
+
+variable "longitude" {
+  type = number
+}
+
+variable "radius_km" {
+  type = number
+  default = 15
+}
+
+variable "daily_budget_micros" {
+  type = number
+  default = 10000000
+}
+
+variable "default_cpc_micros" {
+  type = number
+  default = 3000000
+}
+
+resource "google_ads_campaign_budget" "budget" {
+  name = var.city_name
+  amount_micros = var.daily_budget_micros
+}
+
+resource "google_ads_campaign" "search" {
+  name = var.city_name
+  status = "ENABLED"
+  advertising_channel_type = "SEARCH"
+  campaign_budget = google_ads_campaign_budget.budget.id
+  contains_eu_political_advertising = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"
+
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+}
+
+resource "google_ads_ad_group" "default" {
+  name = "Default"
+  campaign = google_ads_campaign.search.id
+  status = "ENABLED"
+  type = "SEARCH_STANDARD"
+  cpc_bid_micros = var.default_cpc_micros
+}
+
+resource "google_ads_campaign_criterion" "language_pl" {
+  campaign = google_ads_campaign.search.id
+  status = "ENABLED"
+
+  language {
+    language_constant = "languageConstants/1030"
+  }
+}
+
+resource "google_ads_campaign_criterion" "proximity" {
+  campaign = google_ads_campaign.search.id
+  status = "ENABLED"
+
+  proximity {
+    latitude = var.latitude
+    longitude = var.longitude
+    radius = var.radius_km
+    radius_units = "KILOMETERS"
+  }
+}

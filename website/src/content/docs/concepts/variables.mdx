@@ -1,0 +1,188 @@
+---
+title: Variables
+description: Declare typed inputs your .bid can pivot on without editing the file.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A **`variable` block** declares a typed input that your `.bid` file
+can pivot on without edits. The same file can drive a wave-1 campaign
+today and a wave-2 campaign tomorrow — you change the inputs at the
+command line, not the file.
+
+Variables are the right tool when:
+
+- the same `.bid` describes several variants of the same campaign
+  (waves, services, A/B tests),
+- a CI job wants to override one knob (a budget, a city) without
+  touching the file,
+- or a value comes from somewhere outside the file (a secret, a
+  release tag).
+
+If the value is fixed inside the file and you just want to stop
+repeating yourself, use a [`locals` block](/bidsmith/concepts/locals/)
+instead.
+
+## A simple example
+
+```hcl
+variable "city_radius_km" {
+  type    = number
+  default = 15
+}
+
+resource "google_ads_campaign_criterion" "warsaw_proximity" {
+  proximity {
+    latitude     = 52.229675
+    longitude    = 21.012228
+    radius       = var.city_radius_km
+    radius_units = "KILOMETERS"
+  }
+}
+```
+
+By default this campaign uses a 15 km radius. To run a plan with
+25 km instead, override it on the command line:
+
+```sh
+bidsmith plan campaigns.bid --var city_radius_km=25
+```
+
+Or via environment variable, which is useful in CI:
+
+```sh
+BIDSMITH_VAR_city_radius_km=25 bidsmith plan campaigns.bid
+```
+
+The substituted value flows through type checking and the
+validateOnly mutate, exactly like a literal.
+
+## Block shape
+
+A `variable` block takes one label (the variable name) and these
+attributes:
+
+```hcl
+variable "wave" {
+  type        = string
+  default     = "W1"
+  description = "Campaign wave prefix used in resource names."
+}
+```
+
+- **`type`** (required) — one of `string`, `number`, `bool`, written
+  as a bare identifier (not `"string"` in quotes).
+- **`default`** (optional) — a literal that matches the declared type.
+  When no `--var` or env var is supplied, this is the value used.
+- **`description`** (optional) — a string. Reminds future readers
+  (and AI agents) what the variable is for.
+
+If neither `default` nor an input is supplied, `validate` says so:
+
+```
+× variable 'wave' has no value: set --var wave=… or $BIDSMITH_VAR_wave,
+│ or add a default
+```
+
+## Using a variable
+
+Reference a variable with `var.<name>` — the same dotted form as
+locals and resource references, but with `var` as the prefix:
+
+```hcl
+resource "google_ads_campaign" "warsaw_search" {
+  name                              = var.campaign_name
+  advertising_channel_type          = "SEARCH"
+  contains_eu_political_advertising = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"
+
+  manual_cpc {
+    enhanced_cpc_enabled = var.enhanced_cpc
+  }
+}
+```
+
+## Where the value comes from
+
+bidsmith resolves each variable in this order:
+
+1. **`--var name=value`** on the command line (repeatable; first wins).
+2. **`BIDSMITH_VAR_<name>`** in the environment.
+3. The **`default`** in the `.bid`.
+4. Otherwise: an error at `validate` time.
+
+CLI flag and env var values are strings on the wire; bidsmith parses
+them against the declared `type`:
+
+| Declared type | Accepted input                          |
+|---------------|-----------------------------------------|
+| `string`      | any text                                |
+| `number`      | `42`, `3.14`, `-1`, `0.5`               |
+| `bool`        | `true` or `false` (lowercase)           |
+
+A value that can't be parsed (`--var city_radius_km=fifteen`) is
+rejected with a span-mapped diagnostic pointing at the variable
+declaration.
+
+## Variables and locals compose
+
+A `locals` block can reference a variable, and a `variable` default
+can reference a local. Chains resolve all the way to the leaf:
+
+```hcl
+variable "budget_micros" {
+  type    = number
+  default = 10000000
+}
+
+locals {
+  daily = var.budget_micros
+}
+
+resource "google_ads_campaign_budget" "shared" {
+  amount_micros = local.daily
+}
+```
+
+Cycles (`local.a → var.b → local.a`) are caught at validate time, the
+same way pure local cycles are.
+
+## Module scope
+
+Variables live in the same [module](/bidsmith/concepts/modules/) as
+the file that declares them, with the same global-fallback /
+ambiguity-guard semantics as locals and resources. If two modules
+both declare `variable "wave"`, references inside either file resolve
+to that module's variable first.
+
+`--var wave=W2` applies the value to every `variable "wave"` block in
+scope. If you need different values for different modules, name them
+differently (`warsaw_wave`, `krakow_wave`) — explicit
+`module.var.name` addressing isn't supported yet.
+
+## What this doesn't do (yet)
+
+- **String interpolation.** Today `"${var.wave} Warsaw"` is rejected.
+  A reference has to be the *whole* attribute value. The cleanest
+  workaround is to put the full string into the variable:
+  `default = "[W1] Warsaw — Search"`.
+- **Object / list / map types.** Only scalar types are supported.
+
+If your use case needs either of those, open an issue describing the
+shape so we can size the work.
+
+<Aside type="tip">
+  Variables are great for inputs that change per *run*, not per
+  *resource*. If the value changes across resources but never across
+  runs, a [`locals` block](/bidsmith/concepts/locals/) is the simpler
+  tool. If you need to instantiate the same campaign across many
+  cities, that's what `module` blocks will do — not shipped yet.
+</Aside>
+
+## Next
+
+- [Locals](/bidsmith/concepts/locals/) — the related tool for
+  in-file constants.
+- [References](/bidsmith/concepts/references/) — the dotted syntax
+  shared with `local.<name>` and resource references.
+- [Modules](/bidsmith/concepts/modules/) — how multi-file projects
+  share names without colliding.

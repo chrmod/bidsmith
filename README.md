@@ -164,6 +164,70 @@ References like `local.daily_budget_micros` resolve at validate / plan
 / apply time, so type checks and the validateOnly mutate see the
 substituted value. See [`examples/locals/main.bid`](examples/locals/main.bid).
 
+### Pivot the same `.bid` with `variable`
+
+A `variable` block declares a typed input the same file can pivot on,
+fed from `--var name=value` on the command line or `BIDSMITH_VAR_<name>`
+in the environment:
+
+```hcl
+variable "city_radius_km" {
+  type    = number
+  default = 15
+}
+
+resource "google_ads_campaign_criterion" "warsaw_proximity" {
+  proximity {
+    radius       = var.city_radius_km
+    radius_units = "KILOMETERS"
+    ...
+  }
+}
+```
+
+```sh
+bidsmith plan campaigns.bid --var city_radius_km=25
+BIDSMITH_VAR_city_radius_km=25 bidsmith plan campaigns.bid
+```
+
+Allowed types are `string`, `number`, and `bool`. If a variable has
+no `default` and no input is supplied, `validate` says so. See
+[`examples/variable/main.bid`](examples/variable/main.bid).
+
+### Instantiate the same shape with `module`
+
+A `module` block points at a parameterized `.bid` file and supplies
+its variables. Repeat the block to repeat the shape — one instance
+per city, market, wave, A/B variant:
+
+```hcl
+module "warsaw" {
+  source = "./modules/city-campaign.bid"
+
+  city_name = "[W1] Warsaw — Search"
+  latitude  = 52.229675
+  longitude = 21.012228
+}
+
+module "krakow" {
+  source = "./modules/city-campaign.bid"
+
+  city_name           = "[W1] Krakow — Search"
+  latitude            = 50.064650
+  longitude           = 19.944980
+  radius_km           = 20
+  daily_budget_micros = 8000000
+}
+```
+
+The source file (`modules/city-campaign.bid`) declares `variable`
+blocks for each input it needs — `city_name`, `latitude`,
+`longitude`, etc. — and produces a full campaign-budget-adgroup-ad
+graph. Resources inside `module "warsaw"` get the address prefix
+`warsaw.<type>.<name>`. Each instance is an isolation boundary:
+locals and variables inside it stay private. See
+[`examples/modules/`](examples/modules/).
+
 ## Install
 
 ```sh
