@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 
 use serde_json::Value;
@@ -7,9 +7,10 @@ use serde_json::Value;
 use crate::api::live_state::CacheMode;
 use crate::api::{auth, client, diff, import, live_state, mutate};
 use crate::commands::export::ExportInput;
+use crate::commands::vars;
 use crate::diagnostics::Diag;
-use crate::parser::{ParsedFile, parse_file};
-use crate::schema::validate_files;
+use crate::program::{collect_bid_files, Program};
+use crate::schema::{InputBindings, validate_files};
 
 pub fn run(
     path: Option<&str>,
@@ -18,6 +19,7 @@ pub fn run(
     refresh_state: bool,
     offline: bool,
     verbose: bool,
+    cli_vars: &[String],
 ) -> ExitCode {
     if whoami {
         return run_whoami();
@@ -35,7 +37,15 @@ pub fn run(
         return ExitCode::from(2);
     };
 
-    let prepared = match prepare(path, "plan", refresh_state, offline) {
+    let inputs = match vars::collect(cli_vars) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("plan: {e}");
+            return ExitCode::from(2);
+        }
+    };
+
+    let prepared = match prepare(path, "plan", refresh_state, offline, &inputs) {
         Ok(Some(p)) => p,
         Ok(None) => return ExitCode::SUCCESS,
         Err(code) => return code,
@@ -131,10 +141,11 @@ pub fn prepare(
     label: &'static str,
     refresh_state: bool,
     offline: bool,
+    inputs: &InputBindings,
 ) -> Result<Option<Prepared>, ExitCode> {
-    let parsed = load_and_validate(path)?;
+    let program = load_and_validate(path, inputs, label)?;
 
-    let mut imported = match import::import_files(&parsed) {
+    let mut imported = match import::import_program(&program) {
         Ok(v) => v,
         Err(diags) => {
             for d in diags {
@@ -588,39 +599,36 @@ fn extract_policy_topics(err: &Value) -> Vec<String> {
     topics
 }
 
-fn load_and_validate(path: &str) -> Result<Vec<ParsedFile>, ExitCode> {
+fn load_and_validate(
+    path: &str,
+    inputs: &InputBindings,
+    label: &'static str,
+) -> Result<Program, ExitCode> {
     let target = Path::new(path);
     if !target.exists() {
         eprintln!("no such file or directory: {}", target.display());
         return Err(ExitCode::from(1));
     }
 
-    let files: Vec<PathBuf> = if target.is_file() {
-        vec![target.to_path_buf()]
-    } else {
-        match collect_bid_files(target) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("plan: {e}");
-                return Err(ExitCode::from(1));
-            }
+    let files = match collect_bid_files(target) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{label}: {e}");
+            return Err(ExitCode::from(1));
         }
     };
 
     if files.is_empty() {
-        eprintln!("plan: no .bid files under {}", target.display());
+        eprintln!("{label}: no .bid files under {}", target.display());
         return Err(ExitCode::from(1));
     }
 
-    let mut parsed: Vec<ParsedFile> = Vec::new();
-    let mut diags: Vec<Diag> = Vec::new();
-    for f in &files {
-        match parse_file(f) {
-            Ok(pf) => parsed.push(pf),
-            Err(d) => diags.push(d),
-        }
+    let loaded = Program::load(&files, inputs.clone());
+    let program = loaded.program;
+    let mut diags: Vec<Diag> = loaded.diagnostics;
+    for scope in &program.scopes {
+        diags.extend(validate_files(&scope.files, &scope.inputs));
     }
-    diags.extend(validate_files(&parsed));
 
     let blocking_errors: Vec<Diag> = diags.into_iter().filter(|d| d.is_error()).collect();
     if !blocking_errors.is_empty() {
@@ -628,37 +636,11 @@ fn load_and_validate(path: &str) -> Result<Vec<ParsedFile>, ExitCode> {
             let report = miette::Report::new(d);
             eprintln!("{report:?}");
         }
-        eprintln!("plan: refusing to plan an invalid .bid (fix `validate` errors first).");
+        eprintln!("{label}: refusing to plan an invalid .bid (fix `validate` errors first).");
         return Err(ExitCode::from(1));
     }
 
-    Ok(parsed)
-}
-
-fn collect_bid_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut out = Vec::new();
-    walk(dir, &mut out).map_err(|e| format!("failed to walk {}: {e}", dir.display()))?;
-    out.sort();
-    Ok(out)
-}
-
-fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str.starts_with('.') || name_str == "node_modules" || name_str == "target" {
-            continue;
-        }
-        let path = entry.path();
-        let ft = entry.file_type()?;
-        if ft.is_dir() {
-            walk(&path, out)?;
-        } else if ft.is_file() && path.extension().and_then(|e| e.to_str()) == Some("bid") {
-            out.push(path);
-        }
-    }
-    Ok(())
+    Ok(program)
 }
 
 fn run_whoami() -> ExitCode {

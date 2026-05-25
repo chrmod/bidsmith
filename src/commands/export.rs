@@ -1336,7 +1336,7 @@ mod tests {
             crate::parser::parse_file(&account_path).expect("account parses"),
             crate::parser::parse_file(&campaigns_path).expect("campaigns parses"),
         ];
-        let diags = crate::schema::validate_files(&parsed);
+        let diags = crate::schema::validate_files(&parsed, &crate::schema::InputBindings::default());
         let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
         assert!(
             errors.is_empty(),

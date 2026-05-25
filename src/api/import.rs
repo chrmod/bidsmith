@@ -11,7 +11,8 @@ use crate::commands::export::{
 };
 use crate::diagnostics::Diag;
 use crate::parser::ParsedFile;
-use crate::schema::{LocalsRegistry, ResourceRegistry, Resolution};
+use crate::program::Program;
+use crate::schema::{Bindings, InputBindings, ResourceRegistry, Resolution};
 
 pub struct ImportResult {
     pub input: ExportInput,
@@ -21,7 +22,7 @@ pub struct ImportResult {
 struct Ctx<'a> {
     file: &'a ParsedFile,
     registry: &'a ResourceRegistry,
-    locals: &'a LocalsRegistry,
+    bindings: &'a Bindings,
 }
 
 impl<'a> Ctx<'a> {
@@ -40,14 +41,14 @@ impl<'a> Ctx<'a> {
     }
 
     fn resolve_value<'b>(&'b self, expr: &'b Expression) -> &'b Expression {
-        self.locals.resolve_value(&self.file.module, expr)
+        self.bindings.resolve_value(&self.file.module, expr)
     }
 }
 
-pub fn import_files(files: &[ParsedFile]) -> Result<ImportResult, Vec<Diag>> {
+pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<ImportResult, Vec<Diag>> {
     let (registry, mut diags) = ResourceRegistry::build(files);
-    let (locals, locals_diags) = LocalsRegistry::build(files);
-    diags.extend(locals_diags);
+    let (bindings, binding_diags) = Bindings::build(files, inputs);
+    diags.extend(binding_diags);
     let mut input = ExportInput {
         customer_id: String::new(),
         login_customer_id: None,
@@ -70,7 +71,7 @@ pub fn import_files(files: &[ParsedFile]) -> Result<ImportResult, Vec<Diag>> {
         let ctx = Ctx {
             file: f,
             registry: &registry,
-            locals: &locals,
+            bindings: &bindings,
         };
         for s in f.body.iter() {
             let Structure::Block(b) = s else { continue };
@@ -1063,5 +1064,60 @@ fn missing(file: &ParsedFile, block: &Block, address: &str, field: &str) -> Diag
 
 fn span_of(s: Option<std::ops::Range<usize>>) -> std::ops::Range<usize> {
     s.unwrap_or(0..0)
+}
+
+pub fn import_program(program: &Program) -> Result<ImportResult, Vec<Diag>> {
+    let mut combined = ExportInput {
+        customer_id: String::new(),
+        login_customer_id: None,
+        campaign_budgets: Vec::new(),
+        campaigns: Vec::new(),
+        ad_groups: Vec::new(),
+        ad_group_ads: Vec::new(),
+        ad_group_criteria: Vec::new(),
+        campaign_criteria: Vec::new(),
+        conversion_actions: Vec::new(),
+        call_assets: Vec::new(),
+        customer_assets: Vec::new(),
+        shared_sets: Vec::new(),
+        shared_criteria: Vec::new(),
+        campaign_shared_sets: Vec::new(),
+    };
+    let mut skipped: Vec<(String, String)> = Vec::new();
+    let mut diags: Vec<Diag> = Vec::new();
+
+    for (idx, scope) in program.scopes.iter().enumerate() {
+        let is_top = idx == 0;
+        match import_files(&scope.files, &scope.inputs) {
+            Ok(r) => {
+                if is_top {
+                    combined.customer_id = r.input.customer_id;
+                    combined.login_customer_id = r.input.login_customer_id;
+                }
+                combined.campaign_budgets.extend(r.input.campaign_budgets);
+                combined.campaigns.extend(r.input.campaigns);
+                combined.ad_groups.extend(r.input.ad_groups);
+                combined.ad_group_ads.extend(r.input.ad_group_ads);
+                combined.ad_group_criteria.extend(r.input.ad_group_criteria);
+                combined.campaign_criteria.extend(r.input.campaign_criteria);
+                combined.conversion_actions.extend(r.input.conversion_actions);
+                combined.call_assets.extend(r.input.call_assets);
+                combined.customer_assets.extend(r.input.customer_assets);
+                combined.shared_sets.extend(r.input.shared_sets);
+                combined.shared_criteria.extend(r.input.shared_criteria);
+                combined.campaign_shared_sets.extend(r.input.campaign_shared_sets);
+                skipped.extend(r.skipped);
+            }
+            Err(ds) => diags.extend(ds),
+        }
+    }
+
+    if !diags.is_empty() {
+        return Err(diags);
+    }
+    Ok(ImportResult {
+        input: combined,
+        skipped,
+    })
 }
 

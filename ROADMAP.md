@@ -34,14 +34,14 @@ declared HCL against live labeled state. Local cache is rebuildable.
 
 ## Open decisions
 
-- **HCL2 abstractions — `variable` and `module`**: `locals` shipped
-  (any per-city `.bid` can hoist shared scalars to the top). The two
-  other HCL2 top-level blocks are still rejected: `variable` (CLI /
-  env-driven inputs the same `.bid` can pivot on) and `module`
-  (parameterized resource bundles, the big lift that turns "a campaign
-  per city" into a single callable definition). Variable comes next
-  if the rezolutnie wave/service split needs CLI overrides;
-  `module` waits on a real multi-tree consumer.
+- **Module composition v2 — `for_each`, outputs, directory sources,
+  GitHub sources**: `locals`, `variable`, and a v1 `module "x" {
+  source = "./file.bid" }` shipped. The v1 `module` is a single-file
+  source, no outputs, no `for_each` — repeat the block to repeat the
+  shape. The next layer (`for_each = var.cities`, `output "x" { value
+  = … }`, multi-file directory sources, `source =
+  "github.com/org/repo//path?ref=v1"`) waits on real users hitting
+  the boundaries.
 - Multi-account: how do `provider` blocks compose? One provider per
   file? Aliases? Today's `provider` block is single-customer, with the
   customer/login_customer ids overridable via env at `export` / `plan`
@@ -124,9 +124,17 @@ declared HCL against live labeled state. Local cache is rebuildable.
 - ✅ Files-as-modules: each `.bid` file's basename is its implicit
   module name; addresses are `<module>.<type>.<name>`; references
   resolve same-module first, then globally with an ambiguity guard.
-- `module "x" { source = "..." for_each = ... }` — explicit module
-  blocks layered on top of the implicit one.
-- Local + GitHub source resolution.
+- ✅ Explicit `module "x" { source = "./file.bid", ...inputs }` blocks
+  with local single-file sources. Each instance is an isolation
+  boundary — its variables come from the block's attributes (+
+  defaults), and addresses become `<instance>.<type>.<name>`. Wires
+  through `validate`, `plan`, `apply`, and `import`.
+- `for_each = var.cities` to instantiate one block per element.
+- `output "x" { value = … }` so the parent can pull values out of a
+  module instance.
+- Directory sources (multiple `.bid` files per module) and nested
+  module blocks.
+- GitHub source resolution (`source = "github.com/org/repo//path?ref=v1"`).
 
 **Phase 6 — AI integration**
 - `.claude/skills/` — `/add-campaign`, `/review-search-terms`,

@@ -715,6 +715,27 @@ pub enum Resolution<'a> {
     Ambiguous(&'a [String]),
 }
 
+#[derive(Default, Clone)]
+pub struct InputBindings {
+    pub vars: HashMap<String, String>,
+}
+
+impl InputBindings {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn merge_env(&mut self) {
+        for (k, v) in std::env::vars() {
+            if let Some(name) = k.strip_prefix("BIDSMITH_VAR_") {
+                if !name.is_empty() {
+                    self.vars.entry(name.to_string()).or_insert(v);
+                }
+            }
+        }
+    }
+}
+
 pub struct LocalDecl {
     pub module: String,
     pub value: Expression,
@@ -745,27 +766,6 @@ impl LocalsRegistry {
 
     pub fn get(&self, qualified: &str) -> Option<&LocalDecl> {
         self.by_qualified.get(qualified)
-    }
-
-    pub fn resolve_value<'a>(&'a self, from_module: &str, expr: &'a Expression) -> &'a Expression {
-        let mut visited: HashSet<String> = HashSet::new();
-        let mut current_module = from_module.to_string();
-        let mut current_expr: &Expression = expr;
-        while let Some(name) = local_ref_name(current_expr) {
-            let qualified = match self.resolve(&current_module, &name) {
-                Resolution::Found(q) => q,
-                _ => return current_expr,
-            };
-            if !visited.insert(qualified.clone()) {
-                return current_expr;
-            }
-            let Some(decl) = self.by_qualified.get(&qualified) else {
-                return current_expr;
-            };
-            current_module = decl.module.clone();
-            current_expr = &decl.value;
-        }
-        current_expr
     }
 
     pub fn build(files: &[ParsedFile]) -> (Self, Vec<Diag>) {
@@ -843,13 +843,353 @@ impl LocalsRegistry {
     }
 }
 
-pub fn validate_files(files: &[ParsedFile]) -> Vec<Diag> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VarType {
+    String,
+    Number,
+    Bool,
+}
+
+impl VarType {
+    fn from_ident(ident: &str) -> Option<VarType> {
+        match ident {
+            "string" => Some(VarType::String),
+            "number" => Some(VarType::Number),
+            "bool" => Some(VarType::Bool),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            VarType::String => "string",
+            VarType::Number => "number",
+            VarType::Bool => "bool",
+        }
+    }
+}
+
+pub struct VariableDecl {
+    pub module: String,
+    pub value: Expression,
+}
+
+#[derive(Default)]
+pub struct VariablesRegistry {
+    by_qualified: HashMap<String, VariableDecl>,
+    by_short: HashMap<String, Vec<String>>,
+}
+
+pub struct Bindings {
+    pub locals: LocalsRegistry,
+    pub variables: VariablesRegistry,
+}
+
+impl Bindings {
+    pub fn build(files: &[ParsedFile], inputs: &InputBindings) -> (Self, Vec<Diag>) {
+        let (locals, mut diags) = LocalsRegistry::build(files);
+        let (variables, var_diags) = VariablesRegistry::build(files, inputs);
+        diags.extend(var_diags);
+        (Self { locals, variables }, diags)
+    }
+
+    pub fn resolve_value<'a>(&'a self, from_module: &str, expr: &'a Expression) -> &'a Expression {
+        let mut visited: HashSet<(BindingKind, String)> = HashSet::new();
+        let mut current_module = from_module.to_string();
+        let mut current_expr: &Expression = expr;
+        while let Some((kind, name)) = binding_ref(current_expr) {
+            let (qualified, next_module, next_value) = match kind {
+                BindingKind::Local => match self.locals.resolve(&current_module, &name) {
+                    Resolution::Found(q) => match self.locals.get(&q) {
+                        Some(decl) => (q, decl.module.clone(), &decl.value),
+                        None => return current_expr,
+                    },
+                    _ => return current_expr,
+                },
+                BindingKind::Var => match self.variables.resolve(&current_module, &name) {
+                    Resolution::Found(q) => match self.variables.get(&q) {
+                        Some(decl) => (q, decl.module.clone(), &decl.value),
+                        None => return current_expr,
+                    },
+                    _ => return current_expr,
+                },
+            };
+            if !visited.insert((kind, qualified)) {
+                return current_expr;
+            }
+            current_module = next_module;
+            current_expr = next_value;
+        }
+        current_expr
+    }
+}
+
+impl VariablesRegistry {
+    pub fn qualified(module: &str, name: &str) -> String {
+        format!("{module}.{name}")
+    }
+
+    pub fn resolve(&self, module: &str, name: &str) -> Resolution<'_> {
+        let qualified = Self::qualified(module, name);
+        if self.by_qualified.contains_key(&qualified) {
+            return Resolution::Found(qualified);
+        }
+        match self.by_short.get(name).map(Vec::as_slice).unwrap_or(&[]) {
+            [] => Resolution::Missing,
+            [only] => Resolution::Found(Self::qualified(only, name)),
+            many => Resolution::Ambiguous(many),
+        }
+    }
+
+    pub fn get(&self, qualified: &str) -> Option<&VariableDecl> {
+        self.by_qualified.get(qualified)
+    }
+
+    pub fn build(files: &[ParsedFile], inputs: &InputBindings) -> (Self, Vec<Diag>) {
+        let mut registry = VariablesRegistry::default();
+        let mut diags = Vec::new();
+        for f in files {
+            for s in f.body.iter() {
+                let Structure::Block(b) = s else { continue };
+                if b.ident.as_str() != "variable" {
+                    continue;
+                }
+                if b.labels.len() != 1 {
+                    diags.push(Diag::new(
+                        f.src.clone(),
+                        span_of(b.ident.span()),
+                        format!(
+                            "'variable' block requires exactly one label (the variable name), got {}",
+                            b.labels.len()
+                        ),
+                    ));
+                    continue;
+                }
+                let name = b.labels[0].as_str().to_string();
+                let mut declared_type: Option<VarType> = None;
+                let mut default_expr: Option<&Expression> = None;
+                let mut default_span: Option<std::ops::Range<usize>> = None;
+                let mut seen: HashSet<&str> = HashSet::new();
+                let mut had_body_err = false;
+                for inner in b.body.iter() {
+                    match inner {
+                        Structure::Attribute(a) => {
+                            let key = a.key.as_str();
+                            if !seen.insert(key) {
+                                diags.push(Diag::new(
+                                    f.src.clone(),
+                                    span_of(a.key.span()),
+                                    format!("duplicate attribute '{key}' in variable '{name}'"),
+                                ));
+                                had_body_err = true;
+                                continue;
+                            }
+                            match key {
+                                "type" => match &a.value {
+                                    Expression::Variable(v) => {
+                                        match VarType::from_ident(v.as_str()) {
+                                            Some(ty) => declared_type = Some(ty),
+                                            None => {
+                                                diags.push(Diag::new(
+                                                    f.src.clone(),
+                                                    span_of(a.value.span()),
+                                                    format!(
+                                                        "invalid variable type '{}'; expected one of [string, number, bool]",
+                                                        v.as_str()
+                                                    ),
+                                                ));
+                                                had_body_err = true;
+                                            }
+                                        }
+                                    }
+                                    other => {
+                                        diags.push(Diag::new(
+                                            f.src.clone(),
+                                            span_of(a.value.span()),
+                                            format!(
+                                                "variable 'type' must be one of [string, number, bool] (as a bare identifier), got {}",
+                                                describe_expr(other)
+                                            ),
+                                        ));
+                                        had_body_err = true;
+                                    }
+                                },
+                                "default" => {
+                                    default_expr = Some(&a.value);
+                                    default_span = Some(span_of(a.value.span()));
+                                }
+                                "description" => {
+                                    if !matches!(a.value, Expression::String(_)) {
+                                        diags.push(Diag::new(
+                                            f.src.clone(),
+                                            span_of(a.value.span()),
+                                            format!(
+                                                "variable 'description' must be a string, got {}",
+                                                describe_expr(&a.value)
+                                            ),
+                                        ));
+                                        had_body_err = true;
+                                    }
+                                }
+                                other => {
+                                    diags.push(Diag::new(
+                                        f.src.clone(),
+                                        span_of(a.key.span()),
+                                        format!(
+                                            "unknown attribute '{other}' in variable '{name}'; allowed: type, default, description"
+                                        ),
+                                    ));
+                                    had_body_err = true;
+                                }
+                            }
+                        }
+                        Structure::Block(inner_block) => {
+                            diags.push(Diag::new(
+                                f.src.clone(),
+                                span_of(inner_block.ident.span()),
+                                format!(
+                                    "nested block '{}' is not allowed inside 'variable' — variable only takes attributes",
+                                    inner_block.ident.as_str()
+                                ),
+                            ));
+                            had_body_err = true;
+                        }
+                    }
+                }
+                let Some(ty) = declared_type else {
+                    if !seen.contains("type") {
+                        diags.push(Diag::new(
+                            f.src.clone(),
+                            span_of(b.ident.span()),
+                            format!(
+                                "variable '{name}' is missing required attribute 'type' (one of [string, number, bool])"
+                            ),
+                        ));
+                    }
+                    continue;
+                };
+                if had_body_err {
+                    continue;
+                }
+                if let Some(expr) = default_expr {
+                    if let Err(msg) = check_literal_matches(expr, ty) {
+                        diags.push(Diag::new(
+                            f.src.clone(),
+                            default_span.clone().unwrap_or_else(|| span_of(b.ident.span())),
+                            msg,
+                        ));
+                        continue;
+                    }
+                }
+
+                let resolved = match inputs.vars.get(&name) {
+                    Some(raw) => match parse_input_value(raw, ty) {
+                        Ok(expr) => expr,
+                        Err(msg) => {
+                            diags.push(Diag::new(
+                                f.src.clone(),
+                                span_of(b.labels[0].span()),
+                                format!(
+                                    "invalid input for variable '{name}': {msg} (got \"{raw}\", expected {})",
+                                    ty.name()
+                                ),
+                            ));
+                            continue;
+                        }
+                    },
+                    None => match default_expr {
+                        Some(expr) => expr.clone(),
+                        None => {
+                            diags.push(Diag::new(
+                                f.src.clone(),
+                                span_of(b.labels[0].span()),
+                                format!(
+                                    "variable '{name}' has no value: set --var {name}=… or $BIDSMITH_VAR_{name}, or add a default"
+                                ),
+                            ));
+                            continue;
+                        }
+                    },
+                };
+
+                let qualified = Self::qualified(&f.module, &name);
+                if registry.by_qualified.contains_key(&qualified) {
+                    diags.push(Diag::new(
+                        f.src.clone(),
+                        span_of(b.labels[0].span()),
+                        format!("duplicate variable '{name}' in module '{}'", f.module),
+                    ));
+                    continue;
+                }
+                registry.by_qualified.insert(
+                    qualified,
+                    VariableDecl {
+                        module: f.module.clone(),
+                        value: resolved,
+                    },
+                );
+                registry
+                    .by_short
+                    .entry(name)
+                    .or_default()
+                    .push(f.module.clone());
+            }
+        }
+        (registry, diags)
+    }
+}
+
+fn check_literal_matches(expr: &Expression, ty: VarType) -> Result<(), String> {
+    let ok = match (ty, expr) {
+        (VarType::String, Expression::String(_)) => true,
+        (VarType::Number, Expression::Number(_)) => true,
+        (VarType::Bool, Expression::Bool(_)) => true,
+        _ => false,
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "variable default expects {}, got {}",
+            ty.name(),
+            describe_expr(expr)
+        ))
+    }
+}
+
+fn parse_input_value(raw: &str, ty: VarType) -> Result<Expression, String> {
+    match ty {
+        VarType::String => Ok(format!("\"{}\"", raw.replace('\\', "\\\\").replace('"', "\\\""))
+            .parse::<Expression>()
+            .map_err(|e| format!("could not parse as string literal: {e}"))?),
+        VarType::Number => raw
+            .parse::<f64>()
+            .map_err(|_| "could not parse as number".to_string())
+            .and_then(|_| {
+                raw.parse::<Expression>()
+                    .map_err(|e| format!("could not parse number literal: {e}"))
+            }),
+        VarType::Bool => match raw {
+            "true" => "true"
+                .parse::<Expression>()
+                .map_err(|e| format!("internal: {e}")),
+            "false" => "false"
+                .parse::<Expression>()
+                .map_err(|e| format!("internal: {e}")),
+            _ => Err("expected 'true' or 'false'".to_string()),
+        },
+    }
+}
+
+pub fn validate_files(files: &[ParsedFile], inputs: &InputBindings) -> Vec<Diag> {
     let (registry, mut diags) = ResourceRegistry::build(files);
     let (locals, locals_diags) = LocalsRegistry::build(files);
     diags.extend(locals_diags);
+    let (variables, variables_diags) = VariablesRegistry::build(files, inputs);
+    diags.extend(variables_diags);
 
     for f in files {
-        validate_top_level(f, &registry, &locals, &mut diags);
+        validate_top_level(f, &registry, &locals, &variables, &mut diags);
     }
 
     diags.sort_by(|a, b| {
@@ -862,6 +1202,7 @@ fn validate_top_level(
     file: &ParsedFile,
     registry: &ResourceRegistry,
     locals: &LocalsRegistry,
+    variables: &VariablesRegistry,
     diags: &mut Vec<Diag>,
 ) {
     for s in file.body.iter() {
@@ -871,16 +1212,21 @@ fn validate_top_level(
                     file.src.clone(),
                     span_of(a.key.span()),
                     format!(
-                        "top-level attributes are not allowed; place '{}' inside a 'provider', 'resource', or 'locals' block",
+                        "top-level attributes are not allowed; place '{}' inside a 'provider', 'resource', 'locals', 'variable', or 'module' block",
                         a.key.as_str()
                     ),
                 ));
             }
             Structure::Block(b) => match b.ident.as_str() {
-                "provider" => validate_provider(file, b, registry, locals, diags),
-                "resource" => validate_resource(file, b, registry, locals, diags),
+                "provider" => validate_provider(file, b, registry, locals, variables, diags),
+                "resource" => validate_resource(file, b, registry, locals, variables, diags),
                 "locals" => {
-                    let _ = locals;
+                    let _ = b;
+                }
+                "variable" => {
+                    let _ = b;
+                }
+                "module" => {
                     let _ = b;
                 }
                 other => {
@@ -888,7 +1234,7 @@ fn validate_top_level(
                         file.src.clone(),
                         span_of(b.ident.span()),
                         format!(
-                            "unknown top-level block '{other}'; expected 'provider', 'resource', or 'locals'"
+                            "unknown top-level block '{other}'; expected 'provider', 'resource', 'locals', 'variable', or 'module'"
                         ),
                     ));
                 }
@@ -902,6 +1248,7 @@ fn validate_provider(
     block: &Block,
     registry: &ResourceRegistry,
     locals: &LocalsRegistry,
+    variables: &VariablesRegistry,
     diags: &mut Vec<Diag>,
 ) {
     if block.labels.len() != 1 {
@@ -935,6 +1282,7 @@ fn validate_provider(
         &format!("provider.{provider_name}"),
         registry,
         locals,
+        variables,
         diags,
     );
 }
@@ -944,6 +1292,7 @@ fn validate_resource(
     block: &Block,
     registry: &ResourceRegistry,
     locals: &LocalsRegistry,
+    variables: &VariablesRegistry,
     diags: &mut Vec<Diag>,
 ) {
     if block.labels.len() != 2 {
@@ -978,6 +1327,7 @@ fn validate_resource(
         &format!("{ty}.{name}"),
         registry,
         locals,
+        variables,
         diags,
     );
 }
@@ -990,6 +1340,7 @@ fn validate_body(
     address: &str,
     registry: &ResourceRegistry,
     locals: &LocalsRegistry,
+    variables: &VariablesRegistry,
     diags: &mut Vec<Diag>,
 ) {
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -1014,7 +1365,7 @@ fn validate_body(
                     ));
                     continue;
                 };
-                validate_value(file, &a.value, &attr_schema.ty, registry, locals, diags);
+                validate_value(file, &a.value, &attr_schema.ty, registry, locals, variables, diags);
             }
             Structure::Block(b) => {
                 let bname = b.ident.as_str();
@@ -1041,6 +1392,7 @@ fn validate_body(
                     &format!("{address}.{bname}"),
                     registry,
                     locals,
+                    variables,
                     diags,
                 );
             }
@@ -1064,13 +1416,14 @@ fn validate_value(
     ty: &FieldType,
     registry: &ResourceRegistry,
     locals: &LocalsRegistry,
+    variables: &VariablesRegistry,
     diags: &mut Vec<Diag>,
 ) {
     let span = span_of(expr.span());
-    let expr = match resolve_local_chain(file, expr, locals, diags) {
-        LocalResolution::NotALocal => expr,
-        LocalResolution::Resolved(value) => value,
-        LocalResolution::Failed => return,
+    let expr = match resolve_binding_chain(file, expr, locals, variables, diags) {
+        BindingResolution::NotABinding => expr,
+        BindingResolution::Resolved(value) => value,
+        BindingResolution::Failed => return,
     };
     match ty {
         FieldType::String => {
@@ -1144,7 +1497,7 @@ fn validate_value(
         FieldType::List(inner) => match expr {
             Expression::Array(arr) => {
                 for item in arr.iter() {
-                    validate_value(file, item, inner, registry, locals, diags);
+                    validate_value(file, item, inner, registry, locals, variables, diags);
                 }
             }
             other => diags.push(Diag::new(
@@ -1264,74 +1617,128 @@ fn validate_ref(
     }
 }
 
-enum LocalResolution<'a> {
-    NotALocal,
+enum BindingResolution<'a> {
+    NotABinding,
     Resolved(&'a Expression),
     Failed,
 }
 
-fn resolve_local_chain<'a>(
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+enum BindingKind {
+    Local,
+    Var,
+}
+
+impl BindingKind {
+    fn prefix(self) -> &'static str {
+        match self {
+            BindingKind::Local => "local",
+            BindingKind::Var => "var",
+        }
+    }
+}
+
+fn resolve_binding_chain<'a>(
     file: &ParsedFile,
     expr: &'a Expression,
     locals: &'a LocalsRegistry,
+    variables: &'a VariablesRegistry,
     diags: &mut Vec<Diag>,
-) -> LocalResolution<'a> {
-    let Some(first_name) = local_ref_name(expr) else {
-        return LocalResolution::NotALocal;
+) -> BindingResolution<'a> {
+    let Some((first_kind, first_name)) = binding_ref(expr) else {
+        return BindingResolution::NotABinding;
     };
     let use_span = span_of(expr.span());
-    let mut visited: HashSet<String> = HashSet::new();
+    let mut visited: HashSet<(BindingKind, String)> = HashSet::new();
     let mut current_module = file.module.as_str();
+    let mut current_kind = first_kind;
     let mut current_name = first_name;
     loop {
-        let qualified = match locals.resolve(current_module, &current_name) {
-            Resolution::Found(q) => q,
-            Resolution::Missing => {
-                diags.push(Diag::new(
-                    file.src.clone(),
-                    use_span.clone(),
-                    format!("reference to undeclared local 'local.{current_name}'"),
-                ));
-                return LocalResolution::Failed;
+        let (qualified, decl_module, value): (String, &str, &'a Expression) = match current_kind {
+            BindingKind::Local => {
+                match locals.resolve(current_module, &current_name) {
+                    Resolution::Found(q) => match locals.get(&q) {
+                        Some(decl) => (q, decl.module.as_str(), &decl.value),
+                        None => return BindingResolution::Failed,
+                    },
+                    Resolution::Missing => {
+                        diags.push(Diag::new(
+                            file.src.clone(),
+                            use_span.clone(),
+                            format!("reference to undeclared local 'local.{current_name}'"),
+                        ));
+                        return BindingResolution::Failed;
+                    }
+                    Resolution::Ambiguous(modules) => {
+                        let mut sorted: Vec<&str> = modules.iter().map(String::as_str).collect();
+                        sorted.sort();
+                        diags.push(Diag::new(
+                            file.src.clone(),
+                            use_span,
+                            format!(
+                                "ambiguous reference to 'local.{current_name}'; declared in modules [{}] — rename one of the locals so each is unique within its module",
+                                sorted.join(", ")
+                            ),
+                        ));
+                        return BindingResolution::Failed;
+                    }
+                }
             }
-            Resolution::Ambiguous(modules) => {
-                let mut sorted: Vec<&str> = modules.iter().map(String::as_str).collect();
-                sorted.sort();
-                diags.push(Diag::new(
-                    file.src.clone(),
-                    use_span,
-                    format!(
-                        "ambiguous reference to 'local.{current_name}'; declared in modules [{}] — rename one of the locals so each is unique within its module",
-                        sorted.join(", ")
-                    ),
-                ));
-                return LocalResolution::Failed;
+            BindingKind::Var => {
+                match variables.resolve(current_module, &current_name) {
+                    Resolution::Found(q) => match variables.get(&q) {
+                        Some(decl) => (q, decl.module.as_str(), &decl.value),
+                        None => return BindingResolution::Failed,
+                    },
+                    Resolution::Missing => {
+                        diags.push(Diag::new(
+                            file.src.clone(),
+                            use_span.clone(),
+                            format!("reference to undeclared variable 'var.{current_name}'"),
+                        ));
+                        return BindingResolution::Failed;
+                    }
+                    Resolution::Ambiguous(modules) => {
+                        let mut sorted: Vec<&str> = modules.iter().map(String::as_str).collect();
+                        sorted.sort();
+                        diags.push(Diag::new(
+                            file.src.clone(),
+                            use_span,
+                            format!(
+                                "ambiguous reference to 'var.{current_name}'; declared in modules [{}] — rename one of the variables so each is unique within its module",
+                                sorted.join(", ")
+                            ),
+                        ));
+                        return BindingResolution::Failed;
+                    }
+                }
             }
         };
-        if !visited.insert(qualified.clone()) {
+        if !visited.insert((current_kind, qualified.clone())) {
             diags.push(Diag::new(
                 file.src.clone(),
                 use_span,
-                format!("cyclic local reference involving 'local.{current_name}'"),
+                format!(
+                    "cyclic reference involving '{}.{current_name}'",
+                    current_kind.prefix()
+                ),
             ));
-            return LocalResolution::Failed;
+            return BindingResolution::Failed;
         }
-        let Some(decl) = locals.get(&qualified) else {
-            return LocalResolution::Failed;
-        };
-        match local_ref_name(&decl.value) {
-            Some(next) => {
-                current_module = decl.module.as_str();
-                current_name = next;
+        match binding_ref(value) {
+            Some((next_kind, next_name)) => {
+                current_module = decl_module;
+                current_kind = next_kind;
+                current_name = next_name;
             }
             None => {
-                return LocalResolution::Resolved(&decl.value);
+                return BindingResolution::Resolved(value);
             }
         }
     }
 }
 
-fn local_ref_name(expr: &Expression) -> Option<String> {
+fn binding_ref(expr: &Expression) -> Option<(BindingKind, String)> {
     let Expression::Traversal(t) = expr else {
         return None;
     };
@@ -1339,10 +1746,12 @@ fn local_ref_name(expr: &Expression) -> Option<String> {
     if path.len() < 2 {
         return None;
     }
-    if path[0] != "local" {
-        return None;
-    }
-    Some(path[1].clone())
+    let kind = match path[0].as_str() {
+        "local" => BindingKind::Local,
+        "var" => BindingKind::Var,
+        _ => return None,
+    };
+    Some((kind, path[1].clone()))
 }
 
 fn extract_traversal_path(t: &Traversal) -> Option<Vec<String>> {
@@ -1614,6 +2023,12 @@ mod tests {
         parse_file(&tmp).expect("parse")
     }
 
+    fn bindings_from(pf: &ParsedFile) -> Bindings {
+        let (b, diags) = Bindings::build(std::slice::from_ref(pf), &InputBindings::default());
+        assert!(diags.is_empty(), "build diags: {:?}", diags.len());
+        b
+    }
+
     #[test]
     fn locals_resolve_literal_int() {
         let pf = parse_str(
@@ -1622,10 +2037,9 @@ mod tests {
 locals { x = 42 }
 "#,
         );
-        let (locals, diags) = LocalsRegistry::build(std::slice::from_ref(&pf));
-        assert!(diags.is_empty(), "build diags: {:?}", diags.len());
+        let bindings = bindings_from(&pf);
         let expr: Expression = "local.x".parse().expect("parse traversal");
-        let resolved = locals.resolve_value("module", &expr);
+        let resolved = bindings.resolve_value("module", &expr);
         match resolved {
             Expression::Number(n) => assert_eq!(n.as_f64(), Some(42.0)),
             other => panic!("expected Number, got {other:?}"),
@@ -1644,10 +2058,9 @@ locals {
 }
 "#,
         );
-        let (locals, diags) = LocalsRegistry::build(std::slice::from_ref(&pf));
-        assert!(diags.is_empty());
+        let bindings = bindings_from(&pf);
         let expr: Expression = "local.top".parse().expect("parse");
-        match locals.resolve_value("chain", &expr) {
+        match bindings.resolve_value("chain", &expr) {
             Expression::Number(n) => assert_eq!(n.as_f64(), Some(5.0)),
             other => panic!("expected Number, got {other:?}"),
         }
@@ -1664,10 +2077,114 @@ locals {
 }
 "#,
         );
-        let (locals, _diags) = LocalsRegistry::build(std::slice::from_ref(&pf));
+        let (bindings, _diags) =
+            Bindings::build(std::slice::from_ref(&pf), &InputBindings::default());
         let expr: Expression = "local.a".parse().expect("parse");
-        let resolved = locals.resolve_value("cycle", &expr);
+        let resolved = bindings.resolve_value("cycle", &expr);
         assert!(matches!(resolved, Expression::Traversal(_)));
+    }
+
+    #[test]
+    fn variables_resolve_default_number() {
+        let pf = parse_str(
+            "var_default",
+            r#"
+variable "city_radius_km" {
+  type    = number
+  default = 15
+}
+"#,
+        );
+        let bindings = bindings_from(&pf);
+        let expr: Expression = "var.city_radius_km".parse().expect("parse");
+        match bindings.resolve_value("var_default", &expr) {
+            Expression::Number(n) => assert_eq!(n.as_f64(), Some(15.0)),
+            other => panic!("expected Number, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn variables_input_overrides_default() {
+        let pf = parse_str(
+            "var_input",
+            r#"
+variable "wave" {
+  type    = string
+  default = "W1"
+}
+"#,
+        );
+        let mut inputs = InputBindings::default();
+        inputs.vars.insert("wave".to_string(), "W2".to_string());
+        let (bindings, diags) = Bindings::build(std::slice::from_ref(&pf), &inputs);
+        assert!(diags.is_empty());
+        let expr: Expression = "var.wave".parse().expect("parse");
+        match bindings.resolve_value("var_input", &expr) {
+            Expression::String(s) => assert_eq!(s.as_str(), "W2"),
+            other => panic!("expected String, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn variables_missing_value_errors() {
+        let pf = parse_str(
+            "var_missing",
+            r#"
+variable "wave" {
+  type = string
+}
+"#,
+        );
+        let (_bindings, diags) =
+            Bindings::build(std::slice::from_ref(&pf), &InputBindings::default());
+        assert!(
+            diags.iter().any(|d| d.message.contains("variable 'wave' has no value")),
+            "expected missing-value diag, got {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn variables_type_mismatch_in_default_errors() {
+        let pf = parse_str(
+            "var_type_mismatch",
+            r#"
+variable "wave" {
+  type    = number
+  default = "W1"
+}
+"#,
+        );
+        let (_bindings, diags) =
+            Bindings::build(std::slice::from_ref(&pf), &InputBindings::default());
+        assert!(
+            diags.iter().any(|d| d.message.contains("variable default expects number")),
+            "expected default mismatch diag, got {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn locals_can_reference_variables() {
+        let pf = parse_str(
+            "loc_via_var",
+            r#"
+variable "budget_micros" {
+  type    = number
+  default = 10000000
+}
+
+locals {
+  daily = var.budget_micros
+}
+"#,
+        );
+        let bindings = bindings_from(&pf);
+        let expr: Expression = "local.daily".parse().expect("parse");
+        match bindings.resolve_value("loc_via_var", &expr) {
+            Expression::Number(n) => assert_eq!(n.as_f64(), Some(10000000.0)),
+            other => panic!("expected Number, got {other:?}"),
+        }
     }
 
     #[test]

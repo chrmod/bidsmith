@@ -103,16 +103,92 @@ There's no rule. Some heuristics:
 The right answer is whatever makes your `git diff` legible six
 months from now.
 
-## What about explicit module blocks?
+## Explicit `module` blocks
 
-Terraform's `module "..." { source = ... }` lets you compose
-modules from external sources. **bidsmith doesn't ship that yet** —
-files-as-modules is what you get. Explicit module blocks are on the
-[roadmap](https://github.com/chrmod/bidsmith/blob/main/ROADMAP.md)
-as Phase 5.
+When you want to instantiate the same shape multiple times — say, a
+"city campaign" repeated for Warsaw and Kraków — use a top-level
+`module` block. It points at a `.bid` file and supplies values for
+that file's [`variable` blocks](/bidsmith/concepts/variables/):
+
+```hcl
+module "warsaw" {
+  source = "./modules/city-campaign.bid"
+
+  city_name = "[W1] Warsaw — Search"
+  latitude  = 52.229675
+  longitude = 21.012228
+}
+
+module "krakow" {
+  source = "./modules/city-campaign.bid"
+
+  city_name           = "[W1] Krakow — Search"
+  latitude            = 50.064650
+  longitude           = 19.944980
+  radius_km           = 20
+  daily_budget_micros = 8000000
+}
+```
+
+The module file describes the *shape* — its variables are the inputs
+you can dial per instance:
+
+```hcl
+# modules/city-campaign.bid
+variable "city_name" { type = string }
+variable "latitude"  { type = number }
+variable "longitude" { type = number }
+variable "radius_km" { type = number, default = 15 }
+variable "daily_budget_micros" { type = number, default = 10000000 }
+
+resource "google_ads_campaign" "search" {
+  name = var.city_name
+  ...
+}
+```
+
+Resources inside `module "warsaw"` get the address
+`warsaw.google_ads_campaign.search`; inside `module "krakow"`,
+`krakow.google_ads_campaign.search`. The module block's instance name
+replaces the file stem.
+
+### What the `source` attribute accepts
+
+- A path to a single `.bid` file, relative to the calling file's
+  directory: `source = "./modules/city-campaign.bid"`.
+
+That's it for v1. Directory sources, GitHub URLs (`github.com/org/repo`),
+and registry references will land later — directory sources first.
+
+### Scoping rules
+
+Each module instance is an **isolation boundary**:
+
+- Variables in the module are filled by the module block's attributes
+  (+ defaults). `--var name=value` does **not** flow into modules.
+- Locals declared inside the module are private to the module.
+- Resources inside the module can reference each other via the usual
+  `<type>.<name>` syntax.
+- Resources outside the module **cannot** reach inside (no
+  `module.warsaw.google_ads_campaign.search` references yet), and
+  vice versa. If two cities need to share a budget, declare it at
+  the top level and pass its id through a variable.
+
+### What's still deferred
+
+- `for_each` / `count` — instantiating one block multiple times.
+  Today, repeat the module block.
+- `output "x" { value = … }` and cross-module references.
+- Directory sources (multiple `.bid` files per module) and GitHub
+  source resolution.
+- Nested modules (a module file containing its own `module` block).
+
+If your use case bumps into any of these, open an issue.
 
 ## Next
 
+- [Variables](/bidsmith/concepts/variables/) — how a module's inputs
+  are typed and consumed.
 - [References](/bidsmith/concepts/references/) — the mechanics of
   resource-to-resource pointers.
 - [The .bid file](/bidsmith/concepts/bid-file/) — what's inside a

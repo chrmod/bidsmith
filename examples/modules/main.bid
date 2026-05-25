@@ -1,0 +1,19 @@
+provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+module "warsaw" {
+  source = "./modules/city-campaign.bid"
+  city_name = "[W1] Warsaw — Search"
+  latitude = 52.229675
+  longitude = 21.012228
+}
+
+module "krakow" {
+  source = "./modules/city-campaign.bid"
+  city_name = "[W1] Krakow — Search"
+  latitude = 50.06465
+  longitude = 19.94498
+  radius_km = 20
+  daily_budget_micros = 8000000
+}

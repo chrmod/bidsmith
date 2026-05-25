@@ -50,9 +50,36 @@ resource type, any file layout, modules, schema validation.
   Chains (`local.a = local.b = 5`) and cycle detection are supported.
   Resolves the rezolutnie use case where every per-city `.bid` was
   repeating bid micros, proximity radius, budget, and language
-  constant. `variable` and `module` blocks are still
-  rejected at validate time — they're listed under "Open decisions"
-  for future work.
+  constant.
+- **`variable` block**: HCL2-style top-level
+  `variable "name" { type = …, default = …, description = … }` blocks
+  declare typed inputs that the same `.bid` can pivot on without
+  edits. References use `var.<name>`; values come from `--var name=…`
+  CLI flags first, then `BIDSMITH_VAR_<name>` env vars, then the
+  block's `default`. Declared types are `string`, `number`, or `bool`
+  (bare identifiers, not strings); defaults are validated against the
+  declared type at parse time, CLI/env strings are parsed to the
+  declared type, and a variable with no value (no input, no default)
+  is a validate-time error. Scoping and chain resolution match locals,
+  and chains can interleave (`local.x = var.y`, `var.x` referenced
+  inside a `locals` block, etc.).
+- **`module` block**: HCL2-style top-level
+  `module "instance" { source = "./file.bid", ...inputs }` blocks
+  instantiate a parameterized `.bid` source. `source` is a path to a
+  single `.bid` file, relative to the calling file's directory; all
+  other attributes are passed as inputs to that file's `variable`
+  blocks (literals or top-level `local.*` / `var.*` references that
+  resolve to literals). Each instance is an isolation boundary —
+  `--var` and `BIDSMITH_VAR_<name>` do not flow into the module; the
+  module's own locals/variables are private; resources inside cannot
+  cross-reference the parent or sibling instances. Resource addresses
+  become `<instance>.<type>.<name>`, replacing the file stem so two
+  module instances of the same source file don't collide. v1
+  limitations: single-file local sources only, no `for_each`, no
+  outputs, no directory or GitHub sources, no nested modules (a
+  module source containing its own `module` block fails fast). The
+  larger pieces (`for_each`, `output`, directory + GitHub sources)
+  are tracked under "Open decisions" as "Module composition v2."
 - **Files are modules**: each `.bid` file's basename (slugified file
   stem) is its implicit module name. Resource addresses are
   `<module>.<type>.<name>`. Two files in one directory can each declare
@@ -155,6 +182,11 @@ bidsmith/
     ├── multi/                  # two campaigns in one dir with colliding bare
     │   ├── nadarzyn.bid        # criterion names — addresses disambiguate via
     │   └── warszawa.bid        # the file-stem module prefix
+    ├── locals/main.bid         # `locals { … }` plus `local.<name>` use sites
+    ├── variable/main.bid       # `variable "x" { type, default }` plus var.<name>
+    ├── modules/                # `module "x" { source = "./…", ...inputs }`
+    │   ├── main.bid            # root: two `module` instances of city-campaign
+    │   └── modules/city-campaign.bid  # the parameterized source
     ├── exports/
     │   ├── basic.json          # flat bidsmith input for `export --from-json`
     │   └── raw.json            # SearchStream-shaped input for `export --from-gads-search-response`
@@ -178,6 +210,28 @@ Verified locally:
   exercises the `locals { ... }` block plus `local.<name>` references
   for budget micros, default cpc, language constant, and proximity
   radius; `fmt --check examples/locals` is a no-op.
+- `cargo run -- validate examples/variable` → `OK: 1 file(s) valid.` —
+  exercises the `variable "x" { type, default, description }` block
+  plus `var.<name>` references for a string (campaign name), number
+  (city radius), and bool (enhanced CPC). `--var city_radius_km=25`
+  and `BIDSMITH_VAR_city_radius_km=30` both override the default; an
+  invalid input value (`--var enhanced_cpc=not-a-bool`) fails with a
+  span-mapped error pointing at the variable declaration; removing
+  the `default` and not supplying `--var` / env produces a
+  "variable 'x' has no value" diagnostic.
+- `cargo run -- validate examples/modules` → `OK: 3 file(s) valid.` —
+  exercises the top-level `module "instance" { source = "./…", ...inputs }`
+  block. `examples/modules/main.bid` instantiates
+  `examples/modules/modules/city-campaign.bid` twice (Warsaw + Krakow)
+  with distinct city names, coordinates, radii, and budgets. Resources
+  inside each instance get addresses prefixed with the instance name
+  (`warsaw.google_ads_campaign.search`,
+  `krakow.google_ads_campaign.search`). A bogus `--var` is rejected;
+  a missing required input surfaces inside the module file; a wrong-
+  typed input (`latitude = "fifteen"`) gets a span-mapped error
+  pointing at the module's `variable` declaration; a duplicate
+  `module "x"` block is rejected; a nested `module` block inside the
+  source file is rejected with "nested modules are not supported yet."
 - `cargo run -- validate examples/broken` → exit 1 with 11 errors and
   5 warnings (parse failure, type mismatch, enum violation, dangling
   reference, unknown attribute at two depths, unknown resource type,
@@ -328,10 +382,10 @@ Validator covers (so far):
 | Verb       | Status  | Purpose                                              |
 |------------|---------|------------------------------------------------------|
 | `fmt`      | partial | Canonicalize `.bid` files (in-place; `--check` for CI) |
-| `validate` | partial | Syntax + schema + references + lint warnings (local only) |
+| `validate` | partial | Syntax + schema + references + lint warnings (local only). `--var NAME=VALUE` (repeatable) supplies values for `variable` blocks; `BIDSMITH_VAR_<name>` env vars are the fallback |
 | `export`   | partial | Render a fmt-canonical `.bid` file from flat bidsmith JSON (`--from-json`) or raw Google Ads SearchStream JSON (`--from-gads-search-response`); always emits the compact form (one `google_ads_ad_group_criterion` per `(ad_group, match_type)` group with N `keyword {}` sub-blocks, one negatives resource per ad-group / campaign with N `negative_keyword {}` sub-blocks, RSAs as `headlines = [...]` / `descriptions = [...]` lists); drops REMOVED resources unless `--include-removed`; `--login-customer-id` / `--customer-id` (or env vars `GOOGLE_ADS_LOGIN_CUSTOMER_ID` / `GOOGLE_ADS_CUSTOMER_ID`) override the provider block |
-| `plan`     | partial | Diff `.bid` vs live (name-matched, scalar-level), validateOnly batch via googleAds:mutate; emits `+ create` / `~ update` / `no-op` per resource. Reuses cached SearchStream batches from `.bidsmith/cache/` when fresh (15-min TTL); `--refresh-state` forces a re-pull; `--offline` skips OAuth and the validateOnly mutate, diffing against the cache only (errors if no fresh cache) |
-| `apply`    | partial | Shows the validateOnly diff first, then prompts for `yes` (or skips the prompt with `--auto-approve`) before mutating. Refuses to prompt when stdin is not a TTY. Reuses the same cached live state as `plan`; invalidates the cache after a successful real mutate. Does not yet write `bidsmith:address=…` labels or detect removals (state-tracking is the v2 follow-up) |
+| `plan`     | partial | Diff `.bid` vs live (name-matched, scalar-level), validateOnly batch via googleAds:mutate; emits `+ create` / `~ update` / `no-op` per resource. Reuses cached SearchStream batches from `.bidsmith/cache/` when fresh (15-min TTL); `--refresh-state` forces a re-pull; `--offline` skips OAuth and the validateOnly mutate, diffing against the cache only (errors if no fresh cache). `--var NAME=VALUE` (repeatable) and `BIDSMITH_VAR_<name>` env vars supply values for `variable` blocks |
+| `apply`    | partial | Shows the validateOnly diff first, then prompts for `yes` (or skips the prompt with `--auto-approve`) before mutating. Refuses to prompt when stdin is not a TTY. Reuses the same cached live state as `plan`; invalidates the cache after a successful real mutate. Does not yet write `bidsmith:address=…` labels or detect removals (state-tracking is the v2 follow-up). Same `--var` / `BIDSMITH_VAR_<name>` plumbing as `plan` |
 | `pull`     | partial | Dump live state as raw SearchStream JSON (`-o PATH` or stdout). Reuses the same query list `plan --read-live` issues; output is the exact shape `export --from-gads-search-response` consumes, so the pair round-trips an account into a `.bid` |
 | `refresh`  | partial | Bootstrap-mode import of live state into `.bid` (no `-o`/`-d` → stdout, `-o PATH` → single file, `-d DIR` → split into `<DIR>/account.bid` for conversion actions / call assets / customer assets / shared sets and `<DIR>/campaigns.bid` for everything campaign-scoped). Reconcile-in-place against existing `.bid` and label-based matching wait on the Phase 3 v2 label work |
 | `query`    | partial | Read-only GAQL passthrough; `--format table` (default), `json`, or `tsv`; uses the same OAuth + customer envelope as `plan` / `apply` |

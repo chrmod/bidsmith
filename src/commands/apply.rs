@@ -2,20 +2,29 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
 use crate::api::live_state;
-use crate::commands::plan;
+use crate::commands::{plan, vars};
 
 pub fn run(
     path: Option<&str>,
     auto_approve: bool,
     refresh_state: bool,
     verbose: bool,
+    cli_vars: &[String],
 ) -> ExitCode {
     let Some(path) = path else {
         eprintln!("apply: provide a .bid file or directory.");
         return ExitCode::from(2);
     };
 
-    let prepared = match plan::prepare(path, "apply", refresh_state, /* offline */ false) {
+    let inputs = match vars::collect(cli_vars) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("apply: {e}");
+            return ExitCode::from(2);
+        }
+    };
+
+    let prepared = match plan::prepare(path, "apply", refresh_state, /* offline */ false, &inputs) {
         Ok(Some(p)) => p,
         Ok(None) => return ExitCode::SUCCESS,
         Err(code) => return code,

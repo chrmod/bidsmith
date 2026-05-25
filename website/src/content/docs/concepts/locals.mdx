@@ -133,19 +133,20 @@ to rename one.
 ## What this replaces, and what it doesn't
 
 `locals` collapses **repeated literal values** within a single
-`.bid` file. It does not yet do:
+`.bid` file. It does not do:
 
-- **CLI- or env-driven overrides.** That's what `variable` blocks
-  are for — not yet supported. Today the substituted value is the
-  one written in the file.
+- **CLI- or env-driven overrides.** That's what
+  [`variable` blocks](/bidsmith/concepts/variables/) are for. A local
+  can reference a variable (`local.daily = var.budget_micros`), so
+  the two compose naturally.
 - **Reusable resource bundles.** That's what `module` blocks are
-  for — also not yet supported. Today, a "Warsaw campaign" and
+  for — not yet supported. Today, a "Warsaw campaign" and
   "Kraków campaign" are still separate resource declarations, even
   if every value comes from a shared local.
 
-If your use case needs either of those, the
+If your use case needs `module`, the
 [roadmap](https://github.com/chrmod/bidsmith/blob/main/ROADMAP.md)
-lists them under "Open decisions."
+lists it under "Open decisions."
 
 <Aside type="tip">
   `refresh` writes flat state — it doesn't preserve `local.<name>`

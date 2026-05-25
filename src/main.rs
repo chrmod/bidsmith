@@ -3,6 +3,7 @@ mod commands;
 mod diagnostics;
 mod lint;
 mod parser;
+mod program;
 mod schema;
 
 use std::process::ExitCode;
@@ -32,6 +33,11 @@ enum Cmd {
         /// File or directory to validate
         #[arg(default_value = ".")]
         path: String,
+        /// Set a variable value (repeatable). Example: `--var city_radius_km=20`.
+        /// Overrides any `default` in the matching `variable` block. Values from
+        /// `BIDSMITH_VAR_<name>` env vars apply when this flag is not supplied.
+        #[arg(long = "var", value_name = "NAME=VALUE", action = clap::ArgAction::Append)]
+        var: Vec<String>,
     },
     /// Render a .bid file from a Google Ads campaign source
     Export {
@@ -78,6 +84,10 @@ enum Cmd {
         /// Dump the outgoing request body and raw API response
         #[arg(long)]
         verbose: bool,
+        /// Set a variable value (repeatable). Example: `--var city_radius_km=20`.
+        /// Overrides any `default` in the matching `variable` block.
+        #[arg(long = "var", value_name = "NAME=VALUE", action = clap::ArgAction::Append)]
+        var: Vec<String>,
     },
     /// Reconcile the live account with the .bid files
     Apply {
@@ -94,6 +104,10 @@ enum Cmd {
         /// Dump the outgoing request body and raw API response
         #[arg(long)]
         verbose: bool,
+        /// Set a variable value (repeatable). Example: `--var city_radius_km=20`.
+        /// Overrides any `default` in the matching `variable` block.
+        #[arg(long = "var", value_name = "NAME=VALUE", action = clap::ArgAction::Append)]
+        var: Vec<String>,
     },
     /// Dump live Google Ads state as raw SearchStream JSON
     Pull {
@@ -185,7 +199,7 @@ enum DesignDocCmd {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Cmd::Validate { path } => commands::validate::run(&path),
+        Cmd::Validate { path, var } => commands::validate::run(&path, &var),
         Cmd::Export {
             from_json,
             from_gads_search_response,
@@ -202,7 +216,7 @@ fn main() -> ExitCode {
             customer_id.as_deref(),
         ),
         Cmd::Fmt { path, check } => commands::fmt::run(&path, check),
-        Cmd::Plan { path, whoami, read_live, refresh_state, offline, verbose } => {
+        Cmd::Plan { path, whoami, read_live, refresh_state, offline, verbose, var } => {
             commands::plan::run(
                 path.as_deref(),
                 whoami,
@@ -210,13 +224,15 @@ fn main() -> ExitCode {
                 refresh_state,
                 offline,
                 verbose,
+                &var,
             )
         }
-        Cmd::Apply { path, auto_approve, refresh_state, verbose } => commands::apply::run(
+        Cmd::Apply { path, auto_approve, refresh_state, verbose, var } => commands::apply::run(
             path.as_deref(),
             auto_approve,
             refresh_state,
             verbose,
+            &var,
         ),
         Cmd::Pull { output, verbose } => {
             commands::pull::run(output.as_deref(), verbose)
