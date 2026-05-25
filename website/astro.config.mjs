@@ -61,6 +61,7 @@ export default defineConfig({
             { label: 'The .bid file', slug: 'concepts/bid-file' },
             { label: 'Plan and apply', slug: 'concepts/plan-and-apply' },
             { label: 'Modules', slug: 'concepts/modules' },
+            { label: 'Locals', slug: 'concepts/locals' },
             { label: 'References', slug: 'concepts/references' },
             { label: 'Drift', slug: 'concepts/drift' },
             { label: 'The GitHub flow for marketers', slug: 'concepts/github-flow' },
