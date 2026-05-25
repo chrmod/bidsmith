@@ -1,0 +1,57 @@
+locals {
+  daily_budget_micros = 10000000
+  default_cpc_micros = 3000000
+  city_radius_km = 15
+  language_pl = "languageConstants/1030"
+}
+
+provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+resource "google_ads_campaign_budget" "shared" {
+  name = "Shared Daily Budget"
+  amount_micros = local.daily_budget_micros
+  delivery_method = "STANDARD"
+}
+
+resource "google_ads_campaign" "warsaw_search" {
+  name = "[W1] Warsaw — Search"
+  status = "ENABLED"
+  advertising_channel_type = "SEARCH"
+  campaign_budget = google_ads_campaign_budget.shared.id
+  contains_eu_political_advertising = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"
+
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+}
+
+resource "google_ads_ad_group" "warsaw_default" {
+  name = "Default"
+  campaign = google_ads_campaign.warsaw_search.id
+  status = "ENABLED"
+  type = "SEARCH_STANDARD"
+  cpc_bid_micros = local.default_cpc_micros
+}
+
+resource "google_ads_campaign_criterion" "warsaw_lang_pl" {
+  campaign = google_ads_campaign.warsaw_search.id
+  status = "ENABLED"
+
+  language {
+    language_constant = local.language_pl
+  }
+}
+
+resource "google_ads_campaign_criterion" "warsaw_proximity" {
+  campaign = google_ads_campaign.warsaw_search.id
+  status = "ENABLED"
+
+  proximity {
+    latitude = 52.229675
+    longitude = 21.012228
+    radius = local.city_radius_km
+    radius_units = "KILOMETERS"
+  }
+}

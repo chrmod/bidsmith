@@ -42,6 +42,17 @@ resource type, any file layout, modules, schema validation.
   full bypass. Cache directory is gitignored; token file is written
   mode `0600`. A successful `apply` invalidates the live-state cache
   so the next `plan` starts from fresh data.
+- **`locals` block**: HCL2-style top-level `locals { ... }` blocks declare
+  reusable constants. References use `local.<name>` and resolve at
+  validate / plan / apply time — the value is substituted for type
+  checking and for the API mutate body. Scoping mirrors resource
+  scoping: same-module first, then global with an ambiguity guard.
+  Chains (`local.a = local.b = 5`) and cycle detection are supported.
+  Resolves the rezolutnie use case where every per-city `.bid` was
+  repeating bid micros, proximity radius, budget, and language
+  constant. `variable` and `module` blocks are still
+  rejected at validate time — they're listed under "Open decisions"
+  for future work.
 - **Files are modules**: each `.bid` file's basename (slugified file
   stem) is its implicit module name. Resource addresses are
   `<module>.<type>.<name>`. Two files in one directory can each declare
@@ -163,6 +174,10 @@ Verified locally:
   both files declare `google_ads_campaign_criterion.broad_wikipedia`
   and `…broad_olx`; the file-stem module prefix
   (`nadarzyn.…` vs `warszawa.…`) makes the addresses unique.
+- `cargo run -- validate examples/locals` → `OK: 1 file(s) valid.` —
+  exercises the `locals { ... }` block plus `local.<name>` references
+  for budget micros, default cpc, language constant, and proximity
+  radius; `fmt --check examples/locals` is a no-op.
 - `cargo run -- validate examples/broken` → exit 1 with 11 errors and
   5 warnings (parse failure, type mismatch, enum violation, dangling
   reference, unknown attribute at two depths, unknown resource type,

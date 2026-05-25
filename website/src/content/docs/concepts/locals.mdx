@@ -1,0 +1,162 @@
+---
+title: Locals
+description: Hoist repeated values to the top of a .bid file so you only edit them in one place.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A **`locals` block** lets you name a constant once and reference it
+everywhere else in the file. It's the same idea as a variable in any
+programming language, scoped to your `.bid` file.
+
+If you find yourself pasting the same daily budget, language code, or
+city radius into every campaign — that's the use case.
+
+## A simple example
+
+Without locals:
+
+```hcl
+resource "google_ads_campaign_budget" "warsaw" {
+  amount_micros = 10000000
+  ...
+}
+
+resource "google_ads_campaign_budget" "krakow" {
+  amount_micros = 10000000
+  ...
+}
+
+resource "google_ads_campaign_budget" "gdansk" {
+  amount_micros = 10000000
+  ...
+}
+```
+
+Three campaigns, three places to remember to update if the daily
+budget changes.
+
+With locals:
+
+```hcl
+locals {
+  daily_budget_micros = 10000000
+}
+
+resource "google_ads_campaign_budget" "warsaw" {
+  amount_micros = local.daily_budget_micros
+  ...
+}
+
+resource "google_ads_campaign_budget" "krakow" {
+  amount_micros = local.daily_budget_micros
+  ...
+}
+
+resource "google_ads_campaign_budget" "gdansk" {
+  amount_micros = local.daily_budget_micros
+  ...
+}
+```
+
+Now there's one place to change the budget. `plan` will show which
+campaigns picked up the new value.
+
+## Where it goes
+
+A `locals` block sits at the top level of a `.bid` file, next to your
+`provider` and `resource` blocks:
+
+```hcl
+locals {
+  daily_budget_micros = 10000000
+  default_cpc_micros  = 3000000
+  city_radius_km      = 15
+  polish              = "languageConstants/1030"
+}
+```
+
+Values can be strings, numbers, or booleans. Each name has to be
+unique within the file.
+
+## Using a local
+
+Reference a local with `local.<name>` — the same dot-form you use for
+[resource references](/bidsmith/concepts/references/), but with
+`local` instead of a resource type:
+
+```hcl
+resource "google_ads_ad_group" "warsaw_default" {
+  cpc_bid_micros = local.default_cpc_micros
+  ...
+}
+
+resource "google_ads_campaign_criterion" "warsaw_proximity" {
+  proximity {
+    latitude     = 52.229675
+    longitude    = 21.012228
+    radius       = local.city_radius_km
+    radius_units = "KILOMETERS"
+  }
+}
+```
+
+`validate` and `plan` resolve `local.daily_budget_micros` to its
+underlying value before any other check runs — so type errors, enum
+checks, and the validateOnly mutate all see the substituted value.
+
+## Locals can reference other locals
+
+A local can reference another local. Chains are followed all the way
+to the leaf:
+
+```hcl
+locals {
+  base_cpc       = 1500000
+  premium_cpc    = local.base_cpc
+  high_value_cpc = local.premium_cpc
+}
+```
+
+Cycles (`a = local.b`, `b = local.a`) are caught at validate time.
+
+## Module scope
+
+Locals live in the same [module](/bidsmith/concepts/modules/) as the
+file that declares them — same scoping rules as resources. If
+`warsaw.bid` declares `local.radius = 15` and `krakow.bid` doesn't,
+references inside `krakow.bid` to `local.radius` resolve via the
+global fallback (one module declares it, so the lookup succeeds).
+If multiple modules declare the same `local` name, bidsmith asks you
+to rename one.
+
+## What this replaces, and what it doesn't
+
+`locals` collapses **repeated literal values** within a single
+`.bid` file. It does not yet do:
+
+- **CLI- or env-driven overrides.** That's what `variable` blocks
+  are for — not yet supported. Today the substituted value is the
+  one written in the file.
+- **Reusable resource bundles.** That's what `module` blocks are
+  for — also not yet supported. Today, a "Warsaw campaign" and
+  "Kraków campaign" are still separate resource declarations, even
+  if every value comes from a shared local.
+
+If your use case needs either of those, the
+[roadmap](https://github.com/chrmod/bidsmith/blob/main/ROADMAP.md)
+lists them under "Open decisions."
+
+<Aside type="tip">
+  `refresh` writes flat state — it doesn't preserve `local.<name>`
+  references. Treat hand-authored `.bid` files (with locals) as the
+  source of truth, and use `refresh` only for the initial import or
+  for spot-checking what's live.
+</Aside>
+
+## Next
+
+- [References](/bidsmith/concepts/references/) — the same dotted
+  syntax used to point at resources.
+- [Modules](/bidsmith/concepts/modules/) — how multi-file projects
+  share names without colliding.

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
 
 use hcl_edit::Span;
@@ -715,11 +715,141 @@ pub enum Resolution<'a> {
     Ambiguous(&'a [String]),
 }
 
+pub struct LocalDecl {
+    pub module: String,
+    pub value: Expression,
+}
+
+#[derive(Default)]
+pub struct LocalsRegistry {
+    by_qualified: HashMap<String, LocalDecl>,
+    by_short: HashMap<String, Vec<String>>,
+}
+
+impl LocalsRegistry {
+    pub fn qualified(module: &str, name: &str) -> String {
+        format!("{module}.{name}")
+    }
+
+    pub fn resolve(&self, module: &str, name: &str) -> Resolution<'_> {
+        let qualified = Self::qualified(module, name);
+        if self.by_qualified.contains_key(&qualified) {
+            return Resolution::Found(qualified);
+        }
+        match self.by_short.get(name).map(Vec::as_slice).unwrap_or(&[]) {
+            [] => Resolution::Missing,
+            [only] => Resolution::Found(Self::qualified(only, name)),
+            many => Resolution::Ambiguous(many),
+        }
+    }
+
+    pub fn get(&self, qualified: &str) -> Option<&LocalDecl> {
+        self.by_qualified.get(qualified)
+    }
+
+    pub fn resolve_value<'a>(&'a self, from_module: &str, expr: &'a Expression) -> &'a Expression {
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut current_module = from_module.to_string();
+        let mut current_expr: &Expression = expr;
+        while let Some(name) = local_ref_name(current_expr) {
+            let qualified = match self.resolve(&current_module, &name) {
+                Resolution::Found(q) => q,
+                _ => return current_expr,
+            };
+            if !visited.insert(qualified.clone()) {
+                return current_expr;
+            }
+            let Some(decl) = self.by_qualified.get(&qualified) else {
+                return current_expr;
+            };
+            current_module = decl.module.clone();
+            current_expr = &decl.value;
+        }
+        current_expr
+    }
+
+    pub fn build(files: &[ParsedFile]) -> (Self, Vec<Diag>) {
+        let mut registry = LocalsRegistry::default();
+        let mut diags = Vec::new();
+        for f in files {
+            for s in f.body.iter() {
+                let Structure::Block(b) = s else { continue };
+                if b.ident.as_str() != "locals" {
+                    continue;
+                }
+                if !b.labels.is_empty() {
+                    diags.push(Diag::new(
+                        f.src.clone(),
+                        span_of(b.labels[0].span()),
+                        "'locals' block does not take labels".to_string(),
+                    ));
+                }
+                let mut seen: HashSet<String> = HashSet::new();
+                for inner in b.body.iter() {
+                    match inner {
+                        Structure::Attribute(a) => {
+                            let name = a.key.as_str().to_string();
+                            if !seen.insert(name.clone()) {
+                                diags.push(Diag::new(
+                                    f.src.clone(),
+                                    span_of(a.key.span()),
+                                    format!(
+                                        "duplicate local '{name}' in module '{}'",
+                                        f.module
+                                    ),
+                                ));
+                                continue;
+                            }
+                            let qualified = Self::qualified(&f.module, &name);
+                            if registry.by_qualified.contains_key(&qualified) {
+                                diags.push(Diag::new(
+                                    f.src.clone(),
+                                    span_of(a.key.span()),
+                                    format!(
+                                        "duplicate local '{name}' in module '{}'",
+                                        f.module
+                                    ),
+                                ));
+                                continue;
+                            }
+                            registry.by_qualified.insert(
+                                qualified,
+                                LocalDecl {
+                                    module: f.module.clone(),
+                                    value: a.value.clone(),
+                                },
+                            );
+                            registry
+                                .by_short
+                                .entry(name)
+                                .or_default()
+                                .push(f.module.clone());
+                        }
+                        Structure::Block(inner_block) => {
+                            diags.push(Diag::new(
+                                f.src.clone(),
+                                span_of(inner_block.ident.span()),
+                                format!(
+                                    "nested block '{}' is not allowed inside 'locals' — locals only takes attributes",
+                                    inner_block.ident.as_str()
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        (registry, diags)
+    }
+}
+
 pub fn validate_files(files: &[ParsedFile]) -> Vec<Diag> {
     let (registry, mut diags) = ResourceRegistry::build(files);
+    let (locals, locals_diags) = LocalsRegistry::build(files);
+    diags.extend(locals_diags);
 
     for f in files {
-        validate_top_level(f, &registry, &mut diags);
+        validate_top_level(f, &registry, &locals, &mut diags);
     }
 
     diags.sort_by(|a, b| {
@@ -731,6 +861,7 @@ pub fn validate_files(files: &[ParsedFile]) -> Vec<Diag> {
 fn validate_top_level(
     file: &ParsedFile,
     registry: &ResourceRegistry,
+    locals: &LocalsRegistry,
     diags: &mut Vec<Diag>,
 ) {
     for s in file.body.iter() {
@@ -740,20 +871,24 @@ fn validate_top_level(
                     file.src.clone(),
                     span_of(a.key.span()),
                     format!(
-                        "top-level attributes are not allowed; place '{}' inside a 'provider' or 'resource' block",
+                        "top-level attributes are not allowed; place '{}' inside a 'provider', 'resource', or 'locals' block",
                         a.key.as_str()
                     ),
                 ));
             }
             Structure::Block(b) => match b.ident.as_str() {
-                "provider" => validate_provider(file, b, registry, diags),
-                "resource" => validate_resource(file, b, registry, diags),
+                "provider" => validate_provider(file, b, registry, locals, diags),
+                "resource" => validate_resource(file, b, registry, locals, diags),
+                "locals" => {
+                    let _ = locals;
+                    let _ = b;
+                }
                 other => {
                     diags.push(Diag::new(
                         file.src.clone(),
                         span_of(b.ident.span()),
                         format!(
-                            "unknown top-level block '{other}'; expected 'provider' or 'resource'"
+                            "unknown top-level block '{other}'; expected 'provider', 'resource', or 'locals'"
                         ),
                     ));
                 }
@@ -766,6 +901,7 @@ fn validate_provider(
     file: &ParsedFile,
     block: &Block,
     registry: &ResourceRegistry,
+    locals: &LocalsRegistry,
     diags: &mut Vec<Diag>,
 ) {
     if block.labels.len() != 1 {
@@ -798,6 +934,7 @@ fn validate_provider(
         schema,
         &format!("provider.{provider_name}"),
         registry,
+        locals,
         diags,
     );
 }
@@ -806,6 +943,7 @@ fn validate_resource(
     file: &ParsedFile,
     block: &Block,
     registry: &ResourceRegistry,
+    locals: &LocalsRegistry,
     diags: &mut Vec<Diag>,
 ) {
     if block.labels.len() != 2 {
@@ -839,6 +977,7 @@ fn validate_resource(
         schema,
         &format!("{ty}.{name}"),
         registry,
+        locals,
         diags,
     );
 }
@@ -850,6 +989,7 @@ fn validate_body(
     schema: &BlockSchema,
     address: &str,
     registry: &ResourceRegistry,
+    locals: &LocalsRegistry,
     diags: &mut Vec<Diag>,
 ) {
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -874,7 +1014,7 @@ fn validate_body(
                     ));
                     continue;
                 };
-                validate_value(file, &a.value, &attr_schema.ty, registry, diags);
+                validate_value(file, &a.value, &attr_schema.ty, registry, locals, diags);
             }
             Structure::Block(b) => {
                 let bname = b.ident.as_str();
@@ -900,6 +1040,7 @@ fn validate_body(
                     &sub_schema.schema,
                     &format!("{address}.{bname}"),
                     registry,
+                    locals,
                     diags,
                 );
             }
@@ -922,9 +1063,15 @@ fn validate_value(
     expr: &Expression,
     ty: &FieldType,
     registry: &ResourceRegistry,
+    locals: &LocalsRegistry,
     diags: &mut Vec<Diag>,
 ) {
     let span = span_of(expr.span());
+    let expr = match resolve_local_chain(file, expr, locals, diags) {
+        LocalResolution::NotALocal => expr,
+        LocalResolution::Resolved(value) => value,
+        LocalResolution::Failed => return,
+    };
     match ty {
         FieldType::String => {
             if !matches!(expr, Expression::String(_)) {
@@ -997,7 +1144,7 @@ fn validate_value(
         FieldType::List(inner) => match expr {
             Expression::Array(arr) => {
                 for item in arr.iter() {
-                    validate_value(file, item, inner, registry, diags);
+                    validate_value(file, item, inner, registry, locals, diags);
                 }
             }
             other => diags.push(Diag::new(
@@ -1115,6 +1262,87 @@ fn validate_ref(
             ));
         }
     }
+}
+
+enum LocalResolution<'a> {
+    NotALocal,
+    Resolved(&'a Expression),
+    Failed,
+}
+
+fn resolve_local_chain<'a>(
+    file: &ParsedFile,
+    expr: &'a Expression,
+    locals: &'a LocalsRegistry,
+    diags: &mut Vec<Diag>,
+) -> LocalResolution<'a> {
+    let Some(first_name) = local_ref_name(expr) else {
+        return LocalResolution::NotALocal;
+    };
+    let use_span = span_of(expr.span());
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut current_module = file.module.as_str();
+    let mut current_name = first_name;
+    loop {
+        let qualified = match locals.resolve(current_module, &current_name) {
+            Resolution::Found(q) => q,
+            Resolution::Missing => {
+                diags.push(Diag::new(
+                    file.src.clone(),
+                    use_span.clone(),
+                    format!("reference to undeclared local 'local.{current_name}'"),
+                ));
+                return LocalResolution::Failed;
+            }
+            Resolution::Ambiguous(modules) => {
+                let mut sorted: Vec<&str> = modules.iter().map(String::as_str).collect();
+                sorted.sort();
+                diags.push(Diag::new(
+                    file.src.clone(),
+                    use_span,
+                    format!(
+                        "ambiguous reference to 'local.{current_name}'; declared in modules [{}] — rename one of the locals so each is unique within its module",
+                        sorted.join(", ")
+                    ),
+                ));
+                return LocalResolution::Failed;
+            }
+        };
+        if !visited.insert(qualified.clone()) {
+            diags.push(Diag::new(
+                file.src.clone(),
+                use_span,
+                format!("cyclic local reference involving 'local.{current_name}'"),
+            ));
+            return LocalResolution::Failed;
+        }
+        let Some(decl) = locals.get(&qualified) else {
+            return LocalResolution::Failed;
+        };
+        match local_ref_name(&decl.value) {
+            Some(next) => {
+                current_module = decl.module.as_str();
+                current_name = next;
+            }
+            None => {
+                return LocalResolution::Resolved(&decl.value);
+            }
+        }
+    }
+}
+
+fn local_ref_name(expr: &Expression) -> Option<String> {
+    let Expression::Traversal(t) = expr else {
+        return None;
+    };
+    let path = extract_traversal_path(t)?;
+    if path.len() < 2 {
+        return None;
+    }
+    if path[0] != "local" {
+        return None;
+    }
+    Some(path[1].clone())
 }
 
 fn extract_traversal_path(t: &Traversal) -> Option<Vec<String>> {
@@ -1367,5 +1595,99 @@ fn ty_to_doc(ty: &FieldType) -> TypeDoc {
             element: Box::new(ty_to_doc(inner)),
         },
         FieldType::RsaAssetList => TypeDoc::RsaAssetList,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse_file;
+    use std::io::Write;
+
+    fn parse_str(name: &str, content: &str) -> ParsedFile {
+        let mut tmp = std::env::temp_dir();
+        tmp.push(format!("bidsmith-locals-test-{name}.bid"));
+        {
+            let mut f = std::fs::File::create(&tmp).expect("create tmp");
+            f.write_all(content.as_bytes()).expect("write tmp");
+        }
+        parse_file(&tmp).expect("parse")
+    }
+
+    #[test]
+    fn locals_resolve_literal_int() {
+        let pf = parse_str(
+            "literal_int",
+            r#"
+locals { x = 42 }
+"#,
+        );
+        let (locals, diags) = LocalsRegistry::build(std::slice::from_ref(&pf));
+        assert!(diags.is_empty(), "build diags: {:?}", diags.len());
+        let expr: Expression = "local.x".parse().expect("parse traversal");
+        let resolved = locals.resolve_value("module", &expr);
+        match resolved {
+            Expression::Number(n) => assert_eq!(n.as_f64(), Some(42.0)),
+            other => panic!("expected Number, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn locals_resolve_chain() {
+        let pf = parse_str(
+            "chain",
+            r#"
+locals {
+  base = 5
+  via  = local.base
+  top  = local.via
+}
+"#,
+        );
+        let (locals, diags) = LocalsRegistry::build(std::slice::from_ref(&pf));
+        assert!(diags.is_empty());
+        let expr: Expression = "local.top".parse().expect("parse");
+        match locals.resolve_value("chain", &expr) {
+            Expression::Number(n) => assert_eq!(n.as_f64(), Some(5.0)),
+            other => panic!("expected Number, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn locals_cycle_returns_traversal_silently() {
+        let pf = parse_str(
+            "cycle",
+            r#"
+locals {
+  a = local.b
+  b = local.a
+}
+"#,
+        );
+        let (locals, _diags) = LocalsRegistry::build(std::slice::from_ref(&pf));
+        let expr: Expression = "local.a".parse().expect("parse");
+        let resolved = locals.resolve_value("cycle", &expr);
+        assert!(matches!(resolved, Expression::Traversal(_)));
+    }
+
+    #[test]
+    fn locals_build_rejects_duplicate_across_blocks_and_nested_block() {
+        let pf = parse_str(
+            "dup",
+            r#"
+locals {
+  a = 1
+  inner { x = 1 }
+}
+
+locals {
+  a = 2
+}
+"#,
+        );
+        let (_locals, diags) = LocalsRegistry::build(std::slice::from_ref(&pf));
+        let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
+        assert!(msgs.iter().any(|m| m.contains("duplicate local 'a'")), "{msgs:?}");
+        assert!(msgs.iter().any(|m| m.contains("nested block 'inner'")), "{msgs:?}");
     }
 }

@@ -34,6 +34,14 @@ declared HCL against live labeled state. Local cache is rebuildable.
 
 ## Open decisions
 
+- **HCL2 abstractions — `variable` and `module`**: `locals` shipped
+  (any per-city `.bid` can hoist shared scalars to the top). The two
+  other HCL2 top-level blocks are still rejected: `variable` (CLI /
+  env-driven inputs the same `.bid` can pivot on) and `module`
+  (parameterized resource bundles, the big lift that turns "a campaign
+  per city" into a single callable definition). Variable comes next
+  if the rezolutnie wave/service split needs CLI overrides;
+  `module` waits on a real multi-tree consumer.
 - Multi-account: how do `provider` blocks compose? One provider per
   file? Aliases? Today's `provider` block is single-customer, with the
   customer/login_customer ids overridable via env at `export` / `plan`

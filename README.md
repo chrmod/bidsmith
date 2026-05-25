@@ -142,6 +142,28 @@ resource "google_ads_ad_group_ad" "warszawa_rsa" {
 A 1025-line one-resource-per-keyword campaign comes out at 177 lines
 in this form. See [`examples/bulk/main.bid`](examples/bulk/main.bid).
 
+### Hoist repeated values with `locals`
+
+A `locals` block lets you name a constant once and reference it
+everywhere else in the file:
+
+```hcl
+locals {
+  daily_budget_micros = 10000000
+  city_radius_km      = 15
+  polish              = "languageConstants/1030"
+}
+
+resource "google_ads_campaign_budget" "shared" {
+  amount_micros = local.daily_budget_micros
+  ...
+}
+```
+
+References like `local.daily_budget_micros` resolve at validate / plan
+/ apply time, so type checks and the validateOnly mutate see the
+substituted value. See [`examples/locals/main.bid`](examples/locals/main.bid).
+
 ## Install
 
 ```sh

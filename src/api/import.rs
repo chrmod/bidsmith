@@ -11,7 +11,7 @@ use crate::commands::export::{
 };
 use crate::diagnostics::Diag;
 use crate::parser::ParsedFile;
-use crate::schema::{ResourceRegistry, Resolution};
+use crate::schema::{LocalsRegistry, ResourceRegistry, Resolution};
 
 pub struct ImportResult {
     pub input: ExportInput,
@@ -21,6 +21,7 @@ pub struct ImportResult {
 struct Ctx<'a> {
     file: &'a ParsedFile,
     registry: &'a ResourceRegistry,
+    locals: &'a LocalsRegistry,
 }
 
 impl<'a> Ctx<'a> {
@@ -37,10 +38,16 @@ impl<'a> Ctx<'a> {
             _ => bare.to_string(),
         }
     }
+
+    fn resolve_value<'b>(&'b self, expr: &'b Expression) -> &'b Expression {
+        self.locals.resolve_value(&self.file.module, expr)
+    }
 }
 
 pub fn import_files(files: &[ParsedFile]) -> Result<ImportResult, Vec<Diag>> {
     let (registry, mut diags) = ResourceRegistry::build(files);
+    let (locals, locals_diags) = LocalsRegistry::build(files);
+    diags.extend(locals_diags);
     let mut input = ExportInput {
         customer_id: String::new(),
         login_customer_id: None,
@@ -63,11 +70,12 @@ pub fn import_files(files: &[ParsedFile]) -> Result<ImportResult, Vec<Diag>> {
         let ctx = Ctx {
             file: f,
             registry: &registry,
+            locals: &locals,
         };
         for s in f.body.iter() {
             let Structure::Block(b) = s else { continue };
             match b.ident.as_str() {
-                "provider" => import_provider(f, b, &mut input, &mut diags),
+                "provider" => import_provider(&ctx, b, &mut input, &mut diags),
                 "resource" => {
                     if b.labels.len() != 2 {
                         continue;
@@ -174,7 +182,7 @@ pub fn import_files(files: &[ParsedFile]) -> Result<ImportResult, Vec<Diag>> {
 }
 
 fn import_provider(
-    file: &ParsedFile,
+    ctx: &Ctx,
     block: &Block,
     input: &mut ExportInput,
     diags: &mut Vec<Diag>,
@@ -186,12 +194,12 @@ fn import_provider(
         let Structure::Attribute(a) = s else { continue };
         match a.key.as_str() {
             "customer_id" => {
-                if let Some(v) = expect_string(file, a, diags) {
+                if let Some(v) = expect_string(ctx, a, diags) {
                     input.customer_id = v;
                 }
             }
             "login_customer_id" => {
-                if let Some(v) = expect_string(file, a, diags) {
+                if let Some(v) = expect_string(ctx, a, diags) {
                     input.login_customer_id = Some(v);
                 }
             }
@@ -209,10 +217,10 @@ fn import_budget(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonBudget, 
     for s in block.body.iter() {
         let Structure::Attribute(a) = s else { continue };
         match a.key.as_str() {
-            "name" => name = expect_string_owned(a),
-            "amount_micros" => amount = expect_i64(a),
-            "delivery_method" => delivery_method = expect_string_owned(a),
-            "explicitly_shared" => explicitly_shared = expect_bool(a),
+            "name" => name = expect_string_owned(ctx, a),
+            "amount_micros" => amount = expect_i64(ctx, a),
+            "delivery_method" => delivery_method = expect_string_owned(ctx, a),
+            "explicitly_shared" => explicitly_shared = expect_bool(ctx, a),
             _ => {}
         }
     }
@@ -240,16 +248,16 @@ fn import_campaign(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonCampai
     for s in block.body.iter() {
         match s {
             Structure::Attribute(a) => match a.key.as_str() {
-                "name" => name = expect_string_owned(a),
-                "status" => status = expect_string_owned(a),
-                "advertising_channel_type" => channel = expect_string_owned(a),
-                "campaign_budget" => budget_ref = extract_resource_ref(&a.value).map(|r| ctx.resolve_ref(&r)),
-                "contains_eu_political_advertising" => eu_political = expect_string_owned(a),
+                "name" => name = expect_string_owned(ctx, a),
+                "status" => status = expect_string_owned(ctx, a),
+                "advertising_channel_type" => channel = expect_string_owned(ctx, a),
+                "campaign_budget" => budget_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r)),
+                "contains_eu_political_advertising" => eu_political = expect_string_owned(ctx, a),
                 _ => {}
             },
             Structure::Block(b) => match b.ident.as_str() {
-                "manual_cpc" => manual_cpc = Some(import_manual_cpc(b)),
-                "network_settings" => network_settings = Some(import_network_settings(b)),
+                "manual_cpc" => manual_cpc = Some(import_manual_cpc(ctx, b)),
+                "network_settings" => network_settings = Some(import_network_settings(ctx, b)),
                 _ => {}
             },
         }
@@ -271,12 +279,12 @@ fn import_campaign(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonCampai
     })
 }
 
-fn import_manual_cpc(block: &Block) -> JsonManualCpc {
+fn import_manual_cpc(ctx: &Ctx, block: &Block) -> JsonManualCpc {
     let mut enhanced = None;
     for s in block.body.iter() {
         if let Structure::Attribute(a) = s {
             if a.key.as_str() == "enhanced_cpc_enabled" {
-                enhanced = expect_bool(a);
+                enhanced = expect_bool(ctx, a);
             }
         }
     }
@@ -285,7 +293,7 @@ fn import_manual_cpc(block: &Block) -> JsonManualCpc {
     }
 }
 
-fn import_network_settings(block: &Block) -> JsonNetworkSettings {
+fn import_network_settings(ctx: &Ctx, block: &Block) -> JsonNetworkSettings {
     let mut s = JsonNetworkSettings {
         target_google_search: None,
         target_search_network: None,
@@ -295,10 +303,10 @@ fn import_network_settings(block: &Block) -> JsonNetworkSettings {
     for st in block.body.iter() {
         if let Structure::Attribute(a) = st {
             match a.key.as_str() {
-                "target_google_search" => s.target_google_search = expect_bool(a),
-                "target_search_network" => s.target_search_network = expect_bool(a),
-                "target_content_network" => s.target_content_network = expect_bool(a),
-                "target_partner_search_network" => s.target_partner_search_network = expect_bool(a),
+                "target_google_search" => s.target_google_search = expect_bool(ctx, a),
+                "target_search_network" => s.target_search_network = expect_bool(ctx, a),
+                "target_content_network" => s.target_content_network = expect_bool(ctx, a),
+                "target_partner_search_network" => s.target_partner_search_network = expect_bool(ctx, a),
                 _ => {}
             }
         }
@@ -316,11 +324,11 @@ fn import_ad_group(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonAdGrou
     for s in block.body.iter() {
         let Structure::Attribute(a) = s else { continue };
         match a.key.as_str() {
-            "name" => name = expect_string_owned(a),
-            "campaign" => campaign_ref = extract_resource_ref(&a.value).map(|r| ctx.resolve_ref(&r)),
-            "status" => status = expect_string_owned(a),
-            "type" => ty = expect_string_owned(a),
-            "cpc_bid_micros" => cpc = expect_i64(a),
+            "name" => name = expect_string_owned(ctx, a),
+            "campaign" => campaign_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r)),
+            "status" => status = expect_string_owned(ctx, a),
+            "type" => ty = expect_string_owned(ctx, a),
+            "cpc_bid_micros" => cpc = expect_i64(ctx, a),
             _ => {}
         }
     }
@@ -349,12 +357,12 @@ fn import_ad_group_ad(
     for s in block.body.iter() {
         match s {
             Structure::Attribute(a) => match a.key.as_str() {
-                "ad_group" => ad_group_ref = extract_resource_ref(&a.value).map(|r| ctx.resolve_ref(&r)),
-                "status" => status = expect_string_owned(a),
+                "ad_group" => ad_group_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r)),
+                "status" => status = expect_string_owned(ctx, a),
                 _ => {}
             },
             Structure::Block(b) if b.ident.as_str() == "ad" => {
-                ad = Some(import_ad(b));
+                ad = Some(import_ad(ctx, b));
             }
             _ => {}
         }
@@ -370,7 +378,7 @@ fn import_ad_group_ad(
     })
 }
 
-fn import_ad(block: &Block) -> JsonAd {
+fn import_ad(ctx: &Ctx, block: &Block) -> JsonAd {
     let mut name = None;
     let mut final_urls: Vec<String> = Vec::new();
     let mut rsa = None;
@@ -378,12 +386,12 @@ fn import_ad(block: &Block) -> JsonAd {
     for s in block.body.iter() {
         match s {
             Structure::Attribute(a) => match a.key.as_str() {
-                "name" => name = expect_string_owned(a),
-                "final_urls" => final_urls = expect_string_list(&a.value),
+                "name" => name = expect_string_owned(ctx, a),
+                "final_urls" => final_urls = expect_string_list(ctx, &a.value),
                 _ => {}
             },
             Structure::Block(b) if b.ident.as_str() == "responsive_search_ad" => {
-                rsa = Some(import_rsa(b));
+                rsa = Some(import_rsa(ctx, b));
             }
             _ => {}
         }
@@ -396,7 +404,7 @@ fn import_ad(block: &Block) -> JsonAd {
     }
 }
 
-fn import_rsa(block: &Block) -> JsonResponsiveSearchAd {
+fn import_rsa(ctx: &Ctx, block: &Block) -> JsonResponsiveSearchAd {
     let mut path1 = None;
     let mut path2 = None;
     let mut headlines: Vec<JsonRsaAsset> = Vec::new();
@@ -405,20 +413,20 @@ fn import_rsa(block: &Block) -> JsonResponsiveSearchAd {
     for s in block.body.iter() {
         match s {
             Structure::Attribute(a) => match a.key.as_str() {
-                "path1" => path1 = expect_string_owned(a),
-                "path2" => path2 = expect_string_owned(a),
-                "headlines" => headlines.extend(import_rsa_asset_list(&a.value)),
-                "descriptions" => descriptions.extend(import_rsa_asset_list(&a.value)),
+                "path1" => path1 = expect_string_owned(ctx, a),
+                "path2" => path2 = expect_string_owned(ctx, a),
+                "headlines" => headlines.extend(import_rsa_asset_list(ctx, &a.value)),
+                "descriptions" => descriptions.extend(import_rsa_asset_list(ctx, &a.value)),
                 _ => {}
             },
             Structure::Block(b) => match b.ident.as_str() {
                 "headline" => {
-                    if let Some(asset) = import_rsa_asset(b) {
+                    if let Some(asset) = import_rsa_asset(ctx, b) {
                         headlines.push(asset);
                     }
                 }
                 "description" => {
-                    if let Some(asset) = import_rsa_asset(b) {
+                    if let Some(asset) = import_rsa_asset(ctx, b) {
                         descriptions.push(asset);
                     }
                 }
@@ -435,12 +443,12 @@ fn import_rsa(block: &Block) -> JsonResponsiveSearchAd {
     }
 }
 
-fn import_rsa_asset_list(value: &Expression) -> Vec<JsonRsaAsset> {
-    let Expression::Array(arr) = value else {
+fn import_rsa_asset_list(ctx: &Ctx, value: &Expression) -> Vec<JsonRsaAsset> {
+    let Expression::Array(arr) = ctx.resolve_value(value) else {
         return Vec::new();
     };
     arr.iter()
-        .filter_map(|item| match item {
+        .filter_map(|item| match ctx.resolve_value(item) {
             Expression::String(s) => Some(JsonRsaAsset {
                 text: s.as_str().to_string(),
                 pin: None,
@@ -450,7 +458,7 @@ fn import_rsa_asset_list(value: &Expression) -> Vec<JsonRsaAsset> {
                 let mut pin = None;
                 for (key, val) in obj.iter() {
                     let Some(ident) = key.as_ident() else { continue };
-                    match (ident.as_str(), val.expr()) {
+                    match (ident.as_str(), ctx.resolve_value(val.expr())) {
                         ("text", Expression::String(s)) => {
                             text = Some(s.as_str().to_string());
                         }
@@ -467,14 +475,14 @@ fn import_rsa_asset_list(value: &Expression) -> Vec<JsonRsaAsset> {
         .collect()
 }
 
-fn import_rsa_asset(block: &Block) -> Option<JsonRsaAsset> {
+fn import_rsa_asset(ctx: &Ctx, block: &Block) -> Option<JsonRsaAsset> {
     let mut text = None;
     let mut pin = None;
     for s in block.body.iter() {
         if let Structure::Attribute(a) = s {
             match a.key.as_str() {
-                "text" => text = expect_string_owned(a),
-                "pin" => pin = expect_string_owned(a),
+                "text" => text = expect_string_owned(ctx, a),
+                "pin" => pin = expect_string_owned(ctx, a),
                 _ => {}
             }
         }
@@ -497,20 +505,20 @@ fn import_ad_group_criterion(
     for s in block.body.iter() {
         match s {
             Structure::Attribute(a) => match a.key.as_str() {
-                "ad_group" => ad_group_ref = extract_resource_ref(&a.value).map(|r| ctx.resolve_ref(&r)),
-                "status" => status = expect_string_owned(a),
-                "negative" => negative = expect_bool(a),
-                "cpc_bid_micros" => cpc = expect_i64(a),
+                "ad_group" => ad_group_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r)),
+                "status" => status = expect_string_owned(ctx, a),
+                "negative" => negative = expect_bool(ctx, a),
+                "cpc_bid_micros" => cpc = expect_i64(ctx, a),
                 _ => {}
             },
             Structure::Block(b) => match b.ident.as_str() {
                 "keyword" => {
-                    if let Some(kw) = import_keyword(b) {
+                    if let Some(kw) = import_keyword(ctx, b) {
                         keywords.push(kw);
                     }
                 }
                 "negative_keyword" => {
-                    if let Some(kw) = import_keyword(b) {
+                    if let Some(kw) = import_keyword(ctx, b) {
                         negative_keywords.push(kw);
                     }
                 }
@@ -591,21 +599,21 @@ fn import_campaign_criterion(
     for s in block.body.iter() {
         match s {
             Structure::Attribute(a) => match a.key.as_str() {
-                "campaign" => campaign_ref = extract_resource_ref(&a.value).map(|r| ctx.resolve_ref(&r)),
-                "status" => status = expect_string_owned(a),
-                "negative" => negative = expect_bool(a),
+                "campaign" => campaign_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r)),
+                "status" => status = expect_string_owned(ctx, a),
+                "negative" => negative = expect_bool(ctx, a),
                 _ => {}
             },
             Structure::Block(b) => match b.ident.as_str() {
-                "keyword" => keyword = import_keyword(b),
+                "keyword" => keyword = import_keyword(ctx, b),
                 "negative_keyword" => {
-                    if let Some(kw) = import_keyword(b) {
+                    if let Some(kw) = import_keyword(ctx, b) {
                         bulk_negatives.push(kw);
                     }
                 }
-                "location" => location = import_location(b),
-                "language" => language = import_language(b),
-                "proximity" => proximity = import_proximity(b),
+                "location" => location = import_location(ctx, b),
+                "language" => language = import_language(ctx, b),
+                "proximity" => proximity = import_proximity(ctx, b),
                 _ => {}
             },
         }
@@ -653,14 +661,14 @@ fn import_campaign_criterion(
     }])
 }
 
-fn import_keyword(block: &Block) -> Option<JsonKeyword> {
+fn import_keyword(ctx: &Ctx, block: &Block) -> Option<JsonKeyword> {
     let mut text = None;
     let mut match_type = None;
     for s in block.body.iter() {
         if let Structure::Attribute(a) = s {
             match a.key.as_str() {
-                "text" => text = expect_string_owned(a),
-                "match_type" => match_type = expect_string_owned(a),
+                "text" => text = expect_string_owned(ctx, a),
+                "match_type" => match_type = expect_string_owned(ctx, a),
                 _ => {}
             }
         }
@@ -671,12 +679,12 @@ fn import_keyword(block: &Block) -> Option<JsonKeyword> {
     })
 }
 
-fn import_location(block: &Block) -> Option<JsonLocation> {
+fn import_location(ctx: &Ctx, block: &Block) -> Option<JsonLocation> {
     let mut geo = None;
     for s in block.body.iter() {
         if let Structure::Attribute(a) = s {
             if a.key.as_str() == "geo_target_constant" {
-                geo = expect_string_owned(a);
+                geo = expect_string_owned(ctx, a);
             }
         }
     }
@@ -685,12 +693,12 @@ fn import_location(block: &Block) -> Option<JsonLocation> {
     })
 }
 
-fn import_language(block: &Block) -> Option<JsonLanguage> {
+fn import_language(ctx: &Ctx, block: &Block) -> Option<JsonLanguage> {
     let mut lang = None;
     for s in block.body.iter() {
         if let Structure::Attribute(a) = s {
             if a.key.as_str() == "language_constant" {
-                lang = expect_string_owned(a);
+                lang = expect_string_owned(ctx, a);
             }
         }
     }
@@ -716,13 +724,13 @@ fn import_conversion_action(
     for s in block.body.iter() {
         match s {
             Structure::Attribute(a) => match a.key.as_str() {
-                "name" => name = expect_string_owned(a),
-                "type" => ty = expect_string_owned(a),
-                "category" => category = expect_string_owned(a),
-                "status" => status = expect_string_owned(a),
-                "counting_type" => counting_type = expect_string_owned(a),
-                "click_through_lookback_window_days" => click_lookback = expect_i64(a),
-                "view_through_lookback_window_days" => view_lookback = expect_i64(a),
+                "name" => name = expect_string_owned(ctx, a),
+                "type" => ty = expect_string_owned(ctx, a),
+                "category" => category = expect_string_owned(ctx, a),
+                "status" => status = expect_string_owned(ctx, a),
+                "counting_type" => counting_type = expect_string_owned(ctx, a),
+                "click_through_lookback_window_days" => click_lookback = expect_i64(ctx, a),
+                "view_through_lookback_window_days" => view_lookback = expect_i64(ctx, a),
                 _ => {}
             },
             Structure::Block(b) if b.ident.as_str() == "value_settings" => {
@@ -734,12 +742,12 @@ fn import_conversion_action(
                 for st in b.body.iter() {
                     if let Structure::Attribute(a) = st {
                         match a.key.as_str() {
-                            "default_value" => vs.default_value = expect_f64(a),
+                            "default_value" => vs.default_value = expect_f64(ctx, a),
                             "default_currency_code" => {
-                                vs.default_currency_code = expect_string_owned(a)
+                                vs.default_currency_code = expect_string_owned(ctx, a)
                             }
                             "always_use_default_value" => {
-                                vs.always_use_default_value = expect_bool(a)
+                                vs.always_use_default_value = expect_bool(ctx, a)
                             }
                             _ => {}
                         }
@@ -780,13 +788,13 @@ fn import_call_asset(
     for s in block.body.iter() {
         if let Structure::Attribute(a) = s {
             match a.key.as_str() {
-                "country_code" => country_code = expect_string_owned(a),
-                "phone_number" => phone_number = expect_string_owned(a),
-                "call_conversion_reporting_state" => reporting_state = expect_string_owned(a),
+                "country_code" => country_code = expect_string_owned(ctx, a),
+                "phone_number" => phone_number = expect_string_owned(ctx, a),
+                "call_conversion_reporting_state" => reporting_state = expect_string_owned(ctx, a),
                 "call_conversion_action" => {
-                    action_ref = extract_resource_ref(&a.value)
+                    action_ref = extract_resource_ref(ctx, &a.value)
                         .map(|r| ctx.resolve_ref(&r))
-                        .or_else(|| expect_string_owned(a));
+                        .or_else(|| expect_string_owned(ctx, a));
                 }
                 _ => {}
             }
@@ -814,9 +822,9 @@ fn import_customer_asset(
     for s in block.body.iter() {
         if let Structure::Attribute(a) = s {
             match a.key.as_str() {
-                "asset" => asset_ref = extract_resource_ref(&a.value).map(|r| ctx.resolve_ref(&r)),
-                "field_type" => field_type = expect_string_owned(a),
-                "status" => status = expect_string_owned(a),
+                "asset" => asset_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r)),
+                "field_type" => field_type = expect_string_owned(ctx, a),
+                "status" => status = expect_string_owned(ctx, a),
                 _ => {}
             }
         }
@@ -843,13 +851,13 @@ fn import_shared_set(
     for s in block.body.iter() {
         match s {
             Structure::Attribute(a) => match a.key.as_str() {
-                "name" => name = expect_string_owned(a),
-                "type" => ty = expect_string_owned(a),
-                "status" => status = expect_string_owned(a),
+                "name" => name = expect_string_owned(ctx, a),
+                "type" => ty = expect_string_owned(ctx, a),
+                "status" => status = expect_string_owned(ctx, a),
                 _ => {}
             },
             Structure::Block(b) if b.ident.as_str() == "negative_keyword" => {
-                if let Some(kw) = import_keyword(b) {
+                if let Some(kw) = import_keyword(ctx, b) {
                     negative_keywords.push(kw);
                 }
             }
@@ -877,13 +885,13 @@ fn import_shared_criterion(
         match s {
             Structure::Attribute(a) => {
                 if a.key.as_str() == "shared_set" {
-                    shared_set_ref = extract_resource_ref(&a.value)
+                    shared_set_ref = extract_resource_ref(ctx, &a.value)
                         .map(|r| ctx.resolve_ref(&r))
-                        .or_else(|| expect_string_owned(a));
+                        .or_else(|| expect_string_owned(ctx, a));
                 }
             }
             Structure::Block(b) if b.ident.as_str() == "keyword" => {
-                if let Some(kw) = import_keyword(b) {
+                if let Some(kw) = import_keyword(ctx, b) {
                     keyword = Some(kw);
                 }
             }
@@ -912,16 +920,16 @@ fn import_campaign_shared_set(
         let Structure::Attribute(a) = s else { continue };
         match a.key.as_str() {
             "campaign" => {
-                campaign_ref = extract_resource_ref(&a.value)
+                campaign_ref = extract_resource_ref(ctx, &a.value)
                     .map(|r| ctx.resolve_ref(&r))
-                    .or_else(|| expect_string_owned(a));
+                    .or_else(|| expect_string_owned(ctx, a));
             }
             "shared_set" => {
-                shared_set_ref = extract_resource_ref(&a.value)
+                shared_set_ref = extract_resource_ref(ctx, &a.value)
                     .map(|r| ctx.resolve_ref(&r))
-                    .or_else(|| expect_string_owned(a));
+                    .or_else(|| expect_string_owned(ctx, a));
             }
-            "status" => status = expect_string_owned(a),
+            "status" => status = expect_string_owned(ctx, a),
             _ => {}
         }
     }
@@ -935,7 +943,7 @@ fn import_campaign_shared_set(
     })
 }
 
-fn import_proximity(block: &Block) -> Option<JsonProximity> {
+fn import_proximity(ctx: &Ctx, block: &Block) -> Option<JsonProximity> {
     let mut radius = None;
     let mut units = None;
     let mut latitude = None;
@@ -943,10 +951,10 @@ fn import_proximity(block: &Block) -> Option<JsonProximity> {
     for s in block.body.iter() {
         if let Structure::Attribute(a) = s {
             match a.key.as_str() {
-                "latitude" => latitude = expect_f64(a),
-                "longitude" => longitude = expect_f64(a),
-                "radius" => radius = expect_f64(a),
-                "radius_units" => units = expect_string_owned(a),
+                "latitude" => latitude = expect_f64(ctx, a),
+                "longitude" => longitude = expect_f64(ctx, a),
+                "radius" => radius = expect_f64(ctx, a),
+                "radius_units" => units = expect_string_owned(ctx, a),
                 _ => {}
             }
         }
@@ -959,12 +967,12 @@ fn import_proximity(block: &Block) -> Option<JsonProximity> {
     })
 }
 
-fn expect_string(file: &ParsedFile, attr: &Attribute, diags: &mut Vec<Diag>) -> Option<String> {
-    if let Expression::String(s) = &attr.value {
+fn expect_string(ctx: &Ctx, attr: &Attribute, diags: &mut Vec<Diag>) -> Option<String> {
+    if let Expression::String(s) = ctx.resolve_value(&attr.value) {
         Some(s.as_str().to_string())
     } else {
         diags.push(Diag::new(
-            file.src.clone(),
+            ctx.file.src.clone(),
             span_of(attr.key.span()),
             format!("expected string value for '{}'", attr.key.as_str()),
         ));
@@ -972,45 +980,45 @@ fn expect_string(file: &ParsedFile, attr: &Attribute, diags: &mut Vec<Diag>) -> 
     }
 }
 
-fn expect_string_owned(attr: &Attribute) -> Option<String> {
-    if let Expression::String(s) = &attr.value {
+fn expect_string_owned(ctx: &Ctx, attr: &Attribute) -> Option<String> {
+    if let Expression::String(s) = ctx.resolve_value(&attr.value) {
         Some(s.as_str().to_string())
     } else {
         None
     }
 }
 
-fn expect_i64(attr: &Attribute) -> Option<i64> {
-    if let Expression::Number(n) = &attr.value {
+fn expect_i64(ctx: &Ctx, attr: &Attribute) -> Option<i64> {
+    if let Expression::Number(n) = ctx.resolve_value(&attr.value) {
         n.as_f64().map(|f| f as i64)
     } else {
         None
     }
 }
 
-fn expect_f64(attr: &Attribute) -> Option<f64> {
-    if let Expression::Number(n) = &attr.value {
+fn expect_f64(ctx: &Ctx, attr: &Attribute) -> Option<f64> {
+    if let Expression::Number(n) = ctx.resolve_value(&attr.value) {
         n.as_f64()
     } else {
         None
     }
 }
 
-fn expect_bool(attr: &Attribute) -> Option<bool> {
-    if let Expression::Bool(b) = &attr.value {
+fn expect_bool(ctx: &Ctx, attr: &Attribute) -> Option<bool> {
+    if let Expression::Bool(b) = ctx.resolve_value(&attr.value) {
         Some(*b.as_ref())
     } else {
         None
     }
 }
 
-fn expect_string_list(value: &Expression) -> Vec<String> {
-    let Expression::Array(arr) = value else {
+fn expect_string_list(ctx: &Ctx, value: &Expression) -> Vec<String> {
+    let Expression::Array(arr) = ctx.resolve_value(value) else {
         return Vec::new();
     };
     arr.iter()
         .filter_map(|item| {
-            if let Expression::String(s) = item {
+            if let Expression::String(s) = ctx.resolve_value(item) {
                 Some(s.as_str().to_string())
             } else {
                 None
@@ -1019,8 +1027,8 @@ fn expect_string_list(value: &Expression) -> Vec<String> {
         .collect()
 }
 
-fn extract_resource_ref(value: &Expression) -> Option<String> {
-    let Expression::Traversal(t) = value else {
+fn extract_resource_ref(ctx: &Ctx, value: &Expression) -> Option<String> {
+    let Expression::Traversal(t) = ctx.resolve_value(value) else {
         return None;
     };
     let path = extract_traversal_path(t)?;
