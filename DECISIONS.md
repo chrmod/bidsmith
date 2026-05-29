@@ -137,6 +137,15 @@ resource type, any file layout, modules, schema validation.
   `validateOnly=false`. Mutates are sent in dependency order (budgets
   → campaigns → ad_groups → ads → criteria) inside one atomic batch.
   If validateOnly rejects anything, the real mutate is skipped.
+- **License**: MPL-2.0 (Mozilla Public License 2.0). Weak, file-level
+  copyleft — the license Terraform itself shipped under for its entire
+  open-source life. Using bidsmith (CLI, CI, managing clients'
+  accounts) carries zero obligations; only modifications to bidsmith's
+  own source files, once distributed, must stay open. Chosen over AGPL
+  (corporate-adoption chill, and no dual-licensing desk wanted) and
+  over permissive MIT/Apache (MPL keeps improvements to the tool itself
+  open). Supersedes the earlier `license = "MIT"` placeholder; full
+  text in `LICENSE`, declared as `license = "MPL-2.0"` in `Cargo.toml`.
 
 ## Current state
 

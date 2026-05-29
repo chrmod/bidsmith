@@ -302,4 +302,6 @@ Requires Rust 1.89+. The release binary is around 1.3 MB.
 
 ## License
 
-MIT
+Bidsmith is licensed under the [Mozilla Public License 2.0](LICENSE) (MPL-2.0).
+
+Using bidsmith carries no obligations — run it anywhere, including in CI pipelines and for managing clients' accounts, personal or commercial. MPL's copyleft is narrow and file-level: only if you modify bidsmith's own source files *and* distribute the result must those modified files stay open under MPL. It does not extend to your `.bid` files, your scripts, or anything that merely invokes bidsmith.

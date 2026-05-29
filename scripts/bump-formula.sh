@@ -32,7 +32,7 @@ class Bidsmith < Formula
   desc "Declarative, AI-friendly tooling for Google Ads campaigns"
   homepage "https://github.com/chrmod/bidsmith"
   version "${VERSION}"
-  license "MIT"
+  license "MPL-2.0"
 
   on_macos do
     on_arm do
