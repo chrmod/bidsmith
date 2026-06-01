@@ -93,11 +93,11 @@ follow-up questions. The most common ones:
 
 | Question | Where the design doc answers it |
 |---|---|
-| "Who runs the tool?" | §2.2 — your `who_uses_it_operators` field. |
-| "What endpoints do you call?" | §4.1 endpoint table — auto-generated from bidsmith's source. |
-| "How do you protect against accidental mass updates?" | §9.1 plan-before-apply — the explicit `yes` prompt is the central safety property. |
-| "How do you store credentials?" | §7 — env vars only, access tokens process-memory only, no on-disk credential cache. |
-| "Do you re-sell or expose this to other advertisers?" | §2.3 — "Who does *not* use it." |
+| "Who runs the tool?" | §2 — your `who_uses_it_operators` field. |
+| "What endpoints do you call?" | §4 endpoint table — auto-generated from bidsmith's source. |
+| "How do you protect against accidental mass updates?" | §3 plan-before-apply — the explicit `yes` prompt is the central safety property. |
+| "How do you store credentials?" | §6 — env vars only, access tokens process-memory only, no on-disk credential cache. |
+| "Do you re-sell or expose this to other advertisers?" | §1 and §2 — single-tenant, not multi-tenant, no third-party access. |
 
 If Google asks for a revised submission, edit `design-doc.toml`,
 re-run `bidsmith design-doc render`, re-print the PDF, and attach the

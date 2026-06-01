@@ -92,7 +92,7 @@ bidsmith design-doc render [--config design-doc.toml] [--output design-doc.html]
 
 None for the config or template, but the rendered doc reflects bidsmith's
 runtime API version. If you've set `BIDSMITH_API_VERSION` to override
-the default (`v22`), §4.1 of the rendered doc will show that override.
+the default (`v22`), §4 of the rendered doc will show that override.
 
 ## Exit codes
 
@@ -105,18 +105,16 @@ the default (`v22`), §4.1 of the rendered doc will show that override.
 
 | Section of the doc | Source |
 |---|---|
-| §1 Executive summary (applicant references) | `applicant_legal_entity` from TOML |
-| §2.1 Why this tool exists | `why_this_tool_exists` from TOML |
-| §2.2 Operator population | `who_uses_it_operators` from TOML |
-| §3.1 Module list | Hardcoded in bidsmith source — kept in sync via the lockstep rule below |
-| §4.1 Endpoints + API version | `crate::api::client::api_version()` and the actual HTTP call sites |
-| §4.2 GAQL query list | `crate::api::live_state::QUERIES` — iterated, count derived |
-| §4.4 Frequency and volume | Stock estimates; override `volume_typical_per_day` / `volume_ceiling` in TOML if your usage differs |
-| §6 RMF mapping | Hardcoded — universal for any bidsmith user |
-| §7 Authentication | Universal description of bidsmith's OAuth flow |
-| §9 Safety properties | Universal — describes the plan/apply contract |
-| §11 Roadmap and current status | Hardcoded; reflects bidsmith's release status |
-| §12 Contact | `contact_name`, `contact_email`, `company_url` from TOML |
+| §1 Summary (applicant references) | `applicant_legal_entity` from TOML |
+| §2 Why we need API access | `why_this_tool_exists` from TOML |
+| §2 Operator population | `who_uses_it_operators` from TOML |
+| §3 How it works (plan/apply safety) | Universal — describes the read/write boundary and plan/apply contract |
+| §4 Endpoints + API version | `crate::api::client::api_version()` and the actual HTTP call sites |
+| §4 GAQL query list | `crate::api::live_state::QUERIES` — iterated, count derived |
+| §4 Operation volume | Stock estimates; override `volume_typical_per_day` / `volume_ceiling` in TOML if your usage differs |
+| §5 RMF mapping | Hardcoded — universal for any bidsmith user |
+| §6 Authentication and data handling | Universal description of bidsmith's OAuth flow and data handling |
+| §8 Contact | `contact_name`, `contact_email`, `company_url` from TOML |
 
 <Aside type="caution" title="Don't reuse stock paragraphs verbatim">
   The biggest reason API applications get rejected is that the design

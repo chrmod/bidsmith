@@ -68,7 +68,7 @@ hidden `_e2e-cleanup` subcommand.
   `src/commands/design_doc.rs`. When you change the API surface
   (endpoints, version, mutate / search-stream call sites, the
   `pub const QUERIES` list in `src/api/live_state.rs`, the RMF
-  mapping, or the plan-before-apply flow described in §9.1 of the
+  mapping, or the plan-before-apply flow described in §3 of the
   doc), update the matching section of the template or the matching
   constant in `design_doc.rs` in the same commit. The unit test
   `render_with_fixture_produces_personalized_html` enforces that the

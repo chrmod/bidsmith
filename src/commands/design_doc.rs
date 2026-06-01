@@ -155,12 +155,6 @@ fn validate_config(cfg: &DesignDocConfig) -> Result<(), String> {
 }
 
 #[derive(Serialize)]
-struct Module {
-    path: &'static str,
-    description: &'static str,
-}
-
-#[derive(Serialize)]
 struct Endpoint {
     endpoint: String,
     method: &'static str,
@@ -177,14 +171,6 @@ struct GaqlQuery {
 struct RmfRow {
     requirement: &'static str,
     satisfied_by: &'static str,
-}
-
-#[derive(Serialize)]
-struct CommandRow {
-    command: &'static str,
-    status: &'static str,
-    status_class: &'static str,
-    notes: &'static str,
 }
 
 #[derive(Serialize)]
@@ -208,12 +194,10 @@ struct Context {
     who_uses_it_operators: String,
     volume_typical_per_day: String,
     volume_ceiling: String,
-    modules: Vec<Module>,
     endpoints: Vec<Endpoint>,
     gaql_queries: Vec<GaqlQuery>,
     gaql_query_count: usize,
     rmf_table: Vec<RmfRow>,
-    command_status: Vec<CommandRow>,
 }
 
 fn build_context(cfg: &DesignDocConfig) -> Context {
@@ -270,12 +254,10 @@ fn build_context(cfg: &DesignDocConfig) -> Context {
         who_uses_it_operators: html_escape(&cfg.who_uses_it_operators),
         volume_typical_per_day: html_escape(&cfg.volume_typical_per_day),
         volume_ceiling: html_escape(&cfg.volume_ceiling),
-        modules: modules(),
         endpoints,
         gaql_queries,
         gaql_query_count,
         rmf_table: rmf_table(),
-        command_status: command_status(),
     }
 }
 
@@ -343,22 +325,6 @@ fn unix_days_to_ymd(days: i64) -> (i32, u32, u32) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     (y as i32, m, d)
-}
-
-fn modules() -> Vec<Module> {
-    vec![
-        Module { path: "src/parser.rs", description: "HCL2 parsing (via hcl-edit), preserving source spans for diagnostic rendering." },
-        Module { path: "src/schema.rs", description: "Typed resource registry, type system (string, integer, number, bool, enum, ref, list<T>), two-pass validation (collect addresses, then walk)." },
-        Module { path: "src/lint.rs", description: "Soft-issue warnings: missing status, RSA headline/description minimums, phone-number patterns in headlines, suspicious language constants. Warnings only — never fails a build." },
-        Module { path: "src/diagnostics.rs", description: "Miette-backed source-mapped error rendering for parse / schema / lint diagnostics." },
-        Module { path: "src/api/auth.rs", description: "OAuth refresh-token → access-token exchange (process-memory only; access tokens never written to disk)." },
-        Module { path: "src/api/client.rs", description: "REST-over-reqwest wrapper for googleAds:mutate and googleAds:searchStream." },
-        Module { path: "src/api/live_state.rs", description: "Hand-written GAQL queries that populate an in-memory ExportInput from the live account." },
-        Module { path: "src/api/cache.rs", description: "Project-local on-disk cache of the most recent live-state fetch (configuration only; no credentials)." },
-        Module { path: "src/api/diff.rs", description: "Declared-vs-live diff producing Create / NoOp / Update(fields) per resource." },
-        Module { path: "src/api/mutate.rs", description: "Diff report → Google Ads mutate body, in dependency order (budgets → campaigns → ad_groups → ads → criteria), one atomic batch." },
-        Module { path: "src/commands/{plan,apply,query,export,fmt,validate,pull,refresh,schema,design_doc}.rs", description: "Top-level CLI commands." },
-    ]
 }
 
 fn rmf_table() -> Vec<RmfRow> {
@@ -543,19 +509,4 @@ mod tests {
             .expect_err("unfilled init template should fail validation");
         assert!(err.contains("applicant_legal_entity"), "{err}");
     }
-}
-
-fn command_status() -> Vec<CommandRow> {
-    vec![
-        CommandRow { command: "validate", status: "working", status_class: "ok", notes: "Parse + schema + lints, fully local." },
-        CommandRow { command: "fmt", status: "working", status_class: "ok", notes: "Idempotent canonical re-emitter." },
-        CommandRow { command: "export", status: "working", status_class: "ok", notes: "JSON → <code>.bid</code> (testing aid)." },
-        CommandRow { command: "query", status: "working", status_class: "ok", notes: "Read-only GAQL passthrough." },
-        CommandRow { command: "plan", status: "working", status_class: "ok", notes: "Fetch live + diff + validateOnly batch." },
-        CommandRow { command: "apply", status: "working", status_class: "ok", notes: "Plan + prompt + real mutate; <code>--auto-approve</code> skips the prompt." },
-        CommandRow { command: "refresh", status: "working", status_class: "ok", notes: "Pulls live state and writes it back to <code>.bid</code> files; never mutates the API." },
-        CommandRow { command: "pull", status: "working", status_class: "ok", notes: "Dumps live state as raw <code>searchStream</code> JSON. Read-only." },
-        CommandRow { command: "schema", status: "working", status_class: "ok", notes: "Emits the resource schema as JSON for tooling and docs." },
-        CommandRow { command: "design-doc", status: "working", status_class: "ok", notes: "Generates this document from a TOML config and live bidsmith internals." },
-    ]
 }
