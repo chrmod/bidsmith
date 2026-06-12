@@ -5,6 +5,7 @@ use hcl_edit::expr::{Expression, Traversal, TraversalOperator};
 use hcl_edit::structure::{Block, Body, Structure};
 
 use crate::parser::parse_file;
+use crate::program::collect_bid_files;
 
 pub fn run(target: &str, check: bool) -> ExitCode {
     let target = Path::new(target);
@@ -13,15 +14,11 @@ pub fn run(target: &str, check: bool) -> ExitCode {
         return ExitCode::from(1);
     }
 
-    let files: Vec<PathBuf> = if target.is_file() {
-        vec![target.to_path_buf()]
-    } else {
-        match collect_bid_files(target) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("{e}");
-                return ExitCode::from(1);
-            }
+    let files: Vec<PathBuf> = match collect_bid_files(target) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::from(1);
         }
     };
 
@@ -88,32 +85,6 @@ pub fn run(target: &str, check: bool) -> ExitCode {
         }
         ExitCode::SUCCESS
     }
-}
-
-fn collect_bid_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut out = Vec::new();
-    walk(dir, &mut out).map_err(|e| format!("failed to walk {}: {e}", dir.display()))?;
-    out.sort();
-    Ok(out)
-}
-
-fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str.starts_with('.') || name_str == "node_modules" || name_str == "target" {
-            continue;
-        }
-        let path = entry.path();
-        let ft = entry.file_type()?;
-        if ft.is_dir() {
-            walk(&path, out)?;
-        } else if ft.is_file() && path.extension().and_then(|e| e.to_str()) == Some("bid") {
-            out.push(path);
-        }
-    }
-    Ok(())
 }
 
 pub fn format_body(body: &Body) -> String {
