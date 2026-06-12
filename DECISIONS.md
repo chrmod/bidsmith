@@ -140,6 +140,23 @@ resource type, any file layout, modules, schema validation.
   in `.bidsmith/cache/` (mode `0600`) — the **refresh and developer
   tokens** live solely in `~/.bidsmith/credentials.toml`.
   `--customer-id` / `--login-customer-id` flags still override.
+- **Project config (`bidsmith.toml`)**: a committable, per-project file
+  at the project root (found by searching upward from the working
+  directory) supplies the *routing* axis — `customer_id`,
+  `login_customer_id`, and optionally `developer_token`. It sits in the
+  resolver between env and the global credentials file. Full target
+  precedence: env var → `bidsmith.toml` → `.bid` provider block → global
+  `~/.bidsmith/credentials.toml`. This is how multi-account works without
+  env juggling: one global sign-in (the refresh token spans the user's
+  whole Google identity), and each client folder declares its own
+  account/MCC. Only the ids are non-secret and meant to be committed; a
+  developer token placed here should be gitignored. Consequently the
+  provider block's `customer_id` is now **optional** — `.bid` files can be
+  account-agnostic and take their target from `bidsmith.toml`/env. The
+  resolved target is authoritative end-to-end (the importer merges the
+  precedence and the live client is built from that value via
+  `Client::for_target`), removing the prior footgun where the provider
+  block's `customer_id` was silently overwritten by the env for live runs.
 - **Plan = dry-run diff against live**: `plan` always fetches live
   state via `googleAds:searchStream`, matches by name with parent
   cascade, computes scalar field-level drift, and sends one
@@ -400,9 +417,10 @@ Validator covers (so far):
   reference removed or out-of-scope conversion actions still
   round-trip), `google_ads_customer_asset` (links
   a call asset to the account via `field_type = "CALL"`)
-- `provider "google_ads"` (`customer_id` required, `login_customer_id`
-  optional — overridable via `--login-customer-id` / `--customer-id` on
-  `export`)
+- `provider "google_ads"` (`customer_id` optional — resolved from
+  `bidsmith.toml` / env / global credentials when omitted, so `.bid`
+  files can be account-agnostic; `login_customer_id` optional —
+  overridable via `--login-customer-id` / `--customer-id` on `export`)
 - Type system: `string`, `integer`, `number`, `bool`, `enum<…>`,
   `ref<targets>`, `list<T>` (recurses into each element)
 - Two-pass validation: collect addresses, then walk each block.

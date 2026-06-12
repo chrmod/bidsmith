@@ -15,12 +15,15 @@ block; convention is to put it at the top of your top-level
 `account.bid` (or in the first file of a single-file project).
 
 <Aside type="note">
-  The `customer_id` and `login_customer_id` you set here are *defaults*.
-  They can be overridden per-invocation with `--customer-id` /
-  `--login-customer-id` on `plan`, `apply`, and `export`, or via the
-  `GOOGLE_ADS_CUSTOMER_ID` / `GOOGLE_ADS_LOGIN_CUSTOMER_ID` environment
-  variables. The env vars are the recommended path — they keep account
-  IDs out of Git when that matters.
+  `customer_id` is optional here. For live commands the target account
+  resolves in order: `GOOGLE_ADS_CUSTOMER_ID` env var →
+  [`bidsmith.toml`](/bidsmith/recipes/manage-multiple-accounts/) in your
+  project → this provider block → your saved sign-in. Leave it out of the
+  provider block to keep `.bid` files account-agnostic and target them
+  with a per-folder `bidsmith.toml` — ideal when one set of campaigns is
+  applied to several accounts. (`export` also accepts `--customer-id` /
+  `--login-customer-id`; `plan` and `apply` do not — use `bidsmith.toml`
+  or the env vars for those.)
 </Aside>
 
 ## Example

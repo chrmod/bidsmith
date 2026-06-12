@@ -143,6 +143,10 @@ provider "google_ads" {
 
 Use one of the 10-digit IDs `auth status` printed (drop the dashes).
 
+Managing several accounts at once? Put the routing in a per-folder
+[`bidsmith.toml`](/bidsmith/recipes/manage-multiple-accounts/) instead, so
+your `.bid` files stay account-agnostic and one sign-in covers them all.
+
 ## The environment-variable way (CI and power users)
 
 `auth login` writes a file; CI usually can't do a browser sign-in. For

@@ -51,6 +51,7 @@ export default defineConfig({
             { label: 'Roll back a bad change', slug: 'recipes/roll-back-a-bad-change' },
             { label: 'Audit who changed what, when', slug: 'recipes/audit-who-changed-what' },
             { label: 'Cut Google Ads API quota usage', slug: 'recipes/reduce-api-calls' },
+            { label: 'Manage multiple client accounts', slug: 'recipes/manage-multiple-accounts' },
           ],
         },
         {

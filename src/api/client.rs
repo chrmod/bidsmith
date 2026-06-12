@@ -36,13 +36,31 @@ pub struct Client {
 impl Client {
     pub fn from_env() -> Result<Self, ApiError> {
         let resolved = creds::Resolved::load();
-        let customer_id = resolved
-            .customer_id()
-            .ok_or(ApiError::MissingCred("customer id (GOOGLE_ADS_CUSTOMER_ID)"))?;
-        let developer_token = resolved
-            .developer_token()
-            .ok_or(ApiError::MissingCred("developer token (GOOGLE_ADS_DEVELOPER_TOKEN)"))?;
-        let login_customer_id = resolved.login_customer_id();
+        let customer_id = resolved.customer_id().ok_or(ApiError::MissingCred(
+            "customer id (provider block, bidsmith.toml, or GOOGLE_ADS_CUSTOMER_ID)",
+        ))?;
+        Self::build(customer_id, resolved.login_customer_id())
+    }
+
+    /// Build a client aimed at an explicitly resolved target, used by `plan` /
+    /// `apply` where the customer/login ids come from the `.bid` provider block,
+    /// `bidsmith.toml`, or the environment (already merged by the importer).
+    pub fn for_target(
+        customer_id: &str,
+        login_customer_id: Option<&str>,
+    ) -> Result<Self, ApiError> {
+        if customer_id.is_empty() {
+            return Err(ApiError::MissingCred(
+                "customer id (provider block, bidsmith.toml, or GOOGLE_ADS_CUSTOMER_ID)",
+            ));
+        }
+        Self::build(customer_id.to_string(), login_customer_id.map(str::to_string))
+    }
+
+    fn build(customer_id: String, login_customer_id: Option<String>) -> Result<Self, ApiError> {
+        let developer_token = creds::Resolved::load().developer_token().ok_or(
+            ApiError::MissingCred("developer token (bidsmith.toml or GOOGLE_ADS_DEVELOPER_TOKEN)"),
+        )?;
         Ok(Self {
             http: reqwest::blocking::Client::builder()
                 .user_agent(USER_AGENT)

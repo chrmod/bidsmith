@@ -42,11 +42,16 @@ declared HCL against live labeled state. Local cache is rebuildable.
   = … }`, multi-file directory sources, `source =
   "github.com/org/repo//path?ref=v1"`) waits on real users hitting
   the boundaries.
-- Multi-account: how do `provider` blocks compose? One provider per
-  file? Aliases? Today's `provider` block is single-customer, with the
-  customer/login_customer ids overridable via env at `export` / `plan`
-  / `apply` time — works for the rezolutnie loop but needs revisiting
-  before bidsmith manages multiple customers in one tree.
+- Multi-account: how do `provider` blocks compose? **Partially
+  resolved:** a per-project `bidsmith.toml` (`customer_id` /
+  `login_customer_id` / optional `developer_token`) now supplies the
+  target per folder, the provider block's `customer_id` is optional, and
+  the resolved target drives the live client end-to-end — so
+  account-agnostic `.bid` files are applied to different accounts by
+  `cd`-ing into the right folder (target precedence: env → `bidsmith.toml`
+  → provider block → global credentials). Still open: in-tree provider
+  aliases / a single command spanning several customers in one run, and
+  how that composes with modules.
 - Lint catalog: starter set shipped (missing `status`, RSA min
   headlines/descriptions, phone-in-RSA). Still open: missing-negatives
   on search campaigns, declension hints for PL, RSA pinning advice,

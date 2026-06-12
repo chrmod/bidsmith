@@ -179,18 +179,16 @@ pub fn prepare(
             Err(code) => return Err(code),
         }
     } else {
-        let client = match client::Client::from_env() {
+        let client = match client::Client::for_target(
+            &imported.input.customer_id,
+            imported.input.login_customer_id.as_deref(),
+        ) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("{label}: {e}");
                 return Err(ExitCode::from(1));
             }
         };
-
-        imported.input.customer_id = client.customer_id.clone();
-        if let Some(login) = &client.login_customer_id {
-            imported.input.login_customer_id = Some(login.clone());
-        }
 
         let token = match auth::get_access_token() {
             Ok(t) => t,
@@ -250,20 +248,15 @@ fn load_live_from_cache(
     declared: &mut ExportInput,
 ) -> Result<ExportInput, ExitCode> {
     use crate::api::cache;
-    let resolved = crate::api::creds::Resolved::load();
-    let customer_id = match resolved.customer_id() {
-        Some(v) => v,
-        None => {
-            eprintln!(
-                "{label}: --offline still needs a customer id (provider block, --customer-id, \
-                 GOOGLE_ADS_CUSTOMER_ID, or `bidsmith auth login`) to find the right cache entry."
-            );
-            return Err(ExitCode::from(1));
-        }
-    };
-    let login = resolved.login_customer_id();
-    declared.customer_id = customer_id.clone();
-    declared.login_customer_id = login.clone();
+    if declared.customer_id.is_empty() {
+        eprintln!(
+            "{label}: --offline still needs a customer id (provider block, bidsmith.toml, \
+             GOOGLE_ADS_CUSTOMER_ID, or `bidsmith auth login`) to find the right cache entry."
+        );
+        return Err(ExitCode::from(1));
+    }
+    let customer_id = declared.customer_id.clone();
+    let login = declared.login_customer_id.clone();
 
     let cache_dir = cache::project_cache_dir();
     let api_v = client::api_version();

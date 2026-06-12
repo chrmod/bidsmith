@@ -109,7 +109,10 @@ pub fn run_login(
 
 pub fn run_status() -> ExitCode {
     let r = creds::Resolved::load();
-    println!("Credentials (env var > {} > built-in):", creds::credentials_path().display());
+    println!(
+        "Credentials (env var > bidsmith.toml > {} > built-in):",
+        creds::credentials_path().display(),
+    );
     print_field("client_id", r.client_id().as_deref(), false);
     print_field("client_secret", r.client_secret().as_deref(), true);
     print_field("refresh_token", r.refresh_token().as_deref(), true);

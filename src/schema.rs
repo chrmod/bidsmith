@@ -619,7 +619,7 @@ fn provider_schemas() -> &'static HashMap<&'static str, BlockSchema> {
             "google_ads",
             BlockSchema {
                 attributes: vec![
-                    attr("customer_id", FieldType::String, true),
+                    attr("customer_id", FieldType::String, false),
                     attr("login_customer_id", FieldType::String, false),
                 ],
                 blocks: vec![],

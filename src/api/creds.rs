@@ -79,9 +79,59 @@ impl StoredCreds {
     }
 }
 
+pub const PROJECT_CONFIG_NAME: &str = "bidsmith.toml";
+
+/// Per-project, committable routing config, searched for upward from the
+/// current directory. Holds non-secret values (the account + manager ids).
+/// A developer token is accepted too, but it is a secret — gitignore the file
+/// if you put one here.
+#[derive(Default, Deserialize)]
+pub struct ProjectConfig {
+    #[serde(default)]
+    pub customer_id: Option<String>,
+    #[serde(default)]
+    pub login_customer_id: Option<String>,
+    #[serde(default)]
+    pub developer_token: Option<String>,
+}
+
+pub fn find_project_config() -> Option<PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let candidate = dir.join(PROJECT_CONFIG_NAME);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+impl ProjectConfig {
+    pub fn load() -> Self {
+        let Some(path) = find_project_config() else {
+            return Self::default();
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(raw) => toml::from_str(&raw).unwrap_or_default(),
+            Err(_) => Self::default(),
+        }
+    }
+}
+
 /// env var > stored file > built-in default.
 fn choose(env_val: Option<String>, stored: Option<&String>, default: Option<String>) -> Option<String> {
     env_val.or_else(|| stored.cloned()).or(default)
+}
+
+/// env var > project config > global stored file. For per-project routing.
+fn choose3(
+    env_val: Option<String>,
+    project: Option<&String>,
+    stored: Option<&String>,
+) -> Option<String> {
+    env_val.or_else(|| project.cloned()).or_else(|| stored.cloned())
 }
 
 /// A refresh token only works with the OAuth client that minted it. If the
@@ -107,11 +157,15 @@ fn detect_mismatch(
 /// env vars, the stored file, and the built-in default client.
 pub struct Resolved {
     pub stored: StoredCreds,
+    pub project: ProjectConfig,
 }
 
 impl Resolved {
     pub fn load() -> Self {
-        Self { stored: StoredCreds::load() }
+        Self {
+            stored: StoredCreds::load(),
+            project: ProjectConfig::load(),
+        }
     }
 
     pub fn client_id(&self) -> Option<String> {
@@ -143,26 +197,26 @@ impl Resolved {
     }
 
     pub fn developer_token(&self) -> Option<String> {
-        choose(
+        choose3(
             env_nonempty("GOOGLE_ADS_DEVELOPER_TOKEN"),
+            self.project.developer_token.as_ref(),
             self.stored.developer_token.as_ref(),
-            None,
         )
     }
 
     pub fn login_customer_id(&self) -> Option<String> {
-        choose(
+        choose3(
             env_nonempty("GOOGLE_ADS_LOGIN_CUSTOMER_ID"),
+            self.project.login_customer_id.as_ref(),
             self.stored.login_customer_id.as_ref(),
-            None,
         )
     }
 
     pub fn customer_id(&self) -> Option<String> {
-        choose(
+        choose3(
             env_nonempty("GOOGLE_ADS_CUSTOMER_ID"),
+            self.project.customer_id.as_ref(),
             self.stored.customer_id.as_ref(),
-            None,
         )
     }
 
@@ -201,6 +255,22 @@ mod tests {
             Some("default"),
         );
         assert_eq!(choose(None, None, None), None);
+    }
+
+    #[test]
+    fn choose3_precedence_env_then_project_then_stored() {
+        let project = "project".to_string();
+        let stored = "stored".to_string();
+        assert_eq!(
+            choose3(Some("env".into()), Some(&project), Some(&stored)).as_deref(),
+            Some("env"),
+        );
+        assert_eq!(
+            choose3(None, Some(&project), Some(&stored)).as_deref(),
+            Some("project"),
+        );
+        assert_eq!(choose3(None, None, Some(&stored)).as_deref(), Some("stored"));
+        assert_eq!(choose3(None, None, None), None);
     }
 
     #[test]

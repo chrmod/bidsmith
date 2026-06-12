@@ -50,6 +50,12 @@ file. CI setups therefore behave exactly as before, and you can
 override any single saved value with an env var when you need to.
 bidsmith reads all of this at command-start time, not at install time.
 
+The **account and manager-account ids** (and, if you must, the
+developer token) can also come from a committable
+[`bidsmith.toml`](/bidsmith/recipes/manage-multiple-accounts/) at your
+project root — it slots between the env var and the saved file in the
+order above, which is how one sign-in manages many accounts.
+
 ## What happens on each run
 
 When you run `bidsmith plan` or `apply`:
