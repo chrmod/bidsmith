@@ -1,6 +1,6 @@
 ---
 name: bidsmith
-description: Authoring, validating, and applying .bid files with the bidsmith CLI — declarative Google Ads (HCL2-syntax resources, plan/apply against the live account). Use when the user mentions bidsmith, edits or creates .bid files, asks to install or upgrade bidsmith, or needs to validate/export/plan/apply Google Ads campaigns. Covers the Homebrew install (`chrmod/tap/bidsmith`), the .bid file shape, and the prompt-before-apply convention.
+description: Authoring, validating, and applying .bid files with the bidsmith CLI — declarative Google Ads (HCL2-syntax resources, plan/apply against the live account). Use when the user mentions bidsmith, edits or creates .bid files, asks to install or upgrade bidsmith, needs to validate/export/plan/apply Google Ads campaigns, or wants campaign performance data (stats, metrics, search terms) from an account bidsmith manages. Covers the Homebrew install (`chrmod/tap/bidsmith`), the .bid file shape, the prompt-before-apply convention, and read-only GAQL reporting via `bidsmith query`.
 allowed-tools: Bash, Read, Write, Edit
 ---
 
@@ -29,12 +29,16 @@ above — do not silently substitute other tooling.
 ## Commands
 
 ```
-bidsmith validate [path]                       # parse + schema-check .bid files
-bidsmith fmt [path]                            # canonicalize formatting
+bidsmith validate [path]                        # parse + schema-check .bid files
+bidsmith fmt [path]                             # canonicalize formatting
 bidsmith export --from-json input.json [-o out.bid]
-bidsmith plan                                  # diff .bid vs. live Google Ads
-bidsmith apply                                 # apply the plan; prompts unless --auto-approve
-bidsmith refresh                               # pull live state into .bid (not yet implemented)
+bidsmith plan                                   # diff .bid vs. live Google Ads
+bidsmith apply                                  # apply the plan; prompts unless --auto-approve
+bidsmith refresh [-d DIR | -o FILE]             # import live state into fresh .bid files
+bidsmith query "GAQL" [--format table|json|tsv] # read-only stats/reporting passthrough
+bidsmith pull [-o FILE]                         # dump raw live state as SearchStream JSON
+bidsmith auth <login|status|logout|profile>     # browser sign-in + credential management
+bidsmith schema                                 # dump the resource schema as JSON
 ```
 
 `validate` is the most-used verb during authoring. Errors are
@@ -200,8 +204,37 @@ Practical implications:
 
 Never run `bidsmith apply --auto-approve` without first showing the user
 the `plan` output. State lives on Google Ads itself (no local `.tfstate`);
-managed resources carry a `bidsmith:address=<addr>` label, which is how
-`refresh` and `plan` recognise them.
+`plan` and `refresh` match live resources against `.bid` declarations by
+name.
+
+## Reading performance data
+
+`bidsmith query` is the supported way to read stats from the account.
+It sends one GAQL query through bidsmith's own credentials and prints
+the rows — GAQL is SELECT-only, so this verb cannot change anything.
+Use `--format json` when the output feeds further analysis, the default
+`table` when showing the user, `tsv` for spreadsheets.
+
+```sh
+# Campaign performance, last 30 days
+bidsmith query "SELECT campaign.name, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions FROM campaign WHERE segments.date DURING LAST_30_DAYS" --format json
+
+# What people actually searched before seeing an ad
+bidsmith query "SELECT search_term_view.search_term, metrics.clicks, metrics.conversions FROM search_term_view WHERE segments.date DURING LAST_30_DAYS ORDER BY metrics.clicks DESC LIMIT 50"
+
+# Per-keyword cost and conversions
+bidsmith query "SELECT ad_group_criterion.keyword.text, metrics.average_cpc, metrics.cost_micros, metrics.conversions FROM keyword_view WHERE segments.date DURING LAST_30_DAYS"
+```
+
+Money fields (`metrics.cost_micros`, `metrics.average_cpc`,
+`cpc_bid_micros`) are micros — divide by 1,000,000 for the account
+currency. Date ranges: `DURING LAST_7_DAYS` / `LAST_30_DAYS` /
+`THIS_MONTH`, or `segments.date BETWEEN '2026-05-01' AND '2026-05-31'`.
+Full grammar: https://developers.google.com/google-ads/api/docs/query/overview
+
+The optimization loop is: `query` the stats, decide what to change,
+edit the `.bid` files, then `plan` → show the user → `apply`. Stats
+flow one way — insights never justify mutating outside plan/apply.
 
 ## Conventions
 
@@ -243,5 +276,6 @@ unknown resource type or field, crashes, or produces clearly wrong output:
 
 **Do not** paper over the gap by hand-editing HCL the validator rejects,
 by calling the Google Ads API directly, or by silently substituting other
-tooling. Surfacing the missing capability is more valuable than producing
-output that bypasses the engine.
+tooling. Read-only questions go through `bidsmith query`; writes only
+through `plan`/`apply`. Surfacing the missing capability is more valuable
+than producing output that bypasses the engine.

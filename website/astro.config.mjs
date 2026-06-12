@@ -52,6 +52,7 @@ export default defineConfig({
             { label: 'Audit who changed what, when', slug: 'recipes/audit-who-changed-what' },
             { label: 'Cut Google Ads API quota usage', slug: 'recipes/reduce-api-calls' },
             { label: 'Manage multiple client accounts', slug: 'recipes/manage-multiple-accounts' },
+            { label: 'See how your campaigns are performing', slug: 'recipes/see-campaign-performance' },
           ],
         },
         {

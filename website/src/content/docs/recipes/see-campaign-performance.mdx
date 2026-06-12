@@ -1,0 +1,104 @@
+---
+title: See how your campaigns are performing
+description: Pull clicks, cost, and conversions into your terminal or a spreadsheet with bidsmith query — no Google Ads UI digging required.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Your `.bid` files describe what the campaigns *should be*. This recipe
+is about the other direction: what the campaigns *did* — impressions,
+clicks, spend, conversions.
+
+The tool is [`bidsmith query`](/bidsmith/commands/query/). You give it
+a question written in
+[Google Ads Query Language (GAQL)](https://developers.google.com/google-ads/api/docs/query/overview),
+and it prints the answer using the same sign-in your `plan` and
+`apply` already use. Reading stats is completely safe — this command
+physically cannot change anything in the account.
+
+## Campaign overview, last 30 days
+
+```sh
+bidsmith query "SELECT campaign.name, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions FROM campaign WHERE segments.date DURING LAST_30_DAYS ORDER BY metrics.cost_micros DESC"
+```
+
+```
+campaign.name             metrics.impressions  metrics.clicks  metrics.costMicros  metrics.conversions
+------------------------  -------------------  --------------  ------------------  -------------------
+[W1] magazyny-energii     48211                1322             8540000000          41
+[W2] klimatyzacja         21704                611              3120000000          12
+
+2 row(s)
+```
+
+<Aside type="note" title="What's a micro?">
+  Google Ads reports money in *micros* — millionths of your account
+  currency. Divide by 1,000,000: `8540000000` micros is 8,540 PLN
+  (or dollars, euros — whatever the account currency is). It's the
+  same unit your `.bid` files use for `amount_micros`.
+</Aside>
+
+## What did people search for?
+
+The search-terms report shows the real queries that triggered your
+ads — the single best source of new keywords and new negatives:
+
+```sh
+bidsmith query "SELECT search_term_view.search_term, metrics.clicks, metrics.conversions FROM search_term_view WHERE segments.date DURING LAST_30_DAYS ORDER BY metrics.clicks DESC LIMIT 50"
+```
+
+Spot a search term that converts? Add it as a keyword in your `.bid`
+file. Spot one that burns clicks without converting? Add it as a
+negative. Either way the change goes through the normal
+[plan → apply](/bidsmith/concepts/plan-and-apply/) loop.
+
+## Which keywords earn their keep?
+
+```sh
+bidsmith query "SELECT ad_group_criterion.keyword.text, metrics.clicks, metrics.average_cpc, metrics.cost_micros, metrics.conversions FROM keyword_view WHERE segments.date DURING LAST_30_DAYS ORDER BY metrics.cost_micros DESC"
+```
+
+## Pick your date range
+
+Swap the `WHERE` clause:
+
+```sh
+... WHERE segments.date DURING LAST_7_DAYS"
+... WHERE segments.date DURING THIS_MONTH"
+... WHERE segments.date BETWEEN '2026-05-01' AND '2026-05-31'"
+```
+
+## Get it into a spreadsheet
+
+`--format tsv` writes tab-separated values that open cleanly in
+Excel, Google Sheets, or Numbers:
+
+```sh
+bidsmith query "SELECT campaign.name, metrics.clicks, metrics.cost_micros, metrics.conversions FROM campaign WHERE segments.date DURING THIS_MONTH" --format tsv > performance.tsv
+```
+
+## Let an AI assistant do the analysis
+
+Because `query` is a plain command with `--format json` output, an AI
+agent working in your campaign repository can read performance data,
+relate it to the `.bid` files, and propose changes as an ordinary diff
+— which you still review with `bidsmith plan` before anything is
+applied. Asking your assistant *"pull last month's search terms and
+suggest negatives for the Warsaw campaign"* is exactly the workflow
+bidsmith is designed for.
+
+<Aside type="tip" title="Stats flow one way">
+  `query` reads; it never writes. Every change you decide to make goes
+  into a `.bid` file and through `plan` → `apply`, so the account
+  stays in sync with the files and the Git history stays a complete
+  audit log.
+</Aside>
+
+## See also
+
+- [`bidsmith query`](/bidsmith/commands/query/) — full command
+  reference, output formats, more starter queries.
+- [Google's GAQL overview](https://developers.google.com/google-ads/api/docs/query/overview)
+  — every field and report you can ask for.
+- [Audit who changed what, when](/bidsmith/recipes/audit-who-changed-what/)
+  — the Git side of "what happened in this account?".

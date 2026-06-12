@@ -198,6 +198,7 @@ bidsmith/
 │   ├── api/
 │   │   ├── mod.rs
 │   │   ├── auth.rs       # OAuth refresh-token → access token
+│   │   ├── cache.rs      # .bidsmith/cache/ read cache (live state + access token)
 │   │   ├── creds.rs      # credential resolver (env → ~/.bidsmith/credentials.toml → default) + storage
 │   │   ├── oauth.rs      # browser loopback + PKCE authorization-code flow (auth login)
 │   │   ├── client.rs     # reqwest::blocking wrapper; googleAds:mutate + :searchStream + listAccessibleCustomers
@@ -210,10 +211,17 @@ bidsmith/
 │       ├── adapt.rs      # SearchStream JSON → ExportInput (used by export + live_state)
 │       ├── auth.rs       # auth login / status / logout / profile
 │       ├── apply.rs      # prepare + plan display + prompt + real mutate (--auto-approve skips the prompt)
+│       ├── design_doc.rs # render the Basic-Access design document from templates/ + introspection
+│       ├── e2e_cleanup.rs # hidden _e2e-cleanup verb: sweep bidsmith-e2e-* resources
 │       ├── export.rs     # render .bid from a JSON source description
 │       ├── fmt.rs        # canonical re-emitter (in-place / --check)
 │       ├── plan.rs       # parse + validate + import + diff + validateOnly batch
-│       └── validate.rs   # parse + validate orchestration
+│       ├── pull.rs       # dump raw SearchStream batches as JSON
+│       ├── query.rs      # read-only GAQL passthrough (table / json / tsv)
+│       ├── refresh.rs    # bootstrap-mode import of live state into .bid files
+│       ├── schema.rs     # dump the resource + provider schema as JSON
+│       ├── validate.rs   # parse + validate orchestration
+│       └── vars.rs       # --var / BIDSMITH_VAR_* resolution for variable blocks
 └── examples/
     ├── basic/main.bid          # provider, budget, campaign, ad group, ad, criteria
     ├── broken/
