@@ -11,7 +11,21 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
-#[command(name = "bidsmith", version, about = "Declarative tooling for Google Ads")]
+#[command(
+    name = "bidsmith",
+    version,
+    about = "Declarative tooling for Google Ads",
+    after_help = "\
+The authoring loop:
+  edit .bid files -> bidsmith validate -> bidsmith plan -> bidsmith apply
+
+Discovery:
+  bidsmith <command> --help   examples and flag details per command
+  bidsmith schema             every resource type and attribute, as JSON
+  bidsmith query --help       read-only stats and reports (GAQL)
+
+Docs: https://chrmod.github.io/bidsmith/"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Cmd,
@@ -40,6 +54,13 @@ enum Cmd {
         var: Vec<String>,
     },
     /// Render a .bid file from a Google Ads campaign source
+    #[command(after_help = "\
+Examples:
+  bidsmith export --from-json campaign.json -o main.bid
+  bidsmith export --from-gads-search-response dump.json -o main.bid
+
+dump.json is the shape `bidsmith pull -o dump.json` writes, so
+pull + export round-trips a live account into a .bid file.")]
     Export {
         /// Flat bidsmith JSON describing the campaign(s) to render
         #[arg(long = "from-json", value_name = "PATH", conflicts_with = "from_gads_search_response")]
@@ -61,6 +82,14 @@ enum Cmd {
         customer_id: Option<String>,
     },
     /// Show what would change against the live Google Ads account
+    #[command(after_help = "\
+Examples:
+  bidsmith plan .                  # diff against live, server-validated
+  bidsmith plan --offline .        # diff against the cache, no API calls
+  bidsmith plan --refresh-state .  # force a fresh live-state fetch
+
+Live reads are cached in .bidsmith/cache/ (15-min TTL) to save quota.
+plan never modifies the account: its mutate is sent with validateOnly.")]
     Plan {
         /// .bid file or directory to plan
         path: Option<String>,
@@ -90,6 +119,14 @@ enum Cmd {
         var: Vec<String>,
     },
     /// Reconcile the live account with the .bid files
+    #[command(after_help = "\
+apply always shows the validateOnly plan first, then asks for a literal
+'yes' before mutating. --auto-approve skips the prompt and is required
+when stdin is not a TTY. Review the plan before approving.
+
+Examples:
+  bidsmith apply .
+  bidsmith apply --auto-approve .   # CI / scripted runs")]
     Apply {
         /// .bid file or directory to apply
         path: Option<String>,
@@ -119,6 +156,12 @@ enum Cmd {
         verbose: bool,
     },
     /// Pull live state into .bid files
+    #[command(after_help = "\
+Examples:
+  bidsmith refresh -d ads/       # ads/account.bid + ads/campaigns.bid
+  bidsmith refresh -o main.bid   # everything in one file
+
+Bootstrap mode: existing output files are overwritten, not merged.")]
     Refresh {
         /// Write everything to a single .bid file
         #[arg(short = 'o', long, value_name = "PATH", conflicts_with = "dir")]
@@ -135,6 +178,22 @@ enum Cmd {
         verbose: bool,
     },
     /// Run a GAQL query against the live Google Ads account (read-only)
+    #[command(after_help = r#"Examples:
+  # Campaign performance, last 30 days
+  bidsmith query "SELECT campaign.name, metrics.clicks, metrics.cost_micros, metrics.conversions FROM campaign WHERE segments.date DURING LAST_30_DAYS"
+
+  # What people searched before seeing an ad
+  bidsmith query "SELECT search_term_view.search_term, metrics.clicks FROM search_term_view WHERE segments.date DURING LAST_30_DAYS ORDER BY metrics.clicks DESC LIMIT 50"
+
+  # Per-keyword cost and conversions, as JSON for further analysis
+  bidsmith query "SELECT ad_group_criterion.keyword.text, metrics.average_cpc, metrics.conversions FROM keyword_view WHERE segments.date DURING LAST_30_DAYS" --format json
+
+Money fields (cost_micros, average_cpc, ...) are micros: divide by
+1,000,000 for the account currency. Date ranges: DURING LAST_7_DAYS /
+LAST_30_DAYS / THIS_MONTH, or segments.date BETWEEN '2026-05-01' AND
+'2026-05-31'. GAQL is SELECT-only; this command cannot modify the account.
+
+Grammar: https://developers.google.com/google-ads/api/docs/query/overview"#)]
     Query {
         /// GAQL query string (e.g. `SELECT campaign.name FROM campaign`)
         query: String,

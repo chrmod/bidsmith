@@ -40,6 +40,7 @@ Validate, plan, and apply all work today.
 | `apply`    | Make Google Ads match the `.bid` files (prompts before changing anything)    |
 | `pull`     | Snapshot the live account                                                    |
 | `refresh`  | Pull the live account down into `.bid` files (so you can adopt bidsmith without starting from scratch) |
+| `query`    | Read stats and reports with a GAQL query (clicks, cost, conversions, search terms) |
 | `export`   | Render a `.bid` file from a JSON description                                 |
 | `fmt`      | Tidy up `.bid` formatting                                                    |
 

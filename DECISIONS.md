@@ -93,6 +93,18 @@ resource type, any file layout, modules, schema validation.
   blocks in Phase 5.
 - **AI is outside the engine**: skills/agents author and review; engine
   is deterministic. Engine behavior must not depend on a model version.
+- **Agent docs split — facts in the binary, behavior in the skill**:
+  version-coupled facts (verbs, flags, usage examples) live in the
+  binary itself — clap `--help` / `<verb> --help` with `after_help`
+  examples, `bidsmith schema` for resource shapes — so a `brew upgrade`
+  updates docs and behavior atomically and they cannot drift. The
+  Claude Code skill (`skills/bidsmith/SKILL.md`, shipped via
+  `.claude-plugin/`) stays a thin, version-agnostic layer owning only
+  what the binary can't: triggering, installation, safety conventions
+  (plan-before-apply, gap-reporting protocol), with an explicit
+  tie-breaker that the binary wins when the two disagree. No skill
+  self-update machinery — the skill is designed to tolerate being
+  stale rather than trying never to be.
 - **Plan = live validate**: use Google Ads API's `validate_only` flag
   for free server-side validation (auth, references, policy, length).
 - **Apply shows the plan first, then prompts**: terraform-shaped flow.
@@ -198,6 +210,7 @@ bidsmith/
 │   ├── api/
 │   │   ├── mod.rs
 │   │   ├── auth.rs       # OAuth refresh-token → access token
+│   │   ├── cache.rs      # .bidsmith/cache/ read cache (live state + access token)
 │   │   ├── creds.rs      # credential resolver (env → ~/.bidsmith/credentials.toml → default) + storage
 │   │   ├── oauth.rs      # browser loopback + PKCE authorization-code flow (auth login)
 │   │   ├── client.rs     # reqwest::blocking wrapper; googleAds:mutate + :searchStream + listAccessibleCustomers
@@ -210,10 +223,17 @@ bidsmith/
 │       ├── adapt.rs      # SearchStream JSON → ExportInput (used by export + live_state)
 │       ├── auth.rs       # auth login / status / logout / profile
 │       ├── apply.rs      # prepare + plan display + prompt + real mutate (--auto-approve skips the prompt)
+│       ├── design_doc.rs # render the Basic-Access design document from templates/ + introspection
+│       ├── e2e_cleanup.rs # hidden _e2e-cleanup verb: sweep bidsmith-e2e-* resources
 │       ├── export.rs     # render .bid from a JSON source description
 │       ├── fmt.rs        # canonical re-emitter (in-place / --check)
 │       ├── plan.rs       # parse + validate + import + diff + validateOnly batch
-│       └── validate.rs   # parse + validate orchestration
+│       ├── pull.rs       # dump raw SearchStream batches as JSON
+│       ├── query.rs      # read-only GAQL passthrough (table / json / tsv)
+│       ├── refresh.rs    # bootstrap-mode import of live state into .bid files
+│       ├── schema.rs     # dump the resource + provider schema as JSON
+│       ├── validate.rs   # parse + validate orchestration
+│       └── vars.rs       # --var / BIDSMITH_VAR_* resolution for variable blocks
 └── examples/
     ├── basic/main.bid          # provider, budget, campaign, ad group, ad, criteria
     ├── broken/

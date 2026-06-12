@@ -59,6 +59,17 @@ campaign.id   campaign.name
 9876543210    Summer 2026 — Search
 ```
 
+### Check campaign performance
+
+```sh
+bidsmith query "SELECT campaign.name, metrics.clicks, metrics.cost_micros, metrics.conversions FROM campaign WHERE segments.date DURING LAST_30_DAYS ORDER BY metrics.cost_micros DESC"
+```
+
+Money fields are micros — divide by 1,000,000 for the account
+currency. See the
+[performance recipe](/bidsmith/recipes/see-campaign-performance/) for
+more reporting queries (search terms, per-keyword stats, date ranges).
+
 ### List every conversion action
 
 ```sh
@@ -95,6 +106,8 @@ A few useful starting queries:
 | All ad groups in a campaign | `SELECT ad_group.name FROM ad_group WHERE campaign.id = 9876543210` |
 | All keywords | `SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type FROM keyword_view` |
 | Approval status of all RSAs | `SELECT ad_group_ad.policy_summary.approval_status, ad_group_ad.ad.name FROM ad_group_ad WHERE ad_group_ad.ad.type = 'RESPONSIVE_SEARCH_AD'` |
+| Spend + conversions per campaign, last 30 days | `SELECT campaign.name, metrics.cost_micros, metrics.conversions FROM campaign WHERE segments.date DURING LAST_30_DAYS` |
+| What people searched before clicking | `SELECT search_term_view.search_term, metrics.clicks FROM search_term_view WHERE segments.date DURING LAST_30_DAYS` |
 
 ## What `query` doesn't do
 
@@ -115,6 +128,8 @@ A few useful starting queries:
 
 ## See also
 
+- [See how your campaigns are performing](/bidsmith/recipes/see-campaign-performance/)
+  — reporting queries for clicks, cost, conversions, and search terms.
 - [`bidsmith plan --read-live`](/bidsmith/commands/plan/) — a
   per-resource-type count of what's in the account.
 - [Google's GAQL grammar](https://developers.google.com/google-ads/api/docs/query/grammar).
