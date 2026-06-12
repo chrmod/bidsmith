@@ -96,6 +96,7 @@ const CONVERSION_ACTION_TYPE: &[&str] = &[
     "WEBSITE_CALL",
 ];
 const CONVERSION_ACTION_CATEGORY: &[&str] = &[
+    "UNKNOWN",
     "DEFAULT",
     "PAGE_VIEW",
     "PURCHASE",
@@ -446,6 +447,8 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                             "VIDEO_BUMPER",
                             "VIDEO_TRUE_VIEW_IN_STREAM",
                             "VIDEO_TRUE_VIEW_IN_DISPLAY",
+                            "VIDEO_NON_SKIPPABLE_IN_STREAM",
+                            "VIDEO_RESPONSIVE",
                         ]),
                         false,
                     ),

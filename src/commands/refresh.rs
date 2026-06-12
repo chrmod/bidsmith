@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use crate::api::live_state::CacheMode;
 use crate::api::{auth, client, live_state};
 use crate::commands::export::{
-    canonicalize, filter_removed, render_split, ExportInput,
+    canonicalize, filter_removed, prune_orphans, render_split, report_orphans, ExportInput,
 };
 
 pub fn run(
@@ -57,6 +57,7 @@ pub fn run(
     if !include_removed {
         filter_removed(&mut input);
     }
+    report_orphans("refresh", prune_orphans(&mut input));
 
     let (account_raw, campaigns_raw) = render_split(&input);
     let account = canonicalize(&account_raw);

@@ -308,6 +308,7 @@ pub fn run(
     if !include_removed {
         filter_removed(&mut input);
     }
+    report_orphans("export", prune_orphans(&mut input));
 
     let rendered = canonicalize(&render(&input));
 
@@ -348,6 +349,81 @@ pub fn filter_removed(input: &mut ExportInput) {
     input
         .campaign_shared_sets
         .retain(|s| !is_removed(&s.status));
+}
+
+/// The API can return children (ad groups, criteria) whose parent campaign was
+/// filtered out, which would render as a dangling reference; drop them instead.
+pub fn prune_orphans(input: &mut ExportInput) -> Vec<String> {
+    let mut dropped: Vec<String> = Vec::new();
+
+    let campaign_ids: HashSet<String> = input.campaigns.iter().map(|c| c.id.clone()).collect();
+    input.ad_groups.retain(|g| {
+        let keep = campaign_ids.contains(&g.campaign);
+        if !keep {
+            dropped.push(format!(
+                "ad_group {} (campaign {} not in snapshot)",
+                g.id, g.campaign
+            ));
+        }
+        keep
+    });
+    input.campaign_criteria.retain(|c| {
+        let keep = campaign_ids.contains(&c.campaign);
+        if !keep {
+            dropped.push(format!(
+                "campaign_criterion {} (campaign {} not in snapshot)",
+                c.id, c.campaign
+            ));
+        }
+        keep
+    });
+    input.campaign_shared_sets.retain(|s| {
+        let keep = campaign_ids.contains(&s.campaign);
+        if !keep {
+            dropped.push(format!(
+                "campaign_shared_set {} (campaign {} not in snapshot)",
+                s.id, s.campaign
+            ));
+        }
+        keep
+    });
+
+    let ad_group_ids: HashSet<String> = input.ad_groups.iter().map(|g| g.id.clone()).collect();
+    input.ad_group_ads.retain(|a| {
+        let keep = ad_group_ids.contains(&a.ad_group);
+        if !keep {
+            dropped.push(format!(
+                "ad_group_ad {} (ad_group {} not in snapshot)",
+                a.id, a.ad_group
+            ));
+        }
+        keep
+    });
+    input.ad_group_criteria.retain(|c| {
+        let keep = ad_group_ids.contains(&c.ad_group);
+        if !keep {
+            dropped.push(format!(
+                "ad_group_criterion {} (ad_group {} not in snapshot)",
+                c.id, c.ad_group
+            ));
+        }
+        keep
+    });
+
+    dropped
+}
+
+pub fn report_orphans(command: &str, orphans: Vec<String>) {
+    if orphans.is_empty() {
+        return;
+    }
+    eprintln!(
+        "{command}: dropped {} resource(s) referencing a parent not in the account snapshot:",
+        orphans.len()
+    );
+    for o in &orphans {
+        eprintln!("  - {o}");
+    }
 }
 
 fn load_flat_json(path: &str) -> Result<ExportInput, ExitCode> {
@@ -1351,5 +1427,87 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn render_split_validates_video_campaign_round_trip() {
+        let raw = r#"[
+            {
+                "results": [
+                    { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Video Budget", "amountMicros": "5000000" } },
+                    { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Brand Awareness Video", "status": "ENABLED", "advertisingChannelType": "VIDEO", "campaignBudget": "customers/9/campaignBudgets/1001" } },
+                    { "adGroup": { "resourceName": "customers/9/adGroups/3001", "id": "3001", "name": "Non-skippable", "campaign": "customers/9/campaigns/2001", "status": "ENABLED", "type": "VIDEO_NON_SKIPPABLE_IN_STREAM" } },
+                    { "adGroup": { "resourceName": "customers/9/adGroups/3002", "id": "3002", "name": "Responsive", "campaign": "customers/9/campaigns/2001", "status": "ENABLED", "type": "VIDEO_RESPONSIVE" } },
+                    { "conversionAction": { "resourceName": "customers/9/conversionActions/4001", "id": "4001", "name": "Engaged View", "type": "UNKNOWN", "category": "UNKNOWN", "status": "ENABLED" } }
+                ]
+            }
+        ]"#;
+        let input = from_search_response(raw).expect("adapter");
+        let (account, campaigns) = render_split(&input);
+
+        assert!(!campaigns.contains("<unresolved"), "dangling ref:\n{campaigns}");
+
+        let dir = std::env::temp_dir()
+            .join(format!("bidsmith-rs-test-video-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let account_path = dir.join("account.bid");
+        let campaigns_path = dir.join("campaigns.bid");
+        std::fs::write(&account_path, &account).unwrap();
+        std::fs::write(&campaigns_path, &campaigns).unwrap();
+
+        let parsed = vec![
+            crate::parser::parse_file(&account_path).expect("account parses"),
+            crate::parser::parse_file(&campaigns_path).expect("campaigns parses"),
+        ];
+        let diags = crate::schema::validate_files(&parsed, &crate::schema::InputBindings::default());
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(
+            errors.is_empty(),
+            "validate_files produced errors:\n{}\n--- account.bid ---\n{}\n--- campaigns.bid ---\n{}",
+            errors
+                .iter()
+                .map(|d| format!("{}", d.message))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            account,
+            campaigns
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prune_orphans_drops_children_with_missing_parent() {
+        let raw = r#"[
+            {
+                "results": [
+                    { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget A", "amountMicros": "5000000" } },
+                    { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Camp A", "status": "ENABLED", "advertisingChannelType": "SEARCH", "campaignBudget": "customers/9/campaignBudgets/1001" } },
+                    { "adGroup": { "resourceName": "customers/9/adGroups/3001", "id": "3001", "name": "Keep", "campaign": "customers/9/campaigns/2001", "status": "ENABLED", "type": "SEARCH_STANDARD" } },
+                    { "adGroup": { "resourceName": "customers/9/adGroups/3999", "id": "3999", "name": "Orphan", "campaign": "customers/9/campaigns/2999", "status": "ENABLED", "type": "VIDEO_RESPONSIVE" } },
+                    { "adGroupAd": { "resourceName": "customers/9/adGroupAds/3999~5001", "adGroup": "customers/9/adGroups/3999", "status": "ENABLED", "ad": { "finalUrls": ["https://example.com"] } } },
+                    { "adGroupCriterion": { "resourceName": "customers/9/adGroupCriteria/3999~111", "adGroup": "customers/9/adGroups/3999", "status": "ENABLED", "keyword": { "text": "running shoes", "matchType": "EXACT" } } },
+                    { "campaignCriterion": { "resourceName": "customers/9/campaignCriteria/2999~222", "campaign": "customers/9/campaigns/2999", "status": "ENABLED", "negative": true, "keyword": { "text": "free", "matchType": "BROAD" } } }
+                ]
+            }
+        ]"#;
+        let mut input = from_search_response(raw).expect("adapter");
+        assert_eq!(input.ad_groups.len(), 2);
+
+        let dropped = prune_orphans(&mut input);
+
+        assert_eq!(input.ad_groups.len(), 1);
+        assert_eq!(input.ad_groups[0].id, "3001");
+        assert!(input.ad_group_ads.is_empty());
+        assert!(input.ad_group_criteria.is_empty());
+        assert!(input.campaign_criteria.is_empty());
+        assert_eq!(dropped.len(), 4, "unexpected dropped set: {dropped:?}");
+
+        let (_, campaigns) = render_split(&input);
+        assert!(
+            !campaigns.contains("<unresolved"),
+            "pruned render still has dangling refs:\n{campaigns}"
+        );
     }
 }
