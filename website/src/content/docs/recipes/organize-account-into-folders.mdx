@@ -1,0 +1,104 @@
+---
+title: Organize a big account into folders
+description: Split a large account across subfolders by campaign family — bidsmith loads every .bid file in the tree and references still resolve across folders.
+---
+
+import { Aside, FileTree, Steps } from '@astrojs/starlight/components';
+
+One giant `campaigns.bid` with every campaign, ad group, ad, and
+keyword in it gets unwieldy fast — a few hundred resources and twelve
+thousand lines is hard for anyone to navigate. You can split it into a
+folder tree organized however your team thinks about the account
+(by campaign family, by product line, by market) and bidsmith stitches
+it all back together.
+
+## How loading works
+
+When you point any command at a folder, bidsmith loads **every `.bid`
+file underneath it, at any depth** — not just the ones sitting directly
+inside. All those files merge into a single namespace, so a campaign in
+one folder can reference a budget defined in another.
+
+```sh
+bidsmith validate .     # walks the whole tree
+bidsmith plan .
+bidsmith apply .
+```
+
+## The layout
+
+Say your account has search, video, and remarketing campaigns that all
+draw on a few shared budgets and conversion actions. Put the
+account-level pieces at the top and give each campaign family its own
+folder:
+
+<FileTree>
+
+- google-ads/
+  - account.bid          provider, shared budgets, conversion actions
+  - campaigns/
+    - search/
+      - brand.bid
+      - generic.bid
+    - video/
+      - awareness.bid
+    - remarketing/
+      - cart-abandoners.bid
+
+</FileTree>
+
+Group the files however makes sense to the people editing them. The
+folder names are for humans — bidsmith doesn't attach any meaning to
+them.
+
+## References still resolve across folders
+
+Because everything merges into one namespace, a campaign in
+`campaigns/search/brand.bid` can point at a budget defined up in
+`account.bid` exactly as if they were in the same file:
+
+```hcl
+# account.bid
+resource "google_ads_campaign_budget" "shared_daily" {
+  name           = "Shared daily budget"
+  amount_micros  = 50_000_000
+  delivery_method = "STANDARD"
+}
+```
+
+```hcl
+# campaigns/search/brand.bid
+resource "google_ads_campaign" "brand" {
+  name                     = "Brand — Search"
+  campaign_budget          = google_ads_campaign_budget.shared_daily
+  advertising_channel_type = "SEARCH"
+  status                   = "ENABLED"
+}
+```
+
+No imports, no module wiring — just reference the resource by its
+address.
+
+<Aside type="note" title="Splitting an existing file">
+  Already have one big `campaigns.bid`? Cut it into smaller files and
+  drop them into subfolders. Run `bidsmith validate .` afterward — if a
+  reference can't be found, validate names the missing address and the
+  file it's in, so you can move things around until it's clean. Nothing
+  about the live account changes; you're only reshaping the source.
+</Aside>
+
+## What bidsmith skips
+
+When walking the tree, bidsmith ignores:
+
+- **Hidden files and folders** (anything starting with `.`), so
+  `.git/` and `.bidsmith/` are never scanned.
+- **`node_modules/` and `target/`**, so a docs site or build output
+  sitting alongside your campaigns won't trip it up.
+- **Any file that doesn't end in `.bid`** — keep `README.md`,
+  spreadsheets, and notes wherever you like.
+
+## See also
+
+- [Manage multiple client accounts](/bidsmith/recipes/manage-multiple-accounts/) — one folder *per account*, each with its own `bidsmith.toml`.
+- [How references work](/bidsmith/concepts/) — addresses and cross-file resolution.

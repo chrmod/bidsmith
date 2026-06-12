@@ -315,24 +315,59 @@ pub fn collect_bid_files(target: &Path) -> Result<Vec<PathBuf>, String> {
         return Ok(vec![target.to_path_buf()]);
     }
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(target)
-        .map_err(|e| format!("failed to read {}: {e}", target.display()))?
-    {
-        let entry = entry.map_err(|e| format!("failed to read {}: {e}", target.display()))?;
+    walk_bid_files(target, &mut out)
+        .map_err(|e| format!("failed to read {}: {e}", target.display()))?;
+    out.sort();
+    Ok(out)
+}
+
+fn walk_bid_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if name_str.starts_with('.') {
+        if name_str.starts_with('.') || name_str == "node_modules" || name_str == "target" {
             continue;
         }
         let path = entry.path();
-        let ft = entry
-            .file_type()
-            .map_err(|e| format!("failed to stat {}: {e}", path.display()))?;
-        if ft.is_file() && path.extension().and_then(|e| e.to_str()) == Some("bid") {
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            walk_bid_files(&path, out)?;
+        } else if ft.is_file() && path.extension().and_then(|e| e.to_str()) == Some("bid") {
             out.push(path);
         }
     }
-    out.sort();
-    Ok(out)
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_bid_files;
+    use std::fs;
+
+    #[test]
+    fn collect_bid_files_walks_subdirectories() {
+        let root = std::env::temp_dir().join("bidsmith-collect-recursive-test");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("campaigns/search")).unwrap();
+        fs::create_dir_all(root.join(".hidden")).unwrap();
+        fs::create_dir_all(root.join("target")).unwrap();
+
+        fs::write(root.join("account.bid"), "").unwrap();
+        fs::write(root.join("campaigns/search/brand.bid"), "").unwrap();
+        fs::write(root.join("campaigns/notes.txt"), "").unwrap();
+        fs::write(root.join(".hidden/secret.bid"), "").unwrap();
+        fs::write(root.join("target/build.bid"), "").unwrap();
+
+        let found = collect_bid_files(&root).unwrap();
+        let rel: Vec<_> = found
+            .iter()
+            .map(|p| p.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"))
+            .collect();
+
+        assert_eq!(rel, vec!["account.bid", "campaigns/search/brand.bid"]);
+
+        fs::remove_dir_all(&root).unwrap();
+    }
 }
 

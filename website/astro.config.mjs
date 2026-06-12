@@ -53,6 +53,7 @@ export default defineConfig({
             { label: 'Cut Google Ads API quota usage', slug: 'recipes/reduce-api-calls' },
             { label: 'Manage multiple client accounts', slug: 'recipes/manage-multiple-accounts' },
             { label: 'See how your campaigns are performing', slug: 'recipes/see-campaign-performance' },
+            { label: 'Organize a big account into folders', slug: 'recipes/organize-account-into-folders' },
           ],
         },
         {

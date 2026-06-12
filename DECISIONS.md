@@ -91,6 +91,14 @@ resource type, any file layout, modules, schema validation.
   in the same module so single-file projects keep their bare
   `<type>.<name>` UX. This is the foundation for explicit `module`
   blocks in Phase 5.
+- **Directory loading is recursive**: pointing a command at a
+  directory loads every `.bid` file in the tree at any depth (not just
+  the top level), merging them all into one namespace so cross-folder
+  references resolve. The walk skips hidden entries (`.git`,
+  `.bidsmith`) and `node_modules` / `target`. A big account can be
+  split into subfolders (`campaigns/search/`, `campaigns/video/`, …)
+  for navigation; subfolders carry no semantics. `validate`, `plan`,
+  `apply`, and `fmt` share one `collect_bid_files` walker.
 - **AI is outside the engine**: skills/agents author and review; engine
   is deterministic. Engine behavior must not depend on a model version.
 - **Agent docs split — facts in the binary, behavior in the skill**:
