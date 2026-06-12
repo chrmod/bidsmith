@@ -118,7 +118,7 @@ validation failure traces straight back to the <code>.bid</code> line that cause
 <p>
 {{ tool_name }} uses the <strong>Google Ads REST API</strong> over HTTPS. The endpoint version is
 pinned via the <code>BIDSMITH_API_VERSION</code> environment variable (currently <code>{{ api_version }}</code>).
-It calls three endpoints:
+It calls these endpoints:
 </p>
 
 <table>
@@ -159,7 +159,10 @@ is nonetheless fully present, exposed through the <code>.bid</code> source files
 {{ tool_name }} uses the standard Google Ads credential set — a developer token, an OAuth 2.0
 desktop-app client owned by {{ applicant_legal_entity }}&rsquo;s Google Cloud project, and a refresh
 token issued to a named {{ applicant_legal_entity }} employee for the <code>adwords</code> scope —
-supplied via environment variables. On each invocation it exchanges the refresh token for a short-lived
+supplied either via environment variables or a local <code>~/.bidsmith/credentials.toml</code> (file
+mode 0600) written by the tool&rsquo;s <code>auth login</code> command, which runs a one-time
+browser-based OAuth authorization-code flow (loopback redirect + PKCE) to obtain the refresh token.
+On each invocation it exchanges the refresh token for a short-lived
 access token at <code>https://oauth2.googleapis.com/token</code>; the access token lives only in process
 memory for the duration of the run and is never written to disk or logged. The only OAuth scope
 requested is <code>{{ oauth_scope }}</code> — no Drive, Gmail, Calendar, or Cloud Platform scopes.
@@ -175,6 +178,9 @@ requested is <code>{{ oauth_scope }}</code> — no Drive, Gmail, Calendar, or Cl
       <code>.bidsmith/</code> on-disk cache of the most recent live-state read, used to make
       <code>plan</code> fast. The cache holds only account configuration the operator can already see;
       it never contains credentials.</li>
+  <li><strong>Stored locally (credentials):</strong> when <code>auth login</code> is used, the refresh
+      and developer tokens are written to <code>~/.bidsmith/credentials.toml</code> at file mode 0600;
+      environment-variable setups persist no credentials at all.</li>
   <li><strong>Never touched:</strong> end-user PII, third-party advertiser data, or any Google data
       beyond what OAuth requires. Network egress is limited to <code>oauth2.googleapis.com</code> and
       <code>googleads.googleapis.com</code> over HTTPS.</li>

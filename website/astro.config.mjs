@@ -87,6 +87,7 @@ export default defineConfig({
             {
               label: 'API',
               items: [
+                { label: 'bidsmith auth', slug: 'commands/auth' },
                 { label: 'bidsmith plan', slug: 'commands/plan' },
                 { label: 'bidsmith apply', slug: 'commands/apply' },
                 { label: 'bidsmith refresh', slug: 'commands/refresh' },
@@ -145,6 +146,7 @@ export default defineConfig({
           label: 'Reference',
           items: [
             { label: 'Glossary', slug: 'reference/glossary' },
+            { label: 'Privacy policy', slug: 'privacy' },
           ],
         },
       ],

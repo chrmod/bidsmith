@@ -135,7 +135,7 @@ pub fn invalidate_live_state(cache_dir: &Path) {
     let _ = std::fs::remove_file(cache_dir.join(LIVE_STATE_FILE));
 }
 
-fn write_atomic(path: &Path, data: &[u8], _mode: u32) -> std::io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, data: &[u8], _mode: u32) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path
         .file_name()

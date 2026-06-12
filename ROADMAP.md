@@ -202,15 +202,21 @@ Smaller follow-ups that can ride along:
 - Tighten `fmt` ↔ export alignment for non-bidsmith outputs (the
   internal renderer already pipes through fmt; external pretty-print
   use cases may want their own knobs).
-- `bidsmith auth` subcommand — walks the user through the Google Ads
-  OAuth dance (Cloud-Console client + OAuth-Playground refresh-token
-  exchange), opens a browser, captures the redirect, prints the five
-  env vars to paste into `~/.bidsmith/env` or shell config. Today's
-  manual flow is the single steepest onboarding cliff for
-  non-engineers; collapsing ~15 min of clicking down to one command
-  is the highest-leverage marketer-adoption fix. A hosted-helper
-  variant (`bidsmith.dev/auth`) is a follow-up if the local-browser
-  version proves not enough.
+- ✅ `bidsmith auth` subcommand — `login` runs a browser OAuth loopback
+  + PKCE authorization-code flow, then writes `~/.bidsmith/credentials.toml`
+  (`0600`) and lists the accounts `listAccessibleCustomers` returns;
+  `status` / `logout` / `profile` round out the set. Credentials resolve
+  env var → file → bundled default, per value, so CI/env-var setups are
+  unchanged. **Phase A (shipped)** supports a bring-your-own OAuth client
+  (`--client-id`/`--client-secret` or env), so any agency that creates one
+  "Desktop app" client is productive today. **Phase B (remaining):**
+  register + verify the bundled bidsmith OAuth client with Google
+  (sensitive-scope verification — app name, logo, privacy-policy URL, demo
+  video) and inject it at release-build time via
+  `option_env!("BIDSMITH_DEFAULT_CLIENT_ID"/..._SECRET)`; that flips on the
+  zero-config solo path with no code change. A hosted-helper variant
+  (`bidsmith.dev/auth`) is a later follow-up if the local-browser flow
+  proves not enough.
 - Windows binary distribution — `.exe` build via `cross` or
   `cargo-dist`, plus a `scoop` or `winget` recipe to mirror the
   Homebrew tap UX. Today's macOS + Linux targets cover engineers but

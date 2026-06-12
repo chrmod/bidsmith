@@ -1,0 +1,119 @@
+---
+title: bidsmith auth
+description: Sign in to Google Ads in your browser and manage saved credentials.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`auth` connects bidsmith to Google Ads and manages the credentials it
+saves. The headline command, `bidsmith auth login`, opens your browser,
+captures the sign-in, and writes everything to
+`~/.bidsmith/credentials.toml` (file mode `0600`) so the other commands
+just work.
+
+For the end-to-end setup walkthrough, see
+[Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/).
+For the runtime model (how credentials resolve, what's cached), see
+[Authentication](/bidsmith/concepts/authentication/).
+
+## Synopsis
+
+```sh
+bidsmith auth login   [--client-id ID --client-secret SECRET] \
+                      [--developer-token TOKEN] [--login-customer-id ID] [--no-input]
+bidsmith auth status
+bidsmith auth logout  [--all]
+bidsmith auth profile [--with-client]
+```
+
+## How credentials resolve
+
+Every command resolves each credential in this order, so an environment
+variable always wins over the saved file:
+
+```
+environment variable  →  ~/.bidsmith/credentials.toml  →  built-in default
+```
+
+That means CI (which uses env vars) is unaffected by anything `auth`
+saves, and you can override a single saved value with an env var.
+
+## `auth login`
+
+Runs the OAuth flow in your browser, then saves the result. If the
+developer token or manager-account id aren't supplied (by flag, env, or
+a previous login), it prompts for them — unless `--no-input` is set.
+
+| Flag | Description |
+|---|---|
+| `--client-id ID` | OAuth client ID. Defaults to the bundled client when present, otherwise required. |
+| `--client-secret SECRET` | OAuth client secret. Required alongside `--client-id` for a bring-your-own client. |
+| `--developer-token TOKEN` | Your agency's developer token. Prompted if missing and the terminal is interactive. |
+| `--login-customer-id ID` | The manager account (MCC) these calls log in through. Prompted if missing. |
+| `--no-input` | Never prompt; use only what's passed or already saved. For scripts. |
+
+After saving, `auth login` calls `listAccessibleCustomers` and prints
+the accounts you can manage — those 10-digit IDs are what go in a
+project's `provider` block.
+
+<Aside type="note" title="Bundled client is rolling out">
+  bidsmith will ship a built-in OAuth client so `auth login` needs no
+  flags at all, but it's pending Google's app verification. Until then,
+  pass your agency's `--client-id` / `--client-secret` (created as a
+  **Desktop app** client in Google Cloud Console).
+</Aside>
+
+## `auth status`
+
+Shows which credentials resolve (secrets masked), then verifies them
+live: it exchanges the refresh token and lists the accounts you can
+reach. Exit code `0` only if the sign-in works and at least the
+developer token is present.
+
+```sh
+bidsmith auth status
+```
+
+## `auth logout`
+
+Removes the saved sign-in. By default it keeps the **team profile** —
+the developer token and manager-account id — so the next `auth login`
+is a single browser step.
+
+| Flag | Description |
+|---|---|
+| `--all` | Delete the entire `~/.bidsmith/credentials.toml`, team profile included. |
+
+## `auth profile`
+
+Prints a ready-to-run `bidsmith auth login …` command carrying the
+shared agency values, for onboarding a teammate.
+
+| Flag | Description |
+|---|---|
+| `--with-client` | Also include the OAuth client ID and secret in the printed command. |
+
+<Aside type="caution" title="Contains a secret">
+  The printed command includes your developer token (and, with
+  `--with-client`, the client secret). Share it through a password
+  manager or another trusted channel — not a public chat.
+</Aside>
+
+```sh
+bidsmith auth profile --with-client
+# → bidsmith auth login --developer-token … --login-customer-id … --client-id … --client-secret …
+```
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Success. |
+| `1` | Sign-in failed, credentials incomplete, or the live check failed. |
+| `2` | No OAuth client available to sign in with (pass `--client-id` / `--client-secret`). |
+
+## See also
+
+- [Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/) — the full setup guide.
+- [Authentication](/bidsmith/concepts/authentication/) — what bidsmith does with credentials on each run.
+- [`bidsmith plan --whoami`](/bidsmith/commands/plan/) — a lower-level credential check.

@@ -1,0 +1,115 @@
+---
+title: Privacy Policy
+description: How bidsmith handles your Google account data — in short, it stays on your machine.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**Last updated: 12 June 2026**
+
+This policy describes how **bidsmith** — an open-source command-line
+tool for managing Google Ads campaigns as code — handles your data,
+including data accessed through Google APIs.
+
+<Aside type="tip" title="The short version">
+  bidsmith runs entirely on your own computer (or your own CI). It has
+  no servers and no backend. It talks only to Google's own API
+  endpoints, on the accounts you choose, using credentials you supply.
+  It sends nothing to the bidsmith authors or any third party — no
+  telemetry, no analytics, no error reporting.
+</Aside>
+
+## What bidsmith accesses
+
+When you connect bidsmith to Google Ads, you grant it the single OAuth
+scope `https://www.googleapis.com/auth/adwords`. With that scope, and
+only on the Google Ads accounts you point it at, bidsmith reads and
+writes campaign configuration: campaigns, ad groups, ads, keywords,
+budgets, targeting, conversion actions, assets, and the related
+reporting metrics.
+
+bidsmith requests **no other scopes** — no Gmail, Drive, Calendar,
+Cloud Platform, profile, or contacts access.
+
+## How bidsmith uses what it accesses
+
+The data is used for one purpose: to show you the difference between
+your local configuration files (`.bid` files) and your live Google Ads
+account, and — only when you confirm — to make your account match those
+files. That is the entire function of the tool.
+
+bidsmith does **not**:
+
+- transmit your Google Ads data to the bidsmith authors or any third
+  party;
+- use your data to serve advertising;
+- allow any human (including the bidsmith authors) to read your data;
+- use your data to train machine-learning models;
+- sell, rent, or share your data with anyone.
+
+## What is stored, and where
+
+Everything bidsmith stores lives on your own machine. Nothing is
+uploaded anywhere except to Google's APIs as part of fulfilling your
+commands.
+
+| Data | Where it lives | Notes |
+|---|---|---|
+| OAuth credentials (refresh + developer tokens) | Environment variables you set, or `~/.bidsmith/credentials.toml` | The file is written owner-only (mode `0600`). Created only if you run `bidsmith auth login`. |
+| Short-lived access token | `.bidsmith/cache/` in your project | Owner-only (`0600`); expires within ~1 hour and is re-minted as needed. |
+| Account read-cache | `.bidsmith/cache/` in your project | A copy of the account configuration you can already see in Google Ads, kept briefly to make previews fast. Contains no credentials. |
+| Your campaign configuration | Your `.bid` files | Authored and version-controlled by you, typically in Git. |
+
+bidsmith reads credentials only from the two locations above and
+nowhere else.
+
+## Network connections
+
+The bidsmith binary makes outbound HTTPS connections to exactly two
+Google hosts:
+
+- `oauth2.googleapis.com` — to exchange your refresh token for a
+  short-lived access token (and, during `bidsmith auth login`, to
+  complete the one-time sign-in).
+- `googleads.googleapis.com` — to read and write your Google Ads
+  account.
+
+During `bidsmith auth login`, your web browser additionally opens
+Google's own sign-in page (`accounts.google.com`); bidsmith captures
+the result on a temporary `localhost` port on your own machine. It
+makes no other network connections.
+
+## Compliance with the Google API Services User Data Policy
+
+bidsmith's use of information received from Google APIs adheres to the
+[Google API Services User Data Policy](https://developers.google.com/terms/api-services-user-data-policy),
+including the **Limited Use** requirements. Google user data is used
+solely to provide and improve the tool's user-facing functionality
+described above, is processed only on the user's own device, is not
+transferred to others except as necessary to provide that
+functionality (i.e. to Google's own APIs), and is never used for
+advertising or sold.
+
+## Data retention and deletion
+
+Because all data is stored locally, you control its lifetime:
+
+- `bidsmith auth logout` removes the saved sign-in; `bidsmith auth
+  logout --all` deletes the entire credentials file.
+- Deleting the `.bidsmith/cache/` directory removes the local read
+  cache and any cached access token.
+- You can revoke bidsmith's access to your Google account at any time
+  at [myaccount.google.com → Security → Third-party access](https://myaccount.google.com/connections).
+
+Uninstalling bidsmith and deleting these files removes all data it held.
+
+## Changes to this policy
+
+If this policy changes, the updated version will be published on this
+page with a revised "last updated" date.
+
+## Contact
+
+bidsmith is an open-source project. Questions about this policy or
+about how bidsmith handles data can be raised at the project's
+repository: [github.com/chrmod/bidsmith](https://github.com/chrmod/bidsmith/issues).

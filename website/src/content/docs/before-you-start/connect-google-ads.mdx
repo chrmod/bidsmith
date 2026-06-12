@@ -1,73 +1,156 @@
 ---
 title: Connect to Google Ads
-description: One-time OAuth setup so bidsmith can read and write your Google Ads account.
+description: Sign bidsmith in to your Google Ads account with bidsmith auth login.
 ---
 
 import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
-bidsmith reads five environment variables to talk to the Google Ads
-API:
+The fastest way to connect bidsmith to Google Ads is:
 
-| Variable | What it is |
-|---|---|
-| `GOOGLE_ADS_DEVELOPER_TOKEN` | A token from your Google Ads manager account that authorizes API access. |
-| `GOOGLE_ADS_CLIENT_ID` | The OAuth client ID — identifies bidsmith as an "app" to Google. |
-| `GOOGLE_ADS_CLIENT_SECRET` | The OAuth client secret — paired with the client ID. |
-| `GOOGLE_ADS_REFRESH_TOKEN` | A long-lived token bidsmith exchanges for short-lived access tokens on every run. |
-| `GOOGLE_ADS_CUSTOMER_ID` | The numeric ID of the Google Ads account you're managing (10 digits, no dashes). |
+```sh
+bidsmith auth login
+```
 
-Optionally `GOOGLE_ADS_LOGIN_CUSTOMER_ID` — set to your manager
-account ID if you're managing a sub-account via an MCC.
+It opens your browser, you click **Allow**, and bidsmith saves the
+sign-in to `~/.bidsmith/credentials.toml` (locked to your user, file
+mode `0600`). This page explains what you need first, the one-step
+worker flow, and the environment-variable alternative for CI.
 
-You set these once. Total setup time: ≈ 15 minutes the first time.
+## What you need
 
-<Aside type="tip" title="Auth helper coming soon">
-  A `bidsmith auth` subcommand that automates this entire flow is on
-  the [roadmap](https://github.com/chrmod/bidsmith/blob/main/ROADMAP.md).
-  Until then, follow Google's docs to obtain the four credentials,
-  then come back here for the env-var setup and smoke test.
+Google Ads asks for four separate things. The good news: most of them
+are set up **once per agency**, not once per person.
+
+| What | Who provides it | Per person? |
+|---|---|---|
+| **Your Google sign-in** | The browser, during `auth login` | Yes — but it's one click |
+| **Developer token** | Your agency's manager account (MCC) | No — one shared token for the whole agency |
+| **Manager account ID (MCC)** | Your agency | No — same for everyone in the agency |
+| **OAuth client** | Your agency's Google Cloud project (see below) | No — created once |
+| **Customer ID** | Per Google Ads account you manage | Goes in each project's `provider` block, not here |
+
+If someone at your agency has already done the one-time setup, skip to
+[I was handed a team profile](#i-was-handed-a-team-profile). If you're
+the one setting it up, start at [Set up the agency once](#set-up-the-agency-once).
+
+<Aside type="note" title="Why an OAuth client?">
+  An OAuth client is what lets the browser sign-in work. bidsmith will
+  ship a built-in one (so you'd need *nothing* but a browser), but it's
+  still going through Google's app-verification review. Until that
+  lands, your agency supplies one — created once, shared by everyone.
 </Aside>
 
-## Step 1 — Obtain the four credentials
+## I was handed a team profile
 
-Google's docs are the canonical walkthrough for each piece. Open
-them in order:
+If a colleague ran `bidsmith auth profile --with-client`, they have a
+ready-to-run command for you. It looks like:
+
+```sh
+bidsmith auth login --developer-token AbC… --login-customer-id 1234567890 \
+  --client-id 123-abc.apps.googleusercontent.com --client-secret GOCSPX-…
+```
 
 <Steps>
 
-1. **Developer token** → [Obtain a developer token](https://developers.google.com/google-ads/api/docs/get-started/dev-token).
-   Apply via Google Ads → **Tools → API Center**. New tokens start
-   in **test access** mode, which is fine for trying bidsmith
-   against a test account. For a production account you need
-   **basic access** — bidsmith ships a generator for the design
-   document Google requires with that application; see
-   [Apply for Basic API access](/bidsmith/before-you-start/apply-for-basic-access/).
-
-2. **OAuth client ID + secret** → [Create OAuth 2.0 credentials](https://developers.google.com/google-ads/api/docs/oauth/cloud-project).
-   In Google Cloud Console, enable the Google Ads API, configure the
-   OAuth consent screen with scope
-   `https://www.googleapis.com/auth/adwords`, and create credentials
-   of type **Desktop app**.
-
-3. **Refresh token** → [Generate a refresh token via the OAuth Playground](https://developers.google.com/google-ads/api/docs/oauth/playground).
-   Use **your own** OAuth credentials in the Playground settings
-   (gear icon → "Use your own OAuth credentials"), authorize the
-   `adwords` scope, and copy the refresh token from the response.
-   Treat it like a password.
-
-4. **Customer ID** — the 10-digit number in the top-right of the
-   Google Ads UI (formatted as `123-456-7890`). bidsmith expects it
-   **without dashes**: `1234567890`.
+1. Paste that command into your terminal and run it.
+2. Your browser opens. Sign in with **your own** Google account (the
+   one your agency invited to the Google Ads accounts) and click
+   **Allow**.
+3. bidsmith prints the accounts you can manage and saves everything.
+   Done.
 
 </Steps>
 
-## Step 2 — Save them as env vars
+That's the whole worker flow — one paste, one browser click.
+
+## Set up the agency once
+
+Two one-time tasks, done by whoever administers the agency's API access.
+
+<Steps>
+
+1. **Get a developer token.** In Google Ads → **Tools → API Center**,
+   apply for a developer token. New tokens start in **test access**
+   (fine against a test account); a production account needs **basic
+   access**, and bidsmith generates the design document Google asks for
+   with that application — see
+   [Apply for Basic API access](/bidsmith/before-you-start/apply-for-basic-access/).
+
+2. **Create an OAuth client.** In
+   [Google Cloud Console](https://developers.google.com/google-ads/api/docs/oauth/cloud-project),
+   enable the Google Ads API, configure the OAuth consent screen with
+   the scope `https://www.googleapis.com/auth/adwords`, and create a
+   credential of type **Desktop app**. Note the client ID and secret.
+
+3. **Sign in and share.** Run `bidsmith auth login` with your client
+   and developer token, then hand the result to teammates:
+
+   ```sh
+   bidsmith auth login \
+     --client-id 123-abc.apps.googleusercontent.com \
+     --client-secret GOCSPX-xxxxxxxx \
+     --developer-token AbC1DeFg2HiJk-LMNo3PqRs \
+     --login-customer-id 1234567890
+
+   # then print a ready-to-run command for each teammate:
+   bidsmith auth profile --with-client
+   ```
+
+</Steps>
+
+<Aside type="caution" title="The profile contains a secret">
+  `auth profile` includes the developer token (and, with
+  `--with-client`, the OAuth client secret). Share it through a
+  password manager or another trusted channel — not a public Slack
+  channel or email.
+</Aside>
+
+## Verify the connection
+
+```sh
+bidsmith auth status
+```
+
+Expected output:
+
+```
+Credentials (env var > ~/.bidsmith/credentials.toml > built-in):
+  client_id         : 123-abc.apps.googleusercontent.com
+  developer_token   : set (AbC1De…, 23 chars)
+  login_customer_id : 1234567890
+  ...
+
+✓ Google sign-in works (access token valid for 3599s).
+✓ 3 account(s) reachable:
+  123-456-7890
+  234-567-8901
+  345-678-9012
+```
+
+If you see your accounts listed, you're connected.
+
+## Pick which account to manage
+
+`auth login` connects you to Google Ads; it doesn't decide *which*
+account a project edits. That lives in each project's `provider`
+block, so one login can manage many accounts:
+
+```hcl
+provider "google_ads" {
+  customer_id = "1234567890"   # the account this folder manages
+}
+```
+
+Use one of the 10-digit IDs `auth status` printed (drop the dashes).
+
+## The environment-variable way (CI and power users)
+
+`auth login` writes a file; CI usually can't do a browser sign-in. For
+automation, set the same values as environment variables instead — an
+env var always takes precedence over the saved file.
 
 <Tabs syncKey="shell">
   <TabItem label="zsh / bash (macOS, Linux)">
-
-Add to `~/.zshrc` (zsh, default on modern macOS) or `~/.bashrc`
-(bash, default on most Linux distros):
 
 ```sh
 export GOOGLE_ADS_DEVELOPER_TOKEN="aBc1DeFg2HiJk-LMNo3PqRs"
@@ -78,20 +161,8 @@ export GOOGLE_ADS_CUSTOMER_ID="1234567890"
 # export GOOGLE_ADS_LOGIN_CUSTOMER_ID="9876543210"  # uncomment if needed
 ```
 
-Open a new terminal window so the changes take effect, or run
-`source ~/.zshrc`.
-
-<Aside type="tip">
-  Many teams keep a `.envrc` file in the `bidsmith-config` repo and
-  use [direnv](https://direnv.net/) to load it automatically when you
-  `cd` into the folder. **Don't commit `.envrc` to Git** — add it to
-  `.gitignore`.
-</Aside>
-
   </TabItem>
   <TabItem label="Nushell">
-
-Add to your Nushell environment file (`$nu.env-path`):
 
 ```nu
 $env.GOOGLE_ADS_DEVELOPER_TOKEN = "aBc1DeFg2HiJk-LMNo3PqRs"
@@ -101,38 +172,25 @@ $env.GOOGLE_ADS_REFRESH_TOKEN = "1//09xxxxxxxxxxxxxxxxxxx"
 $env.GOOGLE_ADS_CUSTOMER_ID = "1234567890"
 ```
 
-Open a new shell or `source` the env file.
-
   </TabItem>
 </Tabs>
 
-## Step 3 — Smoke test
-
-Confirm bidsmith can authenticate with what you just configured:
-
-```sh
-bidsmith plan --whoami
-```
-
-Expected output:
-
-```
-Refresh token exchanged successfully.
-Access token expires in 3599 seconds.
-Customer ID: 1234567890
-```
-
-If you see that, you're done. **Skip to the
-[first tutorial](/bidsmith/tutorials/launch-search-campaign/).**
+The refresh token here is minted the old way — via Google's
+[OAuth Playground](https://developers.google.com/google-ads/api/docs/oauth/playground)
+using your own OAuth credentials. For laptops, prefer `auth login`.
+More on the runtime model in
+[Authentication](/bidsmith/concepts/authentication/).
 
 ## Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
-| `developer token is not approved` | Token is still in test-access mode. Either use a test account, or apply for basic access via the API Center. |
-| `invalid_grant` | Refresh token is wrong, revoked, or expired. Re-do step 1.3. |
-| `PERMISSION_DENIED` or `customer not found` | Set `GOOGLE_ADS_LOGIN_CUSTOMER_ID` to your manager account ID. |
-| `command not found: bidsmith` | Re-check the [install page](/bidsmith/before-you-start/install/). Open a new terminal so shell config changes take effect. |
+| `no OAuth client to sign in with` | This build has no bundled client yet. Pass `--client-id` / `--client-secret` (your agency's Desktop-app client). |
+| `Google sign-in was denied` | You clicked Cancel, or the consent screen's scope isn't `adwords`. Re-run and Allow. |
+| `developer token is not approved` | Token is still in test-access mode. Use a test account, or apply for basic access via the API Center. |
+| `the saved Google sign-in was created with a different OAuth client` | A `GOOGLE_ADS_CLIENT_ID` env var now points at a different client than the one you logged in with. Unset it, or run `bidsmith auth login` again. |
+| `PERMISSION_DENIED` or `customer not found` | Set the manager account: `--login-customer-id` (or `GOOGLE_ADS_LOGIN_CUSTOMER_ID`). |
+| `command not found: bidsmith` | Re-check the [install page](/bidsmith/before-you-start/install/). |
 | Anything mentioning a retired API version | Set `BIDSMITH_API_VERSION` to the current version (defaults to `v22`). |
 
 ## Next

@@ -250,19 +250,18 @@ fn load_live_from_cache(
     declared: &mut ExportInput,
 ) -> Result<ExportInput, ExitCode> {
     use crate::api::cache;
-    let customer_id = match std::env::var("GOOGLE_ADS_CUSTOMER_ID") {
-        Ok(v) if !v.is_empty() => v,
-        _ => {
+    let resolved = crate::api::creds::Resolved::load();
+    let customer_id = match resolved.customer_id() {
+        Some(v) => v,
+        None => {
             eprintln!(
-                "{label}: --offline still needs GOOGLE_ADS_CUSTOMER_ID set so we can \
-                 find the right cache entry."
+                "{label}: --offline still needs a customer id (provider block, --customer-id, \
+                 GOOGLE_ADS_CUSTOMER_ID, or `bidsmith auth login`) to find the right cache entry."
             );
             return Err(ExitCode::from(1));
         }
     };
-    let login = std::env::var("GOOGLE_ADS_LOGIN_CUSTOMER_ID")
-        .ok()
-        .filter(|s| !s.is_empty());
+    let login = resolved.login_customer_id();
     declared.customer_id = customer_id.clone();
     declared.login_customer_id = login.clone();
 
@@ -644,9 +643,10 @@ fn load_and_validate(
 }
 
 fn run_whoami() -> ExitCode {
-    let customer_id = env_or_blank("GOOGLE_ADS_CUSTOMER_ID");
-    let login_customer_id = env_or_blank("GOOGLE_ADS_LOGIN_CUSTOMER_ID");
-    let developer_token_present = !env_or_blank("GOOGLE_ADS_DEVELOPER_TOKEN").is_empty();
+    let resolved = crate::api::creds::Resolved::load();
+    let customer_id = resolved.customer_id().unwrap_or_default();
+    let login_customer_id = resolved.login_customer_id().unwrap_or_default();
+    let developer_token_present = resolved.developer_token().is_some();
 
     match auth::exchange_refresh_token() {
         Ok(token) => {
@@ -660,24 +660,24 @@ fn run_whoami() -> ExitCode {
             println!("  expires_in         : {}s", token.expires_in);
             println!(
                 "  customer_id        : {}",
-                show_or("(missing GOOGLE_ADS_CUSTOMER_ID)", &customer_id),
+                show_or("(missing — run `bidsmith auth login`)", &customer_id),
             );
             println!(
                 "  login_customer_id  : {}",
-                show_or("(missing GOOGLE_ADS_LOGIN_CUSTOMER_ID)", &login_customer_id),
+                show_or("(missing — run `bidsmith auth login`)", &login_customer_id),
             );
             println!(
                 "  developer_token    : {}",
                 if developer_token_present {
                     "set"
                 } else {
-                    "(missing GOOGLE_ADS_DEVELOPER_TOKEN)"
+                    "(missing — run `bidsmith auth login`)"
                 },
             );
             if customer_id.is_empty() || !developer_token_present {
                 eprintln!(
                     "plan: auth is ready but the API call envelope is incomplete — \
-                     set the missing env var(s) before the next checkpoint.",
+                     run `bidsmith auth login` (or set the missing GOOGLE_ADS_* env var).",
                 );
                 return ExitCode::from(1);
             }
@@ -689,10 +689,6 @@ fn run_whoami() -> ExitCode {
             ExitCode::from(1)
         }
     }
-}
-
-fn env_or_blank(name: &str) -> String {
-    std::env::var(name).unwrap_or_default()
 }
 
 fn show_or<'a>(missing: &'a str, value: &'a str) -> &'a str {

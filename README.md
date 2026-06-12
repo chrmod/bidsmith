@@ -34,6 +34,7 @@ Validate, plan, and apply all work today.
 
 | Command    | What it does                                                                 |
 |------------|------------------------------------------------------------------------------|
+| `auth`     | Sign in to Google Ads in your browser (`bidsmith auth login`)                |
 | `validate` | Check that your `.bid` files are well-formed                                 |
 | `plan`     | Show the diff between your `.bid` files and what's live in Google Ads        |
 | `apply`    | Make Google Ads match the `.bid` files (prompts before changing anything)    |
@@ -246,7 +247,7 @@ The short version:
 
 1. [Install bidsmith](https://chrmod.github.io/bidsmith/before-you-start/install/) — about 2 minutes.
 2. [Set up GitHub](https://chrmod.github.io/bidsmith/before-you-start/set-up-github/) — about 5 minutes if you've never used Git.
-3. [Connect to Google Ads](https://chrmod.github.io/bidsmith/before-you-start/connect-google-ads/) — about 15 minutes, one-time.
+3. [Connect to Google Ads](https://chrmod.github.io/bidsmith/before-you-start/connect-google-ads/) — `bidsmith auth login` opens your browser; one-time.
 4. [Run your first plan](https://chrmod.github.io/bidsmith/before-you-start/first-ten-minutes/).
 
 ## Multiple files in one folder

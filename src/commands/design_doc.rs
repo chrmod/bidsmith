@@ -206,8 +206,14 @@ fn build_context(cfg: &DesignDocConfig) -> Context {
         Endpoint {
             endpoint: "oauth2.googleapis.com/token".into(),
             method: "POST",
-            used_by: "auth (every run)",
+            used_by: "auth (every run, plus the one-time authorization-code exchange in `auth login`)",
             validate_only: "—",
+        },
+        Endpoint {
+            endpoint: format!("/{api_v}/customers:listAccessibleCustomers"),
+            method: "GET",
+            used_by: "auth login / auth status (account discovery)",
+            validate_only: "n/a (read)",
         },
         Endpoint {
             endpoint: format!(

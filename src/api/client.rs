@@ -1,5 +1,7 @@
 use serde_json::Value;
 
+use crate::api::creds;
+
 const DEFAULT_API_VERSION: &str = "v22";
 const USER_AGENT: &str = concat!("bidsmith/", env!("CARGO_PKG_VERSION"));
 
@@ -12,8 +14,8 @@ pub fn api_version() -> String {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
-    #[error("missing env var {0} — see ads/README.md (rezolutnie) or run `python -m ads.oauth_flow`")]
-    MissingEnv(&'static str),
+    #[error("missing {0}. Run `bidsmith auth login`, or set the matching GOOGLE_ADS_* env var.")]
+    MissingCred(&'static str),
     #[error("HTTP error talking to googleads.googleapis.com: {0}")]
     Http(#[from] reqwest::Error),
 }
@@ -33,11 +35,14 @@ pub struct Client {
 
 impl Client {
     pub fn from_env() -> Result<Self, ApiError> {
-        let customer_id = require_env("GOOGLE_ADS_CUSTOMER_ID")?;
-        let developer_token = require_env("GOOGLE_ADS_DEVELOPER_TOKEN")?;
-        let login_customer_id = std::env::var("GOOGLE_ADS_LOGIN_CUSTOMER_ID")
-            .ok()
-            .filter(|s| !s.is_empty());
+        let resolved = creds::Resolved::load();
+        let customer_id = resolved
+            .customer_id()
+            .ok_or(ApiError::MissingCred("customer id (GOOGLE_ADS_CUSTOMER_ID)"))?;
+        let developer_token = resolved
+            .developer_token()
+            .ok_or(ApiError::MissingCred("developer token (GOOGLE_ADS_DEVELOPER_TOKEN)"))?;
+        let login_customer_id = resolved.login_customer_id();
         Ok(Self {
             http: reqwest::blocking::Client::builder()
                 .user_agent(USER_AGENT)
@@ -97,9 +102,36 @@ impl Client {
     }
 }
 
-fn require_env(name: &'static str) -> Result<String, ApiError> {
-    match std::env::var(name) {
-        Ok(v) if !v.is_empty() => Ok(v),
-        _ => Err(ApiError::MissingEnv(name)),
-    }
+/// `customers:listAccessibleCustomers` — the accounts the signed-in user can
+/// reach. Needs only the developer token + access token (no customer id, no
+/// login-customer-id), which makes it the ideal post-login verification call.
+/// Returns bare 10-digit customer ids (the `customers/` prefix stripped).
+pub fn list_accessible_customers(
+    developer_token: &str,
+    access_token: &str,
+) -> Result<Vec<String>, ApiError> {
+    let version = api_version();
+    let url =
+        format!("https://googleads.googleapis.com/{version}/customers:listAccessibleCustomers");
+    let http = reqwest::blocking::Client::builder()
+        .user_agent(USER_AGENT)
+        .build()?;
+    let response = http
+        .get(&url)
+        .bearer_auth(access_token)
+        .header("developer-token", developer_token)
+        .send()?;
+    let raw = response.text()?;
+    let parsed: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+    let names = parsed
+        .get("resourceNames")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.trim_start_matches("customers/").to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(names)
 }
