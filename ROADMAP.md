@@ -42,11 +42,16 @@ declared HCL against live labeled state. Local cache is rebuildable.
   = … }`, multi-file directory sources, `source =
   "github.com/org/repo//path?ref=v1"`) waits on real users hitting
   the boundaries.
-- Multi-account: how do `provider` blocks compose? One provider per
-  file? Aliases? Today's `provider` block is single-customer, with the
-  customer/login_customer ids overridable via env at `export` / `plan`
-  / `apply` time — works for the rezolutnie loop but needs revisiting
-  before bidsmith manages multiple customers in one tree.
+- Multi-account: how do `provider` blocks compose? **Partially
+  resolved:** a per-project `bidsmith.toml` (`customer_id` /
+  `login_customer_id` / optional `developer_token`) now supplies the
+  target per folder, the provider block's `customer_id` is optional, and
+  the resolved target drives the live client end-to-end — so
+  account-agnostic `.bid` files are applied to different accounts by
+  `cd`-ing into the right folder (target precedence: env → `bidsmith.toml`
+  → provider block → global credentials). Still open: in-tree provider
+  aliases / a single command spanning several customers in one run, and
+  how that composes with modules.
 - Lint catalog: starter set shipped (missing `status`, RSA min
   headlines/descriptions, phone-in-RSA). Still open: missing-negatives
   on search campaigns, declension hints for PL, RSA pinning advice,
@@ -202,15 +207,21 @@ Smaller follow-ups that can ride along:
 - Tighten `fmt` ↔ export alignment for non-bidsmith outputs (the
   internal renderer already pipes through fmt; external pretty-print
   use cases may want their own knobs).
-- `bidsmith auth` subcommand — walks the user through the Google Ads
-  OAuth dance (Cloud-Console client + OAuth-Playground refresh-token
-  exchange), opens a browser, captures the redirect, prints the five
-  env vars to paste into `~/.bidsmith/env` or shell config. Today's
-  manual flow is the single steepest onboarding cliff for
-  non-engineers; collapsing ~15 min of clicking down to one command
-  is the highest-leverage marketer-adoption fix. A hosted-helper
-  variant (`bidsmith.dev/auth`) is a follow-up if the local-browser
-  version proves not enough.
+- ✅ `bidsmith auth` subcommand — `login` runs a browser OAuth loopback
+  + PKCE authorization-code flow, then writes `~/.bidsmith/credentials.toml`
+  (`0600`) and lists the accounts `listAccessibleCustomers` returns;
+  `status` / `logout` / `profile` round out the set. Credentials resolve
+  env var → file → bundled default, per value, so CI/env-var setups are
+  unchanged. **Phase A (shipped)** supports a bring-your-own OAuth client
+  (`--client-id`/`--client-secret` or env), so any agency that creates one
+  "Desktop app" client is productive today. **Phase B (remaining):**
+  register + verify the bundled bidsmith OAuth client with Google
+  (sensitive-scope verification — app name, logo, privacy-policy URL, demo
+  video) and inject it at release-build time via
+  `option_env!("BIDSMITH_DEFAULT_CLIENT_ID"/..._SECRET)`; that flips on the
+  zero-config solo path with no code change. A hosted-helper variant
+  (`bidsmith.dev/auth`) is a later follow-up if the local-browser flow
+  proves not enough.
 - Windows binary distribution — `.exe` build via `cross` or
   `cargo-dist`, plus a `scoop` or `winget` recipe to mirror the
   Homebrew tap UX. Today's macOS + Linux targets cover engineers but

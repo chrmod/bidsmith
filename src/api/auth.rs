@@ -1,6 +1,7 @@
 use serde::Deserialize;
 
 use crate::api::cache;
+use crate::api::creds;
 
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 
@@ -12,8 +13,10 @@ pub struct AccessToken {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
-    #[error("missing env var {0} — see ads/README.md (rezolutnie) or run `python -m ads.oauth_flow`")]
-    MissingEnv(&'static str),
+    #[error("missing {0}. Run `bidsmith auth login`, or set the matching GOOGLE_ADS_* env var.")]
+    MissingCred(&'static str),
+    #[error("{0}")]
+    ClientMismatch(String),
     #[error("HTTP error talking to oauth2.googleapis.com: {0}")]
     Http(#[from] reqwest::Error),
     #[error("oauth2.googleapis.com returned {status}: {body}")]
@@ -26,10 +29,22 @@ struct TokenResponse {
     expires_in: u64,
 }
 
+fn resolve_oauth(r: &creds::Resolved) -> Result<(String, String, String), AuthError> {
+    if let Some(msg) = r.client_mismatch() {
+        return Err(AuthError::ClientMismatch(msg));
+    }
+    let client_id = r.client_id().ok_or(AuthError::MissingCred("OAuth client id"))?;
+    let client_secret = r
+        .client_secret()
+        .ok_or(AuthError::MissingCred("OAuth client secret"))?;
+    let refresh_token = r
+        .refresh_token()
+        .ok_or(AuthError::MissingCred("Google sign-in (refresh token)"))?;
+    Ok((client_id, client_secret, refresh_token))
+}
+
 pub fn exchange_refresh_token() -> Result<AccessToken, AuthError> {
-    let client_id = require_env("GOOGLE_ADS_CLIENT_ID")?;
-    let client_secret = require_env("GOOGLE_ADS_CLIENT_SECRET")?;
-    let refresh_token = require_env("GOOGLE_ADS_REFRESH_TOKEN")?;
+    let (client_id, client_secret, refresh_token) = resolve_oauth(&creds::Resolved::load())?;
     exchange_with(&client_id, &client_secret, &refresh_token)
 }
 
@@ -70,9 +85,7 @@ fn exchange_with(
 /// for the current refresh token, otherwise performs a fresh OAuth exchange
 /// and writes the result to the project cache.
 pub fn get_access_token() -> Result<AccessToken, AuthError> {
-    let client_id = require_env("GOOGLE_ADS_CLIENT_ID")?;
-    let client_secret = require_env("GOOGLE_ADS_CLIENT_SECRET")?;
-    let refresh_token = require_env("GOOGLE_ADS_REFRESH_TOKEN")?;
+    let (client_id, client_secret, refresh_token) = resolve_oauth(&creds::Resolved::load())?;
 
     let cache_enabled = !cache::disabled_by_env();
     let cache_dir = cache::project_cache_dir();
@@ -102,11 +115,4 @@ pub fn get_access_token() -> Result<AccessToken, AuthError> {
     }
 
     Ok(token)
-}
-
-fn require_env(name: &'static str) -> Result<String, AuthError> {
-    match std::env::var(name) {
-        Ok(v) if !v.is_empty() => Ok(v),
-        _ => Err(AuthError::MissingEnv(name)),
-    }
 }

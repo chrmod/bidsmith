@@ -34,6 +34,9 @@ jobs:
           key: ${{ matrix.target }}
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
+        env:
+          BIDSMITH_DEFAULT_CLIENT_ID: ${{ secrets.BIDSMITH_DEFAULT_CLIENT_ID }}
+          BIDSMITH_DEFAULT_CLIENT_SECRET: ${{ secrets.BIDSMITH_DEFAULT_CLIENT_SECRET }}
       - name: Package
         working-directory: target/${{ matrix.target }}/release
         run: |

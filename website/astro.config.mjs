@@ -51,6 +51,7 @@ export default defineConfig({
             { label: 'Roll back a bad change', slug: 'recipes/roll-back-a-bad-change' },
             { label: 'Audit who changed what, when', slug: 'recipes/audit-who-changed-what' },
             { label: 'Cut Google Ads API quota usage', slug: 'recipes/reduce-api-calls' },
+            { label: 'Manage multiple client accounts', slug: 'recipes/manage-multiple-accounts' },
           ],
         },
         {
@@ -87,6 +88,7 @@ export default defineConfig({
             {
               label: 'API',
               items: [
+                { label: 'bidsmith auth', slug: 'commands/auth' },
                 { label: 'bidsmith plan', slug: 'commands/plan' },
                 { label: 'bidsmith apply', slug: 'commands/apply' },
                 { label: 'bidsmith refresh', slug: 'commands/refresh' },
@@ -145,6 +147,7 @@ export default defineConfig({
           label: 'Reference',
           items: [
             { label: 'Glossary', slug: 'reference/glossary' },
+            { label: 'Privacy policy', slug: 'privacy' },
           ],
         },
       ],

@@ -1,0 +1,106 @@
+---
+title: Manage multiple client accounts
+description: One sign-in, many Google Ads accounts — a per-folder bidsmith.toml routes each project to its own account.
+---
+
+import { Aside, FileTree } from '@astrojs/starlight/components';
+
+If you manage several Google Ads accounts — a few clients, maybe under
+different manager accounts (MCCs) — you don't need to sign in for each
+one. **One `bidsmith auth login` covers every account your Google login
+can reach.** What changes per client is just *which account a folder
+targets*, and that lives in a small committable file: `bidsmith.toml`.
+
+## The layout
+
+Give each client its own folder, each with a `bidsmith.toml` at its root:
+
+<FileTree>
+
+- ads-config/
+  - acme/
+    - **bidsmith.toml**
+    - campaigns.bid
+  - globex/
+    - **bidsmith.toml**
+    - campaigns.bid
+
+</FileTree>
+
+`acme/bidsmith.toml`:
+
+```toml
+customer_id       = "1112223333"   # the Acme Google Ads account
+login_customer_id = "4445556666"   # the MCC you reach it through
+```
+
+`globex/bidsmith.toml`:
+
+```toml
+customer_id       = "7778889990"
+login_customer_id = "4445556666"
+```
+
+Now switching clients is just `cd`:
+
+```sh
+cd acme   && bidsmith plan      # targets the Acme account
+cd ../globex && bidsmith plan   # targets the Globex account
+```
+
+bidsmith searches upward from the directory you run in, so running from
+a subfolder works too.
+
+## Why this works
+
+A Google Ads connection has four parts. Three of them are shared across
+all your accounts; only the account id really changes:
+
+| Part | Scope | Where it lives |
+|---|---|---|
+| Your sign-in (refresh token) | Your whole Google identity — every account you can access | Global, from `auth login` |
+| Developer token | Your agency's API access | Global (or env) |
+| `login_customer_id` (the MCC) | Per account | `bidsmith.toml` |
+| `customer_id` (the account) | Per account | `bidsmith.toml` |
+
+So `bidsmith.toml` only carries the two **account/MCC ids** — which
+aren't secret, so the file is safe to commit alongside your campaigns.
+
+<Aside type="caution" title="Keep the developer token out of Git">
+  `bidsmith.toml` also accepts a `developer_token`, but that *is* a
+  secret. You rarely need it per-folder — one developer token works
+  across every account your login can reach, so leave it in your global
+  setup. Only set it here if a particular MCC genuinely needs a different
+  token, and then add `bidsmith.toml` to your `.gitignore`.
+</Aside>
+
+## Account-agnostic campaigns
+
+Because the account now comes from `bidsmith.toml`, your `.bid` files
+don't have to name one. You can drop `customer_id` from the provider
+block entirely:
+
+```hcl
+provider "google_ads" {}   # account comes from bidsmith.toml
+```
+
+That lets you apply the *same* campaign files to several accounts — keep
+the campaigns in a shared module and let each client's `bidsmith.toml`
+point it at the right account.
+
+## How it resolves
+
+For the account and MCC ids, bidsmith checks, in order:
+
+```
+environment variable  →  bidsmith.toml  →  provider block  →  saved sign-in
+```
+
+An environment variable always wins, so CI can still set
+`GOOGLE_ADS_CUSTOMER_ID` to override everything for a one-off run.
+
+## See also
+
+- [Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/) — the one-time sign-in.
+- [Authentication](/bidsmith/concepts/authentication/) — the full credential model.
+- [provider "google_ads"](/bidsmith/resources/provider/) — the provider block reference.

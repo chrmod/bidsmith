@@ -118,13 +118,45 @@ resource type, any file layout, modules, schema validation.
   retired-version 404s are detected and surfaced with an actionable
   hint. tonic-build / `google-ads-rs` remain available as future
   swaps if a specific gRPC-only RPC is needed.
-- **Auth**: same env vars the rezolutnie `ads/` scripts already use
-  (`GOOGLE_ADS_DEVELOPER_TOKEN`, `GOOGLE_ADS_CLIENT_ID`,
+- **Auth**: every credential resolves env var → `~/.bidsmith/credentials.toml`
+  → built-in default, evaluated per value, so the env-var setup the
+  rezolutnie `ads/` scripts and CI use is byte-for-byte unchanged (env
+  always wins) while newcomers get a managed file. The six values are the
+  same ones (`GOOGLE_ADS_DEVELOPER_TOKEN`, `GOOGLE_ADS_CLIENT_ID`,
   `GOOGLE_ADS_CLIENT_SECRET`, `GOOGLE_ADS_REFRESH_TOKEN`,
-  `GOOGLE_ADS_CUSTOMER_ID`, `GOOGLE_ADS_LOGIN_CUSTOMER_ID`). bidsmith
-  exchanges the refresh token for an access token on every run; no
-  local credential caching. `--customer-id` / `--login-customer-id`
-  flags override the env when needed.
+  `GOOGLE_ADS_CUSTOMER_ID`, `GOOGLE_ADS_LOGIN_CUSTOMER_ID`).
+  `bidsmith auth login` runs a browser-based OAuth loopback + PKCE
+  authorization-code flow to mint the refresh token, then writes the
+  credentials file (mode `0600`, in the user's home — never the project
+  tree, never Git). It supports **both** a bundled bidsmith OAuth
+  "Desktop app" client (injected at release-build time via
+  `option_env!("BIDSMITH_DEFAULT_CLIENT_ID"/..._SECRET)`, gated on
+  Google's OAuth verification — absent and harmless in ordinary builds)
+  **and** a bring-your-own client (`--client-id`/`--client-secret` or
+  env). A stored refresh token is pinned to the client that minted it; a
+  later client mismatch is reported rather than surfacing as an opaque
+  `invalid_grant`. bidsmith still exchanges the refresh token for an
+  access token on every run, caching only that short-lived access token
+  in `.bidsmith/cache/` (mode `0600`) — the **refresh and developer
+  tokens** live solely in `~/.bidsmith/credentials.toml`.
+  `--customer-id` / `--login-customer-id` flags still override.
+- **Project config (`bidsmith.toml`)**: a committable, per-project file
+  at the project root (found by searching upward from the working
+  directory) supplies the *routing* axis — `customer_id`,
+  `login_customer_id`, and optionally `developer_token`. It sits in the
+  resolver between env and the global credentials file. Full target
+  precedence: env var → `bidsmith.toml` → `.bid` provider block → global
+  `~/.bidsmith/credentials.toml`. This is how multi-account works without
+  env juggling: one global sign-in (the refresh token spans the user's
+  whole Google identity), and each client folder declares its own
+  account/MCC. Only the ids are non-secret and meant to be committed; a
+  developer token placed here should be gitignored. Consequently the
+  provider block's `customer_id` is now **optional** — `.bid` files can be
+  account-agnostic and take their target from `bidsmith.toml`/env. The
+  resolved target is authoritative end-to-end (the importer merges the
+  precedence and the live client is built from that value via
+  `Client::for_target`), removing the prior footgun where the provider
+  block's `customer_id` was silently overwritten by the env for live runs.
 - **Plan = dry-run diff against live**: `plan` always fetches live
   state via `googleAds:searchStream`, matches by name with parent
   cascade, computes scalar field-level drift, and sends one
@@ -166,7 +198,9 @@ bidsmith/
 │   ├── api/
 │   │   ├── mod.rs
 │   │   ├── auth.rs       # OAuth refresh-token → access token
-│   │   ├── client.rs     # reqwest::blocking wrapper; googleAds:mutate + :searchStream
+│   │   ├── creds.rs      # credential resolver (env → ~/.bidsmith/credentials.toml → default) + storage
+│   │   ├── oauth.rs      # browser loopback + PKCE authorization-code flow (auth login)
+│   │   ├── client.rs     # reqwest::blocking wrapper; googleAds:mutate + :searchStream + listAccessibleCustomers
 │   │   ├── live_state.rs # six GAQL queries → populated ExportInput
 │   │   ├── import.rs     # AST → ExportInput (round-trip with the renderer)
 │   │   ├── diff.rs       # declared vs live → Create / NoOp / Update(fields)
@@ -174,6 +208,7 @@ bidsmith/
 │   └── commands/
 │       ├── mod.rs        # module declarations + small shared helpers
 │       ├── adapt.rs      # SearchStream JSON → ExportInput (used by export + live_state)
+│       ├── auth.rs       # auth login / status / logout / profile
 │       ├── apply.rs      # prepare + plan display + prompt + real mutate (--auto-approve skips the prompt)
 │       ├── export.rs     # render .bid from a JSON source description
 │       ├── fmt.rs        # canonical re-emitter (in-place / --check)
@@ -317,6 +352,18 @@ Verified locally:
   no flag writes the concatenation to stdout. Bootstrap-only — it
   overwrites existing files; reconcile-in-place needs the Phase 3
   v2 labels first.
+- `bidsmith auth login` runs the browser OAuth loopback + PKCE flow and
+  writes `~/.bidsmith/credentials.toml` (mode `0600`, home dir `0700`);
+  `auth status` shows the resolved credentials and (given a developer
+  token) lists accessible accounts; `auth logout` drops the sign-in but
+  keeps the developer-token + MCC "team profile", `--all` wipes the
+  file; `auth profile` prints the shareable team blob. The
+  offline-resolvable paths (field display, precedence, profile, logout
+  round-trip, file mode) verified by hand with `BIDSMITH_HOME` pointed
+  at a temp dir and the GOOGLE_ADS_* env cleared; env still wins over the
+  file. Unit tests in `api::creds` (precedence, mismatch guard, TOML
+  round-trip) and `api::oauth` (PKCE RFC-7636 vector, query parsing,
+  percent-encoding) cover the pure logic.
 - `cargo test` runs three offline unit tests in `commands::export`
   that lock in the account-vs-campaign split (`render_split`).
 
@@ -370,9 +417,10 @@ Validator covers (so far):
   reference removed or out-of-scope conversion actions still
   round-trip), `google_ads_customer_asset` (links
   a call asset to the account via `field_type = "CALL"`)
-- `provider "google_ads"` (`customer_id` required, `login_customer_id`
-  optional — overridable via `--login-customer-id` / `--customer-id` on
-  `export`)
+- `provider "google_ads"` (`customer_id` optional — resolved from
+  `bidsmith.toml` / env / global credentials when omitted, so `.bid`
+  files can be account-agnostic; `login_customer_id` optional —
+  overridable via `--login-customer-id` / `--customer-id` on `export`)
 - Type system: `string`, `integer`, `number`, `bool`, `enum<…>`,
   `ref<targets>`, `list<T>` (recurses into each element)
 - Two-pass validation: collect addresses, then walk each block.
@@ -400,6 +448,7 @@ Validator covers (so far):
 | `query`    | partial | Read-only GAQL passthrough; `--format table` (default), `json`, or `tsv`; uses the same OAuth + customer envelope as `plan` / `apply` |
 | `schema`   | partial | Dump the resource + provider schema as JSON (`-o PATH` or stdout). Powers the docs site's auto-generated reference under `website/src/content/docs/resources/`; `website/src/data/schema.json` is a build artifact regenerated by the docs site's `prebuild` / `predev` npm scripts, so it cannot drift from `src/schema.rs` |
 | `design-doc` | working | Generate the Google Ads API Basic-Access design document for an applicant to attach to their application. Two subcommands: `init` writes a commented `design-doc.toml` template; `render` reads the filled-in TOML plus bidsmith's own internals (API version, GAQL query list, RMF mapping) and emits `design-doc.html` for the user to print to PDF |
+| `auth`     | working | Sign in to Google Ads and manage saved credentials. `login` runs a browser OAuth loopback + PKCE flow, then writes `~/.bidsmith/credentials.toml` (`0600`) — prompts for the developer token + MCC id when not passed, and ends by listing the accounts `listAccessibleCustomers` returns; `status` shows which credentials resolve and verifies them live; `logout` clears the sign-in (keeps the developer-token + MCC "team profile" unless `--all`); `profile` emits that shareable team blob. Uses the bundled OAuth client when present, else `--client-id`/`--client-secret` |
 | `init`     | —       | (later) Bootstrap project skeleton                   |
 | `graph`    | —       | (later) Visualize resource graph                     |
 | `import`   | —       | (later) Adopt an unlabeled existing resource         |

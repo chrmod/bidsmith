@@ -159,22 +159,19 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
         }
     }
 
-    if input.customer_id.is_empty() {
-        if let Some(env_id) = std::env::var("GOOGLE_ADS_CUSTOMER_ID")
-            .ok()
-            .filter(|s| !s.is_empty())
-        {
-            input.customer_id = env_id;
-        }
-    }
-    if input.login_customer_id.as_deref().unwrap_or("").is_empty() {
-        if let Some(env_id) = std::env::var("GOOGLE_ADS_LOGIN_CUSTOMER_ID")
-            .ok()
-            .filter(|s| !s.is_empty())
-        {
-            input.login_customer_id = Some(env_id);
-        }
-    }
+    let resolved = crate::api::creds::Resolved::load();
+    let block_customer =
+        (!input.customer_id.is_empty()).then(|| std::mem::take(&mut input.customer_id));
+    input.customer_id = crate::api::creds::env_nonempty("GOOGLE_ADS_CUSTOMER_ID")
+        .or_else(|| resolved.project.customer_id.clone())
+        .or(block_customer)
+        .or_else(|| resolved.stored.customer_id.clone())
+        .unwrap_or_default();
+    let block_login = input.login_customer_id.take().filter(|s| !s.is_empty());
+    input.login_customer_id = crate::api::creds::env_nonempty("GOOGLE_ADS_LOGIN_CUSTOMER_ID")
+        .or_else(|| resolved.project.login_customer_id.clone())
+        .or(block_login)
+        .or_else(|| resolved.stored.login_customer_id.clone());
 
     if !diags.is_empty() {
         return Err(diags);

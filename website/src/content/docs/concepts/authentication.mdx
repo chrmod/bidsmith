@@ -34,16 +34,35 @@ Optionally:
 |---|---|
 | `GOOGLE_ADS_LOGIN_CUSTOMER_ID` | The manager account ID, if you're managing a sub-account via an MCC. |
 
-bidsmith reads these at command-start time, not at install time.
-They live in your shell config (`~/.zshrc`, `~/.bashrc`, a `.envrc`
-loaded by direnv, etc.), not in a bidsmith-specific file.
+You can provide these two ways, and you can mix them:
+
+- **`bidsmith auth login`** signs you in through your browser and
+  saves the values to `~/.bidsmith/credentials.toml` (file mode
+  `0600`). This is the easy path — see
+  [Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/).
+- **Environment variables** in your shell config (`~/.zshrc`,
+  `~/.bashrc`, a `.envrc` loaded by direnv, etc.). This is the path
+  CI uses.
+
+For each value, bidsmith resolves **environment variable → saved
+file → built-in default**, so an env var always wins over the saved
+file. CI setups therefore behave exactly as before, and you can
+override any single saved value with an env var when you need to.
+bidsmith reads all of this at command-start time, not at install time.
+
+The **account and manager-account ids** (and, if you must, the
+developer token) can also come from a committable
+[`bidsmith.toml`](/bidsmith/recipes/manage-multiple-accounts/) at your
+project root — it slots between the env var and the saved file in the
+order above, which is how one sign-in manages many accounts.
 
 ## What happens on each run
 
 When you run `bidsmith plan` or `apply`:
 
-1. **Read the five env vars.** If any are missing, bidsmith exits
-   with a clear error message naming which one is unset.
+1. **Resolve the credentials** (env var → saved file → built-in
+   default). If a required value is missing, bidsmith exits with a
+   clear error message and points you at `bidsmith auth login`.
 2. **Exchange the refresh token for an access token.** bidsmith
    POSTs to Google's OAuth endpoint with the client ID, client
    secret, and refresh token. Google returns a short-lived access
@@ -51,29 +70,33 @@ When you run `bidsmith plan` or `apply`:
 3. **Use the access token to make API calls.** Every Google Ads API
    request bidsmith makes carries this access token in the
    `Authorization` header.
-4. **Discard everything when the command exits.** The access token
-   is never written to disk.
+4. **Cache only the short-lived access token.** The access token is
+   written to `.bidsmith/cache/` (file mode `0600`) so a tight
+   plan/apply loop doesn't re-exchange on every run; it's evicted at
+   expiry. Nothing else from the run is persisted.
 
-The refresh token *does* live on disk — in your shell config — but
-bidsmith doesn't read it from anywhere else.
+The long-lived refresh and developer tokens live at rest only where
+you put them — your shell config, or `~/.bidsmith/credentials.toml`
+if you used `bidsmith auth login`. bidsmith reads them from those two
+places and nowhere else.
 
 ## What bidsmith doesn't do with your credentials
 
-- **No local credential cache.** bidsmith exchanges the refresh
-  token for an access token on every run. Yes, it's a redundant
-  network call. The simplicity of "no cache to invalidate, no
-  expiry to manage" is worth the cost.
+- **Only the access token is cached.** The short-lived access token
+  is cached in `.bidsmith/cache/` (mode `0600`) and re-minted from
+  the refresh token when it expires. The refresh and developer
+  tokens are never copied into that cache.
 - **No phone-home or telemetry.** bidsmith makes API calls *only*
-  to Google Ads. No analytics, no error reporting, no version
-  checks.
-- **No credential storage outside env vars.** bidsmith never writes
-  to `~/.bidsmith/credentials` or similar. The env vars are the
-  only credential surface.
-- **No team-shared secrets.** Each team member runs their own
-  refresh token. Refresh tokens are tied to a Google user; sharing
-  them is bad for audit (you can't tell who applied what) and
-  brittle (if one person leaves and revokes their token, it stops
-  working for everyone).
+  to Google Ads (and Google's OAuth endpoint for the token
+  exchange). No analytics, no error reporting, no version checks.
+- **No surprise credential files.** The only file bidsmith writes
+  credentials to is `~/.bidsmith/credentials.toml`, and only when you
+  run `bidsmith auth login`. A pure env-var setup writes nothing.
+- **No team-shared refresh tokens.** Each person signs in with their
+  own Google account, so the audit trail shows who applied what.
+  `bidsmith auth profile` shares only the *agency-level* values — the
+  developer token and manager-account id — never your personal
+  refresh token; each teammate still does their own browser sign-in.
 
 ## CI / automation
 
@@ -103,28 +126,33 @@ Slack, etc.):
 1. **Revoke it immediately**. In Google: account.google.com →
    Security → Third-party apps with account access → revoke
    bidsmith.
-2. **Mint a new one**. Follow
-   [step 3 of Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/#step-3--mint-a-refresh-token).
-3. **Update your shell config** with the new token.
-4. **Update CI secrets** if applicable.
+2. **Mint a new one**. Run `bidsmith auth login` again — it issues a
+   fresh refresh token and overwrites the saved file. (For an env-var
+   setup, generate a new token via the
+   [OAuth Playground](https://developers.google.com/google-ads/api/docs/oauth/playground).)
+3. **Update your CI secrets** if you store the token as
+   `GOOGLE_ADS_REFRESH_TOKEN` there rather than using `auth login`.
 
 The leaked token is invalid as soon as you revoke it. Your `.bid`
 files and Google Ads account are unaffected — only the credential
 itself was compromised.
 
-## The auth helper that's coming
+## The auth helper
 
-The OAuth dance to mint a refresh token is the steepest part of
-bidsmith onboarding. A `bidsmith auth` subcommand that automates it
-end-to-end (opens browser, captures redirect, prints env vars) is on
-the [roadmap](https://github.com/chrmod/bidsmith/blob/main/ROADMAP.md).
-Once that ships the five-variable shape stays the same — only how
-you get the values changes.
+`bidsmith auth login` automates the OAuth dance end-to-end: it opens
+your browser, captures the redirect on a local port, exchanges the
+result for a refresh token, and saves it to
+`~/.bidsmith/credentials.toml`. The five-variable shape above is
+unchanged — `auth login` just fills the values in for you instead of
+you pasting them into a shell config.
 
-<Aside type="tip" title="In the meantime">
-  If you onboard a new team member, the [Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/)
-  page is the canonical walkthrough. About 15 minutes from zero
-  credentials to a working `bidsmith plan --whoami`.
+<Aside type="tip" title="Onboarding a teammate">
+  `bidsmith auth profile` prints a ready-to-run `bidsmith auth login …`
+  command carrying the developer token + manager-account id (add
+  `--with-client` to include your OAuth client too). Send it over a
+  trusted channel; the teammate pastes it, finishes the browser
+  sign-in with their own Google account, and they're ready. See the
+  [auth command reference](/bidsmith/commands/auth/).
 </Aside>
 
 ## Next

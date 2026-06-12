@@ -151,6 +151,9 @@ enum Cmd {
         #[arg(short = 'o', long, value_name = "PATH")]
         output: Option<String>,
     },
+    /// Sign in to Google Ads and manage saved credentials
+    #[command(subcommand)]
+    Auth(AuthCmd),
     /// Generate the Google Ads API Basic-Access design document
     #[command(name = "design-doc", subcommand)]
     DesignDoc(DesignDocCmd),
@@ -172,6 +175,42 @@ enum QueryFormat {
     Table,
     Json,
     Tsv,
+}
+
+#[derive(Subcommand)]
+enum AuthCmd {
+    /// Sign in with Google in your browser and save the credentials
+    Login {
+        /// OAuth client id (defaults to the bundled client, or your agency's)
+        #[arg(long = "client-id", value_name = "ID")]
+        client_id: Option<String>,
+        /// OAuth client secret (required with --client-id for a bring-your-own client)
+        #[arg(long = "client-secret", value_name = "SECRET")]
+        client_secret: Option<String>,
+        /// Developer token from your agency's manager account
+        #[arg(long = "developer-token", value_name = "TOKEN")]
+        developer_token: Option<String>,
+        /// Manager account id (MCC) these calls log in through
+        #[arg(long = "login-customer-id", value_name = "ID")]
+        login_customer_id: Option<String>,
+        /// Don't prompt for missing values (for scripts / non-interactive use)
+        #[arg(long = "no-input")]
+        no_input: bool,
+    },
+    /// Show which credentials are configured and verify they work
+    Status,
+    /// Remove the saved sign-in (keeps the team profile unless --all)
+    Logout {
+        /// Delete the whole credentials file, including developer token + MCC id
+        #[arg(long)]
+        all: bool,
+    },
+    /// Print a shareable team profile (developer token + manager account id)
+    Profile {
+        /// Also include the OAuth client id/secret in the profile
+        #[arg(long = "with-client")]
+        with_client: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -244,6 +283,24 @@ fn main() -> ExitCode {
             verbose,
         ),
         Cmd::Schema { output } => commands::schema::run(output.as_deref()),
+        Cmd::Auth(sub) => match sub {
+            AuthCmd::Login {
+                client_id,
+                client_secret,
+                developer_token,
+                login_customer_id,
+                no_input,
+            } => commands::auth::run_login(
+                client_id.as_deref(),
+                client_secret.as_deref(),
+                developer_token.as_deref(),
+                login_customer_id.as_deref(),
+                no_input,
+            ),
+            AuthCmd::Status => commands::auth::run_status(),
+            AuthCmd::Logout { all } => commands::auth::run_logout(all),
+            AuthCmd::Profile { with_client } => commands::auth::run_profile(with_client),
+        },
         Cmd::DesignDoc(sub) => match sub {
             DesignDocCmd::Init { output, force } => {
                 commands::design_doc::run_init(&output, force)
