@@ -41,6 +41,12 @@ bidsmith auth <login|status|logout|profile>     # browser sign-in + credential m
 bidsmith schema                                 # dump the resource schema as JSON
 ```
 
+This list is a snapshot; the installed binary is the source of truth.
+When this document and `bidsmith --help` disagree (new verbs, changed
+flags), trust the binary: `bidsmith <command> --help` carries examples
+and flag details, and `bidsmith schema` dumps every resource type and
+attribute as JSON.
+
 `validate` is the most-used verb during authoring. Errors are
 source-mapped (miette) and point at the offending span — show them
 verbatim to the user rather than paraphrasing.

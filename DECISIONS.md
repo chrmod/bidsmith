@@ -93,6 +93,18 @@ resource type, any file layout, modules, schema validation.
   blocks in Phase 5.
 - **AI is outside the engine**: skills/agents author and review; engine
   is deterministic. Engine behavior must not depend on a model version.
+- **Agent docs split — facts in the binary, behavior in the skill**:
+  version-coupled facts (verbs, flags, usage examples) live in the
+  binary itself — clap `--help` / `<verb> --help` with `after_help`
+  examples, `bidsmith schema` for resource shapes — so a `brew upgrade`
+  updates docs and behavior atomically and they cannot drift. The
+  Claude Code skill (`skills/bidsmith/SKILL.md`, shipped via
+  `.claude-plugin/`) stays a thin, version-agnostic layer owning only
+  what the binary can't: triggering, installation, safety conventions
+  (plan-before-apply, gap-reporting protocol), with an explicit
+  tie-breaker that the binary wins when the two disagree. No skill
+  self-update machinery — the skill is designed to tolerate being
+  stale rather than trying never to be.
 - **Plan = live validate**: use Google Ads API's `validate_only` flag
   for free server-side validation (auth, references, policy, length).
 - **Apply shows the plan first, then prompts**: terraform-shaped flow.
