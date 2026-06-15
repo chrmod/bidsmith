@@ -111,11 +111,24 @@ because exact matches tend to be more valuable.
 
 ### Compact form for many keywords
 
-If you're changing several keywords at once, use the compact form:
-group multiple `keyword {}` blocks in one resource per
-`(ad_group, match_type)` pair. See the
-[example](/bidsmith/resources/google_ads_ad_group_criterion/#example)
-in the resource reference.
+If you're adding several keywords at once, skip the per-keyword blocks
+entirely: a `keywords {}` block takes the whole list and can fan it out
+across match types in one go.
+
+```hcl
+resource "google_ads_ad_group_criterion" "summer_deals" {
+  ad_group = google_ads_ad_group.summer_default.id
+  status   = "ENABLED"
+
+  keywords {
+    match_types = ["EXACT", "PHRASE"]
+    texts       = ["summer deals", "summer sale", "end of summer sale"]
+  }
+}
+```
+
+See [Add a whole keyword list at once](./add-many-keywords/) for the
+full rundown.
 
 ## See also
 

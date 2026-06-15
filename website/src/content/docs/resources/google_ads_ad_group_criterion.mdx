@@ -9,7 +9,9 @@ import schema from '~/data/schema.json';
 
 export const resource = schema.resources['google_ads_ad_group_criterion'];
 export const keyword = resource.blocks.find((b) => b.name === 'keyword');
+export const keywords = resource.blocks.find((b) => b.name === 'keywords');
 export const negative_keyword = resource.blocks.find((b) => b.name === 'negative_keyword');
+export const negative_keywords = resource.blocks.find((b) => b.name === 'negative_keywords');
 
 An **ad-group criterion** is a keyword (positive or negative) scoped to
 one ad group. Positive keywords trigger your ads; negative keywords
@@ -73,6 +75,59 @@ resource "google_ads_ad_group_criterion" "summer_negatives" {
 }
 ```
 
+### Compact form
+
+When a list of keywords all share the same settings, a `keywords`
+block carries the texts as one list instead of a block per keyword:
+
+```hcl
+resource "google_ads_ad_group_criterion" "summer_phrases" {
+  ad_group = google_ads_ad_group.summer_default.id
+  status   = "ENABLED"
+
+  keywords {
+    match_type = "PHRASE"
+    texts      = ["summer deals", "summer sale", "end of summer sale"]
+  }
+}
+```
+
+Set `match_types` (plural) instead of `match_type` to fan one list out
+across several match types. The block below is the same as writing the
+three texts twice — once as `EXACT`, once as `PHRASE`:
+
+```hcl
+resource "google_ads_ad_group_criterion" "summer" {
+  ad_group = google_ads_ad_group.summer_default.id
+  status   = "ENABLED"
+
+  keywords {
+    match_types = ["EXACT", "PHRASE"]
+    texts       = ["summer deals", "summer sale", "end of summer sale"]
+  }
+}
+```
+
+`negative_keywords` is the negative counterpart — same shape, marks the
+criteria negative for you:
+
+```hcl
+resource "google_ads_ad_group_criterion" "summer_negatives" {
+  ad_group = google_ads_ad_group.summer_default.id
+  status   = "ENABLED"
+
+  negative_keywords {
+    match_type = "BROAD"
+    texts      = ["free", "diy", "used"]
+  }
+}
+```
+
+Each (text, match type) pair still becomes its own keyword on Google
+Ads, so `plan` and `apply` see no difference between the compact and
+the per-keyword forms — they are purely an authoring convenience. Both
+forms can coexist in the same resource.
+
 ## Schema
 
 <AttributeTable block={resource} headingLevel={3} />
@@ -86,12 +141,27 @@ resource.
 
 <AttributeTable block={keyword} headingLevel={4} />
 
+### `keywords`
+
+The compact form: a list of `texts` fanned out across a single
+`match_type` or a list of `match_types`. One block stands in for many
+`keyword` blocks. Set exactly one of `match_type` or `match_types`.
+
+<AttributeTable block={keywords} headingLevel={4} />
+
 ### `negative_keyword`
 
 A negative keyword for this ad group. Same shape as `keyword`. Using
 this block implicitly marks the criterion as negative.
 
 <AttributeTable block={negative_keyword} headingLevel={4} />
+
+### `negative_keywords`
+
+The compact form for negatives — same shape as `keywords`, and marks
+every resulting criterion negative for you.
+
+<AttributeTable block={negative_keywords} headingLevel={4} />
 
 ## See also
 

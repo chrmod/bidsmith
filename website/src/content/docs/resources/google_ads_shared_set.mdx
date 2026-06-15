@@ -9,6 +9,7 @@ import schema from '~/data/schema.json';
 
 export const resource = schema.resources['google_ads_shared_set'];
 export const negative_keyword = resource.blocks.find((b) => b.name === 'negative_keyword');
+export const negative_keywords = resource.blocks.find((b) => b.name === 'negative_keywords');
 
 A **shared set** is a reusable list of negative keywords. Define it
 once, link it to multiple campaigns via
@@ -50,6 +51,21 @@ resource "google_ads_shared_set" "value_seekers" {
 }
 ```
 
+The same list, written compactly:
+
+```hcl
+resource "google_ads_shared_set" "value_seekers" {
+  name   = "Value-seeker negatives"
+  type   = "NEGATIVE_KEYWORDS"
+  status = "ENABLED"
+
+  negative_keywords {
+    match_type = "BROAD"
+    texts      = ["free", "diy", "used"]
+  }
+}
+```
+
 ## Schema
 
 <AttributeTable block={resource} headingLevel={3} />
@@ -61,6 +77,14 @@ resource "google_ads_shared_set" "value_seekers" {
 A negative keyword in the shared set. Repeat the block to list many.
 
 <AttributeTable block={negative_keyword} headingLevel={4} />
+
+### `negative_keywords`
+
+The compact form: a list of `texts` fanned out across a single
+`match_type` or a list of `match_types`. One block stands in for many
+`negative_keyword` blocks. Set exactly one of `match_type` or `match_types`.
+
+<AttributeTable block={negative_keywords} headingLevel={4} />
 
 ## See also
 

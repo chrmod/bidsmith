@@ -110,13 +110,30 @@ resource "google_ads_ad_group_criterion" "warszawa_phrases" {
   keyword { text = "klimatyzator inwerterowy Wwa",   match_type = "PHRASE" }
 }
 
+# Or the compact form: one list, optionally fanned out across match
+# types — three texts × two match types = six keywords from one block.
+resource "google_ads_ad_group_criterion" "warszawa" {
+  ad_group = google_ads_ad_group.warszawa.id
+  status   = "ENABLED"
+
+  keywords {
+    match_types = ["EXACT", "PHRASE"]
+    texts = [
+      "klimatyzacja Warszawa",
+      "montaż klimatyzacji Warszawa",
+      "klimatyzator inwerterowy Wwa",
+    ]
+  }
+}
+
 resource "google_ads_shared_set" "competitor_brands" {
   name   = "Klima — competitor brands"
   status = "ENABLED"
 
-  negative_keyword { text = "samsung", match_type = "BROAD" }
-  negative_keyword { text = "lg",      match_type = "BROAD" }
-  negative_keyword { text = "daikin",  match_type = "BROAD" }
+  negative_keywords {
+    match_type = "BROAD"
+    texts      = ["samsung", "lg", "daikin"]
+  }
 }
 
 resource "google_ads_ad_group_ad" "warszawa_rsa" {
@@ -142,7 +159,10 @@ resource "google_ads_ad_group_ad" "warszawa_rsa" {
 ```
 
 A 1025-line one-resource-per-keyword campaign comes out at 177 lines
-in this form. See [`examples/bulk/main.bid`](examples/bulk/main.bid).
+in this form. See [`examples/bulk/main.bid`](examples/bulk/main.bid)
+for the per-keyword bulk form and
+[`examples/compact/main.bid`](examples/compact/main.bid) for the
+`keywords {}` / `negative_keywords {}` list form.
 
 ### Hoist repeated values with `locals`
 
