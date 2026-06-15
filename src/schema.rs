@@ -1082,26 +1082,15 @@ impl Bindings {
         let mut current_module = from_module.to_string();
         let mut current_expr: &Expression = expr;
         while let Some((kind, name)) = binding_ref(current_expr) {
-            let (qualified, next_module, next_value) = match kind {
-                BindingKind::Local => match self.locals.resolve(&current_module, &name) {
-                    Resolution::Found(q) => match self.locals.get(&q) {
-                        Some(decl) => (q, decl.module.clone(), &decl.value),
-                        None => return current_expr,
-                    },
-                    _ => return current_expr,
-                },
-                BindingKind::Var => match self.variables.resolve(&current_module, &name) {
-                    Resolution::Found(q) => match self.variables.get(&q) {
-                        Some(decl) => (q, decl.module.clone(), &decl.value),
-                        None => return current_expr,
-                    },
-                    _ => return current_expr,
-                },
+            let Ok((qualified, next_module, next_value)) =
+                resolve_step(&self.locals, &self.variables, &current_module, kind, &name)
+            else {
+                return current_expr;
             };
             if !visited.insert((kind, qualified)) {
                 return current_expr;
             }
-            current_module = next_module;
+            current_module = next_module.to_string();
             current_expr = next_value;
         }
         current_expr
@@ -2236,6 +2225,50 @@ impl BindingKind {
             BindingKind::Var => "var",
         }
     }
+
+    fn noun(self) -> &'static str {
+        match self {
+            BindingKind::Local => "local",
+            BindingKind::Var => "variable",
+        }
+    }
+}
+
+enum StepError {
+    Missing,
+    Ambiguous(Vec<String>),
+    Dangling,
+}
+
+fn resolve_step<'a>(
+    locals: &'a LocalsRegistry,
+    variables: &'a VariablesRegistry,
+    module: &str,
+    kind: BindingKind,
+    name: &str,
+) -> Result<(String, &'a str, &'a Expression), StepError> {
+    let resolution = match kind {
+        BindingKind::Local => locals.resolve(module, name),
+        BindingKind::Var => variables.resolve(module, name),
+    };
+    match resolution {
+        Resolution::Found(q) => {
+            let decl = match kind {
+                BindingKind::Local => locals.get(&q).map(|d| (d.module.as_str(), &d.value)),
+                BindingKind::Var => variables.get(&q).map(|d| (d.module.as_str(), &d.value)),
+            };
+            match decl {
+                Some((decl_module, value)) => Ok((q, decl_module, value)),
+                None => Err(StepError::Dangling),
+            }
+        }
+        Resolution::Missing => Err(StepError::Missing),
+        Resolution::Ambiguous(modules) => {
+            let mut sorted: Vec<String> = modules.to_vec();
+            sorted.sort();
+            Err(StepError::Ambiguous(sorted))
+        }
+    }
 }
 
 fn resolve_binding_chain<'a>(
@@ -2254,70 +2287,40 @@ fn resolve_binding_chain<'a>(
     let mut current_kind = first_kind;
     let mut current_name = first_name;
     loop {
-        let (qualified, decl_module, value): (String, &str, &'a Expression) = match current_kind {
-            BindingKind::Local => {
-                match locals.resolve(current_module, &current_name) {
-                    Resolution::Found(q) => match locals.get(&q) {
-                        Some(decl) => (q, decl.module.as_str(), &decl.value),
-                        None => return BindingResolution::Failed,
-                    },
-                    Resolution::Missing => {
-                        diags.push(Diag::new(
-                            file.src.clone(),
-                            use_span.clone(),
-                            format!("reference to undeclared local 'local.{current_name}'"),
-                        ));
-                        return BindingResolution::Failed;
-                    }
-                    Resolution::Ambiguous(modules) => {
-                        let mut sorted: Vec<&str> = modules.iter().map(String::as_str).collect();
-                        sorted.sort();
-                        diags.push(Diag::new(
-                            file.src.clone(),
-                            use_span,
-                            format!(
-                                "ambiguous reference to 'local.{current_name}'; declared in modules [{}] — rename one of the locals so each is unique within its module",
-                                sorted.join(", ")
-                            ),
-                        ));
-                        return BindingResolution::Failed;
-                    }
+        let (qualified, decl_module, value) =
+            match resolve_step(locals, variables, current_module, current_kind, &current_name) {
+                Ok(t) => t,
+                Err(StepError::Dangling) => return BindingResolution::Failed,
+                Err(StepError::Missing) => {
+                    diags.push(Diag::new(
+                        file.src.clone(),
+                        use_span.clone(),
+                        format!(
+                            "reference to undeclared {} '{}.{current_name}'",
+                            current_kind.noun(),
+                            current_kind.prefix()
+                        ),
+                    ));
+                    return BindingResolution::Failed;
                 }
-            }
-            BindingKind::Var => {
-                match variables.resolve(current_module, &current_name) {
-                    Resolution::Found(q) => match variables.get(&q) {
-                        Some(decl) => (q, decl.module.as_str(), &decl.value),
-                        None => return BindingResolution::Failed,
-                    },
-                    Resolution::Missing => {
-                        diags.push(Diag::new(
-                            file.src.clone(),
-                            use_span.clone(),
-                            format!("reference to undeclared variable 'var.{current_name}'"),
-                        ));
-                        return BindingResolution::Failed;
-                    }
-                    Resolution::Ambiguous(modules) => {
-                        let mut sorted: Vec<&str> = modules.iter().map(String::as_str).collect();
-                        sorted.sort();
-                        diags.push(Diag::new(
-                            file.src.clone(),
-                            use_span,
-                            format!(
-                                "ambiguous reference to 'var.{current_name}'; declared in modules [{}] — rename one of the variables so each is unique within its module",
-                                sorted.join(", ")
-                            ),
-                        ));
-                        return BindingResolution::Failed;
-                    }
+                Err(StepError::Ambiguous(modules)) => {
+                    diags.push(Diag::new(
+                        file.src.clone(),
+                        use_span.clone(),
+                        format!(
+                            "ambiguous reference to '{}.{current_name}'; declared in modules [{}] — rename one of the {}s so each is unique within its module",
+                            current_kind.prefix(),
+                            modules.join(", "),
+                            current_kind.noun()
+                        ),
+                    ));
+                    return BindingResolution::Failed;
                 }
-            }
-        };
-        if !visited.insert((current_kind, qualified.clone())) {
+            };
+        if !visited.insert((current_kind, qualified)) {
             diags.push(Diag::new(
                 file.src.clone(),
-                use_span,
+                use_span.clone(),
                 format!(
                     "cyclic reference involving '{}.{current_name}'",
                     current_kind.prefix()
@@ -3220,6 +3223,28 @@ resource "google_ads_ad_group_criterion" "kw" {
         );
         assert!(
             diags.iter().any(|d| d.message.contains("undeclared local 'local.missing'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn undeclared_variable_reference_errors() {
+        let diags = validate_str(
+            "undeclared_var",
+            r#"
+resource "google_ads_ad_group_criterion" "kw" {
+  ad_group = google_ads_ad_group.g.id
+
+  keywords {
+    texts      = var.missing
+    match_type = "PHRASE"
+  }
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("undeclared variable 'var.missing'")),
             "{:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
