@@ -227,9 +227,15 @@ fn build_prepared(
     label: &'static str,
     client: Option<client::Client>,
     token: Option<auth::AccessToken>,
-    imported: import::ImportResult,
-    live: ExportInput,
+    mut imported: import::ImportResult,
+    mut live: ExportInput,
 ) -> Prepared {
+    // Normalize both sides so an omitted attribute carrying a schema default is
+    // compared (and mutated) as that default — "omitted" means "managed at the
+    // default", not "unmanaged". Filling is None→default only, so real values
+    // are never masked.
+    imported.input.apply_schema_defaults();
+    live.apply_schema_defaults();
     let report = diff::diff(&imported.input, &live);
     let modules: std::collections::HashSet<&str> =
         report.diffs.iter().map(|d| module_of(&d.address)).collect();

@@ -30,10 +30,65 @@ impl FieldType {
     }
 }
 
+/// The Google Ads API's effective create-default for an optional attribute.
+/// An omitted attribute that carries one of these is *managed at the default*:
+/// `plan` enforces it (a UI flip back surfaces as drift) and `refresh` / minimal
+/// `fmt` stop emitting it once the live value matches.
+#[derive(Clone)]
+pub enum DefaultValue {
+    Str(&'static str),
+    Bool(bool),
+}
+
+// Single source of truth for the values referenced both here and by the
+// declared-side fill (`ExportInput::apply_schema_defaults`).
+pub const DEFAULT_STATUS: &str = "ENABLED";
+pub const DEFAULT_DELIVERY_METHOD: &str = "STANDARD";
+pub const DEFAULT_EU_POLITICAL: &str = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING";
+pub const DEFAULT_EXPLICITLY_SHARED: bool = false;
+pub const DEFAULT_NEGATIVE: bool = false;
+
 pub struct AttributeSchema {
     pub name: &'static str,
     pub ty: FieldType,
     pub required: bool,
+    pub default: Option<DefaultValue>,
+    /// Keep emitting this attribute even when it equals its default — used for
+    /// compliance declarations a reviewer wants visible in every file. Omission
+    /// still enforces the default; this only affects rendering.
+    pub always_emit: bool,
+}
+
+impl AttributeSchema {
+    fn with_default(mut self, value: DefaultValue) -> Self {
+        self.default = Some(value);
+        self
+    }
+
+    fn always_emit(mut self) -> Self {
+        self.always_emit = true;
+        self
+    }
+
+    /// The default to strip-on-render, if any. `always_emit` attributes never
+    /// return one (they stay in the file) even though omission still enforces it.
+    pub fn droppable_default(&self) -> Option<&DefaultValue> {
+        if self.always_emit {
+            None
+        } else {
+            self.default.as_ref()
+        }
+    }
+}
+
+/// True when `expr` is a literal scalar equal to `default`. Non-literals
+/// (references, `var.x`) never match, so they are preserved on render.
+pub fn expr_matches_default(expr: &Expression, default: &DefaultValue) -> bool {
+    match (expr, default) {
+        (Expression::String(s), DefaultValue::Str(d)) => s.as_str() == *d,
+        (Expression::Bool(b), DefaultValue::Bool(d)) => *b.as_ref() == *d,
+        _ => false,
+    }
 }
 
 pub struct NestedBlockSchema {
@@ -223,7 +278,13 @@ fn compact_keywords_block(name: &'static str) -> NestedBlockSchema {
 }
 
 fn attr(name: &'static str, ty: FieldType, required: bool) -> AttributeSchema {
-    AttributeSchema { name, ty, required }
+    AttributeSchema {
+        name,
+        ty,
+        required,
+        default: None,
+        always_emit: false,
+    }
 }
 
 fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
@@ -241,8 +302,10 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         "delivery_method",
                         FieldType::Enum(&["STANDARD", "ACCELERATED"]),
                         false,
-                    ),
-                    attr("explicitly_shared", FieldType::Bool, false),
+                    )
+                    .with_default(DefaultValue::Str(DEFAULT_DELIVERY_METHOD)),
+                    attr("explicitly_shared", FieldType::Bool, false)
+                        .with_default(DefaultValue::Bool(DEFAULT_EXPLICITLY_SHARED)),
                 ],
                 blocks: vec![],
             },
@@ -253,7 +316,8 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
             BlockSchema {
                 attributes: vec![
                     attr("name", FieldType::String, true),
-                    attr("status", FieldType::Enum(STATUS), false),
+                    attr("status", FieldType::Enum(STATUS), false)
+                        .with_default(DefaultValue::Str(DEFAULT_STATUS)),
                     attr(
                         "advertising_channel_type",
                         FieldType::Enum(&[
@@ -282,7 +346,9 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                             "CONTAINS_EU_POLITICAL_ADVERTISING",
                         ]),
                         false,
-                    ),
+                    )
+                    .with_default(DefaultValue::Str(DEFAULT_EU_POLITICAL))
+                    .always_emit(),
                     attr("languages", FieldType::LanguageList, false),
                     attr("locations", FieldType::LocationList, false),
                 ],
@@ -327,8 +393,10 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         FieldType::Ref(&["google_ads_ad_group"]),
                         true,
                     ),
-                    attr("status", FieldType::Enum(STATUS), false),
-                    attr("negative", FieldType::Bool, false),
+                    attr("status", FieldType::Enum(STATUS), false)
+                        .with_default(DefaultValue::Str(DEFAULT_STATUS)),
+                    attr("negative", FieldType::Bool, false)
+                        .with_default(DefaultValue::Bool(DEFAULT_NEGATIVE)),
                     attr("cpc_bid_micros", FieldType::Integer, false),
                 ],
                 blocks: vec![
@@ -349,8 +417,10 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         FieldType::Ref(&["google_ads_campaign"]),
                         true,
                     ),
-                    attr("status", FieldType::Enum(STATUS), false),
-                    attr("negative", FieldType::Bool, false),
+                    attr("status", FieldType::Enum(STATUS), false)
+                        .with_default(DefaultValue::Str(DEFAULT_STATUS)),
+                    attr("negative", FieldType::Bool, false)
+                        .with_default(DefaultValue::Bool(DEFAULT_NEGATIVE)),
                 ],
                 blocks: vec![
                     keyword_block(),
@@ -407,7 +477,8 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         FieldType::Ref(&["google_ads_ad_group"]),
                         true,
                     ),
-                    attr("status", FieldType::Enum(STATUS), false),
+                    attr("status", FieldType::Enum(STATUS), false)
+                        .with_default(DefaultValue::Str(DEFAULT_STATUS)),
                 ],
                 blocks: vec![NestedBlockSchema {
                     name: "ad",
@@ -450,7 +521,8 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         FieldType::Ref(&["google_ads_campaign"]),
                         true,
                     ),
-                    attr("status", FieldType::Enum(STATUS), false),
+                    attr("status", FieldType::Enum(STATUS), false)
+                        .with_default(DefaultValue::Str(DEFAULT_STATUS)),
                     attr(
                         "type",
                         FieldType::Enum(&[
@@ -490,7 +562,8 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         "status",
                         FieldType::Enum(CONVERSION_ACTION_STATUS),
                         false,
-                    ),
+                    )
+                    .with_default(DefaultValue::Str(DEFAULT_STATUS)),
                     attr(
                         "counting_type",
                         FieldType::Enum(CONVERSION_COUNTING_TYPE),
@@ -548,7 +621,8 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                 attributes: vec![
                     attr("name", FieldType::String, true),
                     attr("type", FieldType::Enum(SHARED_SET_TYPE), false),
-                    attr("status", FieldType::Enum(SHARED_SET_STATUS), false),
+                    attr("status", FieldType::Enum(SHARED_SET_STATUS), false)
+                        .with_default(DefaultValue::Str(DEFAULT_STATUS)),
                 ],
                 blocks: vec![
                     negative_keyword_block(),
@@ -587,7 +661,8 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         "status",
                         FieldType::Enum(CAMPAIGN_SHARED_SET_STATUS),
                         false,
-                    ),
+                    )
+                    .with_default(DefaultValue::Str(DEFAULT_STATUS)),
                 ],
                 blocks: vec![],
             },
@@ -607,7 +682,8 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         FieldType::Enum(ASSET_FIELD_TYPE),
                         true,
                     ),
-                    attr("status", FieldType::Enum(STATUS), false),
+                    attr("status", FieldType::Enum(STATUS), false)
+                        .with_default(DefaultValue::Str(DEFAULT_STATUS)),
                 ],
                 blocks: vec![],
             },
@@ -615,6 +691,12 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
 
         m
     })
+}
+
+/// Public accessor for the render/`fmt` layer to look up a resource's schema
+/// (and, through it, the per-attribute defaults to strip).
+pub fn resource_schema(ty: &str) -> Option<&'static BlockSchema> {
+    resource_schemas().get(ty)
 }
 
 fn provider_schemas() -> &'static HashMap<&'static str, BlockSchema> {
@@ -2207,8 +2289,16 @@ pub struct BlockDoc {
 pub struct AttributeDoc {
     pub name: &'static str,
     pub required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub always_emit: bool,
     #[serde(flatten)]
     pub ty: TypeDoc,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Serialize)]
@@ -2269,7 +2359,16 @@ fn attr_to_doc(a: &AttributeSchema) -> AttributeDoc {
     AttributeDoc {
         name: a.name,
         required: a.required,
+        default: a.default.as_ref().map(default_to_json),
+        always_emit: a.always_emit,
         ty: ty_to_doc(&a.ty),
+    }
+}
+
+fn default_to_json(d: &DefaultValue) -> serde_json::Value {
+    match d {
+        DefaultValue::Str(s) => serde_json::Value::String((*s).to_string()),
+        DefaultValue::Bool(b) => serde_json::Value::Bool(*b),
     }
 }
 

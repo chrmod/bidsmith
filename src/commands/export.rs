@@ -262,6 +262,57 @@ pub struct JsonRsaAsset {
     pub pin: Option<String>,
 }
 
+impl ExportInput {
+    /// Fill omitted optional attributes that carry a schema default with that
+    /// default, so "omitted" means "managed at the default" for `plan` and the
+    /// mutate builder. Applied to *both* the declared and the live state before
+    /// diffing — never on the render path, where defaults are stripped instead.
+    pub fn apply_schema_defaults(&mut self) {
+        use crate::schema::{
+            DEFAULT_DELIVERY_METHOD, DEFAULT_EU_POLITICAL, DEFAULT_EXPLICITLY_SHARED,
+            DEFAULT_NEGATIVE, DEFAULT_STATUS,
+        };
+        let status = || DEFAULT_STATUS.to_string();
+
+        for b in &mut self.campaign_budgets {
+            b.delivery_method
+                .get_or_insert_with(|| DEFAULT_DELIVERY_METHOD.to_string());
+            b.explicitly_shared.get_or_insert(DEFAULT_EXPLICITLY_SHARED);
+        }
+        for c in &mut self.campaigns {
+            c.status.get_or_insert_with(status);
+            c.contains_eu_political_advertising
+                .get_or_insert_with(|| DEFAULT_EU_POLITICAL.to_string());
+        }
+        for g in &mut self.ad_groups {
+            g.status.get_or_insert_with(status);
+        }
+        for a in &mut self.ad_group_ads {
+            a.status.get_or_insert_with(status);
+        }
+        for c in &mut self.ad_group_criteria {
+            c.status.get_or_insert_with(status);
+            c.negative.get_or_insert(DEFAULT_NEGATIVE);
+        }
+        for c in &mut self.campaign_criteria {
+            c.status.get_or_insert_with(status);
+            c.negative.get_or_insert(DEFAULT_NEGATIVE);
+        }
+        for c in &mut self.conversion_actions {
+            c.status.get_or_insert_with(status);
+        }
+        for a in &mut self.customer_assets {
+            a.status.get_or_insert_with(status);
+        }
+        for s in &mut self.shared_sets {
+            s.status.get_or_insert_with(status);
+        }
+        for s in &mut self.campaign_shared_sets {
+            s.status.get_or_insert_with(status);
+        }
+    }
+}
+
 pub fn run(
     from_json: Option<&str>,
     from_gads_search_response: Option<&str>,
@@ -329,7 +380,7 @@ pub fn run(
 
 pub fn canonicalize(raw: &str) -> String {
     match raw.parse::<hcl_edit::structure::Body>() {
-        Ok(body) => crate::commands::fmt::format_body(&body),
+        Ok(body) => crate::commands::fmt::format_body_minimal(&body),
         Err(_) => raw.to_string(),
     }
 }
