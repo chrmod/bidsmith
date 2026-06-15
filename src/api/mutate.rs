@@ -405,7 +405,7 @@ pub fn build_mutate_with_diff(
             };
             mutate_ops.push(json!({
                 "campaignSharedSetOperation": {
-                    "create": campaign_shared_set_create(cs, rn, &camp_rn, &set_rn)
+                    "create": campaign_shared_set_create(cs, &camp_rn, &set_rn)
                 }
             }));
             operations.push(PlanOperation {
@@ -1061,12 +1061,15 @@ fn shared_criterion_create(
 
 fn campaign_shared_set_create(
     cs: &JsonCampaignSharedSet,
-    resource_name: &str,
     campaign_rn: &str,
     shared_set_rn: &str,
 ) -> Value {
+    // No resourceName: the campaignSharedSet id is the composite
+    // campaign_id~shared_set_id, so pinning it would leak a referenced set's
+    // temp negative id into this op's own id — and the API reads any negative
+    // component as a temp-id *claim*, colliding when N attachments reference
+    // one new set. The campaign / sharedSet fields carry the references.
     let mut m = Map::new();
-    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
     m.insert("campaign".into(), Value::String(campaign_rn.to_string()));
     m.insert("sharedSet".into(), Value::String(shared_set_rn.to_string()));
     if let Some(st) = &cs.status {
@@ -1412,5 +1415,98 @@ mod tests {
             set_rn,
             "member must reference the parent set's temp resource name"
         );
+    }
+
+    #[test]
+    fn new_shared_set_attachments_share_one_temp_id() {
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "6571974784",
+            "shared_sets": [{
+                "id": "account.google_ads_shared_set.platform_negative_keywords",
+                "name": "platform campaigns negative keywords",
+                "type": "NEGATIVE_KEYWORDS",
+                "status": "ENABLED"
+            }],
+            "campaign_shared_sets": [
+                {
+                    "id": "chrome.google_ads_campaign_shared_set.platform_negatives",
+                    "campaign": "customers/6571974784/campaigns/111",
+                    "shared_set": "account.google_ads_shared_set.platform_negative_keywords"
+                },
+                {
+                    "id": "firefox.google_ads_campaign_shared_set.platform_negatives",
+                    "campaign": "customers/6571974784/campaigns/222",
+                    "shared_set": "account.google_ads_shared_set.platform_negative_keywords"
+                }
+            ]
+        }))
+        .expect("valid ExportInput");
+
+        let report = DiffReport {
+            diffs: vec![
+                create_diff(
+                    "account.google_ads_shared_set.platform_negative_keywords",
+                    "shared_set",
+                ),
+                create_diff(
+                    "chrome.google_ads_campaign_shared_set.platform_negatives",
+                    "campaign_shared_set",
+                ),
+                create_diff(
+                    "firefox.google_ads_campaign_shared_set.platform_negatives",
+                    "campaign_shared_set",
+                ),
+            ],
+            noop_count: 0,
+            create_count: 3,
+            update_count: 0,
+        };
+
+        let plan = match build_mutate_with_diff(&input, &report, true) {
+            Ok(plan) => plan,
+            Err(errs) => panic!(
+                "plan should build: {}",
+                errs.iter()
+                    .map(|e| format!("{}: {}", e.address, e.message))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        };
+        let ops = plan.body["mutateOperations"].as_array().unwrap();
+
+        let set_create = ops
+            .iter()
+            .find_map(|op| op.get("sharedSetOperation").and_then(|o| o.get("create")))
+            .expect("shared set create op");
+        let set_rn = set_create["resourceName"].as_str().unwrap();
+        assert!(
+            set_rn.contains("/sharedSets/-"),
+            "new set should get a temp negative resource name, got {set_rn}"
+        );
+
+        let attachments: Vec<&Value> = ops
+            .iter()
+            .filter_map(|op| {
+                op.get("campaignSharedSetOperation")
+                    .and_then(|o| o.get("create"))
+            })
+            .collect();
+        assert_eq!(
+            attachments.len(),
+            2,
+            "both attachments should emit a create op"
+        );
+
+        for create in attachments {
+            assert!(
+                create.get("resourceName").is_none(),
+                "campaign shared set create must not pin a resource name that re-claims the new set's temp id"
+            );
+            assert_eq!(
+                create["sharedSet"].as_str().unwrap(),
+                set_rn,
+                "every attachment must reference the one new set's temp resource name"
+            );
+        }
     }
 }
