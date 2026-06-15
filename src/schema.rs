@@ -1867,7 +1867,7 @@ fn validate_compact_keywords(
 ) {
     let mut has_match_type = false;
     let mut has_match_types = false;
-    let mut empty_list: Option<(&str, std::ops::Range<usize>)> = None;
+    let mut empty_lists: Vec<(&str, std::ops::Range<usize>)> = Vec::new();
     for s in block.body.iter() {
         let Structure::Attribute(a) = s else { continue };
         match a.key.as_str() {
@@ -1878,7 +1878,7 @@ fn validate_compact_keywords(
                     resolve_for_lint(file, &a.value, locals, variables)
                 {
                     if arr.is_empty() {
-                        empty_list = Some(("match_types", span_of(a.value.span())));
+                        empty_lists.push(("match_types", span_of(a.value.span())));
                     }
                 }
             }
@@ -1887,7 +1887,7 @@ fn validate_compact_keywords(
                     resolve_for_lint(file, &a.value, locals, variables)
                 {
                     if arr.is_empty() {
-                        empty_list = Some(("texts", span_of(a.value.span())));
+                        empty_lists.push(("texts", span_of(a.value.span())));
                     }
                 }
             }
@@ -1913,7 +1913,7 @@ fn validate_compact_keywords(
         _ => {}
     }
 
-    if let Some((field, span)) = empty_list {
+    for (field, span) in empty_lists {
         let what = if field == "texts" {
             "at least one keyword"
         } else {
@@ -2878,6 +2878,32 @@ resource "google_ads_ad_group_criterion" "kw" {
             diags.iter().any(|d| d.message.contains("'texts' must list at least one keyword")),
             "{:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn compact_keywords_reports_both_empty_lists() {
+        let diags = validate_str(
+            "kw_both_empty",
+            r#"
+resource "google_ads_ad_group_criterion" "kw" {
+  ad_group = google_ads_ad_group.ag.id
+  keywords {
+    texts       = []
+    match_types = []
+  }
+}
+"#,
+        );
+        let msgs: Vec<&String> = diags.iter().map(|d| &d.message).collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("'texts' must list at least one keyword")),
+            "{msgs:?}"
+        );
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("'match_types' must list at least one match type")),
+            "{msgs:?}"
         );
     }
 
