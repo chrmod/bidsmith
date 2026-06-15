@@ -1,0 +1,104 @@
+---
+title: Target specific countries and languages
+description: Limit a campaign to the countries and languages you care about — in plain codes, not opaque Google constants.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+You want a campaign to show only in the United States and the United
+Kingdom, to English speakers. In the Google Ads UI that's a few
+dropdowns. In bidsmith it's two lines on the campaign — and a reviewer
+can read exactly what changed in the pull request.
+
+## The change
+
+Add `locations` and `languages` to the `google_ads_campaign` block:
+
+```hcl
+resource "google_ads_campaign" "search_brand" {
+  name                     = "Search_Brand"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.brand.id
+
+  languages = ["en"]
+  locations = ["US", "GB"]
+}
+```
+
+- **`locations`** uses two-letter [ISO country
+  codes](https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2) — `"US"`,
+  `"GB"`, `"CA"`, `"DE"`, `"SG"`, and so on.
+- **`languages`** uses short language codes — `"en"`, `"de"`, `"fr"`,
+  `"pl"`, `"zh-CN"`.
+
+Widening the campaign to Canada later is the kind of one-word diff that
+reviews itself:
+
+```hcl
+  locations = ["US", "GB", "CA"]
+```
+
+## Plan and apply
+
+```sh
+bidsmith plan .
+```
+
+Expected: one `+ create` row per new country/language criterion, and
+nothing else churns. Commit, PR, merge, apply.
+
+## Cities, regions, and uncommon languages
+
+The shipped tables cover every country and the major languages. For a
+city or region, drop the raw `geoTargetConstants/NNNN` id into the same
+list — look it up in Google's
+[geo target table](https://developers.google.com/google-ads/api/data/geotargets):
+
+```hcl
+  # United States, plus the New York City metro area
+  locations = ["US", "geoTargetConstants/1023191"]
+```
+
+The same goes for a language that isn't in the shipped set — use its
+`languageConstants/NNNN` id.
+
+## Converting an existing campaign
+
+If your campaign already targets locations and languages through
+explicit `google_ads_campaign_criterion` resources, you can collapse
+them onto the campaign and delete the standalone blocks:
+
+```hcl
+# Before — one resource per target
+resource "google_ads_campaign_criterion" "geo_us" {
+  campaign = google_ads_campaign.search_brand.id
+  location {
+    geo_target_constant = "geoTargetConstants/2840"
+  }
+}
+
+# After — inline on the campaign
+resource "google_ads_campaign" "search_brand" {
+  # ...
+  locations = ["US"]
+}
+```
+
+bidsmith identifies live criteria by their resolved target, not by an
+address, so this conversion plans as **no change at all** — no campaign
+recreation, no lost history. Running `bidsmith refresh` on an existing
+account writes the inline form for you automatically.
+
+<Aside type="caution">
+  Pick one home per axis. A campaign that sets `locations` *and* keeps a
+  positive `location {}` criterion pointing at it is a `validate` error.
+  Negative locations (exclusions), proximity radii, and paused criteria
+  still live in explicit `google_ads_campaign_criterion` blocks — the
+  inline lists are for plain positive targeting.
+</Aside>
+
+## See also
+
+- [`google_ads_campaign`](/bidsmith/resources/google_ads_campaign/) — the `languages` / `locations` reference.
+- [`google_ads_campaign_criterion`](/bidsmith/resources/google_ads_campaign_criterion/) — negatives, proximity, and the explicit form.
+- [Turn many cloned campaigns into one template](./collapse-cloned-campaigns/) — the next step once targeting is the only thing that varies.

@@ -204,6 +204,16 @@ Priority order for what closes the most user-facing gaps:
 
 Smaller follow-ups that can ride along:
 
+- ✅ Inline campaign targeting (`languages = ["en"]` / `locations =
+  ["US"]`) — each entry expands to one positive `campaign_criterion`,
+  resolving human-readable codes (or raw `…Constants/NNNN` strings) via
+  the in-binary `src/targeting.rs` tables. Country geo constants are
+  generated from the stable `2000 + ISO-3166-1-numeric` rule; languages
+  are a curated code→id table. The planner matches by resolved constant,
+  so converting explicit `location {}` / `language {}` criteria to inline
+  — or adopting live targets — is drift-free, and `refresh` / `export`
+  emit the inline form by default. `validate` forbids declaring the same
+  axis both inline and as an explicit positive criterion (issue #37).
 - ✅ `bidsmith mv <from> <to>` — rename a resource's address (block
   label + every reference) as a format-preserving source rewrite.
   Because the planner matches live resources by content, not by

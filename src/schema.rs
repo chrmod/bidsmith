@@ -20,6 +20,8 @@ pub enum FieldType {
     RefOrResourceName(&'static [&'static str]),
     List(Box<FieldType>),
     RsaAssetList,
+    LanguageList,
+    LocationList,
 }
 
 impl FieldType {
@@ -281,6 +283,8 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         ]),
                         false,
                     ),
+                    attr("languages", FieldType::LanguageList, false),
+                    attr("locations", FieldType::LocationList, false),
                 ],
                 blocks: vec![
                     NestedBlockSchema {
@@ -1202,10 +1206,144 @@ pub fn validate_files(files: &[ParsedFile], inputs: &InputBindings) -> Vec<Diag>
         validate_top_level(f, &registry, &locals, &variables, &mut diags);
     }
 
+    validate_targeting_conflicts(files, &registry, &mut diags);
+
     diags.sort_by(|a, b| {
         (a.src.name(), a.span.offset()).cmp(&(b.src.name(), b.span.offset()))
     });
     diags
+}
+
+#[derive(Default, Clone, Copy)]
+struct InlineAxes {
+    languages: bool,
+    locations: bool,
+}
+
+/// A campaign can declare targeting *either* inline (`languages` / `locations`)
+/// *or* via explicit positive `google_ads_campaign_criterion` resources — not
+/// both for the same axis. (Negative locations, proximity, keywords, and
+/// non-positive criteria are unaffected — they only live in explicit form.)
+fn validate_targeting_conflicts(
+    files: &[ParsedFile],
+    registry: &ResourceRegistry,
+    diags: &mut Vec<Diag>,
+) {
+    let mut inline: HashMap<String, InlineAxes> = HashMap::new();
+    for f in files {
+        for s in f.body.iter() {
+            let Structure::Block(b) = s else { continue };
+            if b.ident.as_str() != "resource" || b.labels.len() != 2 {
+                continue;
+            }
+            if b.labels[0].as_str() != "google_ads_campaign" {
+                continue;
+            }
+            let name = b.labels[1].as_str();
+            let mut axes = InlineAxes::default();
+            for inner in b.body.iter() {
+                if let Structure::Attribute(a) = inner {
+                    match a.key.as_str() {
+                        "languages" => axes.languages = true,
+                        "locations" => axes.locations = true,
+                        _ => {}
+                    }
+                }
+            }
+            if axes.languages || axes.locations {
+                inline.insert(
+                    ResourceRegistry::qualified(&f.module, "google_ads_campaign", name),
+                    axes,
+                );
+            }
+        }
+    }
+    if inline.is_empty() {
+        return;
+    }
+
+    for f in files {
+        for s in f.body.iter() {
+            let Structure::Block(b) = s else { continue };
+            if b.ident.as_str() != "resource" || b.labels.len() != 2 {
+                continue;
+            }
+            if b.labels[0].as_str() != "google_ads_campaign_criterion" {
+                continue;
+            }
+            let mut negative = false;
+            let mut campaign_ref: Option<(String, String)> = None;
+            let mut loc_block: Option<&Block> = None;
+            let mut lang_block: Option<&Block> = None;
+            for inner in b.body.iter() {
+                match inner {
+                    Structure::Attribute(a) => match a.key.as_str() {
+                        "negative" => {
+                            if let Expression::Bool(v) = &a.value {
+                                negative = *v.as_ref();
+                            }
+                        }
+                        "campaign" => campaign_ref = ref_type_name(&a.value),
+                        _ => {}
+                    },
+                    Structure::Block(ib) => match ib.ident.as_str() {
+                        "location" => loc_block = Some(ib),
+                        "language" => lang_block = Some(ib),
+                        _ => {}
+                    },
+                }
+            }
+            if negative || (loc_block.is_none() && lang_block.is_none()) {
+                continue;
+            }
+            let Some((ty, name)) = campaign_ref else { continue };
+            if ty != "google_ads_campaign" {
+                continue;
+            }
+            let target = match registry.resolve(&f.module, &ty, &name) {
+                Resolution::Found(q) => q,
+                _ => continue,
+            };
+            let Some(axes) = inline.get(&target) else { continue };
+            if axes.locations {
+                if let Some(ib) = loc_block {
+                    diags.push(conflict_diag(f, ib, &name, "locations", "location"));
+                }
+            }
+            if axes.languages {
+                if let Some(ib) = lang_block {
+                    diags.push(conflict_diag(f, ib, &name, "languages", "language"));
+                }
+            }
+        }
+    }
+}
+
+fn conflict_diag(
+    file: &ParsedFile,
+    block: &Block,
+    campaign_name: &str,
+    attr: &str,
+    axis: &str,
+) -> Diag {
+    Diag::new(
+        file.src.clone(),
+        span_of(block.ident.span()),
+        format!(
+            "campaign '{campaign_name}' already declares inline '{attr}'; drop this explicit positive {axis} criterion or the campaign's '{attr}' attribute (one source of truth per targeting type)"
+        ),
+    )
+}
+
+fn ref_type_name(expr: &Expression) -> Option<(String, String)> {
+    let Expression::Traversal(t) = expr else {
+        return None;
+    };
+    let path = extract_traversal_path(t)?;
+    if path.len() < 2 {
+        return None;
+    }
+    Some((path[0].clone(), path[1].clone()))
 }
 
 fn validate_top_level(
@@ -1602,6 +1740,12 @@ fn validate_value(
                 ),
             )),
         },
+        FieldType::LanguageList => {
+            validate_code_list(file, expr, span, CodeKind::Language, locals, variables, diags)
+        }
+        FieldType::LocationList => {
+            validate_code_list(file, expr, span, CodeKind::Location, locals, variables, diags)
+        }
         FieldType::Ref(targets) => {
             validate_ref(file, expr, span, targets, registry, diags, false);
         }
@@ -1610,6 +1754,65 @@ fn validate_value(
                 return;
             }
             validate_ref(file, expr, span, targets, registry, diags, true);
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CodeKind {
+    Language,
+    Location,
+}
+
+fn validate_code_list(
+    file: &ParsedFile,
+    expr: &Expression,
+    span: std::ops::Range<usize>,
+    kind: CodeKind,
+    locals: &LocalsRegistry,
+    variables: &VariablesRegistry,
+    diags: &mut Vec<Diag>,
+) {
+    let (noun, example, constant) = match kind {
+        CodeKind::Language => ("language code", "en", "languageConstants/NNNN"),
+        CodeKind::Location => ("country code", "US", "geoTargetConstants/NNNN"),
+    };
+    let Expression::Array(arr) = expr else {
+        diags.push(Diag::new(
+            file.src.clone(),
+            span,
+            format!("expected list of {noun}s, got {}", describe_expr(expr)),
+        ));
+        return;
+    };
+    for item in arr.iter() {
+        let item_span = span_of(item.span());
+        let item = match resolve_binding_chain(file, item, locals, variables, diags) {
+            BindingResolution::NotABinding => item,
+            BindingResolution::Resolved(value) => value,
+            BindingResolution::Failed => continue,
+        };
+        let Expression::String(s) = item else {
+            diags.push(Diag::new(
+                file.src.clone(),
+                item_span,
+                format!("expected {noun} string, got {}", describe_expr(item)),
+            ));
+            continue;
+        };
+        let value = s.as_str();
+        let resolved = match kind {
+            CodeKind::Language => crate::targeting::resolve_language(value),
+            CodeKind::Location => crate::targeting::resolve_location(value),
+        };
+        if resolved.is_none() {
+            diags.push(Diag::new(
+                file.src.clone(),
+                item_span,
+                format!(
+                    "unknown {noun} \"{value}\"; use a known code (e.g. \"{example}\") or a raw {constant} string"
+                ),
+            ));
         }
     }
 }
@@ -1860,6 +2063,12 @@ fn describe_field_type(ty: &FieldType) -> String {
         ),
         FieldType::List(inner) => format!("list of {}", describe_field_type(inner)),
         FieldType::RsaAssetList => "list of strings or { text, pin? } objects".to_string(),
+        FieldType::LanguageList => {
+            "list of language codes (e.g. \"en\") or languageConstants/NNNN".to_string()
+        }
+        FieldType::LocationList => {
+            "list of country codes (e.g. \"US\") or geoTargetConstants/NNNN".to_string()
+        }
     }
 }
 
@@ -2014,6 +2223,8 @@ pub enum TypeDoc {
     ReferenceOrResourceName { targets: Vec<&'static str> },
     List { element: Box<TypeDoc> },
     RsaAssetList,
+    LanguageList,
+    LocationList,
 }
 
 #[derive(Serialize)]
@@ -2081,6 +2292,8 @@ fn ty_to_doc(ty: &FieldType) -> TypeDoc {
             element: Box::new(ty_to_doc(inner)),
         },
         FieldType::RsaAssetList => TypeDoc::RsaAssetList,
+        FieldType::LanguageList => TypeDoc::LanguageList,
+        FieldType::LocationList => TypeDoc::LocationList,
     }
 }
 
@@ -2363,6 +2576,111 @@ resource "google_ads_ad_group_criterion" "kw" {
   }
 }
 "#,
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    const TARGETING_PREAMBLE: &str = r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+"#;
+
+    #[test]
+    fn inline_targeting_validates_clean() {
+        let diags = validate_str(
+            "inline_ok",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  languages                = ["en", "pl"]
+  locations                = ["US", "geoTargetConstants/2702"]
+}}
+"#
+            ),
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn inline_targeting_rejects_unknown_code() {
+        let diags = validate_str(
+            "inline_bad_code",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  locations                = ["US", "Atlantis"]
+}}
+"#
+            ),
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("unknown country code \"Atlantis\"")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn inline_and_explicit_same_axis_conflict() {
+        let diags = validate_str(
+            "inline_conflict",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  locations                = ["US"]
+}}
+
+resource "google_ads_campaign_criterion" "extra_geo" {{
+  campaign = google_ads_campaign.c.id
+  location {{
+    geo_target_constant = "geoTargetConstants/2826"
+  }}
+}}
+"#
+            ),
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("already declares inline 'locations'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn inline_locations_allows_explicit_negative_location() {
+        let diags = validate_str(
+            "inline_neg_ok",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  locations                = ["US"]
+}}
+
+resource "google_ads_campaign_criterion" "exclude_ak" {{
+  campaign = google_ads_campaign.c.id
+  negative = true
+  location {{
+    geo_target_constant = "geoTargetConstants/21132"
+  }}
+}}
+"#
+            ),
         );
         let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
         assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());

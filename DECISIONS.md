@@ -245,6 +245,27 @@ resource type, any file layout, modules, schema validation.
   over permissive MIT/Apache (MPL keeps improvements to the tool itself
   open). Supersedes the earlier `license = "MIT"` placeholder; full
   text in `LICENSE`, declared as `license = "MPL-2.0"` in `Cargo.toml`.
+- **Inline campaign targeting (`languages` / `locations`)**: a
+  `google_ads_campaign` can carry `languages = ["en"]` /
+  `locations = ["US"]` list attributes instead of one boilerplate
+  positive `google_ads_campaign_criterion` per language/geo. Each entry
+  expands at import time to one positive criterion; the planner already
+  matches campaign criteria by their resolved constant (not by address),
+  so converting explicit `location {}` / `language {}` criteria to the
+  inline form — or adopting targets already live — is drift-free.
+  Resolution ships in the binary (`src/targeting.rs`): country geo
+  constants follow Google's stable `geoTargetConstants/(2000 + ISO-3166-1
+  numeric)` convention (US → `…/2840`), so the full alpha-2 country table
+  is generated; languages are a hand-curated code→id table for the major
+  languages. Codes are canonical; the raw `geoTargetConstants/NNNN` /
+  `languageConstants/NNNN` strings are accepted in the same list for
+  cities, regions, and uncommon languages. **One source of truth per
+  axis**: a campaign that sets `locations` *and* has an explicit positive
+  location criterion pointing at it fails `validate` (negatives,
+  proximity, and non-default statuses stay explicit). `refresh` / `export`
+  emit the inline form by default for plain positive targeting, which
+  retires the collision-suffixed criterion addresses for the common case
+  (issue #37).
 
 ## Current state
 
@@ -260,6 +281,7 @@ bidsmith/
 │   ├── main.rs           # clap dispatcher, subcommands
 │   ├── parser.rs         # hcl-edit wrapper: parse_file → ParsedFile
 │   ├── schema.rs         # resource-type registry + validator
+│   ├── targeting.rs      # geo/language code ↔ Google Ads constant tables
 │   ├── lint.rs           # soft-issue warnings (status, RSA min, phone)
 │   ├── diagnostics.rs    # miette Diag type with severity
 │   ├── api/
@@ -322,7 +344,15 @@ Verified locally:
   integration test in `tests/e2e.rs`)
 - `cargo build --release` → ~4 MB binary (the jump from ~1.5 MB is
   the reqwest + rustls TLS stack added for the live API client)
-- `cargo run -- validate examples/basic` → `OK: 1 file(s) valid.`
+- `cargo run -- validate examples/basic` → `OK: 1 file(s) valid.` —
+  the `summer_search` campaign now uses inline `languages = ["pl"]` /
+  `locations = ["US"]` (the old explicit language/location criterion
+  resources were folded into it); proximity + negatives stay explicit.
+- `cargo run -- export --from-json examples/exports/basic.json -o
+  /tmp/out.bid` folds the US location + Polish language criteria into
+  inline `languages`/`locations` on the campaign; `validate /tmp/out.bid`
+  and `fmt --check /tmp/out.bid` both pass (inline is the default
+  `export` / `refresh` form for plain positive targeting).
 - `cargo run -- validate examples/multi` → `OK: 2 file(s) valid.` —
   both files declare `google_ads_campaign_criterion.broad_wikipedia`
   and `…broad_olx`; the file-stem module prefix
@@ -466,7 +496,14 @@ Validator covers (so far):
   `contains_eu_political_advertising` enum — defaults to
   `DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING` at mutate time when the
   attribute is omitted, since Google Ads rejects new campaigns that
-  don't declare it), `google_ads_ad_group`, `google_ads_ad_group_ad`
+  don't declare it; plus optional inline `languages = [...]` /
+  `locations = [...]` list attributes that each expand to one positive
+  campaign criterion at import time, resolving human-readable codes
+  (`"en"`, `"US"`) — or raw `languageConstants/NNNN` /
+  `geoTargetConstants/NNNN` strings — to the API constants, with a
+  validate-time guard against declaring the same axis both inline and as
+  an explicit positive criterion resource), `google_ads_ad_group`,
+  `google_ads_ad_group_ad`
   (with `ad` → `responsive_search_ad` → repeating
   `headline { text, pin? }` / `description { text, pin? }` blocks,
   plus an equivalent list-attribute form `headlines = [...]` /

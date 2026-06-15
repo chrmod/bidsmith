@@ -5,6 +5,7 @@ mod lint;
 mod parser;
 mod program;
 mod schema;
+mod targeting;
 
 use std::process::ExitCode;
 

@@ -48,6 +48,7 @@ export default defineConfig({
             { label: 'Overview', slug: 'recipes' },
             { label: 'Pause everything for the holidays', slug: 'recipes/pause-for-holidays' },
             { label: 'Move a keyword between match types', slug: 'recipes/change-keyword-match-type' },
+            { label: 'Target specific countries and languages', slug: 'recipes/target-countries-and-languages' },
             { label: 'Add a whole keyword list at once', slug: 'recipes/add-many-keywords' },
             { label: 'Roll back a bad change', slug: 'recipes/roll-back-a-bad-change' },
             { label: 'Audit who changed what, when', slug: 'recipes/audit-who-changed-what' },

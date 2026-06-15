@@ -452,6 +452,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
     let mut account = String::new();
     let mut campaigns = String::new();
     let mut names = NameAllocator::default();
+    let inline = compute_inline_targeting(input);
 
     let mut budget_addr: HashMap<String, String> = HashMap::new();
     let mut campaign_addr: HashMap<String, String> = HashMap::new();
@@ -512,7 +513,14 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
         for c in &input.campaigns {
             let name = names.allocate("google_ads_campaign", &slugify(&c.name));
             campaign_addr.insert(c.id.clone(), format!("google_ads_campaign.{name}"));
-            write_campaign(&mut campaigns, &name, c, &budget_addr);
+            write_campaign(
+                &mut campaigns,
+                &name,
+                c,
+                &budget_addr,
+                inline.languages_for(&c.id),
+                inline.locations_for(&c.id),
+            );
         }
 
         for g in &input.ad_groups {
@@ -533,7 +541,12 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
             write_ad_group_criterion_group(&mut campaigns, &name, &group, &ad_group_addr);
         }
 
-        let (negative_groups, singletons) = partition_campaign_criteria(&input.campaign_criteria);
+        let remaining: Vec<&JsonCampaignCriterion> = input
+            .campaign_criteria
+            .iter()
+            .filter(|c| !inline.folded.contains(&c.id))
+            .collect();
+        let (negative_groups, singletons) = partition_campaign_criteria(&remaining);
         for group in negative_groups {
             let base = campaign_negative_group_base(&group, &campaign_addr);
             let name = names.allocate("google_ads_campaign_criterion", &slugify(&base));
@@ -575,6 +588,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
 fn render(input: &ExportInput) -> String {
     let mut out = String::new();
     let mut names = NameAllocator::default();
+    let inline = compute_inline_targeting(input);
 
     let mut budget_addr: HashMap<String, String> = HashMap::new();
     let mut campaign_addr: HashMap<String, String> = HashMap::new();
@@ -618,7 +632,14 @@ fn render(input: &ExportInput) -> String {
     for c in &input.campaigns {
         let name = names.allocate("google_ads_campaign", &slugify(&c.name));
         campaign_addr.insert(c.id.clone(), format!("google_ads_campaign.{name}"));
-        write_campaign(&mut out, &name, c, &budget_addr);
+        write_campaign(
+            &mut out,
+            &name,
+            c,
+            &budget_addr,
+            inline.languages_for(&c.id),
+            inline.locations_for(&c.id),
+        );
     }
 
     for g in &input.ad_groups {
@@ -639,7 +660,12 @@ fn render(input: &ExportInput) -> String {
         write_ad_group_criterion_group(&mut out, &name, &group, &ad_group_addr);
     }
 
-    let (negative_groups, singletons) = partition_campaign_criteria(&input.campaign_criteria);
+    let remaining: Vec<&JsonCampaignCriterion> = input
+        .campaign_criteria
+        .iter()
+        .filter(|c| !inline.folded.contains(&c.id))
+        .collect();
+    let (negative_groups, singletons) = partition_campaign_criteria(&remaining);
     for group in negative_groups {
         let base = campaign_negative_group_base(&group, &campaign_addr);
         let name = names.allocate("google_ads_campaign_criterion", &slugify(&base));
@@ -706,6 +732,8 @@ fn write_campaign(
     name: &str,
     c: &JsonCampaign,
     budget_addr: &HashMap<String, String>,
+    languages: &[String],
+    locations: &[String],
 ) {
     let _ = writeln!(out, "resource \"google_ads_campaign\" \"{name}\" {{");
     write_attr(out, 1, "name", &fmt_string(&c.name));
@@ -725,6 +753,12 @@ fn write_campaign(
     write_attr(out, 1, "campaign_budget", &budget_ref);
     if let Some(v) = &c.contains_eu_political_advertising {
         write_attr(out, 1, "contains_eu_political_advertising", &fmt_string(v));
+    }
+    if !languages.is_empty() {
+        write_attr(out, 1, "languages", &fmt_string_list(languages));
+    }
+    if !locations.is_empty() {
+        write_attr(out, 1, "locations", &fmt_string_list(locations));
     }
 
     if let Some(m) = &c.manual_cpc {
@@ -908,13 +942,72 @@ fn write_ad_group_criterion_group(
     out.push_str("}\n\n");
 }
 
-fn partition_campaign_criteria(
-    items: &[JsonCampaignCriterion],
-) -> (Vec<Vec<&JsonCampaignCriterion>>, Vec<&JsonCampaignCriterion>) {
-    let mut groups: Vec<Vec<&JsonCampaignCriterion>> = Vec::new();
+/// Positive, ENABLED language / location criteria fold onto their campaign as
+/// inline `languages` / `locations` attributes; everything else (negatives,
+/// proximity, keywords, paused/removed) stays an explicit criterion resource.
+#[derive(Default)]
+struct InlineTargeting {
+    languages: HashMap<String, Vec<String>>,
+    locations: HashMap<String, Vec<String>>,
+    folded: HashSet<String>,
+}
+
+impl InlineTargeting {
+    fn languages_for(&self, campaign_id: &str) -> &[String] {
+        self.languages.get(campaign_id).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    fn locations_for(&self, campaign_id: &str) -> &[String] {
+        self.locations.get(campaign_id).map(Vec::as_slice).unwrap_or(&[])
+    }
+}
+
+fn compute_inline_targeting(input: &ExportInput) -> InlineTargeting {
+    let campaign_ids: HashSet<&str> = input.campaigns.iter().map(|c| c.id.as_str()).collect();
+    let mut t = InlineTargeting::default();
+    for c in &input.campaign_criteria {
+        if !campaign_ids.contains(c.campaign.as_str()) {
+            continue;
+        }
+        let foldable = !c.negative.unwrap_or(false)
+            && matches!(c.status.as_deref(), None | Some("ENABLED"))
+            && c.keyword.is_none()
+            && c.proximity.is_none();
+        if !foldable {
+            continue;
+        }
+        if let Some(loc) = &c.location {
+            let entry = crate::targeting::location_code(&loc.geo_target_constant)
+                .map(str::to_string)
+                .unwrap_or_else(|| loc.geo_target_constant.clone());
+            t.locations.entry(c.campaign.clone()).or_default().push(entry);
+            t.folded.insert(c.id.clone());
+        } else if let Some(lang) = &c.language {
+            let entry = crate::targeting::language_code(&lang.language_constant)
+                .map(str::to_string)
+                .unwrap_or_else(|| lang.language_constant.clone());
+            t.languages.entry(c.campaign.clone()).or_default().push(entry);
+            t.folded.insert(c.id.clone());
+        }
+    }
+    for v in t.languages.values_mut() {
+        v.sort();
+        v.dedup();
+    }
+    for v in t.locations.values_mut() {
+        v.sort();
+        v.dedup();
+    }
+    t
+}
+
+fn partition_campaign_criteria<'a>(
+    items: &[&'a JsonCampaignCriterion],
+) -> (Vec<Vec<&'a JsonCampaignCriterion>>, Vec<&'a JsonCampaignCriterion>) {
+    let mut groups: Vec<Vec<&'a JsonCampaignCriterion>> = Vec::new();
     let mut index: HashMap<(String, Option<String>), usize> = HashMap::new();
-    let mut singletons: Vec<&JsonCampaignCriterion> = Vec::new();
-    for c in items {
+    let mut singletons: Vec<&'a JsonCampaignCriterion> = Vec::new();
+    for &c in items {
         let is_negative_keyword = c.negative.unwrap_or(false) && c.keyword.is_some();
         if is_negative_keyword {
             let key = (c.campaign.clone(), c.status.clone());

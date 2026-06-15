@@ -1,6 +1,6 @@
 ---
 interface TypeShape {
-  type: 'string' | 'integer' | 'number' | 'boolean' | 'enum' | 'reference' | 'list' | 'rsa_asset_list';
+  type: 'string' | 'integer' | 'number' | 'boolean' | 'enum' | 'reference' | 'list' | 'rsa_asset_list' | 'language_list' | 'location_list';
   values?: string[];
   targets?: string[];
   element?: TypeShape;
@@ -33,6 +33,10 @@ function plainTypeLabel(t: TypeShape): string {
       return 'List of ' + (t.element ? plainTypeLabel(t.element) : 'value');
     case 'rsa_asset_list':
       return 'List of strings or { text, pin } objects';
+    case 'language_list':
+      return 'List of language codes (e.g. "en") or languageConstants/NNNN';
+    case 'location_list':
+      return 'List of country codes (e.g. "US") or geoTargetConstants/NNNN';
     case 'reference':
       return 'Reference';
     default:

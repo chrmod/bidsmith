@@ -47,6 +47,50 @@ resource "google_ads_campaign" "summer_search" {
 }
 ```
 
+## Geo and language targeting
+
+The `languages` and `locations` lists are the readable way to say *who*
+sees a campaign. Each entry expands to one positive campaign criterion
+under the hood, so a targeting change reads like plain English in a
+pull request — `locations = ["US"]` → `locations = ["US", "SG"]` —
+instead of an opaque `geoTargetConstants/2702`.
+
+```hcl
+resource "google_ads_campaign" "search_ublock" {
+  name                     = "Search_uBlock"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.search_ublock.id
+
+  languages = ["en"]
+  locations = ["US", "GB", "CA"]
+}
+```
+
+- **`locations`** takes ISO 3166-1 alpha-2 country codes (`"US"`,
+  `"GB"`, `"SG"`, …). For a city, region, or anything finer-grained,
+  drop in the raw `geoTargetConstants/NNNN` string in the same list —
+  look the id up with Google's
+  [geo target constant table](https://developers.google.com/google-ads/api/data/geotargets).
+- **`languages`** takes short language codes (`"en"`, `"de"`, `"pl"`,
+  `"zh-CN"`, …). Less common languages can be given as a raw
+  `languageConstants/NNNN` string.
+
+Two rules keep targeting unambiguous:
+
+- A campaign declares each axis **once**. Setting `locations` on the
+  campaign *and* a positive `google_ads_campaign_criterion` with a
+  `location {}` block pointing at it is a validation error — pick one
+  source of truth.
+- The inline form is **positive targeting only**. Negative locations,
+  proximity radii, and non-default statuses still use an explicit
+  [`google_ads_campaign_criterion`](./google_ads_campaign_criterion/).
+
+Because bidsmith matches live criteria by their resolved constant (not
+by an address), converting existing explicit `location {}` / `language {}`
+criteria to the inline form — or adopting targets that already exist on
+the account — plans as a no-op. `refresh` emits the inline form by
+default for plain positive targeting.
+
 ## Schema
 
 <AttributeTable block={resource} headingLevel={3} />
