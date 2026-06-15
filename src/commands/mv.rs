@@ -137,13 +137,9 @@ pub fn run(
         .map(|r| (r.from_qualified.clone(), r.to_name.clone()))
         .collect();
 
-    // Baseline error count on the project as-is. The batch is only rejected if
-    // it raises this count — pre-existing, unrelated errors don't block a
-    // cleanup pass.
-    let baseline_errors = validate_files(&files, &InputBindings::default())
-        .iter()
-        .filter(|d| d.is_error())
-        .count();
+    // Only a newly introduced error blocks the batch; pre-existing, unrelated
+    // errors don't block a cleanup pass.
+    let baseline_errors = error_signatures(&validate_files(&files, &InputBindings::default()));
 
     let (block_count, ref_count, changed) = apply_renames(&mut files, &registry, &renames);
 
@@ -160,7 +156,7 @@ pub fn run(
         .map(|&i| (files[i].path.clone(), files[i].body.to_string()))
         .collect();
 
-    if let Err(code) = revalidate(&files, baseline_errors) {
+    if let Err(code) = revalidate(&files, &baseline_errors) {
         return code;
     }
 
@@ -422,12 +418,14 @@ fn set_label(label: &mut BlockLabel, to_name: &str) {
     }
 }
 
-fn revalidate(files: &[ParsedFile], baseline_errors: usize) -> Result<(), ExitCode> {
+fn revalidate(
+    files: &[ParsedFile],
+    baseline: &HashMap<(String, String), usize>,
+) -> Result<(), ExitCode> {
     // `files` is already mutated in place, so re-serializing each body reflects
     // the rename. Re-parse from those strings and run the full validator so a
     // rename that breaks a reference (or introduces an ambiguity) aborts before
-    // anything is written — but only if it raises the error count above the
-    // pre-rename baseline.
+    // anything is written.
     let mut reparsed: Vec<ParsedFile> = Vec::with_capacity(files.len());
     for f in files {
         let content = f.body.to_string();
@@ -441,18 +439,38 @@ fn revalidate(files: &[ParsedFile], baseline_errors: usize) -> Result<(), ExitCo
         }
     }
 
-    let errors: Vec<Diag> = validate_files(&reparsed, &InputBindings::default())
-        .into_iter()
-        .filter(|d| d.is_error())
-        .collect();
-    if errors.len() > baseline_errors {
-        for d in errors {
-            eprintln!("{:?}", miette::Report::new(d));
+    // Re-serializing shifts span offsets, so compare errors by (file, message),
+    // not position; only a higher count for a signature is newly introduced.
+    let errors = validate_files(&reparsed, &InputBindings::default());
+    let after = error_signatures(&errors);
+    let regressed = after
+        .iter()
+        .any(|(sig, &n)| n > baseline.get(sig).copied().unwrap_or(0));
+    if regressed {
+        let mut seen: HashMap<(String, String), usize> = HashMap::new();
+        for d in errors.into_iter().filter(|d| d.is_error()) {
+            let sig = (d.src.name().to_string(), d.message.clone());
+            let allowed = baseline.get(&sig).copied().unwrap_or(0);
+            let count = seen.entry(sig).or_insert(0);
+            *count += 1;
+            if *count > allowed {
+                eprintln!("{:?}", miette::Report::new(d));
+            }
         }
         eprintln!("mv: the rename would break the project; nothing was written");
         return Err(ExitCode::from(1));
     }
     Ok(())
+}
+
+fn error_signatures(diags: &[Diag]) -> HashMap<(String, String), usize> {
+    let mut counts: HashMap<(String, String), usize> = HashMap::new();
+    for d in diags.iter().filter(|d| d.is_error()) {
+        *counts
+            .entry((d.src.name().to_string(), d.message.clone()))
+            .or_insert(0) += 1;
+    }
+    counts
 }
 
 fn report(plan: &[Rename], blocks: usize, refs: usize, files: usize) {
@@ -827,5 +845,50 @@ resource "google_ads_ad_group" "b" {{
         // a malformed line (3 tokens) reports its line number
         let err = parse_pairs("a.b c.d\nx y z\n").unwrap_err();
         assert!(err.contains("line 2"), "{err}");
+    }
+
+    #[test]
+    fn pre_existing_error_does_not_block_unrelated_rename() {
+        // A dangling reference is a pre-existing error. A clean, unrelated rename
+        // must still succeed — and the byte-offset shift it causes must not make
+        // that pre-existing error read as newly introduced.
+        let dir = workdir("preexisting");
+        let file = dir.join("main.bid");
+        fs::write(
+            &file,
+            format!(
+                r#"{PROVIDER}{}
+resource "google_ads_ad_group" "old_group" {{
+  name = "G"
+  campaign = google_ads_campaign.search.id
+  status = "ENABLED"
+}}
+
+resource "google_ads_ad_group" "h" {{
+  name = "H"
+  campaign = google_ads_campaign.ghost.id
+  status = "ENABLED"
+}}
+"#,
+                campaign("search"),
+            ),
+        )
+        .unwrap();
+
+        let code = one(
+            "google_ads_ad_group.old_group",
+            "google_ads_ad_group.preroll",
+            dir.to_str().unwrap(),
+        );
+        assert!(ok(code), "clean rename should survive a pre-existing error");
+
+        let out = fs::read_to_string(&file).unwrap();
+        assert!(out.contains(r#"resource "google_ads_ad_group" "preroll""#), "{out}");
+        assert!(
+            out.contains("google_ads_campaign.ghost.id"),
+            "pre-existing dangling reference left intact: {out}"
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
