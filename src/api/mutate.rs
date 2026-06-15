@@ -163,7 +163,9 @@ pub fn build_mutate_with_diff(
     let mut mutate_ops: Vec<Value> = Vec::new();
 
     for b in &input.campaign_budgets {
-        let rn = refs.get(&b.id).expect("budget rn");
+        let Some(rn) = plan_rn(&refs, &b.id, "campaign_budget", &mut errors) else {
+            continue;
+        };
         if create_set.contains(&b.id) {
             mutate_ops.push(json!({
                 "campaignBudgetOperation": { "create": budget_create(b, rn) }
@@ -180,7 +182,9 @@ pub fn build_mutate_with_diff(
         }
     }
     for c in &input.campaigns {
-        let rn = refs.get(&c.id).expect("campaign rn");
+        let Some(rn) = plan_rn(&refs, &c.id, "campaign", &mut errors) else {
+            continue;
+        };
         if create_set.contains(&c.id) {
             let budget_rn = match resolve(&refs, &c.campaign_budget, &c.id, "campaign_budget", &mut errors) {
                 Some(s) => s,
@@ -201,7 +205,9 @@ pub fn build_mutate_with_diff(
         }
     }
     for g in &input.ad_groups {
-        let rn = refs.get(&g.id).expect("ad_group rn");
+        let Some(rn) = plan_rn(&refs, &g.id, "ad_group", &mut errors) else {
+            continue;
+        };
         if create_set.contains(&g.id) {
             let campaign_rn = match resolve(&refs, &g.campaign, &g.id, "campaign", &mut errors) {
                 Some(s) => s,
@@ -222,7 +228,9 @@ pub fn build_mutate_with_diff(
         }
     }
     for a in &input.ad_group_ads {
-        let rn = refs.get(&a.id).expect("ad_group_ad rn");
+        let Some(rn) = plan_rn(&refs, &a.id, "ad_group_ad", &mut errors) else {
+            continue;
+        };
         if create_set.contains(&a.id) {
             let ag_rn = match resolve(&refs, &a.ad_group, &a.id, "ad_group", &mut errors) {
                 Some(s) => s,
@@ -243,7 +251,9 @@ pub fn build_mutate_with_diff(
         }
     }
     for cr in &input.ad_group_criteria {
-        let rn = refs.get(&cr.id).expect("ad_group_criterion rn");
+        let Some(rn) = plan_rn(&refs, &cr.id, "ad_group_criterion", &mut errors) else {
+            continue;
+        };
         if create_set.contains(&cr.id) {
             let ag_rn = match resolve(&refs, &cr.ad_group, &cr.id, "ad_group", &mut errors) {
                 Some(s) => s,
@@ -266,7 +276,9 @@ pub fn build_mutate_with_diff(
         }
     }
     for cr in &input.campaign_criteria {
-        let rn = refs.get(&cr.id).expect("campaign_criterion rn");
+        let Some(rn) = plan_rn(&refs, &cr.id, "campaign_criterion", &mut errors) else {
+            continue;
+        };
         if create_set.contains(&cr.id) {
             let camp_rn = match resolve(&refs, &cr.campaign, &cr.id, "campaign", &mut errors) {
                 Some(s) => s,
@@ -289,7 +301,9 @@ pub fn build_mutate_with_diff(
         }
     }
     for c in &input.conversion_actions {
-        let rn = refs.get(&c.id).expect("conversion_action rn");
+        let Some(rn) = plan_rn(&refs, &c.id, "conversion_action", &mut errors) else {
+            continue;
+        };
         if create_set.contains(&c.id) {
             mutate_ops.push(json!({
                 "conversionActionOperation": { "create": conversion_action_create(c, rn) }
@@ -308,7 +322,9 @@ pub fn build_mutate_with_diff(
         }
     }
     for a in &input.call_assets {
-        let rn = refs.get(&a.id).expect("call_asset rn");
+        let Some(rn) = plan_rn(&refs, &a.id, "call_asset", &mut errors) else {
+            continue;
+        };
         if create_set.contains(&a.id) {
             let action_rn = match a.call_conversion_action.as_ref() {
                 Some(addr) if addr.starts_with("customers/") => Some(addr.clone()),
@@ -322,7 +338,9 @@ pub fn build_mutate_with_diff(
         }
     }
     for a in &input.customer_assets {
-        let rn = refs.get(&a.id).expect("customer_asset rn");
+        let Some(rn) = plan_rn(&refs, &a.id, "customer_asset", &mut errors) else {
+            continue;
+        };
         if create_set.contains(&a.id) {
             let asset_rn = match resolve(&refs, &a.asset, &a.id, "asset", &mut errors) {
                 Some(s) => s,
@@ -344,7 +362,9 @@ pub fn build_mutate_with_diff(
     }
 
     for s in &input.shared_sets {
-        let rn = refs.get(&s.id).expect("shared_set rn");
+        let Some(rn) = plan_rn(&refs, &s.id, "shared_set", &mut errors) else {
+            continue;
+        };
         if create_set.contains(&s.id) {
             mutate_ops.push(json!({
                 "sharedSetOperation": { "create": shared_set_create(s, rn) }
@@ -385,7 +405,9 @@ pub fn build_mutate_with_diff(
     }
 
     for cs in &input.campaign_shared_sets {
-        let rn = refs.get(&cs.id).expect("campaign_shared_set rn");
+        let Some(rn) = plan_rn(&refs, &cs.id, "campaign_shared_set", &mut errors) else {
+            continue;
+        };
         if create_set.contains(&cs.id) {
             let camp_rn = if cs.campaign.starts_with("customers/") {
                 cs.campaign.clone()
@@ -1015,6 +1037,24 @@ fn resolve(
             errors.push(PlanBuildError {
                 address: owner.to_string(),
                 message: format!("unresolved reference '{address}' for field '{field}'"),
+            });
+            None
+        }
+    }
+}
+
+fn plan_rn<'a>(
+    refs: &'a HashMap<String, String>,
+    id: &str,
+    kind: &'static str,
+    errors: &mut Vec<PlanBuildError>,
+) -> Option<&'a String> {
+    match refs.get(id) {
+        Some(rn) => Some(rn),
+        None => {
+            errors.push(PlanBuildError {
+                address: id.to_string(),
+                message: format!("internal error: no planned resource name for {kind} '{id}'"),
             });
             None
         }
