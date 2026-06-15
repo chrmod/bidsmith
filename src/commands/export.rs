@@ -1345,7 +1345,7 @@ fn write_campaign_shared_set(
 }
 
 fn format_number(n: f64) -> String {
-    if n.fract() == 0.0 && n.is_finite() {
+    if n.is_finite() && n.fract() == 0.0 && n.abs() < 2f64.powi(53) {
         format!("{}", n as i64)
     } else {
         format!("{n}")
@@ -1744,5 +1744,15 @@ mod tests {
             errors.iter().map(|d| d.message.clone()).collect::<Vec<_>>()
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn format_number_does_not_saturate_large_integers() {
+        assert_eq!(format_number(5.0), "5");
+        assert_eq!(format_number(1_000_000.0), "1000000");
+        assert_eq!(format_number(2.5), "2.5");
+        let big = 1e20;
+        assert_ne!(format_number(big), i64::MAX.to_string());
+        assert_eq!(format_number(big).parse::<f64>().unwrap(), big);
     }
 }
