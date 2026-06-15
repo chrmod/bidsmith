@@ -74,12 +74,38 @@ resource type, any file layout, modules, schema validation.
   module's own locals/variables are private; resources inside cannot
   cross-reference the parent or sibling instances. Resource addresses
   become `<instance>.<type>.<name>`, replacing the file stem so two
-  module instances of the same source file don't collide. v1
-  limitations: single-file local sources only, no `for_each`, no
-  outputs, no directory or GitHub sources, no nested modules (a
-  module source containing its own `module` block fails fast). The
-  larger pieces (`for_each`, `output`, directory + GitHub sources)
-  are tracked under "Open decisions" as "Module composition v2."
+  module instances of the same source file don't collide. A file used
+  as a `module` source is a *template*, not a root file: it is loaded
+  only inside its instance scope(s) and excluded from the top-level
+  scope, so a template whose `variable`s have no defaults doesn't fail
+  top-level validation when it sits in a directory the loader walks.
+  Limitations: single-file local sources only, no outputs, no directory
+  or GitHub sources, no nested modules (a module source containing its
+  own `module` block fails fast). The remaining pieces (`output`,
+  directory + GitHub sources) are tracked under "Open decisions" as
+  "Module composition v2."
+- **`module` `for_each`**: a `module` block can declare
+  `for_each = { <key> = { <inputs> }, … }` to instantiate its source
+  N times — one instance per map entry — so all N variants coexist in
+  one desired state (the cross-file counterpart to `variable` + `--var`,
+  which pivots one variant per run). The `for_each` value is an object
+  literal, or a `local.<name>` that resolves to one (`var.<name>` is
+  scalar-only and can't be a map — feed variant tables from a `local`).
+  Each entry's value is an object mapping the source's `variable` names
+  to scalar literals; per instance the inputs are the block's shared
+  top-level attributes merged with that entry's object, entry winning on
+  conflict. Each instance is a normal module scope keyed by
+  `<label>.<key>`, so addresses are `<label>.<key>.<type>.<name>`
+  (collision-free as long as label + key are unique). There is no
+  `each.key` / `each.value` interpolation: bidsmith has no expression
+  engine, so the map's values *are* the inputs — which keeps the scalar
+  `variable` machinery unchanged and needs no object variable type. An
+  empty `for_each` map is an error (almost always a mistake, and once
+  removal-detection lands an empty table would silently destroy the
+  instances). Like all addresses, instance addresses are source-only;
+  the planner matches live resources by content, so converting N
+  hand-written clone files into one `for_each` template is live-neutral
+  (no campaign recreation) even though the addresses change.
 - **Files are modules**: each `.bid` file's basename (slugified file
   stem) is its implicit module name. Resource addresses are
   `<module>.<type>.<name>`. Two files in one directory can each declare
@@ -327,6 +353,17 @@ Verified locally:
   pointing at the module's `variable` declaration; a duplicate
   `module "x"` block is rejected; a nested `module` block inside the
   source file is rejected with "nested modules are not supported yet."
+  The `city-campaign.bid` source (whose `variable`s have no defaults)
+  is excluded from the top-level scope, so the recursive directory
+  walk doesn't try to validate it as a standalone file.
+- `cargo run -- validate examples/modules-for-each` →
+  `OK: 4 file(s) valid.` — exercises `for_each` on a `module` block.
+  `examples/modules-for-each/main.bid` instantiates
+  `templates/preroll-campaign.bid` three times (one per `for_each`
+  entry) with a shared `geo` and per-entry `campaign_name` / `final_url`;
+  resources get addresses `ghostery_search.<key>.<type>.<name>`
+  (`ghostery_search.privacy.google_ads_campaign.search`, …).
+  `fmt --check examples/modules-for-each` is a no-op.
 - `cargo run -- validate examples/broken` → exit 1 with 11 errors and
   5 warnings (parse failure, type mismatch, enum violation, dangling
   reference, unknown attribute at two depths, unknown resource type,

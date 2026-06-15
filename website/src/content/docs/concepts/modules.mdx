@@ -174,10 +174,71 @@ Each module instance is an **isolation boundary**:
   vice versa. If two cities need to share a budget, declare it at
   the top level and pass its id through a variable.
 
+## Repeat a module with `for_each`
+
+Writing one `module` block per variant gets tedious fast. When you have
+a table of near-identical campaigns — same shape, a few values changing
+— give a single block a `for_each` map instead. Each entry in the map
+becomes one instance:
+
+```hcl
+module "ghostery_search" {
+  source = "./templates/preroll-campaign.bid"
+
+  geo = "geoTargetConstants/2840"   # shared by every instance
+
+  for_each = {
+    privacy  = {
+      campaign_name = "Ghostery — Privacy"
+      final_url     = "https://www.ghostery.com/?utm_campaign=search_privacy"
+    }
+    adblock  = {
+      campaign_name = "Ghostery — Ad Blocker"
+      final_url     = "https://www.ghostery.com/?utm_campaign=search_adblock"
+    }
+    trackers = {
+      campaign_name = "Ghostery — Anti-Tracking"
+      final_url     = "https://www.ghostery.com/?utm_campaign=search_trackers"
+    }
+  }
+}
+```
+
+This builds three campaigns from one template. A few rules:
+
+- **The map keys name the instances.** Resources land at
+  `ghostery_search.privacy.google_ads_campaign.search`,
+  `ghostery_search.adblock.…`, and so on — the key slots in between the
+  block label and the resource address.
+- **Each entry's object supplies that instance's inputs**, exactly like
+  the attributes on a plain `module` block. The values must be plain
+  literals (text, numbers, true/false) matching the template's
+  `variable` types.
+- **Shared attributes on the block apply to every instance.** Above,
+  every campaign targets the same `geo`; only `campaign_name` and
+  `final_url` differ. If an entry also sets a shared key, the entry
+  wins for that instance.
+- **The table itself can come from a `local`.** `for_each =
+  local.variants` works when `local.variants` is a map — handy when the
+  same table drives more than one block.
+
+<Aside type="note">
+There's no `each.key` or `each.value` to interpolate into strings —
+bidsmith doesn't evaluate expressions. The map's values *are* the
+inputs, so you write each variant's values out in full. An empty
+`for_each = {}` is an error, not "zero instances".
+</Aside>
+
+Renaming a clone-by-hand setup into a `for_each` template is safe
+against your live account: bidsmith matches live resources by their
+content (campaign name, keywords, geo…), not by their address, so the
+campaigns aren't recreated even though their addresses change. See
+[`examples/modules-for-each/`](https://github.com/chrmod/bidsmith/tree/main/examples/modules-for-each).
+
 ### What's still deferred
 
-- `for_each` / `count` — instantiating one block multiple times.
-  Today, repeat the module block.
+- `count` — instantiating a block a fixed number of times. Use
+  `for_each` with a map today.
 - `output "x" { value = … }` and cross-module references.
 - Directory sources (multiple `.bid` files per module) and GitHub
   source resolution.

@@ -220,8 +220,7 @@ no `default` and no input is supplied, `validate` says so. See
 ### Instantiate the same shape with `module`
 
 A `module` block points at a parameterized `.bid` file and supplies
-its variables. Repeat the block to repeat the shape — one instance
-per city, market, wave, A/B variant:
+its variables — one instance per city, market, wave, A/B variant:
 
 ```hcl
 module "warsaw" {
@@ -250,6 +249,34 @@ graph. Resources inside `module "warsaw"` get the address prefix
 `warsaw.<type>.<name>`. Each instance is an isolation boundary:
 locals and variables inside it stay private. See
 [`examples/modules/`](examples/modules/).
+
+### Stamp out N variants with `for_each`
+
+When you'd otherwise copy-paste a whole campaign file a dozen times —
+changing only a name, a UTM tag, a target — give one `module` block a
+`for_each` map instead. Each entry becomes its own instance; all of
+them coexist in your account's desired state:
+
+```hcl
+module "ghostery_search" {
+  source = "./templates/preroll-campaign.bid"
+
+  geo = "geoTargetConstants/2840"          # shared by every instance
+
+  for_each = {
+    privacy  = { campaign_name = "Ghostery — Privacy",      final_url = "https://www.ghostery.com/?utm_campaign=search_privacy" }
+    adblock  = { campaign_name = "Ghostery — Ad Blocker",   final_url = "https://www.ghostery.com/?utm_campaign=search_adblock" }
+    trackers = { campaign_name = "Ghostery — Anti-Tracking", final_url = "https://www.ghostery.com/?utm_campaign=search_trackers" }
+  }
+}
+```
+
+Each entry's object supplies that instance's inputs (merged with any
+shared attributes on the block, like `geo`). Resources get the address
+`ghostery_search.<key>.<type>.<name>` —
+`ghostery_search.privacy.google_ads_campaign.search`, and so on. One
+template plus a table replaces N near-identical files. See
+[`examples/modules-for-each/`](examples/modules-for-each/).
 
 ## Install
 
