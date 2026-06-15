@@ -96,35 +96,36 @@ once at the top of your <code dir="auto">.bid</code> files (or in a dedicated
 (
 String
 )
-</em>  </li><li> <code>type</code>  <em>
+</em>   </li><li> <code>type</code>  <em>
 (
 String
 )
 </em>  One of: <span> <code>UNKNOWN</code>,  </span><span> <code>AD_CALL</code>,  </span><span> <code>ANDROID_APP_PRE_REGISTRATION</code>,  </span><span> <code>ANDROID_INSTALLS_ALL_OTHER_APPS</code>,  </span><span> <code>CLICK_TO_CALL</code>,  </span><span> <code>FIREBASE_ANDROID_CUSTOM</code>,  </span><span> <code>FIREBASE_ANDROID_FIRST_OPEN</code>,  </span><span> <code>FIREBASE_ANDROID_IN_APP_PURCHASE</code>,  </span><span> <code>FIREBASE_IOS_CUSTOM</code>,  </span><span> <code>FIREBASE_IOS_FIRST_OPEN</code>,  </span><span> <code>FIREBASE_IOS_IN_APP_PURCHASE</code>,  </span><span> <code>FLOODLIGHT_ACTION</code>,  </span><span> <code>FLOODLIGHT_TRANSACTION</code>,  </span><span> <code>GOOGLE_ANALYTICS_4_CUSTOM</code>,  </span><span> <code>GOOGLE_ANALYTICS_4_PURCHASE</code>,  </span><span> <code>GOOGLE_HOSTED</code>,  </span><span> <code>GOOGLE_PLAY_DOWNLOAD</code>,  </span><span> <code>GOOGLE_PLAY_IN_APP_PURCHASE</code>,  </span><span> <code>LEAD_FORM_SUBMIT</code>,  </span><span> <code>SALESFORCE</code>,  </span><span> <code>SEARCH_ADS_360</code>,  </span><span> <code>SMART_CAMPAIGN_AD_CLICKS_TO_CALL</code>,  </span><span> <code>SMART_CAMPAIGN_MAP_CLICKS_TO_CALL</code>,  </span><span> <code>SMART_CAMPAIGN_MAP_DIRECTIONS</code>,  </span><span> <code>SMART_CAMPAIGN_TRACKED_CALLS</code>,  </span><span> <code>STORE_SALES</code>,  </span><span> <code>STORE_SALES_DIRECT_UPLOAD</code>,  </span><span> <code>STORE_VISITS</code>,  </span><span> <code>THIRD_PARTY_APP_ANALYTICS_ANDROID_CUSTOM</code>,  </span><span> <code>THIRD_PARTY_APP_ANALYTICS_ANDROID_FIRST_OPEN</code>,  </span><span> <code>THIRD_PARTY_APP_ANALYTICS_ANDROID_IN_APP_PURCHASE</code>,  </span><span> <code>THIRD_PARTY_APP_ANALYTICS_IOS_CUSTOM</code>,  </span><span> <code>THIRD_PARTY_APP_ANALYTICS_IOS_FIRST_OPEN</code>,  </span><span> <code>THIRD_PARTY_APP_ANALYTICS_IOS_IN_APP_PURCHASE</code>,  </span><span> <code>UPLOAD_CALLS</code>,  </span><span> <code>UPLOAD_CLICKS</code>,  </span><span> <code>WEBPAGE</code>,  </span><span> <code>WEBPAGE_CODELESS</code>,  </span><span> <code>WEBSITE_CALL</code> </span>.
- </li><li> <code>category</code>  <em>
+  </li><li> <code>category</code>  <em>
 (
 String
 )
 </em>  One of: <span> <code>UNKNOWN</code>,  </span><span> <code>DEFAULT</code>,  </span><span> <code>PAGE_VIEW</code>,  </span><span> <code>PURCHASE</code>,  </span><span> <code>SIGNUP</code>,  </span><span> <code>LEAD</code>,  </span><span> <code>DOWNLOAD</code>,  </span><span> <code>ADD_TO_CART</code>,  </span><span> <code>BEGIN_CHECKOUT</code>,  </span><span> <code>SUBSCRIBE_PAID</code>,  </span><span> <code>PHONE_CALL_LEAD</code>,  </span><span> <code>IMPORTED_LEAD</code>,  </span><span> <code>SUBMIT_LEAD_FORM</code>,  </span><span> <code>BOOK_APPOINTMENT</code>,  </span><span> <code>REQUEST_QUOTE</code>,  </span><span> <code>GET_DIRECTIONS</code>,  </span><span> <code>OUTBOUND_CLICK</code>,  </span><span> <code>CONTACT</code>,  </span><span> <code>ENGAGEMENT</code>,  </span><span> <code>STORE_VISIT</code>,  </span><span> <code>STORE_SALE</code>,  </span><span> <code>QUALIFIED_LEAD</code>,  </span><span> <code>CONVERTED_LEAD</code> </span>.
- </li></ul><h3>Optional</h3><ul><li> <code>status</code>  <em>
+  </li></ul><h3>Optional</h3><ul><li> <code>status</code>  <em>
 (
 String
 )
 </em>  One of: <span> <code>ENABLED</code>,  </span><span> <code>REMOVED</code>,  </span><span> <code>HIDDEN</code> </span>.
+  Default <code>&quot;ENABLED&quot;</code>; omit to manage at the default.
  </li><li> <code>counting_type</code>  <em>
 (
 String
 )
 </em>  One of: <span> <code>ONE_PER_CLICK</code>,  </span><span> <code>MANY_PER_CLICK</code> </span>.
- </li><li> <code>click_through_lookback_window_days</code>  <em>
+  </li><li> <code>click_through_lookback_window_days</code>  <em>
 (
 Integer
 )
-</em>  </li><li> <code>view_through_lookback_window_days</code>  <em>
+</em>   </li><li> <code>view_through_lookback_window_days</code>  <em>
 (
 Integer
 )
-</em>  </li></ul><p><small>Nested blocks documented below: <span><code>value_settings</code></span>.</small></p>
+</em>   </li></ul><p><small>Nested blocks documented below: <span><code>value_settings</code></span>.</small></p>
 <h2 id="nested-blocks">Nested blocks</h2>
 <h3 id="value_settings"><code dir="auto">value_settings</code></h3>
 <p>Default monetary value Google assigns to each conversion.
@@ -135,17 +136,17 @@ qualified).</p>
 (
 Number
 )
-</em>  </li><li> <code>default_currency_code</code>  <em>
+</em>   </li><li> <code>default_currency_code</code>  <em>
 (
 String
 )
-</em>  </li><li> <code>always_use_default_value</code>  <em>
+</em>   </li><li> <code>always_use_default_value</code>  <em>
 (
 Boolean
 )
-</em>  </li></ul>
+</em>   </li></ul>
 <h2 id="see-also">See also</h2>
 <ul>
 <li><a href="./google_ads_call_asset/"><code dir="auto">google_ads_call_asset</code></a> — links a phone number to a call-tracking conversion action.</li>
 <li><a href="https://support.google.com/google-ads/answer/1722022">Google’s conversion-tracking docs</a> — for choosing <code dir="auto">type</code> and <code dir="auto">category</code>.</li>
-</ul> </div> <footer class="sl-flex astro-3yyafb3n"> <div class="meta sl-flex astro-3yyafb3n"> <a href="https://github.com/chrmod/bidsmith/edit/main/website/src/content/docs/resources/google_ads_conversion_action.mdx" class="sl-flex print:hidden astro-eez2twj6"><svg aria-hidden="true" class="astro-eez2twj6 astro-c6vsoqas" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.2em;"><path d="M22 7.24a1 1 0 0 0-.29-.71l-4.24-4.24a1 1 0 0 0-1.1-.22 1 1 0 0 0-.32.22l-2.83 2.83L2.29 16.05a1 1 0 0 0-.29.71V21a1 1 0 0 0 1 1h4.24a1 1 0 0 0 .76-.29l10.87-10.93L21.71 8c.1-.1.17-.2.22-.33a1 1 0 0 0 0-.24v-.14l.07-.05ZM6.83 20H4v-2.83l9.93-9.93 2.83 2.83L6.83 20ZM18.17 8.66l-2.83-2.83 1.42-1.41 2.82 2.82-1.41 1.42Z"/></svg> Edit page</a> <p>Last updated: <time datetime="2026-06-15T11:10:07.000Z">Jun 15, 2026</time></p> </div> <div class="pagination-links print:hidden astro-u2l5gyhi" dir="ltr"> <a href="/bidsmith/resources/google_ads_campaign_criterion/" rel="prev" class="astro-u2l5gyhi"> <svg aria-hidden="true" class="astro-u2l5gyhi astro-c6vsoqas" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg>  <span class="astro-u2l5gyhi"> Previous <br class="astro-u2l5gyhi"> <span class="link-title astro-u2l5gyhi">google_ads_campaign_criterion</span> </span> </a> <a href="/bidsmith/resources/google_ads_call_asset/" rel="next" class="astro-u2l5gyhi"> <svg aria-hidden="true" class="astro-u2l5gyhi astro-c6vsoqas" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg>  <span class="astro-u2l5gyhi"> Next <br class="astro-u2l5gyhi"> <span class="link-title astro-u2l5gyhi">google_ads_call_asset</span> </span> </a> </div>   </footer>  </div> </div>   </main> </div> </div>  </div> </div>  </body></html>
+</ul> </div> <footer class="sl-flex astro-3yyafb3n"> <div class="meta sl-flex astro-3yyafb3n"> <a href="https://github.com/chrmod/bidsmith/edit/main/website/src/content/docs/resources/google_ads_conversion_action.mdx" class="sl-flex print:hidden astro-eez2twj6"><svg aria-hidden="true" class="astro-eez2twj6 astro-c6vsoqas" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.2em;"><path d="M22 7.24a1 1 0 0 0-.29-.71l-4.24-4.24a1 1 0 0 0-1.1-.22 1 1 0 0 0-.32.22l-2.83 2.83L2.29 16.05a1 1 0 0 0-.29.71V21a1 1 0 0 0 1 1h4.24a1 1 0 0 0 .76-.29l10.87-10.93L21.71 8c.1-.1.17-.2.22-.33a1 1 0 0 0 0-.24v-.14l.07-.05ZM6.83 20H4v-2.83l9.93-9.93 2.83 2.83L6.83 20ZM18.17 8.66l-2.83-2.83 1.42-1.41 2.82 2.82-1.41 1.42Z"/></svg> Edit page</a> <p>Last updated: <time datetime="2026-06-15T11:34:31.000Z">Jun 15, 2026</time></p> </div> <div class="pagination-links print:hidden astro-u2l5gyhi" dir="ltr"> <a href="/bidsmith/resources/google_ads_campaign_criterion/" rel="prev" class="astro-u2l5gyhi"> <svg aria-hidden="true" class="astro-u2l5gyhi astro-c6vsoqas" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg>  <span class="astro-u2l5gyhi"> Previous <br class="astro-u2l5gyhi"> <span class="link-title astro-u2l5gyhi">google_ads_campaign_criterion</span> </span> </a> <a href="/bidsmith/resources/google_ads_call_asset/" rel="next" class="astro-u2l5gyhi"> <svg aria-hidden="true" class="astro-u2l5gyhi astro-c6vsoqas" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg>  <span class="astro-u2l5gyhi"> Next <br class="astro-u2l5gyhi"> <span class="link-title astro-u2l5gyhi">google_ads_call_asset</span> </span> </a> </div>   </footer>  </div> </div>   </main> </div> </div>  </div> </div>  </body></html>
