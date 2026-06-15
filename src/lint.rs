@@ -4,6 +4,7 @@ use hcl_edit::structure::{Attribute, Block, Body, Structure};
 
 use crate::diagnostics::Diag;
 use crate::parser::ParsedFile;
+use crate::schema::{Bindings, InputBindings};
 
 const MIN_HEADLINES: usize = 3;
 const MIN_DESCRIPTIONS: usize = 2;
@@ -19,25 +20,27 @@ const SUSPICIOUS_LANGUAGE_CONSTANTS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-pub fn lint_files(files: &[ParsedFile]) -> Vec<Diag> {
+pub fn lint_files(files: &[ParsedFile], inputs: &InputBindings) -> Vec<Diag> {
+    // Resolve list-valued `local`/`var` refs so `headlines = local.set` is counted, not seen as zero; build diags belong to `validate`.
+    let (bindings, _) = Bindings::build(files, inputs);
     let mut diags = Vec::new();
     for f in files {
-        lint_file(f, &mut diags);
+        lint_file(f, &bindings, &mut diags);
     }
     diags
 }
 
-fn lint_file(file: &ParsedFile, diags: &mut Vec<Diag>) {
+fn lint_file(file: &ParsedFile, bindings: &Bindings, diags: &mut Vec<Diag>) {
     for s in file.body.iter() {
         let Structure::Block(b) = s else { continue };
         if b.ident.as_str() != "resource" || b.labels.len() != 2 {
             continue;
         }
-        lint_resource(file, b, diags);
+        lint_resource(file, b, bindings, diags);
     }
 }
 
-fn lint_resource(file: &ParsedFile, block: &Block, diags: &mut Vec<Diag>) {
+fn lint_resource(file: &ParsedFile, block: &Block, bindings: &Bindings, diags: &mut Vec<Diag>) {
     let ty = block.labels[0].as_str();
     let name = block.labels[1].as_str();
     let address = format!("{ty}.{name}");
@@ -45,7 +48,7 @@ fn lint_resource(file: &ParsedFile, block: &Block, diags: &mut Vec<Diag>) {
     if ty == "google_ads_ad_group_ad" {
         if let Some(ad_block) = find_block(&block.body, "ad") {
             if let Some(rsa_block) = find_block(&ad_block.body, "responsive_search_ad") {
-                lint_rsa(file, rsa_block, &address, diags);
+                lint_rsa(file, rsa_block, &address, bindings, diags);
             }
         }
     }
@@ -77,7 +80,7 @@ fn lint_language(file: &ParsedFile, block: &Block, address: &str, diags: &mut Ve
     }
 }
 
-fn lint_rsa(file: &ParsedFile, rsa: &Block, address: &str, diags: &mut Vec<Diag>) {
+fn lint_rsa(file: &ParsedFile, rsa: &Block, address: &str, bindings: &Bindings, diags: &mut Vec<Diag>) {
     lint_rsa_block(
         file,
         rsa,
@@ -85,6 +88,7 @@ fn lint_rsa(file: &ParsedFile, rsa: &Block, address: &str, diags: &mut Vec<Diag>
         "headline",
         MIN_HEADLINES,
         MAX_HEADLINE_LEN,
+        bindings,
         diags,
     );
     lint_rsa_block(
@@ -94,6 +98,7 @@ fn lint_rsa(file: &ParsedFile, rsa: &Block, address: &str, diags: &mut Vec<Diag>
         "description",
         MIN_DESCRIPTIONS,
         MAX_DESCRIPTION_LEN,
+        bindings,
         diags,
     );
     lint_rsa_paths(file, rsa, address, diags);
@@ -132,6 +137,7 @@ fn lint_rsa_paths(file: &ParsedFile, rsa: &Block, address: &str, diags: &mut Vec
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lint_rsa_block(
     file: &ParsedFile,
     rsa: &Block,
@@ -139,6 +145,7 @@ fn lint_rsa_block(
     label: &str,
     minimum: usize,
     max_len: usize,
+    bindings: &Bindings,
     diags: &mut Vec<Diag>,
 ) {
     let blocks: Vec<&Block> = rsa
@@ -157,7 +164,7 @@ fn lint_rsa_block(
     };
     let list_items: Vec<(Option<std::ops::Range<usize>>, Option<String>)> =
         find_attr(&rsa.body, list_attr_name)
-            .map(|attr| collect_rsa_list_items(&attr.value))
+            .map(|attr| collect_rsa_list_items(&attr.value, bindings, &file.module))
             .unwrap_or_default();
 
     let total = blocks.len() + list_items.len();
@@ -250,26 +257,37 @@ fn lint_rsa_text(
 
 fn collect_rsa_list_items(
     expr: &Expression,
+    bindings: &Bindings,
+    module: &str,
 ) -> Vec<(Option<std::ops::Range<usize>>, Option<String>)> {
-    let Expression::Array(arr) = expr else {
+    let resolved = bindings.resolve_value(module, expr);
+    // A referenced list's item spans point into the (maybe other-file) declaration, so fall back to the use-site span.
+    let from_ref = !std::ptr::eq(resolved, expr);
+    let fallback = expr.span();
+    let Expression::Array(arr) = resolved else {
         return Vec::new();
     };
     arr.iter()
-        .map(|item| match item {
-            Expression::String(s) => (item.span(), Some(s.as_str().to_string())),
-            Expression::Object(obj) => {
-                let mut text = None;
-                for (key, value) in obj.iter() {
-                    let Some(ident) = key.as_ident() else { continue };
-                    if ident.as_str() == "text" {
-                        if let Expression::String(s) = value.expr() {
-                            text = Some(s.as_str().to_string());
+        .map(|item| {
+            let span = if from_ref { fallback.clone() } else { item.span() };
+            let text = match bindings.resolve_value(module, item) {
+                Expression::String(s) => Some(s.as_str().to_string()),
+                Expression::Object(obj) => {
+                    let mut text = None;
+                    for (key, value) in obj.iter() {
+                        let Some(ident) = key.as_ident() else { continue };
+                        if ident.as_str() == "text" {
+                            if let Expression::String(s) = bindings.resolve_value(module, value.expr())
+                            {
+                                text = Some(s.as_str().to_string());
+                            }
                         }
                     }
+                    text
                 }
-                (item.span(), text)
-            }
-            _ => (item.span(), None),
+                _ => None,
+            };
+            (span, text)
         })
         .collect()
 }
@@ -307,4 +325,98 @@ fn find_block<'a>(body: &'a Body, name: &str) -> Option<&'a Block> {
 
 fn span_of(s: Option<std::ops::Range<usize>>) -> std::ops::Range<usize> {
     s.unwrap_or(0..0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse_file;
+    use std::io::Write;
+
+    fn lint_str(name: &str, content: &str) -> Vec<String> {
+        let mut tmp = std::env::temp_dir();
+        tmp.push(format!("bidsmith-lint-test-{name}.bid"));
+        {
+            let mut f = std::fs::File::create(&tmp).expect("create tmp");
+            f.write_all(content.as_bytes()).expect("write tmp");
+        }
+        let pf = parse_file(&tmp).expect("parse");
+        lint_files(std::slice::from_ref(&pf), &InputBindings::default())
+            .iter()
+            .map(|d| d.message.clone())
+            .collect()
+    }
+
+    fn rsa(headlines: &str, descriptions: &str) -> String {
+        format!(
+            r#"
+resource "google_ads_ad_group_ad" "rsa" {{
+  ad_group = google_ads_ad_group.g.id
+
+  ad {{
+    final_urls = ["https://example.com"]
+    responsive_search_ad {{
+      headlines    = {headlines}
+      descriptions = {descriptions}
+    }}
+  }}
+}}
+"#
+        )
+    }
+
+    #[test]
+    fn list_local_meets_rsa_minimums_no_warning() {
+        let content = format!(
+            r#"
+locals {{
+  headlines    = ["One Headline", "Two Headline", "Three Headline"]
+  descriptions = ["First description", "Second description"]
+}}
+{}"#,
+            rsa("local.headlines", "local.descriptions")
+        );
+        let msgs = lint_str("list_local_ok", &content);
+        assert!(
+            !msgs.iter().any(|m| m.contains("Google Ads requires at least")),
+            "unexpected min-count warning: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn list_local_below_minimum_still_warns() {
+        let content = format!(
+            r#"
+locals {{
+  headlines    = ["Only One Headline"]
+  descriptions = ["First description", "Second description"]
+}}
+{}"#,
+            rsa("local.headlines", "local.descriptions")
+        );
+        let msgs = lint_str("list_local_short", &content);
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("has only 1 headline") && m.contains("at least 3")),
+            "expected min-count warning: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn over_length_headline_in_referenced_list_warns() {
+        let content = format!(
+            r#"
+locals {{
+  headlines    = ["This headline is far too long for Google Ads to accept it", "Short Two", "Short Three"]
+  descriptions = ["First description", "Second description"]
+}}
+{}"#,
+            rsa("local.headlines", "local.descriptions")
+        );
+        let msgs = lint_str("list_local_long", &content);
+        assert!(
+            msgs.iter().any(|m| m.contains("characters; Google Ads rejects headlines over 30")),
+            "expected length warning: {msgs:?}"
+        );
+    }
 }

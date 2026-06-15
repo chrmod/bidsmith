@@ -1,0 +1,46 @@
+provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+resource "google_ads_campaign_budget" "budget" {
+  name = "Generic — Daily"
+  amount_micros = 15000000
+}
+
+resource "google_ads_campaign" "generic" {
+  name = "Ghostery — Generic"
+  status = "ENABLED"
+  advertising_channel_type = "SEARCH"
+  campaign_budget = google_ads_campaign_budget.budget.id
+  languages = local.search_languages
+  locations = local.search_locations
+
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+}
+
+resource "google_ads_ad_group" "generic_core" {
+  name = "Generic — Core"
+  status = "ENABLED"
+  campaign = google_ads_campaign.generic.id
+  cpc_bid_micros = 2500000
+}
+
+resource "google_ads_ad_group_ad" "generic_rsa" {
+  ad_group = google_ads_ad_group.generic_core.id
+  status = "ENABLED"
+
+  ad {
+    final_urls = local.landing_urls
+
+    responsive_search_ad {
+      headlines = [
+        "Private Browsing, Built In",
+        "Stop Ads Following You",
+        "Ghostery Privacy Suite",
+      ]
+      descriptions = local.brand_descriptions
+    }
+  }
+}

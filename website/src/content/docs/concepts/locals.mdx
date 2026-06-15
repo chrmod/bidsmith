@@ -76,8 +76,9 @@ locals {
 }
 ```
 
-Values can be strings, numbers, or booleans. Each name has to be
-unique within the file.
+Values can be strings, numbers, booleans, **lists**, or **maps**. Each
+name has to be unique within the file. (Lists and maps get their own
+section [below](#lists-the-headline-set-problem).)
 
 ## Using a local
 
@@ -120,6 +121,110 @@ locals {
 
 Cycles (`a = local.b`, `b = local.a`) are caught at validate time.
 
+## Lists: the headline-set problem
+
+The values above are single numbers. But the copy you repeat most is
+usually a *list* — the same dozen headlines pasted into every
+responsive search ad, the same descriptions, the same keyword theme. A
+local can hold a list, and any attribute that expects a list can take
+the reference instead of an inline copy:
+
+```hcl
+locals {
+  brand_headlines = [
+    "Ghostery Blocks Trackers",
+    "Privacy That Just Works",
+    "Switch to Ghostery Free",
+    { text = "Ghostery — Private by Default", pin = "HEADLINE_1" },
+  ]
+  brand_descriptions = [
+    "Block ads, trackers, and popups. Manifest V3 ready.",
+    "The privacy extension millions of people already trust.",
+  ]
+}
+
+resource "google_ads_ad_group_ad" "search_ad_1" {
+  ad {
+    final_urls = ["https://ghostery.com/get"]
+    responsive_search_ad {
+      headlines    = local.brand_headlines
+      descriptions = local.brand_descriptions
+    }
+  }
+}
+
+resource "google_ads_ad_group_ad" "search_ad_2" {
+  ad {
+    final_urls = ["https://ghostery.com/extension"]
+    responsive_search_ad {
+      headlines    = local.brand_headlines
+      descriptions = local.brand_descriptions
+    }
+  }
+}
+```
+
+Two ads, one headline set. Change a headline in the local and `plan`
+shows the edit landing on **every** ad that points at it — that fan-out
+is the whole point.
+
+Lists work the same way for the other list-shaped attributes:
+
+- `final_urls` on an ad
+- `languages` and `locations` on a campaign (so every campaign shares
+  one geo/language list)
+- `texts` (and `match_types`) inside a compact
+  [`keywords` block](/bidsmith/recipes/add-many-keywords/)
+
+That last one is how you reuse a **keyword list**. A compact `keywords`
+block already expands its `texts` into one keyword criterion each, so
+pointing `texts` at a local fans a named list out into criteria:
+
+```hcl
+locals {
+  competitor_terms = ["ublock", "ublock origin", "adblock alternative"]
+}
+
+resource "google_ads_ad_group_criterion" "competitors" {
+  ad_group = google_ads_ad_group.core.id
+  keywords {
+    texts      = local.competitor_terms
+    match_type = "PHRASE"
+  }
+}
+```
+
+A list element can be a plain string or a `{ text, pin }` object (for
+pinned headlines), and the two can mix in one list — exactly like an
+inline `headlines` list.
+
+## Maps
+
+A local can also hold a map (a set of key/value pairs). Today the main
+use is feeding a [`module` `for_each`](/bidsmith/concepts/modules/) a
+table of variants:
+
+```hcl
+locals {
+  cities = {
+    warsaw = { name = "Warsaw", radius_km = 15 }
+    krakow = { name = "Kraków", radius_km = 12 }
+  }
+}
+
+module "city" {
+  source   = "./city-campaign.bid"
+  for_each = local.cities
+}
+```
+
+<Aside type="note" title="Picking one value out of a map">
+  Indexing a map to pull a single entry —
+  `local.headlines["ublock"]` — isn't supported yet. For now, give each
+  list its own named local (`local.ublock_headlines`,
+  `local.generic_headlines`) and reference it directly.
+</Aside>
+
 ## Module scope
 
 Locals live in the same [module](/bidsmith/concepts/modules/) as the
@@ -130,10 +235,19 @@ global fallback (one module declares it, so the lookup succeeds).
 If multiple modules declare the same `local` name, bidsmith asks you
 to rename one.
 
+That global fallback is what makes a **shared file** work. When the
+same headline set is copied across `ublock.bid`, `generic.bid`, and a
+dozen others, move it into one well-known file — say `shared.bid` —
+that declares nothing but `locals`. Every other file references
+`local.brand_headlines` and resolves it through the fallback. One
+declaration, account-wide; edit it once and `plan` shows the change on
+every campaign at the same time.
+
 ## What this replaces, and what it doesn't
 
-`locals` collapses **repeated literal values** within a single
-`.bid` file. It does not do:
+`locals` collapses **repeated values** — single numbers, whole headline
+sets, keyword lists — within a file or across every file in the folder.
+It does not do:
 
 - **CLI- or env-driven overrides.** That's what
   [`variable` blocks](/bidsmith/concepts/variables/) are for. A local

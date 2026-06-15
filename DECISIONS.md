@@ -51,6 +51,34 @@ resource type, any file layout, modules, schema validation.
   Resolves the rezolutnie use case where every per-city `.bid` was
   repeating bid micros, proximity radius, budget, and language
   constant.
+- **List / map locals** (issue #39): a `local` value is an arbitrary HCL
+  expression, so it holds lists and maps as readily as scalars. A
+  `local.<name>` that resolves to a list is usable anywhere a list
+  attribute is expected — RSA `headlines` / `descriptions` (the mixed
+  string / `{ text, pin }` form included), `final_urls`, inline
+  `languages` / `locations`, and the compact `keywords` / `negative_keywords`
+  `texts` / `match_types` lists. Because the compact keyword block already
+  fans a `texts` list out into one criterion per `(text, match_type)`
+  pair, `keywords { texts = local.<theme> }` is the "repeated block from a
+  list" form — no `dynamic` / `for_each` block-expansion construct is
+  needed. Maps are usable as whole values (a `module` `for_each` already
+  takes `for_each = local.<variants>`); map **indexing**
+  (`local.headlines["ublock"]`) is deferred with the rest of the
+  expression engine. The de-duplication crosses files via the existing
+  same-module-first-then-global-fallback resolution: declare a shared list
+  in one file (a conventional `shared.bid`) and reference `local.<name>`
+  from every other file — one declaration, account-wide reuse, and editing
+  it shows as an in-place update fanning out to every referencing
+  resource. Resolution happens at load time, so `plan` / `apply` are
+  unchanged and `export` / `refresh` keep emitting literals (folding into
+  locals stays an edit-time operation). The validator resolves the binding
+  before type-checking (a `local` that resolves to a scalar in a list slot
+  fails with the normal "expected list…" error at the use site); the RSA
+  min-headline / max-length lints resolve list references too, so a
+  `headlines = local.<set>` no longer mis-reports as zero. `variable`
+  blocks stay scalar-only (`string` / `number` / `bool`) — a CLI-supplied
+  list input has no obvious `--var` syntax, and the measured duplication
+  is list **data**, which belongs in `locals`.
 - **`variable` block**: HCL2-style top-level
   `variable "name" { type = …, default = …, description = … }` blocks
   declare typed inputs that the same `.bid` can pivot on without
@@ -391,6 +419,16 @@ Verified locally:
   exercises the `locals { ... }` block plus `local.<name>` references
   for budget micros, default cpc, language constant, and proximity
   radius; `fmt --check examples/locals` is a no-op.
+- `cargo run -- validate examples/lists` → `OK: 3 file(s) valid.` —
+  exercises **list-valued locals** (issue #39). `shared.bid` declares
+  the headline set, description set, competitor-keyword theme, landing
+  URL, and `languages` / `locations` lists once; `ublock.bid` and
+  `generic.bid` reference them across files via the global fallback —
+  two RSAs reuse the same `local.brand_headlines` / `local.brand_descriptions`,
+  the campaigns take inline `languages` / `locations` from a shared list,
+  and a compact `keywords { texts = local.competitor_keywords }` block
+  fans the shared list out into one criterion per keyword. No false RSA
+  min-headline warnings; `fmt --check examples/lists` is a no-op.
 - `cargo run -- validate examples/variable` → `OK: 1 file(s) valid.` —
   exercises the `variable "x" { type, default, description }` block
   plus `var.<name>` references for a string (campaign name), number
