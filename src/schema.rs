@@ -2030,6 +2030,11 @@ fn validate_value(
         FieldType::RsaAssetList => match expr {
             Expression::Array(arr) => {
                 for item in arr.iter() {
+                    let item = match resolve_binding_chain(file, item, locals, variables, diags) {
+                        BindingResolution::NotABinding => item,
+                        BindingResolution::Resolved(value) => value,
+                        BindingResolution::Failed => continue,
+                    };
                     validate_rsa_asset_item(file, item, diags);
                 }
             }
@@ -3127,6 +3132,39 @@ resource "google_ads_ad_group_criterion" "kw" {
         );
         content.push_str(LIST_LOCAL_PREAMBLE);
         let diags = validate_str("list_local_ok", &content);
+        let errors: Vec<&String> = diags
+            .iter()
+            .filter(|d| d.is_error())
+            .map(|d| &d.message)
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn per_element_local_in_rsa_list_validates() {
+        let mut content = String::from(
+            r#"
+locals {
+  promo = "Promo Headline Here"
+}
+
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group = google_ads_ad_group.g.id
+  status   = "ENABLED"
+
+  ad {
+    final_urls = ["https://example.com"]
+
+    responsive_search_ad {
+      headlines    = ["First Headline", local.promo, "Third Headline"]
+      descriptions = ["A description here", "Another description here"]
+    }
+  }
+}
+"#,
+        );
+        content.push_str(LIST_LOCAL_PREAMBLE);
+        let diags = validate_str("per_element_local", &content);
         let errors: Vec<&String> = diags
             .iter()
             .filter(|d| d.is_error())
