@@ -192,6 +192,12 @@ fn build_plan(pairs: &[(String, String)], reg: &ResourceRegistry) -> Result<Vec<
                 continue;
             }
         };
+        if from_addr.ty == "ad_template" || to_addr.ty == "ad_template" {
+            errors.push(format!(
+                "'{from_s}' -> '{to_s}': mv does not support ad_template blocks; rename them by hand and update each 'template = ad_template.<name>' reference"
+            ));
+            continue;
+        }
         if from_addr.ty != to_addr.ty {
             errors.push(format!(
                 "'{from_s}' -> '{to_s}': cannot change resource type ('{}' -> '{}')",
@@ -887,6 +893,45 @@ resource "google_ads_ad_group" "h" {{
         assert!(
             out.contains("google_ads_campaign.ghost.id"),
             "pre-existing dangling reference left intact: {out}"
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_ad_template_rename_with_clear_message() {
+        let dir = workdir("adtemplate");
+        let file = dir.join("main.bid");
+        fs::write(
+            &file,
+            format!(
+                r#"{PROVIDER}ad_template "tmpl" {{
+  final_urls = ["https://example.com/"]
+  responsive_search_ad {{
+    headlines = ["One", "Two", "Three"]
+    descriptions = ["Description one", "Description two"]
+  }}
+}}
+"#
+            ),
+        )
+        .unwrap();
+
+        let parsed = vec![parse_file(&file).expect("parses")];
+        let (reg, _diags) = ResourceRegistry::build(&parsed);
+        let err = match build_plan(
+            &[(
+                "ad_template.tmpl".to_string(),
+                "ad_template.renamed".to_string(),
+            )],
+            &reg,
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("ad_template rename should be rejected"),
+        };
+        assert!(
+            err.iter().any(|e| e.contains("ad_template")),
+            "expected a clear ad_template message, got {err:?}"
         );
 
         fs::remove_dir_all(&dir).unwrap();
