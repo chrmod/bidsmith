@@ -74,7 +74,7 @@ impl StoredCreds {
             let _ = std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700));
         }
         let raw = toml::to_string_pretty(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         crate::api::cache::write_atomic(&credentials_path(), raw.as_bytes(), 0o600)
     }
 }

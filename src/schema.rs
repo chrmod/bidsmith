@@ -1324,12 +1324,12 @@ impl VariablesRegistry {
 }
 
 fn check_literal_matches(expr: &Expression, ty: VarType) -> Result<(), String> {
-    let ok = match (ty, expr) {
-        (VarType::String, Expression::String(_)) => true,
-        (VarType::Number, Expression::Number(_)) => true,
-        (VarType::Bool, Expression::Bool(_)) => true,
-        _ => false,
-    };
+    let ok = matches!(
+        (ty, expr),
+        (VarType::String, Expression::String(_))
+            | (VarType::Number, Expression::Number(_))
+            | (VarType::Bool, Expression::Bool(_))
+    );
     if ok {
         Ok(())
     } else {
@@ -1990,7 +1990,7 @@ fn validate_value(
         FieldType::Enum(values) => match expr {
             Expression::String(s) => {
                 let v = s.as_str();
-                if !values.iter().any(|&x| x == v) {
+                if !values.contains(&v) {
                     diags.push(Diag::new(
                         file.src.clone(),
                         span,
@@ -2420,7 +2420,7 @@ fn validate_rsa_asset_item(file: &ParsedFile, expr: &Expression, diags: &mut Vec
                     "pin" => match value.expr() {
                         Expression::String(s) => {
                             let v = s.as_str();
-                            if !RSA_PIN.iter().any(|&x| x == v) {
+                            if !RSA_PIN.contains(&v) {
                                 diags.push(Diag::new(
                                     file.src.clone(),
                                     span_of(value.expr().span()),

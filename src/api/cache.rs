@@ -67,7 +67,7 @@ pub fn load_token(cache_dir: &Path, fp: &str) -> Option<TokenCache> {
 pub fn save_token(cache_dir: &Path, cached: &TokenCache) -> std::io::Result<()> {
     std::fs::create_dir_all(cache_dir)?;
     let raw = serde_json::to_string_pretty(cached)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
     write_atomic(&cache_dir.join(TOKEN_FILE), raw.as_bytes(), 0o600)
 }
 
@@ -127,7 +127,7 @@ pub fn save_live_state(
         batches: batches.to_vec(),
     };
     let raw = serde_json::to_string(&cached)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
     write_atomic(&cache_dir.join(LIVE_STATE_FILE), raw.as_bytes(), 0o644)
 }
 

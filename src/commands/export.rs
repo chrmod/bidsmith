@@ -1563,7 +1563,7 @@ mod tests {
             "validate_files produced errors:\n{}\n--- account.bid ---\n{}\n--- campaigns.bid ---\n{}",
             errors
                 .iter()
-                .map(|d| format!("{}", d.message))
+                .map(|d| d.message.to_string())
                 .collect::<Vec<_>>()
                 .join("\n"),
             account,
@@ -1611,7 +1611,7 @@ mod tests {
             "validate_files produced errors:\n{}\n--- account.bid ---\n{}\n--- campaigns.bid ---\n{}",
             errors
                 .iter()
-                .map(|d| format!("{}", d.message))
+                .map(|d| d.message.to_string())
                 .collect::<Vec<_>>()
                 .join("\n"),
             account,

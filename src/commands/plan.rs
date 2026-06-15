@@ -183,10 +183,7 @@ pub fn prepare(
     }
 
     let live = if offline {
-        match load_live_from_cache(label, &mut imported.input) {
-            Ok(input) => input,
-            Err(code) => return Err(code),
-        }
+        load_live_from_cache(label, &mut imported.input)?
     } else {
         let client = match client::Client::for_target(
             &imported.input.customer_id,
