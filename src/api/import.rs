@@ -1499,6 +1499,109 @@ resource "google_ads_campaign" "c" {
     }
 
     #[test]
+    fn omitted_default_status_round_trips_against_enabled_live() {
+        let mut declared = import_str(
+            "omit_status",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+"#,
+        );
+        // status / contains_eu omitted in the file.
+        assert!(declared.campaigns[0].status.is_none());
+        declared.apply_schema_defaults();
+        assert_eq!(declared.campaigns[0].status.as_deref(), Some("ENABLED"));
+
+        let mut live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+        live.apply_schema_defaults();
+
+        let report = crate::api::diff::diff(&declared, &live);
+        assert_eq!(report.create_count, 0, "diffs: {:?}", report.diffs);
+        assert_eq!(report.update_count, 0, "diffs: {:?}", report.diffs);
+    }
+
+    #[test]
+    fn omitted_default_status_surfaces_drift_when_live_differs() {
+        let mut declared = import_str(
+            "omit_status_drift",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+"#,
+        );
+        declared.apply_schema_defaults();
+
+        // Someone paused the campaign in the UI; omission must enforce ENABLED.
+        let mut live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"PAUSED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+        live.apply_schema_defaults();
+
+        let report = crate::api::diff::diff(&declared, &live);
+        assert_eq!(report.update_count, 1, "diffs: {:?}", report.diffs);
+        let changed: Vec<&str> = report
+            .diffs
+            .iter()
+            .filter_map(|d| match &d.action {
+                crate::api::diff::Action::Update { changed_fields, .. } => {
+                    Some(changed_fields.iter().map(String::as_str).collect::<Vec<_>>())
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(changed.contains(&"status"), "changed: {changed:?}");
+    }
+
+    #[test]
+    fn omitted_negative_round_trips_for_positive_criterion() {
+        // The #15 case: a positive keyword criterion that omits `negative`
+        // must not churn against live state where the API reports negative=false.
+        let mut declared = import_str(
+            "omit_negative",
+            r#"
+resource "google_ads_ad_group_criterion" "kw" {
+  ad_group = google_ads_ad_group.ag.id
+
+  keyword {
+    text       = "running shoes"
+    match_type = "EXACT"
+  }
+}
+"#,
+        );
+        declared.apply_schema_defaults();
+        assert_eq!(declared.ad_group_criteria[0].negative, Some(false));
+        assert_eq!(declared.ad_group_criteria[0].status.as_deref(), Some("ENABLED"));
+    }
+
+    #[test]
     fn compact_negative_keywords_in_shared_set() {
         let input = import_str(
             "shared",

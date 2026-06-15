@@ -9,10 +9,16 @@ interface TypeShape {
 interface AttributeShape extends TypeShape {
   name: string;
   required: boolean;
+  default?: string | number | boolean;
+  always_emit?: boolean;
 }
 
 interface Props {
   attr: AttributeShape;
+}
+
+function formatDefault(v: string | number | boolean): string {
+  return typeof v === 'string' ? `"${v}"` : String(v);
 }
 
 const { attr } = Astro.props;
@@ -48,6 +54,7 @@ const isReference = attr.type === 'reference';
 const targets = attr.targets ?? [];
 const values = attr.type === 'enum' && attr.values ? attr.values : [];
 const label = plainTypeLabel(attr);
+const hasDefault = attr.default !== undefined;
 ---
 
 <li>
@@ -76,6 +83,12 @@ const label = plainTypeLabel(attr);
           <code>{v}</code>{i < values.length - 1 ? ', ' : ''}
         </span>
       ))}.
+    </Fragment>
+  )}
+  {hasDefault && (
+    <Fragment>
+      {' '}Default <code>{formatDefault(attr.default!)}</code>; omit to manage at the default.
+      {attr.always_emit && ' Kept in the file even at its default.'}
     </Fragment>
   )}
 </li>

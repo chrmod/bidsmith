@@ -5,14 +5,6 @@ use hcl_edit::structure::{Attribute, Block, Body, Structure};
 use crate::diagnostics::Diag;
 use crate::parser::ParsedFile;
 
-const STATUS_AWARE: &[&str] = &[
-    "google_ads_campaign",
-    "google_ads_ad_group",
-    "google_ads_ad_group_ad",
-    "google_ads_ad_group_criterion",
-    "google_ads_campaign_criterion",
-];
-
 const MIN_HEADLINES: usize = 3;
 const MIN_DESCRIPTIONS: usize = 2;
 const MAX_HEADLINE_LEN: usize = 30;
@@ -49,16 +41,6 @@ fn lint_resource(file: &ParsedFile, block: &Block, diags: &mut Vec<Diag>) {
     let ty = block.labels[0].as_str();
     let name = block.labels[1].as_str();
     let address = format!("{ty}.{name}");
-
-    if STATUS_AWARE.contains(&ty) && find_attr(&block.body, "status").is_none() {
-        diags.push(Diag::warning(
-            file.src.clone(),
-            span_of(block.ident.span()),
-            format!(
-                "{address} has no 'status' — defaults to ENABLED on apply; set it explicitly"
-            ),
-        ));
-    }
 
     if ty == "google_ads_ad_group_ad" {
         if let Some(ad_block) = find_block(&block.body, "ad") {

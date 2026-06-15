@@ -42,6 +42,10 @@ enum Cmd {
         /// Don't write; exit non-zero if any file would change
         #[arg(long)]
         check: bool,
+        /// Also strip optional attributes whose value equals the schema default
+        /// (the form `refresh` / `export` emit). Compliance fields stay.
+        #[arg(long)]
+        minimal: bool,
     },
     /// Rename a resource's address across .bid files (block + every reference)
     #[command(after_help = "\
@@ -352,7 +356,7 @@ fn main() -> ExitCode {
             login_customer_id.as_deref(),
             customer_id.as_deref(),
         ),
-        Cmd::Fmt { path, check } => commands::fmt::run(&path, check),
+        Cmd::Fmt { path, check, minimal } => commands::fmt::run(&path, check, minimal),
         Cmd::Mv { from, to, from_file, path } => {
             commands::mv::run(from.as_deref(), to.as_deref(), from_file.as_deref(), &path)
         }

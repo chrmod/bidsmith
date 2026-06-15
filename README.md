@@ -43,7 +43,7 @@ Validate, plan, and apply all work today.
 | `query`    | Read stats and reports with a GAQL query (clicks, cost, conversions, search terms) |
 | `export`   | Render a `.bid` file from a JSON description                                 |
 | `mv`       | Rename a resource everywhere without recreating it in Google Ads             |
-| `fmt`      | Tidy up `.bid` formatting                                                    |
+| `fmt`      | Tidy up `.bid` formatting (`--minimal` also drops attributes left at their default) |
 
 Covered today: campaigns (Search), ad groups, responsive search ads,
 keywords and negatives, shared keyword lists, budgets,

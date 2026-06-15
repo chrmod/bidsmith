@@ -16,7 +16,7 @@ operation is idempotent.
 ## Synopsis
 
 ```sh
-bidsmith fmt [PATH] [--check]
+bidsmith fmt [PATH] [--check] [--minimal]
 ```
 
 ## Arguments
@@ -30,6 +30,7 @@ bidsmith fmt [PATH] [--check]
 | Flag | Description |
 |---|---|
 | `--check` | Don't write any files. Exit `1` if any file would change. Use in CI. |
+| `--minimal` | Also drop optional attributes whose value equals the schema default (e.g. `status = "ENABLED"`, `delivery_method = "STANDARD"`). This is the form `refresh` and `export` already emit. Omitting an attribute keeps it managed at the default — `plan` still enforces it — so the only thing lost is the noise. Compliance declarations such as `contains_eu_political_advertising` stay even at their default. |
 
 ## Environment variables
 
@@ -68,6 +69,41 @@ requests so no non-canonical files reach `main`.
 ```sh
 bidsmith fmt summer-2026.bid
 ```
+
+### Drop attributes left at their default
+
+```sh
+bidsmith fmt --minimal .
+```
+
+Turns this:
+
+```hcl
+resource "google_ads_campaign" "spring" {
+  name                              = "Spring Sale"
+  status                            = "ENABLED"
+  advertising_channel_type          = "SEARCH"
+  campaign_budget                   = google_ads_campaign_budget.spring.id
+  contains_eu_political_advertising = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"
+}
+```
+
+into this:
+
+```hcl
+resource "google_ads_campaign" "spring" {
+  name                              = "Spring Sale"
+  advertising_channel_type          = "SEARCH"
+  campaign_budget                   = google_ads_campaign_budget.spring.id
+  contains_eu_political_advertising = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"
+}
+```
+
+`status = "ENABLED"` is the default, so it's dropped — the campaign is
+still enabled, and a `plan` still flips it back if someone pauses it in
+the UI. A `status = "PAUSED"` would stay, because it carries
+information. The EU-political line stays because it's a compliance
+declaration. This is the same output `bidsmith refresh` produces.
 
 ## What "canonical" means
 

@@ -266,6 +266,36 @@ resource type, any file layout, modules, schema validation.
   emit the inline form by default for plain positive targeting, which
   retires the collision-suffixed criterion addresses for the common case
   (issue #37).
+- **Schema defaults** (issue #38): optional attributes can carry the
+  Google Ads API's effective create-default in the schema
+  (`AttributeSchema::default`). An omitted attribute that has a default is
+  **managed at that default** — *not* unmanaged: `plan` diffs the live
+  value against the default (a UI flip back to `ACCELERATED` surfaces as
+  drift), and `refresh` / `export` / `fmt --minimal` stop emitting the
+  attribute once the live value equals the default. The fill happens once,
+  on both the declared and the live state, right before diffing
+  (`ExportInput::apply_schema_defaults` in `plan::build_prepared`), so a
+  None→default fill never masks a real value. This generalizes the
+  per-criterion `negative = false` round-trip patch (issue #15) into one
+  rule. Defaults are **pinned in the schema, not inferred from proto zero
+  values** — the API's create-default differs (campaign `status`: proto
+  `UNSPECIFIED`, server creates `ENABLED`). Defaults set so far:
+  `status = "ENABLED"` (campaign / ad_group / ad_group_ad /
+  ad_group_criterion / campaign_criterion / conversion_action /
+  customer_asset / shared_set / campaign_shared_set), `negative = false`
+  (ad_group_criterion / campaign_criterion), budget
+  `delivery_method = "STANDARD"` and `explicitly_shared = false`.
+  Context-dependent defaults are deliberately **not** pinned: ad_group
+  `type` and the `network_settings` booleans vary by channel, so a flat
+  schema default would be wrong. `contains_eu_political_advertising`
+  defaults to `DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING` but is flagged
+  `always_emit` — omission still enforces the default, but the compliance
+  declaration stays visible in every campaign file. Plain `fmt` is
+  unchanged (it preserves explicit defaults); only `fmt --minimal` strips
+  them, keeping a stable canonical form for hand-written files while
+  refresh output is minimal by default. The old "missing `status` —
+  defaults to ENABLED; set it explicitly" lint is **retired** — it
+  encouraged exactly the per-line noise this closes.
 
 ## Current state
 
@@ -579,7 +609,7 @@ Validator covers (so far):
 
 | Verb       | Status  | Purpose                                              |
 |------------|---------|------------------------------------------------------|
-| `fmt`      | partial | Canonicalize `.bid` files (in-place; `--check` for CI) |
+| `fmt`      | partial | Canonicalize `.bid` files (in-place; `--check` for CI). `--minimal` also strips optional attributes left at their schema default — the form `refresh` / `export` emit — while `always_emit` compliance fields stay |
 | `mv`       | working | Rename a resource address in source: rewrites the `resource` block label and every reference that resolves to it, across all `.bid` files under `--path` (default `.`). Addresses are `<type>.<name>`, or `<module>.<type>.<name>` to disambiguate a name shared across files. **Bulk mode** `--from-file <path>` (or `-` for stdin) renames a whole batch from a `<from> <to>`-per-line file (arrow optional, `#` comments) applied atomically against one snapshot — rejects missing sources, occupied targets, duplicate sources/targets, and rename chains (`a→b`,`b→c`); any bad rule writes nothing. Format-preserving (only the renamed identifiers change; comments and layout are byte-preserved). Refuses when the rename would raise the project's validation-error count above its pre-rename baseline (so it can still tidy a not-yet-fully-valid tree). **Source-only by design**: because the planner matches live resources by content (name / keyword / geo / …), not by address or label, an address rename is invisible to the account — no delete+create, no lost history or ad review. Once labels become identity (Phase 3 v2), a move will additionally rewrite the live `bidsmith:address` label; until then `mv` is the complete mechanism and `moved` blocks are deferred |
 | `validate` | partial | Syntax + schema + references + lint warnings (local only). `--var NAME=VALUE` (repeatable) supplies values for `variable` blocks; `BIDSMITH_VAR_<name>` env vars are the fallback |
 | `export`   | partial | Render a fmt-canonical `.bid` file from flat bidsmith JSON (`--from-json`) or raw Google Ads SearchStream JSON (`--from-gads-search-response`); always emits the compact form (one `google_ads_ad_group_criterion` per `(ad_group, match_type)` group with N `keyword {}` sub-blocks, one negatives resource per ad-group / campaign with N `negative_keyword {}` sub-blocks, RSAs as `headlines = [...]` / `descriptions = [...]` lists); drops REMOVED resources unless `--include-removed`; `--login-customer-id` / `--customer-id` (or env vars `GOOGLE_ADS_LOGIN_CUSTOMER_ID` / `GOOGLE_ADS_CUSTOMER_ID`) override the provider block |
