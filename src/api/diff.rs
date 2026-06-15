@@ -131,12 +131,17 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     }
 
     // ---- ad_group_criteria (match by ad_group + keyword) -----------------
-    let live_ag_criteria: HashMap<(String, String, String), &JsonAdGroupCriterion> = live
+    let live_ag_criteria: HashMap<(String, bool, String, String), &JsonAdGroupCriterion> = live
         .ad_group_criteria
         .iter()
         .map(|c| {
             (
-                (c.ad_group.clone(), c.keyword.text.clone(), c.keyword.match_type.clone()),
+                (
+                    c.ad_group.clone(),
+                    c.negative.unwrap_or(false),
+                    c.keyword.text.clone(),
+                    c.keyword.match_type.clone(),
+                ),
                 c,
             )
         })
@@ -146,6 +151,7 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
             Some(parent_id) => {
                 let key = (
                     parent_id.clone(),
+                    d.negative.unwrap_or(false),
                     d.keyword.text.clone(),
                     d.keyword.match_type.clone(),
                 );
@@ -850,7 +856,8 @@ fn diff_campaign_shared_set(d: &JsonCampaignSharedSet, l: &JsonCampaignSharedSet
 
 fn campaign_criterion_key(cr: &JsonCampaignCriterion) -> Option<String> {
     if let Some(kw) = &cr.keyword {
-        return Some(format!("kw:{}|{}", kw.match_type, kw.text));
+        let polarity = if cr.negative.unwrap_or(false) { "neg" } else { "pos" };
+        return Some(format!("kw:{polarity}:{}|{}", kw.match_type, kw.text));
     }
     if let Some(loc) = &cr.location {
         return Some(format!("loc:{}", loc.geo_target_constant));
@@ -997,5 +1004,64 @@ mod ad_match_tests {
         let actions = match_ad_group_ads(&declared, &live, &identity_match());
 
         assert!(matches!(&actions[0], Action::Create));
+    }
+}
+
+#[cfg(test)]
+mod criterion_match_tests {
+    use super::*;
+
+    fn input(json: &str) -> ExportInput {
+        serde_json::from_str(json).expect("valid test input")
+    }
+
+    #[test]
+    fn positive_and_negative_same_keyword_do_not_collide() {
+        // A live ad group can hold the same keyword as both a positive and a
+        // negative criterion. Declaring only the positive must match the live
+        // positive and leave the negative untouched — never delete the positive.
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"c","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"b"}],
+            "ad_groups": [{"id":"g","name":"G","campaign":"c"}],
+            "ad_group_criteria": [
+                {"id":"k","ad_group":"g","negative":false,"keyword":{"text":"shoes","match_type":"BROAD"}}
+            ]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"100","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"200"}],
+            "ad_groups": [{"id":"300","name":"G","campaign":"100"}],
+            "ad_group_criteria": [
+                {"id":"400","ad_group":"300","negative":false,"keyword":{"text":"shoes","match_type":"BROAD"}},
+                {"id":"401","ad_group":"300","negative":true,"keyword":{"text":"shoes","match_type":"BROAD"}}
+            ]
+        }"#,
+        );
+
+        let report = diff(&declared, &live);
+
+        assert_eq!(
+            report.delete_count, 0,
+            "no criterion should be deleted: {:?}",
+            report
+                .diffs
+                .iter()
+                .map(|d| (&d.address, &d.action))
+                .collect::<Vec<_>>()
+        );
+        let crit = report
+            .diffs
+            .iter()
+            .find(|d| d.kind == "ad_group_criterion" && d.address == "k")
+            .expect("declared criterion present");
+        assert!(
+            matches!(&crit.action, Action::NoOp { live_id } if live_id == "400"),
+            "declared positive keyword should match the live positive one, got {:?}",
+            crit.action
+        );
     }
 }
