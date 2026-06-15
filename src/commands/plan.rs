@@ -273,8 +273,15 @@ fn load_live_from_cache(
     let cache_dir = cache::project_cache_dir();
     let api_v = client::api_version();
     let ttl = cache::live_state_ttl_secs();
-    let hit = match cache::load_live_state(&cache_dir, &customer_id, login.as_deref(), &api_v, ttl)
-    {
+    let queries_fp = live_state::queries_fingerprint();
+    let hit = match cache::load_live_state(
+        &cache_dir,
+        &customer_id,
+        login.as_deref(),
+        &api_v,
+        &queries_fp,
+        ttl,
+    ) {
         Some(h) => h,
         None => {
             eprintln!(

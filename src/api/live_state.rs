@@ -192,6 +192,17 @@ pub const QUERIES: &[(&str, &str)] = &[
     ),
 ];
 
+pub fn queries_fingerprint() -> String {
+    let mut joined = String::new();
+    for (label, query) in QUERIES {
+        joined.push_str(label);
+        joined.push('\n');
+        joined.push_str(query);
+        joined.push('\n');
+    }
+    cache::fingerprint(&joined)
+}
+
 pub fn fetch_raw(client: &Client, access_token: &str) -> Result<Vec<Value>, LiveStateError> {
     let mut all_batches: Vec<Value> = Vec::new();
     for (label, query) in QUERIES {
@@ -247,6 +258,7 @@ pub fn fetch_with_cache(
     let effective_mode = if env_off { CacheMode::Bypass } else { mode };
     let cache_dir = cache::project_cache_dir();
     let api_v = client::api_version();
+    let queries_fp = queries_fingerprint();
     let login = client.login_customer_id.as_deref();
 
     if matches!(effective_mode, CacheMode::ReadWrite) {
@@ -255,6 +267,7 @@ pub fn fetch_with_cache(
             &client.customer_id,
             login,
             &api_v,
+            &queries_fp,
             cache::live_state_ttl_secs(),
         ) {
             eprintln!(
@@ -273,7 +286,14 @@ pub fn fetch_with_cache(
     let batches = fetch_raw(client, access_token)?;
 
     if !matches!(effective_mode, CacheMode::Bypass) {
-        let _ = cache::save_live_state(&cache_dir, &client.customer_id, login, &api_v, &batches);
+        let _ = cache::save_live_state(
+            &cache_dir,
+            &client.customer_id,
+            login,
+            &api_v,
+            &queries_fp,
+            &batches,
+        );
     }
 
     let state = adapt_batches(batches)?;
