@@ -68,7 +68,8 @@ struct AdapterState {
     call_assets: BTreeMap<String, JsonCallAsset>,
     customer_assets: BTreeMap<String, JsonCustomerAsset>,
     shared_sets: BTreeMap<String, SharedSetBuilder>,
-    shared_criteria: BTreeMap<String, Vec<JsonKeyword>>,
+    // value: (real criterion resource-name segment `<setId>~<critId>`, keyword)
+    shared_criteria: BTreeMap<String, Vec<(String, JsonKeyword)>>,
     campaign_shared_sets: BTreeMap<String, JsonCampaignSharedSet>,
 }
 
@@ -604,6 +605,12 @@ impl AdapterState {
         else {
             return;
         };
+        let criterion_id = v
+            .get("resourceName")
+            .and_then(Value::as_str)
+            .and_then(last_segment)
+            .unwrap_or("")
+            .to_string();
         let Some(kw) = v.get("keyword") else { return };
         let text = kw.get("text").and_then(Value::as_str).unwrap_or("").to_string();
         let match_type = kw
@@ -617,7 +624,7 @@ impl AdapterState {
         self.shared_criteria
             .entry(set_id)
             .or_default()
-            .push(JsonKeyword { text, match_type });
+            .push((criterion_id, JsonKeyword { text, match_type }));
     }
 
     fn merge_campaign_shared_set(&mut self, v: &Value) {
@@ -679,13 +686,20 @@ impl AdapterState {
                     ty,
                     status,
                 } = s;
-                let keywords = self.shared_criteria.remove(&id).unwrap_or_default();
-                for (i, kw) in keywords.iter().enumerate() {
+                let members = self.shared_criteria.remove(&id).unwrap_or_default();
+                let mut keywords: Vec<JsonKeyword> = Vec::with_capacity(members.len());
+                for (i, (criterion_id, kw)) in members.into_iter().enumerate() {
+                    let member_id = if criterion_id.is_empty() {
+                        format!("{id}~{i}")
+                    } else {
+                        criterion_id
+                    };
                     shared_criteria_out.push(crate::commands::export::JsonSharedCriterion {
-                        id: format!("{id}~{i}"),
+                        id: member_id,
                         shared_set: id.clone(),
                         keyword: kw.clone(),
                     });
+                    keywords.push(kw);
                 }
                 JsonSharedSet {
                     id,

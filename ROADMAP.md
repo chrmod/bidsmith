@@ -60,9 +60,13 @@ declared HCL against live labeled state. Local cache is rebuildable.
   per-asset). Open: detect added/removed/repinned assets and emit a
   granular update — or accept "replace the whole ad" as the only edit
   path (which matches how Google Ads operators usually edit RSAs).
-- Removal mechanics on `apply`: once labels land, do we delete on
-  apply (terraform-style "configured-state is reality") or require a
-  separate `apply --allow-destroy` flag?
+- Removal mechanics on `apply`: **partially resolved.** Orphaned
+  criteria *members* (a `negative_keyword`/`keyword` block dropped from
+  a still-declared parent) now plan as `- destroy` and apply
+  terraform-style through the normal `yes` prompt — no
+  `--allow-destroy` flag (see DECISIONS.md). Still open for *whole*
+  resources, which need identity labels: once labels land, do we delete
+  on apply or gate it behind a flag?
 
 ## Phases
 
@@ -107,8 +111,11 @@ declared HCL against live labeled state. Local cache is rebuildable.
 - ⏳ Write `bidsmith:address=...` labels on created/updated resources
   (state tracking via Google Ads Label + CampaignLabel / AdGroupLabel
   / AdGroupAdLabel / AdGroupCriterionLabel associations)
-- ⏳ Removal detection: labeled live resources with no matching .bid
-  entry → `- destroy`
+- ✅ Member-level removal detection (no labels needed): an orphaned
+  criterion whose declared parent still exists → `- destroy`, scoped to
+  the `(parent, category)` the file already owns.
+- ⏳ Whole-resource removal detection: labeled live resources with no
+  matching .bid entry → `- destroy` (needs identity labels).
 - ⏳ Once labels are identity, `bidsmith mv` grows a second half: a
   rename also rewrites the live `bidsmith:address` label (one label
   edit per resource, no statefile surgery), and Terraform-style

@@ -1748,6 +1748,208 @@ resource "google_ads_ad_group_ad" "b" {
         assert!(ids.iter().any(|id| id.ends_with("google_ads_ad_group_ad.b")));
     }
 
+    fn diff_after_defaults(
+        mut declared: ExportInput,
+        mut live: ExportInput,
+    ) -> crate::api::diff::DiffReport {
+        declared.apply_schema_defaults();
+        live.apply_schema_defaults();
+        crate::api::diff::diff(&declared, &live)
+    }
+
+    fn delete_live_ids(report: &crate::api::diff::DiffReport) -> Vec<String> {
+        report
+            .diffs
+            .iter()
+            .filter_map(|d| match &d.action {
+                crate::api::diff::Action::Delete { live_id } => Some(live_id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn delete_addresses(report: &crate::api::diff::DiffReport) -> Vec<String> {
+        report
+            .diffs
+            .iter()
+            .filter(|d| matches!(d.action, crate::api::diff::Action::Delete { .. }))
+            .map(|d| d.address.clone())
+            .collect()
+    }
+
+    #[test]
+    fn removing_an_ad_group_negative_plans_a_delete() {
+        // The #43 case: one negative_keyword block is dropped from a resource
+        // that keeps its other blocks. The dropped member must plan as a
+        // delete; a live positive keyword nobody declared is left alone.
+        let declared = import_str(
+            "agc_prune",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+
+resource "google_ads_ad_group" "ag" {
+  name     = "AG"
+  campaign = google_ads_campaign.c.id
+}
+
+resource "google_ads_ad_group_criterion" "neg" {
+  ad_group = google_ads_ad_group.ag.id
+
+  negative_keywords {
+    match_type = "BROAD"
+    texts      = ["free"]
+  }
+}
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"}},
+              {"adGroup":{"resourceName":"customers/9/adGroups/3","id":"3","name":"AG","status":"ENABLED","campaign":"customers/9/campaigns/2"}},
+              {"adGroupCriterion":{"resourceName":"customers/9/adGroupCriteria/3~100","adGroup":"customers/9/adGroups/3","status":"ENABLED","negative":true,"keyword":{"text":"free","matchType":"BROAD"}}},
+              {"adGroupCriterion":{"resourceName":"customers/9/adGroupCriteria/3~101","adGroup":"customers/9/adGroups/3","status":"ENABLED","negative":true,"keyword":{"text":"cheap","matchType":"BROAD"}}},
+              {"adGroupCriterion":{"resourceName":"customers/9/adGroupCriteria/3~102","adGroup":"customers/9/adGroups/3","status":"ENABLED","negative":false,"keyword":{"text":"shoes","matchType":"EXACT"}}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(report.create_count, 0, "diffs: {:?}", report.diffs);
+        assert_eq!(report.update_count, 0, "diffs: {:?}", report.diffs);
+        assert_eq!(report.delete_count, 1, "diffs: {:?}", report.diffs);
+        assert_eq!(delete_live_ids(&report), vec!["3~101".to_string()]);
+        let addrs = delete_addresses(&report);
+        assert!(addrs[0].contains("cheap"), "delete row: {addrs:?}");
+        // The unmanaged positive keyword must not be deleted.
+        assert!(
+            !addrs.iter().any(|a| a.contains("shoes")),
+            "a live positive nobody declared was pruned: {addrs:?}"
+        );
+    }
+
+    #[test]
+    fn removing_a_campaign_negative_plans_a_delete_but_spares_locations() {
+        let declared = import_str(
+            "camp_prune",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+
+resource "google_ads_campaign_criterion" "neg" {
+  campaign = google_ads_campaign.c.id
+
+  negative_keywords {
+    match_types = ["PHRASE"]
+    texts       = ["jobs"]
+  }
+}
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"}},
+              {"campaignCriterion":{"resourceName":"customers/9/campaignCriteria/2~500","campaign":"customers/9/campaigns/2","status":"ENABLED","negative":true,"keyword":{"text":"jobs","matchType":"PHRASE"}}},
+              {"campaignCriterion":{"resourceName":"customers/9/campaignCriteria/2~501","campaign":"customers/9/campaigns/2","status":"ENABLED","negative":true,"keyword":{"text":"salary","matchType":"PHRASE"}}},
+              {"campaignCriterion":{"resourceName":"customers/9/campaignCriteria/2~2840","campaign":"customers/9/campaigns/2","status":"ENABLED","negative":false,"location":{"geoTargetConstant":"geoTargetConstants/2840"}}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(report.delete_count, 1, "diffs: {:?}", report.diffs);
+        assert_eq!(delete_live_ids(&report), vec!["2~501".to_string()]);
+        let addrs = delete_addresses(&report);
+        assert!(addrs[0].contains("salary"), "delete row: {addrs:?}");
+        // A location criterion nobody declared (no declared location category)
+        // must survive.
+        assert!(
+            !addrs.iter().any(|a| a.contains("location")),
+            "an undeclared location was pruned: {addrs:?}"
+        );
+    }
+
+    #[test]
+    fn removing_a_shared_set_member_plans_a_delete() {
+        let declared = import_str(
+            "shared_prune",
+            r#"
+resource "google_ads_shared_set" "s" {
+  name = "Brands"
+
+  negative_keywords {
+    match_type = "BROAD"
+    texts      = ["acme"]
+  }
+}
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"sharedSet":{"resourceName":"customers/9/sharedSets/50","id":"50","name":"Brands","type":"NEGATIVE_KEYWORDS","status":"ENABLED"}},
+              {"sharedCriterion":{"resourceName":"customers/9/sharedCriteria/50~200","sharedSet":"customers/9/sharedSets/50","keyword":{"text":"acme","matchType":"BROAD"}}},
+              {"sharedCriterion":{"resourceName":"customers/9/sharedCriteria/50~201","sharedSet":"customers/9/sharedSets/50","keyword":{"text":"globex","matchType":"BROAD"}}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(report.delete_count, 1, "diffs: {:?}", report.diffs);
+        assert_eq!(delete_live_ids(&report), vec!["50~201".to_string()]);
+    }
+
+    #[test]
+    fn criteria_under_an_undeclared_parent_are_not_pruned() {
+        // The ad group itself isn't declared, so bidsmith doesn't own its
+        // criteria — nothing here should plan as a delete (that whole-resource
+        // case waits on identity labels).
+        let declared = import_str(
+            "no_parent_prune",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"}},
+              {"adGroup":{"resourceName":"customers/9/adGroups/3","id":"3","name":"AG","status":"ENABLED","campaign":"customers/9/campaigns/2"}},
+              {"adGroupCriterion":{"resourceName":"customers/9/adGroupCriteria/3~100","adGroup":"customers/9/adGroups/3","status":"ENABLED","negative":true,"keyword":{"text":"free","matchType":"BROAD"}}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(report.delete_count, 0, "diffs: {:?}", report.diffs);
+    }
+
     #[test]
     fn compact_keyword_texts_resolve_from_locals() {
         let input = import_str(

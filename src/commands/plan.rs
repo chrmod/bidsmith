@@ -311,7 +311,7 @@ pub fn execute(
     let label = prepared.label;
     let strip = prepared.strip_module;
 
-    if report.create_count == 0 && report.update_count == 0 {
+    if report.create_count == 0 && report.update_count == 0 && report.delete_count == 0 {
         if matches!(display, DisplayMode::PerResource) {
             for d in &report.diffs {
                 println!(
@@ -324,7 +324,7 @@ pub fn execute(
         }
         let title = summary_title(validate_only);
         println!(
-            "{title}: 0 to create, 0 to update, {} unchanged. (no API call needed)",
+            "{title}: 0 to create, 0 to update, 0 to destroy, {} unchanged. (no API call needed)",
             report.noop_count,
         );
         return ExitCode::SUCCESS;
@@ -401,6 +401,7 @@ pub fn execute(
             diff::Action::Update { changed_fields, .. } => {
                 ("~ update", format!(" ({})", changed_fields.join(", ")))
             }
+            diff::Action::Delete { .. } => ("- destroy", String::new()),
         };
         let outcome = match &d.action {
             diff::Action::NoOp { .. } => "".to_string(),
@@ -410,7 +411,10 @@ pub fn execute(
                 None => "  (no result — batch rejected)".to_string(),
             },
         };
-        if matches!(d.action, diff::Action::Create | diff::Action::Update { .. }) {
+        if matches!(
+            d.action,
+            diff::Action::Create | diff::Action::Update { .. } | diff::Action::Delete { .. }
+        ) {
             if errors_by_address.contains_key(&d.address) {
                 rejected += 1;
             } else if success {
@@ -437,13 +441,13 @@ pub fn execute(
     let title = summary_title(validate_only);
     if validate_only {
         println!(
-            "{title}: {} to create, {} to update, {} unchanged. ({} accepted, {} rejected)",
-            report.create_count, report.update_count, report.noop_count, accepted, rejected,
+            "{title}: {} to create, {} to update, {} to destroy, {} unchanged. ({} accepted, {} rejected)",
+            report.create_count, report.update_count, report.delete_count, report.noop_count, accepted, rejected,
         );
     } else {
         println!(
-            "{title}: {} created, {} updated, {} unchanged. ({} succeeded, {} failed)",
-            report.create_count, report.update_count, report.noop_count, accepted, rejected,
+            "{title}: {} created, {} updated, {} destroyed, {} unchanged. ({} succeeded, {} failed)",
+            report.create_count, report.update_count, report.delete_count, report.noop_count, accepted, rejected,
         );
     }
 
@@ -492,6 +496,7 @@ fn display_offline_diff(prepared: &Prepared, validate_only: bool) -> ExitCode {
             diff::Action::Update { changed_fields, .. } => {
                 ("~ update", format!(" ({})", changed_fields.join(", ")))
             }
+            diff::Action::Delete { .. } => ("- destroy", String::new()),
         };
         println!(
             "{addr:<width$}  {verb}{detail}",
@@ -502,15 +507,17 @@ fn display_offline_diff(prepared: &Prepared, validate_only: bool) -> ExitCode {
     println!();
     let title = summary_title(validate_only);
     println!(
-        "{title}: {} to create, {} to update, {} unchanged. (offline — diff only, not server-validated)",
-        report.create_count, report.update_count, report.noop_count,
+        "{title}: {} to create, {} to update, {} to destroy, {} unchanged. (offline — diff only, not server-validated)",
+        report.create_count, report.update_count, report.delete_count, report.noop_count,
     );
     ExitCode::SUCCESS
 }
 
 /// Convenience: returns `true` iff the prepared diff would touch anything.
 pub fn has_pending_changes(prepared: &Prepared) -> bool {
-    prepared.report.create_count > 0 || prepared.report.update_count > 0
+    prepared.report.create_count > 0
+        || prepared.report.update_count > 0
+        || prepared.report.delete_count > 0
 }
 
 /// Reference to the underlying ExportInput, exposed so apply can print

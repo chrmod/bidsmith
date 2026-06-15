@@ -100,6 +100,21 @@ This is intentional: a wrong key (`y`, `Yes`, accidental Enter)
 should not auto-commit. The prompt is meant to *make you re-read
 the plan* before agreeing.
 
+## Removing keywords
+
+When you delete a `negative_keyword` (or `keyword`) block from a
+resource that still exists, apply now removes that keyword from
+Google Ads — it shows up as a `- destroy` row in the plan and is
+approved by the same `yes` prompt as every other change. This makes
+cleanup safe: trim a few negatives, or move a whole ad-group negative
+list into a shared set, and the old entries are actually removed
+instead of silently lingering.
+
+The removal is scoped to what you already manage. If your file lists
+negative keywords for an ad group, that negative list is treated as
+the complete set — but positive keywords you manage elsewhere (or in
+the Google Ads UI) are left untouched, and vice versa.
+
 ## What apply doesn't yet do
 
 Two known gaps, both on the
@@ -107,12 +122,12 @@ Two known gaps, both on the
 
 - **No label-based identity tracking.** bidsmith matches resources
   by name. A future version will tag every managed resource with a
-  `bidsmith:address=…` label and match by that, making import and
-  removal both possible.
-- **No `- destroy` flow.** Resources removed from `.bid` files
-  aren't deleted from Google Ads — they're just "not managed
-  anymore." Combine with the labels work above to implement real
-  destroy semantics.
+  `bidsmith:address=…` label and match by that.
+- **No whole-resource `- destroy` yet.** Deleting an entire
+  campaign, ad group, or ad block from a `.bid` file doesn't remove it
+  from Google Ads — it's just "not managed anymore." (Removing
+  *members* of a surviving resource, like the negatives above, does
+  destroy them.) Whole-resource removal needs the labels work above.
 
 For now, the practical pattern is: to remove a campaign, set its
 `status = "REMOVED"` in the `.bid` file rather than deleting the

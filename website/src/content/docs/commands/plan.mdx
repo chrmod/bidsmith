@@ -111,12 +111,20 @@ match yours.
    field-by-field; any difference becomes a `~ update` row with
    the before/after values.
 3. Resources in `.bid` with no live match become `+ create` rows.
-4. Resources in the live account with no `.bid` match are **not**
-   shown today — they're "stuff bidsmith doesn't manage." Label-based
-   matching (and `- destroy` rows) is on the roadmap.
+4. A keyword removed from a resource that still exists becomes a
+   `- destroy` row: if your file still lists *some* negatives (or
+   keywords) for an ad group or campaign, that list is the complete
+   set, so a live keyword no longer in it is removed. The pruning
+   stays within what you manage — declaring negatives never destroys
+   positives, and vice versa.
+5. Whole resources in the live account with no `.bid` match are
+   **not** shown today — they're "stuff bidsmith doesn't manage."
+   Label-based matching (and whole-resource `- destroy` rows) is on
+   the roadmap.
 
-After producing the diff, bidsmith sends the create/update operations
-to Google's `googleAds:mutate` endpoint with `validateOnly=true`.
+After producing the diff, bidsmith sends the create/update/remove
+operations to Google's `googleAds:mutate` endpoint with
+`validateOnly=true`.
 Google checks them without committing. Any rejection
 ("headline too long," "bid below minimum") shows up inline in the
 plan output.

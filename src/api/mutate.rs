@@ -426,6 +426,27 @@ pub fn build_mutate_with_diff(
         }
     }
 
+    // Removes for orphaned criteria members (parent still declared, member
+    // dropped from its blocks). Appended after creates/updates: the planner
+    // only deletes members no longer declared, so they never collide with a
+    // create of the same (text, match_type) in the same batch.
+    for d in &report.diffs {
+        if let Action::Delete { live_id } = &d.action {
+            let Some(segment) = remove_segment_for(d.kind) else {
+                continue;
+            };
+            let Some(env) = remove_envelope_for(d.kind) else {
+                continue;
+            };
+            let rn = format!("customers/{customer_id}/{segment}/{live_id}");
+            mutate_ops.push(json!({ env: { "remove": rn } }));
+            operations.push(PlanOperation {
+                address: d.address.clone(),
+                kind: d.kind,
+            });
+        }
+    }
+
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -435,6 +456,19 @@ pub fn build_mutate_with_diff(
         "validateOnly": validate_only,
     });
     Ok(PlanBody { body, operations })
+}
+
+fn remove_segment_for(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "campaign_budget" => "campaignBudgets",
+        "campaign" => "campaigns",
+        "ad_group" => "adGroups",
+        "ad_group_ad" => "adGroupAds",
+        "ad_group_criterion" => "adGroupCriteria",
+        "campaign_criterion" => "campaignCriteria",
+        "shared_criterion" => "sharedCriteria",
+        _ => return None,
+    })
 }
 
 /// Build a REMOVE-only googleAds:mutate body for the given (kind, resource_name)
@@ -463,6 +497,7 @@ fn remove_envelope_for(kind: &str) -> Option<&'static str> {
         "ad_group_ad" => "adGroupAdOperation",
         "ad_group_criterion" => "adGroupCriterionOperation",
         "campaign_criterion" => "campaignCriterionOperation",
+        "shared_criterion" => "sharedCriterionOperation",
         _ => return None,
     })
 }
@@ -1343,6 +1378,64 @@ mod tests {
     }
 
     #[test]
+    fn delete_diff_emits_a_remove_op() {
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "6571974784",
+        }))
+        .expect("valid ExportInput");
+
+        let report = DiffReport {
+            diffs: vec![
+                ResourceDiff {
+                    address: "ag (removed negative_keyword \"cheap\" BROAD)".to_string(),
+                    kind: "ad_group_criterion",
+                    action: Action::Delete { live_id: "3~101".to_string() },
+                },
+                ResourceDiff {
+                    address: "set (removed negative_keyword \"globex\" BROAD)".to_string(),
+                    kind: "shared_criterion",
+                    action: Action::Delete { live_id: "50~201".to_string() },
+                },
+            ],
+            noop_count: 0,
+            create_count: 0,
+            update_count: 0,
+            delete_count: 2,
+        };
+
+        let plan = match build_mutate_with_diff(&input, &report, true) {
+            Ok(plan) => plan,
+            Err(errs) => panic!(
+                "plan should build: {}",
+                errs.iter()
+                    .map(|e| format!("{}: {}", e.address, e.message))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        };
+        let ops = plan.body["mutateOperations"].as_array().unwrap();
+        assert_eq!(ops.len(), 2, "expected two remove ops, got {ops:?}");
+
+        let agc = ops
+            .iter()
+            .find_map(|op| op.get("adGroupCriterionOperation").and_then(|o| o.get("remove")))
+            .expect("ad group criterion remove op");
+        assert_eq!(
+            agc.as_str().unwrap(),
+            "customers/6571974784/adGroupCriteria/3~101"
+        );
+
+        let sc = ops
+            .iter()
+            .find_map(|op| op.get("sharedCriterionOperation").and_then(|o| o.get("remove")))
+            .expect("shared criterion remove op");
+        assert_eq!(
+            sc.as_str().unwrap(),
+            "customers/6571974784/sharedCriteria/50~201"
+        );
+    }
+
+    #[test]
     fn new_shared_set_members_create_without_id() {
         let input: ExportInput = serde_json::from_value(json!({
             "customer_id": "6571974784",
@@ -1374,6 +1467,7 @@ mod tests {
             noop_count: 0,
             create_count: 2,
             update_count: 0,
+            delete_count: 0,
         };
 
         let plan = match build_mutate_with_diff(&input, &report, true) {
@@ -1460,6 +1554,7 @@ mod tests {
             noop_count: 0,
             create_count: 3,
             update_count: 0,
+            delete_count: 0,
         };
 
         let plan = match build_mutate_with_diff(&input, &report, true) {
