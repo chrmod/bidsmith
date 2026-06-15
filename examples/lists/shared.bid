@@ -1,0 +1,18 @@
+locals {
+  brand_headlines = [
+    "Ghostery Blocks Trackers",
+    "Privacy That Just Works",
+    "Switch to Ghostery Free",
+    { text = "Ghostery — Private by Default", pin = "HEADLINE_1" },
+  ]
+  brand_descriptions = [
+    "Block ads, trackers, and popups. Manifest V3 ready, fast, and free.",
+    "The privacy browser extension millions of people already trust.",
+  ]
+  competitor_keywords = ["ublock", "ublock origin", "adblock alternative", "best ad blocker"]
+  landing_urls = [
+    "https://ghostery.info/get?utm_source=google&utm_medium=cpc&utm_term={keyword}",
+  ]
+  search_languages = ["en"]
+  search_locations = ["US", "CA", "GB"]
+}

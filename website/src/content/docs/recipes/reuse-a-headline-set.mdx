@@ -1,0 +1,122 @@
+---
+title: Reuse a headline set across many ads
+description: Stop pasting the same RSA headlines, descriptions, and keyword lists into every ad. Name the list once in a local and point every ad at it.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+You have one good set of headlines, and it's pasted — verbatim — into
+twenty responsive search ads. Same descriptions. Same competitor
+keyword list in every ad group. When the legal team tweaks one line,
+you get to find the other nineteen copies and change them by hand.
+
+The fix is a [local](/bidsmith/concepts/locals/) that holds the **list**,
+and ads that reference it instead of copying it.
+
+## Name the list once
+
+A `locals` block can hold a list, not just a single value. Put your
+headline set, description set, and any shared keyword themes in one
+place:
+
+```hcl
+locals {
+  brand_headlines = [
+    "Ghostery Blocks Trackers",
+    "Privacy That Just Works",
+    "Switch to Ghostery Free",
+    { text = "Ghostery — Private by Default", pin = "HEADLINE_1" },
+  ]
+  brand_descriptions = [
+    "Block ads, trackers, and popups. Manifest V3 ready.",
+    "The privacy extension millions of people already trust.",
+  ]
+  competitor_terms = ["ublock", "ublock origin", "adblock alternative"]
+}
+```
+
+Headlines can be plain strings or `{ text, pin }` objects for pinned
+positions — mix both in one list, just like an inline `headlines` list.
+
+## Point every ad at it
+
+Anywhere an attribute expects a list, hand it the `local.` reference:
+
+```hcl
+resource "google_ads_ad_group_ad" "search_ad_1" {
+  ad_group = google_ads_ad_group.core.id
+  ad {
+    final_urls = ["https://ghostery.com/get"]
+    responsive_search_ad {
+      headlines    = local.brand_headlines
+      descriptions = local.brand_descriptions
+    }
+  }
+}
+
+resource "google_ads_ad_group_ad" "search_ad_2" {
+  ad_group = google_ads_ad_group.core.id
+  ad {
+    final_urls = ["https://ghostery.com/extension"]
+    responsive_search_ad {
+      headlines    = local.brand_headlines
+      descriptions = local.brand_descriptions
+    }
+  }
+}
+```
+
+Two ads, one source of truth. Edit a headline in the local, run
+`bidsmith plan`, and the change shows up on **every** ad that points at
+the list — that fan-out is exactly what you want.
+
+## Reuse a keyword list too
+
+The same trick works for keywords. A compact
+[`keywords` block](/bidsmith/recipes/add-many-keywords/) already turns a
+`texts` list into one keyword each, so point `texts` at a local:
+
+```hcl
+resource "google_ads_ad_group_criterion" "competitors" {
+  ad_group = google_ads_ad_group.core.id
+  keywords {
+    texts      = local.competitor_terms
+    match_type = "PHRASE"
+  }
+}
+```
+
+It also works for `final_urls`, and for a campaign's `languages` /
+`locations` lists — so every campaign can share one geo/language list.
+
+## Share it across files
+
+If the same set is copied across several campaign files, lift it into
+one file that holds nothing but `locals` — call it `shared.bid`:
+
+```hcl
+# shared.bid
+locals {
+  brand_headlines    = [ /* ... */ ]
+  brand_descriptions = [ /* ... */ ]
+  competitor_terms   = [ /* ... */ ]
+}
+```
+
+Every other file in the folder references `local.brand_headlines` and
+bidsmith resolves it from the shared file. One declaration for the whole
+account; one place to edit.
+
+<Aside type="note" title="Want a different list per campaign?">
+  Give each one its own named local —
+  `local.ublock_headlines`, `local.generic_headlines` — and reference
+  the one you want. Picking a single entry out of a map by key
+  (`local.headlines["ublock"]`) isn't supported yet.
+</Aside>
+
+## See also
+
+- [Locals](/bidsmith/concepts/locals/) — the full reference, including
+  chains and module scope.
+- [Add a whole keyword list at once](/bidsmith/recipes/add-many-keywords/)
+  — the compact `keywords` block this recipe reuses.

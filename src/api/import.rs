@@ -1619,5 +1619,87 @@ resource "google_ads_shared_set" "brands" {
         assert_eq!(input.shared_criteria.len(), 3);
         assert!(input.shared_sets[0].negative_keywords.is_empty());
     }
+
+    #[test]
+    fn rsa_list_attributes_resolve_from_locals() {
+        let input = import_str(
+            "rsa_list_local",
+            r#"
+locals {
+  headlines = [
+    "First Headline",
+    "Second Headline",
+    { text = "Pinned Headline", pin = "HEADLINE_1" },
+  ]
+  descriptions = ["First description", "Second description"]
+  urls         = ["https://example.com/landing"]
+}
+
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group = google_ads_ad_group.ag.id
+  status   = "ENABLED"
+
+  ad {
+    final_urls = local.urls
+
+    responsive_search_ad {
+      headlines    = local.headlines
+      descriptions = local.descriptions
+    }
+  }
+}
+"#,
+        );
+        let ad = &input.ad_group_ads[0].ad;
+        assert_eq!(ad.final_urls, vec!["https://example.com/landing".to_string()]);
+        let rsa = ad.responsive_search_ad.as_ref().expect("rsa present");
+        let headlines: Vec<(&str, Option<&str>)> = rsa
+            .headlines
+            .iter()
+            .map(|h| (h.text.as_str(), h.pin.as_deref()))
+            .collect();
+        assert_eq!(
+            headlines,
+            vec![
+                ("First Headline", None),
+                ("Second Headline", None),
+                ("Pinned Headline", Some("HEADLINE_1")),
+            ]
+        );
+        let descriptions: Vec<&str> = rsa.descriptions.iter().map(|d| d.text.as_str()).collect();
+        assert_eq!(descriptions, vec!["First description", "Second description"]);
+    }
+
+    #[test]
+    fn compact_keyword_texts_resolve_from_locals() {
+        let input = import_str(
+            "kw_texts_local",
+            r#"
+locals {
+  themes = ["ublock", "ublock origin", "adblock alternative"]
+}
+
+resource "google_ads_ad_group_criterion" "kw" {
+  ad_group = google_ads_ad_group.ag.id
+  status   = "ENABLED"
+
+  keywords {
+    texts      = local.themes
+    match_type = "PHRASE"
+  }
+}
+"#,
+        );
+        assert_eq!(input.ad_group_criteria.len(), 3);
+        let got = keyword_set(&input.ad_group_criteria);
+        assert_eq!(
+            got,
+            vec![
+                ("adblock alternative".to_string(), "PHRASE".to_string(), false),
+                ("ublock".to_string(), "PHRASE".to_string(), false),
+                ("ublock origin".to_string(), "PHRASE".to_string(), false),
+            ]
+        );
+    }
 }
 

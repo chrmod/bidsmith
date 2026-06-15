@@ -41,7 +41,7 @@ pub fn run(target: &str, cli_vars: &[String]) -> ExitCode {
         diags.extend(validate_files(&scope.files, &scope.inputs));
     }
     for scope in &program.scopes {
-        diags.extend(crate::lint::lint_files(&scope.files));
+        diags.extend(crate::lint::lint_files(&scope.files, &scope.inputs));
     }
 
     diags.sort_by(|a, b| {

@@ -1626,7 +1626,14 @@ fn validate_body(
                     diags,
                 );
                 if matches!(bname, "keywords" | "negative_keywords") {
-                    validate_compact_keywords(file, b, &format!("{address}.{bname}"), diags);
+                    validate_compact_keywords(
+                        file,
+                        b,
+                        &format!("{address}.{bname}"),
+                        locals,
+                        variables,
+                        diags,
+                    );
                 }
             }
         }
@@ -1643,10 +1650,26 @@ fn validate_body(
     }
 }
 
+/// Follow a `local`/`var` chain to its value, discarding diags (`validate_value` reports reference errors); returns the input if not a resolvable binding.
+fn resolve_for_lint<'a>(
+    file: &ParsedFile,
+    expr: &'a Expression,
+    locals: &'a LocalsRegistry,
+    variables: &'a VariablesRegistry,
+) -> &'a Expression {
+    let mut sink = Vec::new();
+    match resolve_binding_chain(file, expr, locals, variables, &mut sink) {
+        BindingResolution::Resolved(value) => value,
+        _ => expr,
+    }
+}
+
 fn validate_compact_keywords(
     file: &ParsedFile,
     block: &Block,
     address: &str,
+    locals: &LocalsRegistry,
+    variables: &VariablesRegistry,
     diags: &mut Vec<Diag>,
 ) {
     let mut has_match_type = false;
@@ -1658,14 +1681,18 @@ fn validate_compact_keywords(
             "match_type" => has_match_type = true,
             "match_types" => {
                 has_match_types = true;
-                if let Expression::Array(arr) = &a.value {
+                if let Expression::Array(arr) =
+                    resolve_for_lint(file, &a.value, locals, variables)
+                {
                     if arr.is_empty() {
                         empty_list = Some(("match_types", span_of(a.value.span())));
                     }
                 }
             }
             "texts" => {
-                if let Expression::Array(arr) = &a.value {
+                if let Expression::Array(arr) =
+                    resolve_for_lint(file, &a.value, locals, variables)
+                {
                     if arr.is_empty() {
                         empty_list = Some(("texts", span_of(a.value.span())));
                     }
@@ -2804,5 +2831,123 @@ locals {
         let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
         assert!(msgs.iter().any(|m| m.contains("duplicate local 'a'")), "{msgs:?}");
         assert!(msgs.iter().any(|m| m.contains("nested block 'inner'")), "{msgs:?}");
+    }
+
+    const LIST_LOCAL_PREAMBLE: &str = r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  manual_cpc { enhanced_cpc_enabled = false }
+}
+
+resource "google_ads_ad_group" "g" {
+  name           = "G"
+  campaign       = google_ads_campaign.c.id
+  cpc_bid_micros = 1000000
+}
+"#;
+
+    #[test]
+    fn list_local_in_rsa_and_compact_keywords_validates() {
+        let mut content = String::from(
+            r#"
+locals {
+  headlines    = ["One Headline", "Two Headline", "Three Headline"]
+  descriptions = ["A description here", "Another description here"]
+  urls         = ["https://example.com"]
+  themes       = ["alpha", "beta", "gamma"]
+}
+
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group = google_ads_ad_group.g.id
+  status   = "ENABLED"
+
+  ad {
+    final_urls = local.urls
+
+    responsive_search_ad {
+      headlines    = local.headlines
+      descriptions = local.descriptions
+    }
+  }
+}
+
+resource "google_ads_ad_group_criterion" "kw" {
+  ad_group = google_ads_ad_group.g.id
+  status   = "ENABLED"
+
+  keywords {
+    texts      = local.themes
+    match_type = "PHRASE"
+  }
+}
+"#,
+        );
+        content.push_str(LIST_LOCAL_PREAMBLE);
+        let diags = validate_str("list_local_ok", &content);
+        let errors: Vec<&String> = diags
+            .iter()
+            .filter(|d| d.is_error())
+            .map(|d| &d.message)
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn scalar_local_into_list_attribute_errors() {
+        let diags = validate_str(
+            "scalar_into_list",
+            r#"
+locals {
+  not_a_list = "just a string"
+}
+
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group = google_ads_ad_group.g.id
+
+  ad {
+    final_urls = ["https://example.com"]
+    responsive_search_ad {
+      headlines    = local.not_a_list
+      descriptions = ["A description here", "Another description here"]
+    }
+  }
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.is_error()
+                && d.message.contains("expected list of strings or")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn undeclared_list_local_reference_errors() {
+        let diags = validate_str(
+            "undeclared_list",
+            r#"
+resource "google_ads_ad_group_criterion" "kw" {
+  ad_group = google_ads_ad_group.g.id
+
+  keywords {
+    texts      = local.missing
+    match_type = "PHRASE"
+  }
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("undeclared local 'local.missing'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 }

@@ -1,0 +1,67 @@
+provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+resource "google_ads_campaign_budget" "budget" {
+  name = "uBlock — Daily"
+  amount_micros = 20000000
+}
+
+resource "google_ads_campaign" "ublock" {
+  name = "Ghostery — uBlock"
+  status = "ENABLED"
+  advertising_channel_type = "SEARCH"
+  campaign_budget = google_ads_campaign_budget.budget.id
+  languages = local.search_languages
+  locations = local.search_locations
+
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+}
+
+resource "google_ads_ad_group" "ublock_core" {
+  name = "uBlock — Core"
+  status = "ENABLED"
+  campaign = google_ads_campaign.ublock.id
+  cpc_bid_micros = 3000000
+}
+
+resource "google_ads_ad_group_ad" "ublock_rsa_a" {
+  ad_group = google_ads_ad_group.ublock_core.id
+  status = "ENABLED"
+
+  ad {
+    final_urls = local.landing_urls
+
+    responsive_search_ad {
+      headlines = local.brand_headlines
+      descriptions = local.brand_descriptions
+    }
+  }
+}
+
+resource "google_ads_ad_group_ad" "ublock_rsa_b" {
+  ad_group = google_ads_ad_group.ublock_core.id
+  status = "ENABLED"
+
+  ad {
+    final_urls = local.landing_urls
+
+    responsive_search_ad {
+      headlines = local.brand_headlines
+      descriptions = local.brand_descriptions
+      path1 = "ublock"
+    }
+  }
+}
+
+resource "google_ads_ad_group_criterion" "ublock_keywords" {
+  ad_group = google_ads_ad_group.ublock_core.id
+  status = "ENABLED"
+
+  keywords {
+    texts = local.competitor_keywords
+    match_type = "PHRASE"
+  }
+}

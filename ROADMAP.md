@@ -226,6 +226,20 @@ Smaller follow-ups that can ride along:
   that label is the matching key, a move grows a second half (rewrite
   the live label) and `moved` blocks become the plan-visible,
   PR-reviewable form worth adding then.
+- ✅ List / map locals (issue #39) — a `local` holds lists and maps, not
+  just scalars, and a `local.<name>` that resolves to a list is usable
+  in every list attribute (RSA `headlines` / `descriptions`,
+  `final_urls`, inline `languages` / `locations`, compact `keywords`
+  `texts` / `match_types`). The compact keyword block doubles as the
+  "repeated block from a list" form (`keywords { texts = local.theme }`
+  fans out into one criterion per keyword), so no `dynamic` / `for_each`
+  block-expansion construct was added. Cross-file de-duplication rides
+  the existing same-module-then-global-fallback resolution: shared lists
+  live in one `shared.bid` and are referenced everywhere. Validator and
+  RSA lints resolve list references; `examples/lists/` covers it.
+  **Deferred:** map indexing (`local.headlines["ublock"]`) and other
+  element-level expressions wait on the expression engine; `variable`
+  blocks stay scalar-only (list data belongs in `locals`).
 - Repeating-block field-level diff for RSA `headline` / `description`
   blocks and the `final_urls` list. Today these are matched
   all-or-nothing; per-asset add/remove/repin detection would close
