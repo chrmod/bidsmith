@@ -188,6 +188,38 @@ fn keyword_block() -> NestedBlockSchema {
     }
 }
 
+fn negative_keyword_block() -> NestedBlockSchema {
+    NestedBlockSchema {
+        name: "negative_keyword",
+        schema: BlockSchema {
+            attributes: vec![
+                attr("text", FieldType::String, true),
+                attr("match_type", FieldType::Enum(KEYWORD_MATCH_TYPE), true),
+            ],
+            blocks: vec![],
+        },
+    }
+}
+
+// "exactly one of match_type / match_types" is not expressible here; enforced by validate_compact_keywords.
+fn compact_keywords_block(name: &'static str) -> NestedBlockSchema {
+    NestedBlockSchema {
+        name,
+        schema: BlockSchema {
+            attributes: vec![
+                attr("texts", FieldType::list_of(FieldType::String), true),
+                attr("match_type", FieldType::Enum(KEYWORD_MATCH_TYPE), false),
+                attr(
+                    "match_types",
+                    FieldType::list_of(FieldType::Enum(KEYWORD_MATCH_TYPE)),
+                    false,
+                ),
+            ],
+            blocks: vec![],
+        },
+    }
+}
+
 fn attr(name: &'static str, ty: FieldType, required: bool) -> AttributeSchema {
     AttributeSchema { name, ty, required }
 }
@@ -297,20 +329,9 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                 ],
                 blocks: vec![
                     keyword_block(),
-                    NestedBlockSchema {
-                        name: "negative_keyword",
-                        schema: BlockSchema {
-                            attributes: vec![
-                                attr("text", FieldType::String, true),
-                                attr(
-                                    "match_type",
-                                    FieldType::Enum(KEYWORD_MATCH_TYPE),
-                                    true,
-                                ),
-                            ],
-                            blocks: vec![],
-                        },
-                    },
+                    compact_keywords_block("keywords"),
+                    negative_keyword_block(),
+                    compact_keywords_block("negative_keywords"),
                 ],
             },
         );
@@ -329,20 +350,8 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                 ],
                 blocks: vec![
                     keyword_block(),
-                    NestedBlockSchema {
-                        name: "negative_keyword",
-                        schema: BlockSchema {
-                            attributes: vec![
-                                attr("text", FieldType::String, true),
-                                attr(
-                                    "match_type",
-                                    FieldType::Enum(KEYWORD_MATCH_TYPE),
-                                    true,
-                                ),
-                            ],
-                            blocks: vec![],
-                        },
-                    },
+                    negative_keyword_block(),
+                    compact_keywords_block("negative_keywords"),
                     NestedBlockSchema {
                         name: "location",
                         schema: BlockSchema {
@@ -537,20 +546,10 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                     attr("type", FieldType::Enum(SHARED_SET_TYPE), false),
                     attr("status", FieldType::Enum(SHARED_SET_STATUS), false),
                 ],
-                blocks: vec![NestedBlockSchema {
-                    name: "negative_keyword",
-                    schema: BlockSchema {
-                        attributes: vec![
-                            attr("text", FieldType::String, true),
-                            attr(
-                                "match_type",
-                                FieldType::Enum(KEYWORD_MATCH_TYPE),
-                                true,
-                            ),
-                        ],
-                        blocks: vec![],
-                    },
-                }],
+                blocks: vec![
+                    negative_keyword_block(),
+                    compact_keywords_block("negative_keywords"),
+                ],
             },
         );
 
@@ -1398,6 +1397,9 @@ fn validate_body(
                     variables,
                     diags,
                 );
+                if matches!(bname, "keywords" | "negative_keywords") {
+                    validate_compact_keywords(file, b, &format!("{address}.{bname}"), diags);
+                }
             }
         }
     }
@@ -1410,6 +1412,70 @@ fn validate_body(
                 format!("missing required attribute '{}' in {}", a.name, address),
             ));
         }
+    }
+}
+
+fn validate_compact_keywords(
+    file: &ParsedFile,
+    block: &Block,
+    address: &str,
+    diags: &mut Vec<Diag>,
+) {
+    let mut has_match_type = false;
+    let mut has_match_types = false;
+    let mut empty_list: Option<(&str, std::ops::Range<usize>)> = None;
+    for s in block.body.iter() {
+        let Structure::Attribute(a) = s else { continue };
+        match a.key.as_str() {
+            "match_type" => has_match_type = true,
+            "match_types" => {
+                has_match_types = true;
+                if let Expression::Array(arr) = &a.value {
+                    if arr.is_empty() {
+                        empty_list = Some(("match_types", span_of(a.value.span())));
+                    }
+                }
+            }
+            "texts" => {
+                if let Expression::Array(arr) = &a.value {
+                    if arr.is_empty() {
+                        empty_list = Some(("texts", span_of(a.value.span())));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    match (has_match_type, has_match_types) {
+        (false, false) => diags.push(Diag::new(
+            file.src.clone(),
+            span_of(block.ident.span()),
+            format!(
+                "{address} must set either 'match_type' (a single match type) or 'match_types' (a list of match types)"
+            ),
+        )),
+        (true, true) => diags.push(Diag::new(
+            file.src.clone(),
+            span_of(block.ident.span()),
+            format!(
+                "{address} sets both 'match_type' and 'match_types'; use one or the other"
+            ),
+        )),
+        _ => {}
+    }
+
+    if let Some((field, span)) = empty_list {
+        let what = if field == "texts" {
+            "at least one keyword"
+        } else {
+            "at least one match type"
+        };
+        diags.push(Diag::new(
+            file.src.clone(),
+            span,
+            format!("{address} '{field}' must list {what}"),
+        ));
     }
 }
 
@@ -2188,6 +2254,110 @@ locals {
             Expression::Number(n) => assert_eq!(n.as_f64(), Some(10000000.0)),
             other => panic!("expected Number, got {other:?}"),
         }
+    }
+
+    fn validate_str(name: &str, content: &str) -> Vec<Diag> {
+        let pf = parse_str(name, content);
+        validate_files(std::slice::from_ref(&pf), &InputBindings::default())
+    }
+
+    #[test]
+    fn compact_keywords_requires_a_match_type() {
+        let diags = validate_str(
+            "kw_neither",
+            r#"
+resource "google_ads_ad_group_criterion" "kw" {
+  ad_group = google_ads_ad_group.ag.id
+  keywords {
+    texts = ["a", "b"]
+  }
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("must set either 'match_type'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn compact_keywords_rejects_both_match_type_forms() {
+        let diags = validate_str(
+            "kw_both",
+            r#"
+resource "google_ads_ad_group_criterion" "kw" {
+  ad_group = google_ads_ad_group.ag.id
+  keywords {
+    match_type  = "EXACT"
+    match_types = ["PHRASE"]
+    texts       = ["a"]
+  }
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("use one or the other")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn compact_keywords_rejects_empty_texts() {
+        let diags = validate_str(
+            "kw_empty",
+            r#"
+resource "google_ads_ad_group_criterion" "kw" {
+  ad_group = google_ads_ad_group.ag.id
+  keywords {
+    match_type = "EXACT"
+    texts      = []
+  }
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("'texts' must list at least one keyword")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn compact_keywords_valid_form_has_no_errors() {
+        let diags = validate_str(
+            "kw_ok",
+            r#"
+resource "google_ads_ad_group" "ag" {
+  name     = "AG"
+  campaign = google_ads_campaign.c.id
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_ad_group_criterion" "kw" {
+  ad_group = google_ads_ad_group.ag.id
+  status   = "ENABLED"
+
+  keywords {
+    match_types = ["EXACT", "PHRASE"]
+    texts       = ["a", "b"]
+  }
+}
+"#,
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 
     #[test]

@@ -249,6 +249,8 @@ bidsmith/
     │   └── syntax.bid          # parse error
     ├── bulk/main.bid           # bulk keyword sub-blocks, shared sets,
     │                           # RSA headlines/descriptions list attributes
+    ├── compact/main.bid        # compact `keywords {}` / `negative_keywords {}`
+    │                           # blocks (texts list + match_type / match_types fan-out)
     ├── lint/
     │   └── warnings.bid        # valid syntax/schema but trips every lint rule
     ├── multi/                  # two campaigns in one dir with colliding bare
@@ -316,6 +318,11 @@ Verified locally:
   and the `headlines = [...]` / `descriptions = [...]` RSA list
   attributes. Re-encodes the rezolutnie `[W2]` campaign (1025 lines
   one-resource-per-keyword) in 177 lines.
+- `cargo run -- validate examples/compact` → `OK: 1 file(s) valid.` —
+  exercises the compact `keywords {}` / `negative_keywords {}` form on
+  ad-group criteria (single `match_type` and a `match_types` fan-out),
+  campaign criteria, and a shared set; `fmt --check examples/compact`
+  is a no-op.
 - `cargo run -- validate examples/lint` → exit 0 with 10 warnings (the
   lint rules trip: missing `status` on three blocks, RSA headlines
   < 3, RSA descriptions < 2, phone number in a headline, the
@@ -415,7 +422,16 @@ Validator covers (so far):
   import time — the `negative` attribute is inferred from the block
   shape, so `keyword {}` defaults `negative = false` and
   `negative_keyword {}` is always `negative = true` without writing
-  the attribute explicitly),
+  the attribute explicitly; plus a *compact* form `keywords { texts =
+  [...], match_type = "EXACT" }` (or `match_types = ["EXACT","PHRASE"]`
+  to fan one list out across several match types) and its
+  `negative_keywords {}` counterpart, where one block expands into the
+  cartesian product of texts × match types — exactly one of
+  `match_type` / `match_types` is required, validated up front. The
+  compact and per-keyword forms are equivalent at import time (each
+  (text, match_type) pair is one criterion, matched by that key in the
+  diff), so the choice is purely authoring ergonomics and the two can
+  coexist in one resource. `fmt` does not fold between the forms),
   `google_ads_campaign_criterion` (single negative keyword, location,
   language, proximity with flat `latitude` / `longitude` in decimal
   degrees plus `radius` + `radius_units`; the adapter rounds to the
@@ -423,10 +439,12 @@ Validator covers (so far):
   syntactic-sugar form where repeating `negative_keyword { text,
   match_type }` sub-blocks in one resource expand into N individual
   negative criteria at import time (same `negative`-from-block-shape
-  inference as ad-group criteria),
+  inference as ad-group criteria), plus the compact
+  `negative_keywords { texts = [...], match_type/match_types }` form,
   `google_ads_shared_set` (named negative-keyword set with a bulk
-  `negative_keyword { text, match_type }` sub-block form; type
-  defaults to `NEGATIVE_KEYWORDS` at mutate time),
+  `negative_keyword { text, match_type }` sub-block form, also the
+  compact `negative_keywords { texts = [...], match_type/match_types }`
+  form; type defaults to `NEGATIVE_KEYWORDS` at mutate time),
   `google_ads_shared_criterion` (a single negative keyword inside a
   shared set, declared as its own top-level resource for fine-grained
   add/remove diffs — equivalent at mutate time to a single

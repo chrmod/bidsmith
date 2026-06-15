@@ -515,11 +515,13 @@ fn import_ad_group_criterion(
                         keywords.push(kw);
                     }
                 }
+                "keywords" => keywords.extend(import_compact_keywords(ctx, b)),
                 "negative_keyword" => {
                     if let Some(kw) = import_keyword(ctx, b) {
                         negative_keywords.push(kw);
                     }
                 }
+                "negative_keywords" => negative_keywords.extend(import_compact_keywords(ctx, b)),
                 _ => {}
             },
         }
@@ -609,6 +611,7 @@ fn import_campaign_criterion(
                         bulk_negatives.push(kw);
                     }
                 }
+                "negative_keywords" => bulk_negatives.extend(import_compact_keywords(ctx, b)),
                 "location" => location = import_location(ctx, b),
                 "language" => language = import_language(ctx, b),
                 "proximity" => proximity = import_proximity(ctx, b),
@@ -675,6 +678,35 @@ fn import_keyword(ctx: &Ctx, block: &Block) -> Option<JsonKeyword> {
         text: text?,
         match_type: match_type?,
     })
+}
+
+// Match-type-major order keeps each match type's criteria grouped together.
+fn import_compact_keywords(ctx: &Ctx, block: &Block) -> Vec<JsonKeyword> {
+    let mut texts: Vec<String> = Vec::new();
+    let mut match_types: Vec<String> = Vec::new();
+    for s in block.body.iter() {
+        let Structure::Attribute(a) = s else { continue };
+        match a.key.as_str() {
+            "texts" => texts = expect_string_list(ctx, &a.value),
+            "match_type" => {
+                if let Some(mt) = expect_string_owned(ctx, a) {
+                    match_types.push(mt);
+                }
+            }
+            "match_types" => match_types.extend(expect_string_list(ctx, &a.value)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::with_capacity(texts.len() * match_types.len());
+    for match_type in &match_types {
+        for text in &texts {
+            out.push(JsonKeyword {
+                text: text.clone(),
+                match_type: match_type.clone(),
+            });
+        }
+    }
+    out
 }
 
 fn import_location(ctx: &Ctx, block: &Block) -> Option<JsonLocation> {
@@ -854,12 +886,15 @@ fn import_shared_set(
                 "status" => status = expect_string_owned(ctx, a),
                 _ => {}
             },
-            Structure::Block(b) if b.ident.as_str() == "negative_keyword" => {
-                if let Some(kw) = import_keyword(ctx, b) {
-                    negative_keywords.push(kw);
+            Structure::Block(b) => match b.ident.as_str() {
+                "negative_keyword" => {
+                    if let Some(kw) = import_keyword(ctx, b) {
+                        negative_keywords.push(kw);
+                    }
                 }
-            }
-            _ => {}
+                "negative_keywords" => negative_keywords.extend(import_compact_keywords(ctx, b)),
+                _ => {}
+            },
         }
     }
     let name = name.ok_or_else(|| missing(ctx.file, block, address, "name"))?;
@@ -1116,5 +1151,173 @@ pub fn import_program(program: &Program) -> Result<ImportResult, Vec<Diag>> {
         input: combined,
         skipped,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse_file;
+    use std::io::Write;
+
+    fn import_str(name: &str, content: &str) -> ExportInput {
+        let mut tmp = std::env::temp_dir();
+        tmp.push(format!("bidsmith-import-test-{name}.bid"));
+        {
+            let mut f = std::fs::File::create(&tmp).expect("create tmp");
+            f.write_all(content.as_bytes()).expect("write tmp");
+        }
+        let pf = parse_file(&tmp).expect("parse");
+        import_files(std::slice::from_ref(&pf), &InputBindings::default())
+            .expect("import")
+            .input
+    }
+
+    fn keyword_set(criteria: &[JsonAdGroupCriterion]) -> Vec<(String, String, bool)> {
+        let mut v: Vec<(String, String, bool)> = criteria
+            .iter()
+            .map(|c| {
+                (
+                    c.keyword.text.clone(),
+                    c.keyword.match_type.clone(),
+                    c.negative.unwrap_or(false),
+                )
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn compact_keywords_fan_out_match_types() {
+        let input = import_str(
+            "fanout",
+            r#"
+resource "google_ads_ad_group_criterion" "kw" {
+  ad_group = google_ads_ad_group.ag.id
+  status   = "ENABLED"
+
+  keywords {
+    match_types = ["EXACT", "PHRASE"]
+    texts       = ["a", "b", "c"]
+  }
+}
+"#,
+        );
+        assert_eq!(input.ad_group_criteria.len(), 6);
+        assert!(input.ad_group_criteria.iter().all(|c| c.negative == Some(false)));
+        let mut got = keyword_set(&input.ad_group_criteria);
+        let mut want = vec![
+            ("a".to_string(), "EXACT".to_string(), false),
+            ("b".to_string(), "EXACT".to_string(), false),
+            ("c".to_string(), "EXACT".to_string(), false),
+            ("a".to_string(), "PHRASE".to_string(), false),
+            ("b".to_string(), "PHRASE".to_string(), false),
+            ("c".to_string(), "PHRASE".to_string(), false),
+        ];
+        got.sort();
+        want.sort();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn compact_form_matches_verbose_form() {
+        let compact = import_str(
+            "compact",
+            r#"
+resource "google_ads_ad_group_criterion" "kw" {
+  ad_group = google_ads_ad_group.ag.id
+  status   = "ENABLED"
+
+  keywords {
+    match_type = "EXACT"
+    texts      = ["running shoes", "trail shoes"]
+  }
+}
+"#,
+        );
+        let verbose = import_str(
+            "verbose",
+            r#"
+resource "google_ads_ad_group_criterion" "kw" {
+  ad_group = google_ads_ad_group.ag.id
+  status   = "ENABLED"
+
+  keyword {
+    text       = "running shoes"
+    match_type = "EXACT"
+  }
+
+  keyword {
+    text       = "trail shoes"
+    match_type = "EXACT"
+  }
+}
+"#,
+        );
+        assert_eq!(
+            keyword_set(&compact.ad_group_criteria),
+            keyword_set(&verbose.ad_group_criteria)
+        );
+    }
+
+    #[test]
+    fn compact_negative_keywords_in_ad_group() {
+        let input = import_str(
+            "ag_neg",
+            r#"
+resource "google_ads_ad_group_criterion" "neg" {
+  ad_group = google_ads_ad_group.ag.id
+  status   = "ENABLED"
+
+  negative_keywords {
+    match_type = "BROAD"
+    texts      = ["free", "cheap"]
+  }
+}
+"#,
+        );
+        assert_eq!(input.ad_group_criteria.len(), 2);
+        assert!(input.ad_group_criteria.iter().all(|c| c.negative == Some(true)));
+    }
+
+    #[test]
+    fn compact_negative_keywords_in_campaign() {
+        let input = import_str(
+            "camp_neg",
+            r#"
+resource "google_ads_campaign_criterion" "neg" {
+  campaign = google_ads_campaign.c.id
+  status   = "ENABLED"
+
+  negative_keywords {
+    match_types = ["PHRASE", "EXACT"]
+    texts       = ["jobs", "salary"]
+  }
+}
+"#,
+        );
+        assert_eq!(input.campaign_criteria.len(), 4);
+        assert!(input.campaign_criteria.iter().all(|c| c.negative == Some(true)));
+        assert!(input.campaign_criteria.iter().all(|c| c.keyword.is_some()));
+    }
+
+    #[test]
+    fn compact_negative_keywords_in_shared_set() {
+        let input = import_str(
+            "shared",
+            r#"
+resource "google_ads_shared_set" "brands" {
+  name = "Brands"
+
+  negative_keywords {
+    match_type = "BROAD"
+    texts      = ["acme", "globex", "initech"]
+  }
+}
+"#,
+        );
+        assert_eq!(input.shared_criteria.len(), 3);
+        assert!(input.shared_sets[0].negative_keywords.is_empty());
+    }
 }
 

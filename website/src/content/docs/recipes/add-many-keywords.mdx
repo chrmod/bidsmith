@@ -1,0 +1,104 @@
+---
+title: Add a whole keyword list at once
+description: Use the compact keywords block to add many keywords — and fan one list out across match types — in a few lines.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+You have a list of fifteen keywords to add to an ad group, and you
+want each as both an exact and a phrase match. Writing thirty
+`keyword {}` blocks by hand is a lot of typing — and a lot of diff to
+review later.
+
+The `keywords {}` block takes the whole list at once.
+
+## One list, one match type
+
+```hcl
+resource "google_ads_ad_group_criterion" "winter_boots" {
+  ad_group = google_ads_ad_group.winter_default.id
+  status   = "ENABLED"
+
+  keywords {
+    match_type = "PHRASE"
+    texts = [
+      "winter boots",
+      "waterproof winter boots",
+      "insulated winter boots",
+    ]
+  }
+}
+```
+
+Each text becomes its own keyword on Google Ads. This is exactly the
+same as writing one `keyword {}` block per text — just shorter.
+
+## One list, several match types
+
+Search campaigns often carry the same keyword list as both `EXACT` and
+`PHRASE`. Instead of two near-identical resources, set `match_types`
+(plural) and let bidsmith fan the list out:
+
+```hcl
+resource "google_ads_ad_group_criterion" "winter_boots" {
+  ad_group = google_ads_ad_group.winter_default.id
+  status   = "ENABLED"
+
+  keywords {
+    match_types = ["EXACT", "PHRASE"]
+    texts = [
+      "winter boots",
+      "waterproof winter boots",
+      "insulated winter boots",
+    ]
+  }
+}
+```
+
+Three texts × two match types = six keywords, from one block.
+
+## Negative keyword lists
+
+`negative_keywords {}` is the same shape and marks every keyword
+negative for you:
+
+```hcl
+resource "google_ads_ad_group_criterion" "winter_negatives" {
+  ad_group = google_ads_ad_group.winter_default.id
+  status   = "ENABLED"
+
+  negative_keywords {
+    match_type = "BROAD"
+    texts      = ["free", "diy", "repair"]
+  }
+}
+```
+
+The same `negative_keywords {}` block works on
+[`google_ads_campaign_criterion`](/bidsmith/resources/google_ads_campaign_criterion/)
+(for campaign-wide negatives) and
+[`google_ads_shared_set`](/bidsmith/resources/google_ads_shared_set/)
+(for negative lists shared across campaigns).
+
+## It's the same keywords either way
+
+The compact form is purely an authoring convenience. Each (text, match
+type) pair is still a separate keyword on Google Ads, so:
+
+- `plan` shows the same per-keyword diff whether you wrote the compact
+  form or the long form.
+- Moving a text out of one list (or out of one match type) plans as
+  exactly that one keyword removed — its neighbours are untouched.
+- You can mix forms freely: a `keywords {}` block and a couple of
+  individual `keyword {}` blocks can live in the same resource.
+
+<Aside type="note">
+  `bidsmith fmt` leaves both forms as you wrote them — it does not fold
+  individual `keyword {}` blocks into a `keywords {}` list, and it does
+  not unfold a list back into blocks.
+</Aside>
+
+## See also
+
+- [`google_ads_ad_group_criterion`](/bidsmith/resources/google_ads_ad_group_criterion/) — full reference, including the compact block schema.
+- [Move a keyword between match types](./change-keyword-match-type/) — for editing an existing keyword.

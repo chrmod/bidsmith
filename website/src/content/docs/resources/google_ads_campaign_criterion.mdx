@@ -10,6 +10,7 @@ import schema from '~/data/schema.json';
 export const resource = schema.resources['google_ads_campaign_criterion'];
 export const keyword = resource.blocks.find((b) => b.name === 'keyword');
 export const negative_keyword = resource.blocks.find((b) => b.name === 'negative_keyword');
+export const negative_keywords = resource.blocks.find((b) => b.name === 'negative_keywords');
 export const location = resource.blocks.find((b) => b.name === 'location');
 export const language = resource.blocks.find((b) => b.name === 'language');
 export const proximity = resource.blocks.find((b) => b.name === 'proximity');
@@ -41,6 +42,21 @@ resource "google_ads_campaign_criterion" "summer_negatives" {
   negative_keyword {
     text       = "used"
     match_type = "BROAD"
+  }
+}
+```
+
+Or, more compactly, with a `negative_keywords` list (optionally fanned
+out across `match_types`):
+
+```hcl
+resource "google_ads_campaign_criterion" "summer_negatives" {
+  campaign = google_ads_campaign.summer_search.id
+  status   = "ENABLED"
+
+  negative_keywords {
+    match_type = "BROAD"
+    texts      = ["free", "diy", "used"]
   }
 }
 ```
@@ -107,6 +123,14 @@ A negative keyword that excludes searches campaign-wide. Repeat the
 block to list many. The most common use of `google_ads_campaign_criterion`.
 
 <AttributeTable block={negative_keyword} headingLevel={4} />
+
+### `negative_keywords`
+
+The compact form: a list of `texts` fanned out across a single
+`match_type` or a list of `match_types`. One block stands in for many
+`negative_keyword` blocks. Set exactly one of `match_type` or `match_types`.
+
+<AttributeTable block={negative_keywords} headingLevel={4} />
 
 ### `location`
 

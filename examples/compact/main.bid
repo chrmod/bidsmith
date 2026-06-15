@@ -1,0 +1,93 @@
+provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+resource "google_ads_campaign_budget" "search" {
+  name = "Privacy tools daily"
+  amount_micros = 20000000
+  delivery_method = "STANDARD"
+}
+
+resource "google_ads_campaign" "search" {
+  name = "[S1] Privacy tools — Search"
+  status = "ENABLED"
+  advertising_channel_type = "SEARCH"
+  campaign_budget = google_ads_campaign_budget.search.id
+
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+}
+
+resource "google_ads_ad_group" "ublock_alternative" {
+  name = "uBlock alternative"
+  campaign = google_ads_campaign.search.id
+  status = "ENABLED"
+  type = "SEARCH_STANDARD"
+  cpc_bid_micros = 2500000
+}
+
+resource "google_ads_ad_group_criterion" "ublock_alternative" {
+  ad_group = google_ads_ad_group.ublock_alternative.id
+  status = "ENABLED"
+
+  keywords {
+    match_types = ["EXACT", "PHRASE"]
+    texts = ["ublock alternative", "alternative to ublock", "alternative for ublock"]
+  }
+}
+
+resource "google_ads_ad_group" "tracker_blocker" {
+  name = "Tracker blocker"
+  campaign = google_ads_campaign.search.id
+  status = "ENABLED"
+  type = "SEARCH_STANDARD"
+  cpc_bid_micros = 2500000
+}
+
+resource "google_ads_ad_group_criterion" "tracker_blocker_exact" {
+  ad_group = google_ads_ad_group.tracker_blocker.id
+  status = "ENABLED"
+
+  keywords {
+    match_type = "EXACT"
+    texts = ["tracker blocker", "block trackers", "stop website tracking"]
+  }
+}
+
+resource "google_ads_ad_group_criterion" "tracker_blocker_negatives" {
+  ad_group = google_ads_ad_group.tracker_blocker.id
+  status = "ENABLED"
+
+  negative_keywords {
+    match_type = "BROAD"
+    texts = ["free", "crack", "review"]
+  }
+}
+
+resource "google_ads_shared_set" "brand_terms" {
+  name = "Competitor brand terms"
+  type = "NEGATIVE_KEYWORDS"
+  status = "ENABLED"
+
+  negative_keywords {
+    match_type = "BROAD"
+    texts = ["adblock plus", "ghostery", "privacy badger"]
+  }
+}
+
+resource "google_ads_campaign_shared_set" "search_brand_terms" {
+  campaign = google_ads_campaign.search.id
+  shared_set = google_ads_shared_set.brand_terms.id
+  status = "ENABLED"
+}
+
+resource "google_ads_campaign_criterion" "search_negatives" {
+  campaign = google_ads_campaign.search.id
+  status = "ENABLED"
+
+  negative_keywords {
+    match_types = ["PHRASE", "EXACT"]
+    texts = ["jobs", "salary"]
+  }
+}
