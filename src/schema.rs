@@ -664,6 +664,14 @@ impl ResourceRegistry {
         }
     }
 
+    /// True if exactly this `<module>.<type>.<name>` resource is declared,
+    /// without the same-module-first / global-fallback resolution `resolve`
+    /// applies. Used by `mv` to detect an occupied rename target.
+    pub fn declared(&self, module: &str, ty: &str, name: &str) -> bool {
+        self.by_qualified
+            .contains_key(&Self::qualified(module, ty, name))
+    }
+
     pub fn build(files: &[ParsedFile]) -> (Self, Vec<Diag>) {
         let mut registry = ResourceRegistry::default();
         let mut diags = Vec::new();

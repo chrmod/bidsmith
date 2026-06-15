@@ -1,0 +1,125 @@
+---
+title: Rename a resource without recreating it
+description: Clean up machine-generated names from a refresh — no delete, no recreate, no lost history.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+When you adopt an existing account with
+[`refresh`](/bidsmith/commands/refresh/), bidsmith has to invent an
+internal **name** for every resource it pulls down. It often lands on
+awkward, machine-generated ones — `reklama_1_7`,
+`niestandardowa_wideo_2023_05_24_5`, `language_languageconstants_1000_19`.
+Those number suffixes are leftovers from de-duplicating; they mean
+nothing now, and they're hard to read in plans and PRs.
+
+You want to rename them to something sane. The catch: that name is how
+bidsmith and other resources refer to this one, so you can't just edit
+the one line — you'd break every reference to it.
+
+`mv` does the whole rename in one step.
+
+## The fix
+
+```sh
+bidsmith mv google_ads_ad_group_ad.reklama_1_7 google_ads_ad_group_ad.preroll_ad
+```
+
+bidsmith renames the resource **and** every reference to it, across all
+your files. The output tells you what it touched:
+
+```
+Renamed singapore_12sec.google_ads_ad_group_ad.reklama_1_7 ->
+        singapore_12sec.google_ads_ad_group_ad.preroll_ad:
+        1 block + 2 references across 1 file.
+```
+
+<Aside type="note" title="Your account is not touched">
+  This is the important part: renaming an internal handle does **not**
+  delete and recreate the live ad. The campaign keeps its performance
+  history, its smart-bidding learning, and its ad-review status. Unlike
+  changing a keyword's match type — which Google Ads implements as a
+  delete + create — a rename is free, because bidsmith matches live
+  resources by their real content, not by these handles.
+</Aside>
+
+## Confirm it's a no-op
+
+```sh
+bidsmith plan .
+```
+
+Expected: `0 to create, 0 to update`. The rename changed your files,
+not your account. Commit it like any other tidy-up.
+
+## Cleaning up a whole account at once
+
+A freshly adopted account can carry **hundreds** of these names. Instead
+of one `mv` per resource, write a batch file — one `from -> to` per
+line — and apply it in a single pass:
+
+```text
+# renames.txt
+google_ads_ad_group.niestandardowa_wideo_2023_05_24_5 -> google_ads_ad_group.instream_12sec
+google_ads_ad_group_ad.reklama_1_7                    -> google_ads_ad_group_ad.preroll_ad
+google_ads_campaign_criterion.location_geotargetconstants_2702 -> google_ads_campaign_criterion.location_singapore
+```
+
+```sh
+bidsmith mv --from-file renames.txt
+```
+
+The batch is all-or-nothing: if any line is wrong, nothing is written,
+so you never end up half-renamed. After it runs, `bidsmith plan` should
+still report no changes.
+
+<Aside type="tip">
+  This is a great job to hand to your AI assistant: point it at a `.bid`
+  file and ask it to propose a `renames.txt` that maps each
+  machine-generated name to a readable one based on the resource's real
+  `name`, geography, or language. You review the proposed list — keeping
+  the ones that encode real meaning, like a geo or language code — then
+  apply it with `mv --from-file`.
+</Aside>
+
+## When the name is used in two files
+
+Each `.bid` file is its own namespace, named after the file. If the
+same name appears in two files, bidsmith asks you to say which one:
+
+```
+mv: 'google_ads_campaign_criterion.broad_wikipedia' is declared in
+multiple modules [nadarzyn, warszawa]; qualify it as
+'<module>.google_ads_campaign_criterion.broad_wikipedia'
+```
+
+Add the file name (without `.bid`) as a prefix:
+
+```sh
+bidsmith mv nadarzyn.google_ads_campaign_criterion.broad_wikipedia \
+            nadarzyn.google_ads_campaign_criterion.wiki_broad
+```
+
+Only the `nadarzyn` one is renamed; the `warszawa` one is left alone.
+
+## What this does and doesn't change
+
+- ✅ The internal handle, everywhere it's used.
+- ❌ The **public name** Google Ads shows (the `name = "..."` line
+  inside the resource). To change that, edit the attribute and `apply`
+  normally — that one *is* a real change to your account.
+
+<Aside type="tip">
+  Renaming a `.bid` **file** is safe too. A file's name only affects
+  how references resolve inside your project, never the live account —
+  so reorganize and rename files freely as you clean up a freshly
+  refreshed tree.
+</Aside>
+
+## See also
+
+- [`bidsmith mv`](/bidsmith/commands/mv/) — full command reference.
+- [`bidsmith refresh`](/bidsmith/commands/refresh/) — where the awkward
+  names come from.
+- [Organize a big account into folders](./organize-account-into-folders/)
+  — the other half of tidying up an adopted account.

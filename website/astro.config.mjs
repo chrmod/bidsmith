@@ -55,6 +55,7 @@ export default defineConfig({
             { label: 'Manage multiple client accounts', slug: 'recipes/manage-multiple-accounts' },
             { label: 'See how your campaigns are performing', slug: 'recipes/see-campaign-performance' },
             { label: 'Organize a big account into folders', slug: 'recipes/organize-account-into-folders' },
+            { label: 'Rename a resource without recreating it', slug: 'recipes/rename-without-recreating' },
           ],
         },
         {
@@ -82,6 +83,7 @@ export default defineConfig({
               label: 'Local',
               items: [
                 { label: 'bidsmith validate', slug: 'commands/validate' },
+                { label: 'bidsmith mv', slug: 'commands/mv' },
                 { label: 'bidsmith fmt', slug: 'commands/fmt' },
                 { label: 'bidsmith export', slug: 'commands/export' },
                 { label: 'bidsmith schema', slug: 'commands/schema' },

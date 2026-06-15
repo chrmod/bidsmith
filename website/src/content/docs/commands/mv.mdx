@@ -1,0 +1,169 @@
+---
+title: bidsmith mv
+description: Rename a resource everywhere at once, without recreating it in Google Ads.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Every resource in a `.bid` file has a short **name** you use to refer
+to it — the bit in quotes after the type:
+
+```hcl
+resource "google_ads_ad_group" "reklama_1_7" {
+  # ...
+}
+```
+
+That name (`reklama_1_7`) is an internal handle. Other resources point
+at it, and you read it in plans and diffs. When you adopt an existing
+account with [`refresh`](/bidsmith/commands/refresh/), bidsmith has to
+invent these names for you, and it often lands on awkward,
+machine-generated ones with number suffixes — `reklama_1_7`,
+`niestandardowa_wideo_2023_05_24_5`, and worse.
+
+`mv` renames them. It rewrites the resource and **every reference to
+it**, across all your files, in one step.
+
+```sh
+bidsmith mv google_ads_ad_group_ad.reklama_1_7 google_ads_ad_group_ad.preroll_ad
+```
+
+<Aside type="note" title="This never touches Google Ads">
+  `mv` is a pure rename of your local files. It does **not** delete and
+  recreate anything in your account, so the campaign keeps its
+  performance history, learning, and ad-review status. bidsmith
+  recognises live resources by their real content (campaign name,
+  keyword, location, …), not by these internal handles — so changing a
+  handle is invisible to Google Ads. A `plan` right after `mv` reports
+  no changes.
+</Aside>
+
+## Synopsis
+
+```sh
+bidsmith mv <FROM> <TO> [--path PATH]
+bidsmith mv --from-file <PATH> [--path PATH]
+```
+
+## Arguments
+
+| Argument | Description |
+|---|---|
+| `FROM` | The resource's current address: `<type>.<name>` (for example `google_ads_ad_group.reklama_1_7`). Omit when using `--from-file`. |
+| `TO` | The new address: the **same type**, a new name. Omit when using `--from-file`. |
+
+An address is normally just `<type>.<name>`. If the same name is used
+in more than one file, bidsmith asks you to be specific and qualify it
+with the file it lives in: `<file>.<type>.<name>` (for example
+`singapore_12sec.google_ads_ad_group.reklama_1_7`). Each `.bid` file is
+its own little namespace, named after the file.
+
+## Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--from-file PATH` | — | Rename many resources at once. Reads `<from> <to>` pairs from a file, one per line. Use `-` to read from standard input. Can't be combined with the `FROM` / `TO` arguments. |
+| `--path PATH` | `.` | The file or directory to rewrite. A directory is walked recursively — important, because a reference can live in a different file than the resource. |
+
+## Environment variables
+
+None. `mv` runs entirely offline.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | The rename succeeded (or `FROM` and `TO` were already the same — nothing to do). |
+| `1` | The resource wasn't found, the new name is already taken, the name was ambiguous, or the rename would have broken a reference. With `--from-file`, any one bad rule fails the whole batch. Nothing is written in these cases. |
+| `2` | The address was malformed, the new name isn't valid, you tried to change the type, or the arguments were given the wrong way (for example both positional and `--from-file`). |
+
+## Examples
+
+### Clean up a machine-generated name
+
+```sh
+bidsmith mv google_ads_ad_group_ad.reklama_1_7 google_ads_ad_group_ad.preroll_ad
+```
+
+Renames the ad and updates everything that referred to it. Run
+`bidsmith plan` afterward to confirm Google Ads sees no change.
+
+### Disambiguate when the same name is used in two files
+
+```sh
+bidsmith mv singapore_12sec.google_ads_ad_group.niestandardowa_wideo_2023_05_24_5 \
+            singapore_12sec.google_ads_ad_group.instream_12sec
+```
+
+The `singapore_12sec.` prefix is the file (`singapore-12sec.bid`). Use
+it when a plain `<type>.<name>` rename reports that the name exists in
+more than one file.
+
+### Rename inside one folder
+
+```sh
+bidsmith mv google_ads_campaign.old google_ads_campaign.new --path campaigns/
+```
+
+## Rename many at once
+
+A freshly adopted account can have hundreds of machine-generated names.
+Renaming them one at a time is a slog, so `mv` takes a **batch file**:
+one `<from> <to>` pair per line (an arrow is optional). Blank lines and
+anything after `#` are ignored.
+
+```text
+# renames.txt — clean up the Singapore 12s campaign
+google_ads_ad_group.niestandardowa_wideo_2023_05_24_5 -> google_ads_ad_group.instream_12sec
+google_ads_ad_group_ad.reklama_1_7                    -> google_ads_ad_group_ad.preroll_ad
+google_ads_campaign_criterion.location_geotargetconstants_2702 -> google_ads_campaign_criterion.location_singapore
+```
+
+```sh
+bidsmith mv --from-file renames.txt
+```
+
+The whole batch is **all-or-nothing**. If any line is wrong — a name
+that doesn't exist, a target that's already taken, two lines renaming
+to the same name, or a rename chain (`a → b` and `b → c` in the same
+run) — bidsmith reports it and writes **nothing**. Fix the file and run
+again. One clean run, one git diff to review.
+
+<Aside type="tip">
+  Pair this with your AI assistant: ask it to read a `.bid` file and
+  propose a `renames.txt` mapping each machine-generated name to a
+  readable one based on the resource's real `name`, geo, or language.
+  You review the list, then `mv --from-file` applies it in one shot.
+  `-` reads the batch from standard input, so a tool can pipe the pairs
+  straight in: `generate-renames | bidsmith mv --from-file -`.
+</Aside>
+
+## What it changes — and what it doesn't
+
+- ✅ The `resource "<type>" "<name>"` line for the resource itself.
+- ✅ Every reference to it (`google_ads_ad_group.<name>.id` and
+  similar), wherever it appears — even in other files.
+- ❌ The **`name` attribute** inside the resource (the real campaign /
+  ad group name that Google Ads shows). `mv` only touches the internal
+  handle. To change the public-facing name, edit the `name = "..."`
+  attribute and `apply` as usual.
+- ❌ Anything in your Google Ads account.
+
+Comments, spacing, and alignment in your files are left exactly as they
+were — only the renamed identifiers change.
+
+<Aside type="tip">
+  Renaming a **file** is also safe: a file's name only affects how
+  references inside your project resolve, never the live account. Feel
+  free to reorganize and rename `.bid` files to taste.
+</Aside>
+
+## See also
+
+- [`bidsmith refresh`](/bidsmith/commands/refresh/) — the command that
+  generates the awkward names in the first place, when you adopt an
+  existing account.
+- [`bidsmith plan`](/bidsmith/commands/plan/) — run it after a rename
+  to confirm Google Ads sees no change.
+- [Organize a big account into folders](/bidsmith/recipes/organize-account-into-folders/)
+  — renaming and moving files as you tidy up.

@@ -110,6 +110,11 @@ declared HCL against live labeled state. Local cache is rebuildable.
   / AdGroupAdLabel / AdGroupCriterionLabel associations)
 - ⏳ Removal detection: labeled live resources with no matching .bid
   entry → `- destroy`
+- ⏳ Once labels are identity, `bidsmith mv` grows a second half: a
+  rename also rewrites the live `bidsmith:address` label (one label
+  edit per resource, no statefile surgery), and Terraform-style
+  `moved {}` blocks become worth adding as the plan-visible form. The
+  source-rewrite half shipped already (see the `mv` follow-up below).
 
 **Phase 4 — Refresh / Import**
 - ✅ `refresh`: bootstrap-mode import that pulls live state and writes
@@ -197,6 +202,18 @@ Priority order for what closes the most user-facing gaps:
 
 Smaller follow-ups that can ride along:
 
+- ✅ `bidsmith mv <from> <to>` — rename a resource's address (block
+  label + every reference) as a format-preserving source rewrite.
+  Because the planner matches live resources by content, not by
+  address, the rename is a no-op against the account — the path from a
+  refresh dump's counter-suffixed names to a hand-maintained tree
+  without recreating live resources (issue #35). Terraform-style
+  `moved {}` blocks were considered and **deferred**: a `moved` block
+  exists to rewrite *stored* identity, and bidsmith's identity is the
+  `bidsmith:address` label that arrives with Phase 3 v2 below. Once
+  that label is the matching key, a move grows a second half (rewrite
+  the live label) and `moved` blocks become the plan-visible,
+  PR-reviewable form worth adding then.
 - Repeating-block field-level diff for RSA `headline` / `description`
   blocks and the `final_urls` list. Today these are matched
   all-or-nothing; per-asset add/remove/repin detection would close
