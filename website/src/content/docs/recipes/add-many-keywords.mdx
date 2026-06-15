@@ -87,8 +87,11 @@ type) pair is still a separate keyword on Google Ads, so:
 
 - `plan` shows the same per-keyword diff whether you wrote the compact
   form or the long form.
-- Moving a text out of one list (or out of one match type) plans as
-  exactly that one keyword removed — its neighbours are untouched.
+- Deleting a text from a list that still has other entries plans as
+  exactly that one keyword removed — a `- destroy` row that `apply`
+  acts on — while its neighbours are untouched. (The remaining list is
+  treated as the complete set, so the dropped keyword is actually
+  removed from Google Ads, not just left behind.)
 - You can mix forms freely: a `keywords {}` block and a couple of
   individual `keyword {}` blocks can live in the same resource.
 

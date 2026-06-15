@@ -16,12 +16,20 @@ pub enum Action {
         live_id: String,
         changed_fields: Vec<String>,
     },
+    /// A live resource that is no longer declared and should be removed. Only
+    /// emitted for criteria members whose declared parent still exists, so the
+    /// parent scopes the pruning (no `bidsmith:address` labels needed).
+    Delete {
+        live_id: String,
+    },
 }
 
 impl Action {
     pub fn live_id(&self) -> Option<&str> {
         match self {
-            Action::NoOp { live_id } | Action::Update { live_id, .. } => Some(live_id.as_str()),
+            Action::NoOp { live_id }
+            | Action::Update { live_id, .. }
+            | Action::Delete { live_id } => Some(live_id.as_str()),
             Action::Create => None,
         }
     }
@@ -39,6 +47,7 @@ pub struct DiffReport {
     pub noop_count: usize,
     pub create_count: usize,
     pub update_count: usize,
+    pub delete_count: usize,
 }
 
 pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
@@ -337,14 +346,26 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         });
     }
 
+    let deletes = orphan_criteria_deletes(
+        declared,
+        live,
+        &diffs,
+        &ad_group_match,
+        &campaign_match,
+        &shared_set_match,
+    );
+    diffs.extend(deletes);
+
     let mut noop_count = 0;
     let mut create_count = 0;
     let mut update_count = 0;
+    let mut delete_count = 0;
     for d in &diffs {
         match &d.action {
             Action::NoOp { .. } => noop_count += 1,
             Action::Create => create_count += 1,
             Action::Update { .. } => update_count += 1,
+            Action::Delete { .. } => delete_count += 1,
         }
     }
 
@@ -353,6 +374,196 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         noop_count,
         create_count,
         update_count,
+        delete_count,
+    }
+}
+
+/// A live criterion stops being declared in two ways: its whole parent
+/// resource is dropped, or — the silent case — a `negative_keyword` /
+/// `keyword` block is deleted from a resource that otherwise survives. The
+/// first needs `bidsmith:address` labels to prune safely; the second doesn't,
+/// because the parent is still declared and the declared members are the
+/// authoritative set *within their category*. We prune only inside a
+/// `(parent, category)` the file already claims (has ≥1 declared member of),
+/// so declaring negatives never deletes positives a user manages elsewhere.
+fn orphan_criteria_deletes(
+    declared: &ExportInput,
+    live: &ExportInput,
+    diffs: &[ResourceDiff],
+    ad_group_match: &HashMap<String, String>,
+    campaign_match: &HashMap<String, String>,
+    shared_set_match: &HashMap<String, String>,
+) -> Vec<ResourceDiff> {
+    let mut out: Vec<ResourceDiff> = Vec::new();
+
+    let matched_live_ids = |kind: &str| -> std::collections::HashSet<&str> {
+        diffs
+            .iter()
+            .filter(|d| d.kind == kind)
+            .filter_map(|d| d.action.live_id())
+            .collect()
+    };
+    let reverse = |m: &HashMap<String, String>| -> HashMap<String, String> {
+        m.iter().map(|(addr, id)| (id.clone(), addr.clone())).collect()
+    };
+
+    // ---- ad_group_criteria: category = negative polarity ----------------
+    {
+        let matched = matched_live_ids("ad_group_criterion");
+        let parent_addr = reverse(ad_group_match);
+        let mut managed: std::collections::HashSet<(String, bool)> = std::collections::HashSet::new();
+        for d in &declared.ad_group_criteria {
+            if let Some(live_ag) = ad_group_match.get(&d.ad_group) {
+                managed.insert((live_ag.clone(), d.negative.unwrap_or(false)));
+            }
+        }
+        for l in &live.ad_group_criteria {
+            if matched.contains(l.id.as_str()) {
+                continue;
+            }
+            let polarity = l.negative.unwrap_or(false);
+            if !managed.contains(&(l.ad_group.clone(), polarity)) {
+                continue;
+            }
+            let word = if polarity { "negative_keyword" } else { "keyword" };
+            let descriptor = format!("{word} \"{}\" {}", l.keyword.text, l.keyword.match_type);
+            out.push(delete_diff(
+                "ad_group_criterion",
+                parent_addr.get(&l.ad_group),
+                &l.ad_group,
+                "adGroups",
+                &descriptor,
+                &l.id,
+            ));
+        }
+    }
+
+    // ---- campaign_criteria: category = kw polarity / location / language / proximity ----
+    {
+        let matched = matched_live_ids("campaign_criterion");
+        let parent_addr = reverse(campaign_match);
+        let mut managed: std::collections::HashSet<(String, &'static str)> =
+            std::collections::HashSet::new();
+        for d in &declared.campaign_criteria {
+            if let Some(live_c) = campaign_match.get(&d.campaign) {
+                managed.insert((live_c.clone(), campaign_criterion_category(d)));
+            }
+        }
+        for l in &live.campaign_criteria {
+            if matched.contains(l.id.as_str()) {
+                continue;
+            }
+            let category = campaign_criterion_category(l);
+            if !managed.contains(&(l.campaign.clone(), category)) {
+                continue;
+            }
+            let Some(descriptor) = campaign_criterion_descriptor(l) else {
+                continue;
+            };
+            out.push(delete_diff(
+                "campaign_criterion",
+                parent_addr.get(&l.campaign),
+                &l.campaign,
+                "campaigns",
+                &descriptor,
+                &l.id,
+            ));
+        }
+    }
+
+    // ---- shared_criteria: one category (set membership) -----------------
+    {
+        let matched = matched_live_ids("shared_criterion");
+        let parent_addr = reverse(shared_set_match);
+        let resolve_set = |declared_ref: &str| -> Option<String> {
+            shared_set_match.get(declared_ref).cloned().or_else(|| {
+                declared_ref
+                    .starts_with("customers/")
+                    .then(|| declared_ref.rsplit('/').next().map(str::to_string))
+                    .flatten()
+            })
+        };
+        let mut managed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for d in &declared.shared_criteria {
+            if let Some(set_id) = resolve_set(&d.shared_set) {
+                managed.insert(set_id);
+            }
+        }
+        for l in &live.shared_criteria {
+            if matched.contains(l.id.as_str()) {
+                continue;
+            }
+            if !managed.contains(&l.shared_set) {
+                continue;
+            }
+            let descriptor =
+                format!("negative_keyword \"{}\" {}", l.keyword.text, l.keyword.match_type);
+            out.push(delete_diff(
+                "shared_criterion",
+                parent_addr.get(&l.shared_set),
+                &l.shared_set,
+                "sharedSets",
+                &descriptor,
+                &l.id,
+            ));
+        }
+    }
+
+    out
+}
+
+fn delete_diff(
+    kind: &'static str,
+    parent_addr: Option<&String>,
+    parent_live_id: &str,
+    parent_segment: &str,
+    descriptor: &str,
+    live_id: &str,
+) -> ResourceDiff {
+    let anchor = parent_addr
+        .cloned()
+        .unwrap_or_else(|| format!("{parent_segment}/{parent_live_id}"));
+    ResourceDiff {
+        address: format!("{anchor} (removed {descriptor})"),
+        kind,
+        action: Action::Delete {
+            live_id: live_id.to_string(),
+        },
+    }
+}
+
+fn campaign_criterion_category(cr: &JsonCampaignCriterion) -> &'static str {
+    if cr.keyword.is_some() {
+        if cr.negative.unwrap_or(false) {
+            "keyword_negative"
+        } else {
+            "keyword_positive"
+        }
+    } else if cr.location.is_some() {
+        "location"
+    } else if cr.language.is_some() {
+        "language"
+    } else if cr.proximity.is_some() {
+        "proximity"
+    } else {
+        "other"
+    }
+}
+
+fn campaign_criterion_descriptor(cr: &JsonCampaignCriterion) -> Option<String> {
+    if let Some(kw) = &cr.keyword {
+        let word = if cr.negative.unwrap_or(false) {
+            "negative_keyword"
+        } else {
+            "keyword"
+        };
+        Some(format!("{word} \"{}\" {}", kw.text, kw.match_type))
+    } else if let Some(loc) = &cr.location {
+        Some(format!("location {}", loc.geo_target_constant))
+    } else if let Some(lang) = &cr.language {
+        Some(format!("language {}", lang.language_constant))
+    } else {
+        cr.proximity.as_ref().map(|_| "proximity".to_string())
     }
 }
 
