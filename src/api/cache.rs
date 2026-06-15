@@ -77,6 +77,8 @@ pub struct LiveStateCache {
     #[serde(default)]
     pub login_customer_id: Option<String>,
     pub api_version: String,
+    #[serde(default)]
+    pub queries_fingerprint: String,
     pub fetched_at: u64,
     pub batches: Vec<Value>,
 }
@@ -91,6 +93,7 @@ pub fn load_live_state(
     customer_id: &str,
     login_customer_id: Option<&str>,
     api_version: &str,
+    queries_fingerprint: &str,
     ttl_secs: u64,
 ) -> Option<LiveStateHit> {
     let raw = std::fs::read_to_string(cache_dir.join(LIVE_STATE_FILE)).ok()?;
@@ -98,6 +101,7 @@ pub fn load_live_state(
     if cached.customer_id != customer_id
         || cached.login_customer_id.as_deref() != login_customer_id
         || cached.api_version != api_version
+        || cached.queries_fingerprint != queries_fingerprint
     {
         return None;
     }
@@ -116,6 +120,7 @@ pub fn save_live_state(
     customer_id: &str,
     login_customer_id: Option<&str>,
     api_version: &str,
+    queries_fingerprint: &str,
     batches: &[Value],
 ) -> std::io::Result<()> {
     std::fs::create_dir_all(cache_dir)?;
@@ -123,6 +128,7 @@ pub fn save_live_state(
         customer_id: customer_id.to_string(),
         login_customer_id: login_customer_id.map(|s| s.to_string()),
         api_version: api_version.to_string(),
+        queries_fingerprint: queries_fingerprint.to_string(),
         fetched_at: now_unix(),
         batches: batches.to_vec(),
     };
@@ -221,19 +227,24 @@ mod tests {
     fn live_state_round_trip_and_ttl() {
         let dir = tmp_dir("live");
         let batches = vec![serde_json::json!({"results": [{"campaign": {"id": "1"}}]})];
-        save_live_state(&dir, "123", Some("999"), "v22", &batches).unwrap();
+        save_live_state(&dir, "123", Some("999"), "v22", "qfp", &batches).unwrap();
 
-        let hit = load_live_state(&dir, "123", Some("999"), "v22", 900).unwrap();
+        let hit = load_live_state(&dir, "123", Some("999"), "v22", "qfp", 900).unwrap();
         assert_eq!(hit.batches, batches);
 
-        assert!(load_live_state(&dir, "OTHER", Some("999"), "v22", 900).is_none());
-        assert!(load_live_state(&dir, "123", None, "v22", 900).is_none());
-        assert!(load_live_state(&dir, "123", Some("999"), "v23", 900).is_none());
+        assert!(load_live_state(&dir, "OTHER", Some("999"), "v22", "qfp", 900).is_none());
+        assert!(load_live_state(&dir, "123", None, "v22", "qfp", 900).is_none());
+        assert!(load_live_state(&dir, "123", Some("999"), "v23", "qfp", 900).is_none());
+        assert!(
+            load_live_state(&dir, "123", Some("999"), "v22", "other-queries", 900).is_none(),
+            "a changed query set must invalidate the cache",
+        );
 
         let aged = LiveStateCache {
             customer_id: "123".into(),
             login_customer_id: Some("999".into()),
             api_version: "v22".into(),
+            queries_fingerprint: "qfp".into(),
             fetched_at: now_unix().saturating_sub(10_000),
             batches: batches.clone(),
         };
@@ -243,12 +254,12 @@ mod tests {
         )
         .unwrap();
         assert!(
-            load_live_state(&dir, "123", Some("999"), "v22", 900).is_none(),
+            load_live_state(&dir, "123", Some("999"), "v22", "qfp", 900).is_none(),
             "entries older than the TTL must miss",
         );
 
         invalidate_live_state(&dir);
-        assert!(load_live_state(&dir, "123", Some("999"), "v22", 900).is_none());
+        assert!(load_live_state(&dir, "123", Some("999"), "v22", "qfp", 900).is_none());
 
         std::fs::remove_dir_all(&dir).ok();
     }
