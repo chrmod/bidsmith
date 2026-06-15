@@ -102,7 +102,57 @@ ad copy (≤ 90 characters); `pin` optionally locks the description to
 
 <AttributeTable block={description} headingLevel={5} />
 
+## Reusing one body across ad groups
+
+When the *same* ad runs in every ad group of a campaign, you don't have
+to paste the `ad {}` body into each `google_ads_ad_group_ad`. Declare
+the body once in a top-level `ad_template "name" { … }` block — its body
+is exactly an `ad {}` body — and attach it with `template =
+ad_template.<name>` in place of the inline `ad {}` block:
+
+```hcl
+ad_template "ublock_rsa" {
+  final_urls = ["https://ghostery.info/ublock?utm_term={keyword}"]
+  responsive_search_ad {
+    headlines    = ["uBlock Gone? Try Ghostery", "uBlock Replacement Found", "Switch from uBlock Now"]
+    descriptions = ["Blocks ads, trackers & popups. Manifest V3 ready.", "The privacy suite millions trust."]
+    path1        = "ublock"
+    path2        = "ghostery"
+  }
+}
+
+resource "google_ads_ad_group_ad" "replacement_rsa" {
+  ad_group = google_ads_ad_group.replacement.id
+  status   = "ENABLED"
+  template = ad_template.ublock_rsa
+}
+
+resource "google_ads_ad_group_ad" "chrome_rsa" {
+  ad_group = google_ads_ad_group.chrome.id
+  status   = "ENABLED"
+  template = ad_template.ublock_rsa
+}
+```
+
+Each ad stays its own resource with its own address, so adopting a
+template on an account that's already live is a no-op `plan` — the
+expanded body is identical to what was there before. A template declared
+in one file can be referenced from any other (same resolution as
+resources), so a body shared across campaigns lives in one place.
+
+<Aside type="note">
+  A `google_ads_ad_group_ad` needs **exactly one** of an inline `ad {}`
+  block or a `template`. Setting both, or neither, is a validate-time
+  error. The template's headlines and descriptions are linted at the
+  `ad_template` declaration, so the 3-headline / 2-description minimum is
+  still enforced.
+</Aside>
+
+See the recipe [Reuse one ad across every ad group](/bidsmith/recipes/reuse-an-ad-across-ad-groups/)
+for the before/after on a real campaign.
+
 ## See also
 
 - [`google_ads_ad_group`](./google_ads_ad_group/) — required parent.
 - [Tutorial: Launch a new search campaign](/bidsmith/tutorials/launch-search-campaign/) — includes a full RSA example.
+- [Reuse one ad across every ad group](/bidsmith/recipes/reuse-an-ad-across-ad-groups/) — the `ad_template` recipe.

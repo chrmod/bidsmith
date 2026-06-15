@@ -33,10 +33,17 @@ pub fn lint_files(files: &[ParsedFile], inputs: &InputBindings) -> Vec<Diag> {
 fn lint_file(file: &ParsedFile, bindings: &Bindings, diags: &mut Vec<Diag>) {
     for s in file.body.iter() {
         let Structure::Block(b) = s else { continue };
-        if b.ident.as_str() != "resource" || b.labels.len() != 2 {
-            continue;
+        match b.ident.as_str() {
+            "resource" if b.labels.len() == 2 => lint_resource(file, b, bindings, diags),
+            // Lint the template's RSA once at its declaration; referencing ad_group_ads carry no `ad` block.
+            "ad_template" if b.labels.len() == 1 => {
+                if let Some(rsa) = find_block(&b.body, "responsive_search_ad") {
+                    let address = format!("ad_template.{}", b.labels[0].as_str());
+                    lint_rsa(file, rsa, &address, bindings, diags);
+                }
+            }
+            _ => {}
         }
-        lint_resource(file, b, bindings, diags);
     }
 }
 
@@ -399,6 +406,27 @@ locals {{
             msgs.iter()
                 .any(|m| m.contains("has only 1 headline") && m.contains("at least 3")),
             "expected min-count warning: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn thin_ad_template_warns_at_declaration() {
+        let msgs = lint_str(
+            "thin_template",
+            r#"
+ad_template "thin" {
+  final_urls = ["https://example.com"]
+  responsive_search_ad {
+    headlines    = ["Only One"]
+    descriptions = ["Just one description here"]
+  }
+}
+"#,
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("ad_template.thin")
+                && m.contains("has only 1 headline")),
+            "expected template min-headline warning: {msgs:?}"
         );
     }
 
