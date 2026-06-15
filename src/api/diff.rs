@@ -54,7 +54,6 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     let mut diffs: Vec<ResourceDiff> = Vec::new();
     let mut campaign_match: HashMap<String, String> = HashMap::new();
     let mut ad_group_match: HashMap<String, String> = HashMap::new();
-    let mut conversion_match: HashMap<String, String> = HashMap::new();
     let mut call_asset_match: HashMap<String, String> = HashMap::new();
 
     // ---- campaign_budgets (match by name) --------------------------------
@@ -198,10 +197,7 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         .collect();
     for d in &declared.conversion_actions {
         let action = match live_conversion_actions.get(d.name.as_str()) {
-            Some(l) => {
-                conversion_match.insert(d.id.clone(), l.id.clone());
-                action_for_match(l.id.clone(), diff_conversion_action(d, l))
-            }
+            Some(l) => action_for_match(l.id.clone(), diff_conversion_action(d, l)),
             None => Action::Create,
         };
         diffs.push(ResourceDiff {
@@ -254,7 +250,6 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         });
     }
 
-    let _ = conversion_match;
 
     let mut shared_set_match: HashMap<String, String> = HashMap::new();
     let live_shared_sets: HashMap<&str, &JsonSharedSet> = live
