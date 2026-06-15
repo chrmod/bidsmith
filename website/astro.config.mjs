@@ -55,6 +55,7 @@ export default defineConfig({
             { label: 'Manage multiple client accounts', slug: 'recipes/manage-multiple-accounts' },
             { label: 'See how your campaigns are performing', slug: 'recipes/see-campaign-performance' },
             { label: 'Organize a big account into folders', slug: 'recipes/organize-account-into-folders' },
+            { label: 'Turn many cloned campaigns into one template', slug: 'recipes/collapse-cloned-campaigns' },
             { label: 'Rename a resource without recreating it', slug: 'recipes/rename-without-recreating' },
           ],
         },

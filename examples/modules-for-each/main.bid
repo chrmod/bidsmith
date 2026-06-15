@@ -1,0 +1,22 @@
+provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+module "ghostery_search" {
+  source = "./templates/preroll-campaign.bid"
+  geo = "geoTargetConstants/2840"
+  for_each = {
+    privacy = {
+      campaign_name = "Ghostery — Privacy"
+      final_url     = "https://www.ghostery.com/ghostery-ad-blocker?utm_source=google&utm_campaign=search_privacy"
+    }
+    adblock = {
+      campaign_name = "Ghostery — Ad Blocker"
+      final_url     = "https://www.ghostery.com/ghostery-ad-blocker?utm_source=google&utm_campaign=search_adblock"
+    }
+    trackers = {
+      campaign_name = "Ghostery — Anti-Tracking"
+      final_url     = "https://www.ghostery.com/ghostery-ad-blocker?utm_source=google&utm_campaign=search_trackers"
+    }
+  }
+}

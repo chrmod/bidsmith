@@ -1,0 +1,125 @@
+---
+title: Turn many cloned campaigns into one template
+description: Replace a folder of copy-pasted, near-identical campaign files with one template plus a table of what changes.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+You have a folder full of campaigns that are basically the same. Maybe
+eight "Singapore" variants, six "India" ones, a handful of remarketing
+clones — each file 50-something lines, and the only real difference
+between siblings is a name, a UTM tag, and one targeting line. Every
+other change was just the rename copied through.
+
+That's a lot of files to keep in sync. Change the ad copy once and you
+get to paste it into all eight. `for_each` collapses the whole set into
+**one template plus a table of what varies**.
+
+## The shape
+
+Pull the campaign into a template file with a `variable` for each thing
+that changes between siblings:
+
+```hcl
+# templates/preroll-campaign.bid
+variable "campaign_name" { type = string }
+variable "final_url"     { type = string }
+variable "geo"           { type = string }
+
+resource "google_ads_campaign_budget" "budget" {
+  name          = var.campaign_name
+  amount_micros = 5000000
+}
+
+resource "google_ads_campaign" "search" {
+  name                     = var.campaign_name
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.budget.id
+  # ...ad group, ad, criteria...
+}
+
+resource "google_ads_campaign_criterion" "geo" {
+  campaign = google_ads_campaign.search.id
+  location {
+    geo_target_constant = var.geo
+  }
+}
+```
+
+Then list the variants in one `module` block:
+
+```hcl
+# main.bid
+module "ghostery_search" {
+  source = "./templates/preroll-campaign.bid"
+
+  geo = "geoTargetConstants/2840"   # shared: every variant targets the same place
+
+  for_each = {
+    privacy  = {
+      campaign_name = "Ghostery — Privacy"
+      final_url     = "https://www.ghostery.com/?utm_campaign=search_privacy"
+    }
+    adblock  = {
+      campaign_name = "Ghostery — Ad Blocker"
+      final_url     = "https://www.ghostery.com/?utm_campaign=search_adblock"
+    }
+    trackers = {
+      campaign_name = "Ghostery — Anti-Tracking"
+      final_url     = "https://www.ghostery.com/?utm_campaign=search_trackers"
+    }
+  }
+}
+```
+
+`bidsmith plan` now shows three full campaigns — one per row in the
+table. Eight files become one template and an eight-row map; the ad copy
+lives in exactly one place.
+
+## How the table works
+
+- **Each key is a variant.** `privacy`, `adblock`, `trackers` — the key
+  shows up in the plan as `ghostery_search.privacy.…`, so you can tell
+  the instances apart.
+- **Each value fills in that variant's blanks.** The fields match the
+  template's `variable` names.
+- **Put shared values on the block.** `geo` sits outside the table
+  because all three campaigns share it. Anything that's the same for
+  every variant goes there; only the differences go in the rows.
+
+<Aside type="note">
+  The table values are plain text/numbers — there's no way to build
+  `"search_${key}"` out of the key, because bidsmith doesn't run
+  expressions. Write each variant's values out in full. It reads better
+  in a review anyway: the whole variant is right there.
+</Aside>
+
+## Is this safe on a live account?
+
+Yes. Converting hand-cloned files into a `for_each` template doesn't
+recreate anything in Google Ads. bidsmith matches your live campaigns by
+their **content** — the campaign name, the keywords, the geo — not by
+where they live in your files. As long as each variant still produces
+the same campaign name and settings it had before, `plan` reports **no
+changes** and your performance history, learning, and ad reviews stay
+put.
+
+The safe way to migrate:
+
+1. Build the template + `for_each` so each row reproduces an existing
+   campaign exactly.
+2. Run `bidsmith plan`. You want `0 to create, 0 to update`.
+3. Delete the old copy-pasted files in the same commit.
+
+If `plan` wants to create or change something, a value in the table
+doesn't match the live campaign yet — fix the row until the plan is
+clean.
+
+## See also
+
+- [Modules](/bidsmith/concepts/modules/) — the full `for_each` rules and
+  addressing.
+- [Variables](/bidsmith/concepts/variables/) — how a template's inputs
+  are typed.
+- [Organize a big account into folders](./organize-account-into-folders/)
+  — the file-layout side of taming a large account.

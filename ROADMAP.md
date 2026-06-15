@@ -34,12 +34,11 @@ declared HCL against live labeled state. Local cache is rebuildable.
 
 ## Open decisions
 
-- **Module composition v2 — `for_each`, outputs, directory sources,
-  GitHub sources**: `locals`, `variable`, and a v1 `module "x" {
-  source = "./file.bid" }` shipped. The v1 `module` is a single-file
-  source, no outputs, no `for_each` — repeat the block to repeat the
-  shape. The next layer (`for_each = var.cities`, `output "x" { value
-  = … }`, multi-file directory sources, `source =
+- **Module composition v2 — outputs, directory sources, GitHub
+  sources**: `locals`, `variable`, a v1 `module "x" { source =
+  "./file.bid" }`, and `module` `for_each` (instantiate one source N
+  times from a variant map) shipped. The remaining layer (`output "x"
+  { value = … }`, multi-file directory sources, `source =
   "github.com/org/repo//path?ref=v1"`) waits on real users hitting
   the boundaries.
 - Multi-account: how do `provider` blocks compose? **Partially
@@ -139,7 +138,10 @@ declared HCL against live labeled state. Local cache is rebuildable.
   boundary — its variables come from the block's attributes (+
   defaults), and addresses become `<instance>.<type>.<name>`. Wires
   through `validate`, `plan`, `apply`, and `import`.
-- `for_each = var.cities` to instantiate one block per element.
+- ✅ `module` `for_each = { … }` instantiates the source once per map
+  entry (instance address `<label>.<key>.<type>.<name>`); inputs merge
+  the block's shared attributes with each entry's object. Collapses N
+  hand-written clone files into one template plus a variant table.
 - `output "x" { value = … }` so the parent can pull values out of a
   module instance.
 - Directory sources (multiple `.bid` files per module) and nested

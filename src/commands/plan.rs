@@ -69,16 +69,25 @@ pub struct Prepared {
     pub strip_module: bool,
 }
 
+// The module segment may contain dots (a `for_each` instance is `<label>.<key>`),
+// but type and name never do, so the module ends at the 2nd-to-last dot.
+fn split_module(qualified: &str) -> (&str, &str) {
+    match qualified.rmatch_indices('.').nth(1) {
+        Some((idx, _)) => (&qualified[..idx], &qualified[idx + 1..]),
+        None => ("", qualified),
+    }
+}
+
 fn display_address(qualified: &str, strip_module: bool) -> &str {
     if strip_module {
-        qualified.splitn(2, '.').nth(1).unwrap_or(qualified)
+        split_module(qualified).1
     } else {
         qualified
     }
 }
 
 fn module_of(qualified: &str) -> &str {
-    qualified.split_once('.').map(|(m, _)| m).unwrap_or("")
+    split_module(qualified).0
 }
 
 pub enum DisplayMode {
@@ -704,4 +713,41 @@ fn tail(s: &str, n: usize) -> &str {
         .map(|(i, _)| i)
         .unwrap_or(0);
     &s[start..]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{display_address, module_of, split_module};
+
+    #[test]
+    fn split_module_handles_plain_address() {
+        assert_eq!(
+            split_module("summer.google_ads_campaign.search"),
+            ("summer", "google_ads_campaign.search")
+        );
+        assert_eq!(module_of("summer.google_ads_campaign.search"), "summer");
+        assert_eq!(
+            display_address("summer.google_ads_campaign.search", true),
+            "google_ads_campaign.search"
+        );
+    }
+
+    #[test]
+    fn split_module_handles_for_each_instance_address() {
+        let addr = "ghostery_search.privacy.google_ads_campaign.search";
+        assert_eq!(
+            split_module(addr),
+            ("ghostery_search.privacy", "google_ads_campaign.search")
+        );
+        assert_eq!(module_of(addr), "ghostery_search.privacy");
+        assert_eq!(display_address(addr, true), "google_ads_campaign.search");
+        assert_eq!(display_address(addr, false), addr);
+    }
+
+    #[test]
+    fn for_each_siblings_are_distinct_modules() {
+        let a = "ghostery_search.privacy.google_ads_campaign.search";
+        let b = "ghostery_search.adblock.google_ads_campaign.search";
+        assert_ne!(module_of(a), module_of(b));
+    }
 }

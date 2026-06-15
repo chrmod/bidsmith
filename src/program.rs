@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use hcl_edit::Span;
-use hcl_edit::expr::Expression;
+use hcl_edit::expr::{Expression, ObjectKey};
 use hcl_edit::structure::{Block, Structure};
 use miette::NamedSource;
 
@@ -31,26 +31,45 @@ impl Program {
             }
         }
 
-        let (top_bindings, _bind_diags) = Bindings::build(&top_files, &cli_inputs);
-
-        let mut scopes = vec![Scope {
-            files: top_files,
-            inputs: cli_inputs.clone(),
-        }];
-
-        let mut seen_instances: HashSet<String> = HashSet::new();
-        let mut module_specs: Vec<ModuleSpec> = Vec::new();
-
-        for file in &scopes[0].files {
+        let mut seen_labels: HashSet<String> = HashSet::new();
+        let mut raw_modules: Vec<RawModule> = Vec::new();
+        for file in &top_files {
             for s in file.body.iter() {
                 let Structure::Block(b) = s else { continue };
                 if b.ident.as_str() != "module" {
                     continue;
                 }
-                match validate_block_shape(file, b, &mut seen_instances) {
-                    Ok(spec) => module_specs.push(spec),
+                match validate_block_shape(file, b, &mut seen_labels) {
+                    Ok(raw) => raw_modules.push(raw),
                     Err(ds) => diags.extend(ds),
                 }
+            }
+        }
+
+        // A module source is a template, not a root file — evaluating it at the
+        // top level would fail (its variables have no values there).
+        let source_paths: HashSet<PathBuf> = raw_modules
+            .iter()
+            .map(|r| canonical(&r.source_path))
+            .collect();
+        let root_files: Vec<ParsedFile> = top_files
+            .into_iter()
+            .filter(|f| !source_paths.contains(&canonical(&f.path)))
+            .collect();
+
+        let (top_bindings, _bind_diags) = Bindings::build(&root_files, &cli_inputs);
+
+        let mut scopes = vec![Scope {
+            files: root_files,
+            inputs: cli_inputs.clone(),
+        }];
+
+        let mut seen_instances: HashSet<String> = HashSet::new();
+        let mut module_specs: Vec<ModuleSpec> = Vec::new();
+        for raw in &raw_modules {
+            match expand_module(raw, &top_bindings, &mut seen_instances) {
+                Ok(specs) => module_specs.extend(specs),
+                Err(ds) => diags.extend(ds),
             }
         }
 
@@ -82,11 +101,22 @@ struct ModuleSpec {
     inputs: Vec<(String, Expression, std::ops::Range<usize>)>,
 }
 
+/// A `module` block as parsed, before `for_each` expansion into N `ModuleSpec`s.
+struct RawModule {
+    instance: String,
+    caller_module: String,
+    src: Arc<NamedSource<String>>,
+    source_span: std::ops::Range<usize>,
+    source_path: PathBuf,
+    shared_inputs: Vec<(String, Expression, std::ops::Range<usize>)>,
+    for_each: Option<(Expression, std::ops::Range<usize>)>,
+}
+
 fn validate_block_shape(
     file: &ParsedFile,
     block: &Block,
-    seen: &mut HashSet<String>,
-) -> Result<ModuleSpec, Vec<Diag>> {
+    seen_labels: &mut HashSet<String>,
+) -> Result<RawModule, Vec<Diag>> {
     let mut diags = Vec::new();
     if block.labels.len() != 1 {
         diags.push(Diag::new(
@@ -100,7 +130,7 @@ fn validate_block_shape(
         return Err(diags);
     }
     let instance = block.labels[0].as_str().to_string();
-    if !seen.insert(instance.clone()) {
+    if !seen_labels.insert(instance.clone()) {
         diags.push(Diag::new(
             file.src.clone(),
             span_of(block.labels[0].span()),
@@ -111,7 +141,8 @@ fn validate_block_shape(
 
     let mut source: Option<String> = None;
     let mut source_span: Option<std::ops::Range<usize>> = None;
-    let mut inputs: Vec<(String, Expression, std::ops::Range<usize>)> = Vec::new();
+    let mut shared_inputs: Vec<(String, Expression, std::ops::Range<usize>)> = Vec::new();
+    let mut for_each: Option<(Expression, std::ops::Range<usize>)> = None;
     let mut seen_keys: HashSet<String> = HashSet::new();
 
     for inner in block.body.iter() {
@@ -143,8 +174,10 @@ fn validate_block_shape(
                             ));
                         }
                     }
+                } else if key == "for_each" {
+                    for_each = Some((a.value.clone(), span_of(a.value.span())));
                 } else {
-                    inputs.push((key, a.value.clone(), span_of(a.value.span())));
+                    shared_inputs.push((key, a.value.clone(), span_of(a.value.span())));
                 }
             }
             Structure::Block(inner_block) => {
@@ -180,14 +213,193 @@ fn validate_block_shape(
         return Err(diags);
     }
 
-    Ok(ModuleSpec {
+    Ok(RawModule {
         instance,
         caller_module: file.module.clone(),
         src: file.src.clone(),
-        span: source_span.unwrap_or_else(|| span_of(block.ident.span())),
+        source_span: source_span.unwrap_or_else(|| span_of(block.ident.span())),
         source_path,
-        inputs,
+        shared_inputs,
+        for_each,
     })
+}
+
+/// Turn a `RawModule` into instances: one named after the label without
+/// `for_each`, else one per map entry named `<label>.<key>`.
+fn expand_module(
+    raw: &RawModule,
+    top_bindings: &Bindings,
+    seen_instances: &mut HashSet<String>,
+) -> Result<Vec<ModuleSpec>, Vec<Diag>> {
+    let Some((for_each_expr, for_each_span)) = &raw.for_each else {
+        let instance = raw.instance.clone();
+        if !seen_instances.insert(instance.clone()) {
+            return Err(vec![Diag::new(
+                raw.src.clone(),
+                raw.source_span.clone(),
+                format!("duplicate module instance '{instance}'"),
+            )]);
+        }
+        return Ok(vec![ModuleSpec {
+            instance,
+            caller_module: raw.caller_module.clone(),
+            src: raw.src.clone(),
+            span: raw.source_span.clone(),
+            source_path: raw.source_path.clone(),
+            inputs: raw.shared_inputs.clone(),
+        }]);
+    };
+
+    let resolved = top_bindings.resolve_value(&raw.caller_module, for_each_expr);
+    let Expression::Object(obj) = resolved else {
+        return Err(vec![Diag::new(
+            raw.src.clone(),
+            for_each_span.clone(),
+            format!(
+                "module '{}' for_each must be an object (a map of instance keys to input objects), got {}",
+                raw.instance,
+                describe_expr_brief(resolved)
+            ),
+        )]);
+    };
+    if obj.is_empty() {
+        return Err(vec![Diag::new(
+            raw.src.clone(),
+            for_each_span.clone(),
+            format!(
+                "module '{}' for_each map is empty; declare at least one instance or remove for_each",
+                raw.instance
+            ),
+        )]);
+    }
+
+    let mut diags = Vec::new();
+    let mut specs = Vec::new();
+    let mut seen_keys: HashSet<String> = HashSet::new();
+    for (key, val) in obj.iter() {
+        let Some(key_str) = object_key_str(key) else {
+            diags.push(Diag::new(
+                raw.src.clone(),
+                for_each_span.clone(),
+                format!(
+                    "module '{}' for_each keys must be identifiers or strings",
+                    raw.instance
+                ),
+            ));
+            continue;
+        };
+        if !seen_keys.insert(key_str.clone()) {
+            diags.push(Diag::new(
+                raw.src.clone(),
+                for_each_span.clone(),
+                format!(
+                    "module '{}' for_each has a duplicate key '{key_str}'",
+                    raw.instance
+                ),
+            ));
+            continue;
+        }
+
+        let entry = top_bindings.resolve_value(&raw.caller_module, val.expr());
+        let Expression::Object(entry_obj) = entry else {
+            diags.push(Diag::new(
+                raw.src.clone(),
+                span_of(val.expr().span()),
+                format!(
+                    "module '{}' for_each[\"{key_str}\"] must be an object mapping input names to literals, got {}",
+                    raw.instance,
+                    describe_expr_brief(entry)
+                ),
+            ));
+            continue;
+        };
+
+        let mut entry_inputs: Vec<(String, Expression, std::ops::Range<usize>)> = Vec::new();
+        let mut entry_keys: HashSet<String> = HashSet::new();
+        let mut field_err = false;
+        for (fk, fv) in entry_obj.iter() {
+            let Some(fk_str) = object_key_str(fk) else {
+                diags.push(Diag::new(
+                    raw.src.clone(),
+                    span_of(val.expr().span()),
+                    format!(
+                        "module '{}' for_each[\"{key_str}\"] keys must be identifiers or strings",
+                        raw.instance
+                    ),
+                ));
+                field_err = true;
+                continue;
+            };
+            if !entry_keys.insert(fk_str.clone()) {
+                diags.push(Diag::new(
+                    raw.src.clone(),
+                    span_of(fv.expr().span()),
+                    format!(
+                        "module '{}' for_each[\"{key_str}\"] has a duplicate input '{fk_str}'",
+                        raw.instance
+                    ),
+                ));
+                field_err = true;
+                continue;
+            }
+            entry_inputs.push((fk_str, fv.expr().clone(), span_of(fv.expr().span())));
+        }
+        if field_err {
+            continue;
+        }
+
+        let instance = format!("{}.{}", raw.instance, key_str);
+        if !seen_instances.insert(instance.clone()) {
+            diags.push(Diag::new(
+                raw.src.clone(),
+                for_each_span.clone(),
+                format!("duplicate module instance '{instance}'"),
+            ));
+            continue;
+        }
+        specs.push(ModuleSpec {
+            instance,
+            caller_module: raw.caller_module.clone(),
+            src: raw.src.clone(),
+            span: raw.source_span.clone(),
+            source_path: raw.source_path.clone(),
+            inputs: merge_inputs(&raw.shared_inputs, &entry_inputs),
+        });
+    }
+
+    if !diags.is_empty() {
+        return Err(diags);
+    }
+    Ok(specs)
+}
+
+fn merge_inputs(
+    shared: &[(String, Expression, std::ops::Range<usize>)],
+    entry: &[(String, Expression, std::ops::Range<usize>)],
+) -> Vec<(String, Expression, std::ops::Range<usize>)> {
+    let mut out = shared.to_vec();
+    for item in entry {
+        if let Some(slot) = out.iter_mut().find(|(name, _, _)| name == &item.0) {
+            *slot = item.clone();
+        } else {
+            out.push(item.clone());
+        }
+    }
+    out
+}
+
+fn object_key_str(key: &ObjectKey) -> Option<String> {
+    if let Some(ident) = key.as_ident() {
+        return Some(ident.as_str().to_string());
+    }
+    if let ObjectKey::Expression(Expression::String(s)) = key {
+        return Some(s.as_str().to_string());
+    }
+    None
+}
+
+fn canonical(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
 fn load_module(spec: &ModuleSpec, top_bindings: &Bindings) -> Result<Scope, Vec<Diag>> {
@@ -342,8 +554,287 @@ fn walk_bid_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::collect_bid_files;
+    use super::*;
+    use crate::schema::InputBindings;
+    use std::collections::HashSet;
     use std::fs;
+
+    fn write_and_load(dir_name: &str, files: &[(&str, &str)]) -> Loaded {
+        let root = std::env::temp_dir().join(dir_name);
+        let _ = fs::remove_dir_all(&root);
+        for (rel, content) in files {
+            let path = root.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, content).unwrap();
+        }
+        let collected = collect_bid_files(&root).unwrap();
+        let loaded = Program::load(&collected, InputBindings::default());
+        let _ = fs::remove_dir_all(&root);
+        loaded
+    }
+
+    const TEMPLATE: &str = r#"
+variable "campaign_name" {
+  type = string
+}
+
+variable "region" {
+  type = string
+  default = "US"
+}
+
+resource "google_ads_campaign_budget" "budget" {
+  name = var.campaign_name
+  amount_micros = 1000000
+}
+"#;
+
+    fn module_names(loaded: &Loaded) -> HashSet<String> {
+        loaded
+            .program
+            .scopes
+            .iter()
+            .skip(1)
+            .map(|s| s.files[0].module.clone())
+            .collect()
+    }
+
+    fn errors(loaded: &Loaded) -> Vec<String> {
+        loaded
+            .diagnostics
+            .iter()
+            .filter(|d| d.is_error())
+            .map(|d| d.message.clone())
+            .collect()
+    }
+
+    #[test]
+    fn for_each_expands_to_one_instance_per_entry() {
+        let main = r#"
+module "m" {
+  source = "./t.bid"
+  for_each = {
+    privacy = { campaign_name = "Privacy" }
+    adblock = { campaign_name = "Ad Blocker" }
+  }
+}
+"#;
+        let loaded = write_and_load(
+            "bidsmith-fe-expand",
+            &[("main.bid", main), ("t.bid", TEMPLATE)],
+        );
+        assert_eq!(errors(&loaded), Vec::<String>::new());
+        // root scope + two instances
+        assert_eq!(loaded.program.scopes.len(), 3);
+        assert_eq!(
+            module_names(&loaded),
+            HashSet::from(["m.privacy".to_string(), "m.adblock".to_string()])
+        );
+        let privacy = loaded
+            .program
+            .scopes
+            .iter()
+            .find(|s| s.files[0].module == "m.privacy")
+            .unwrap();
+        assert_eq!(
+            privacy.inputs.vars.get("campaign_name"),
+            Some(&"Privacy".to_string())
+        );
+    }
+
+    #[test]
+    fn for_each_merges_shared_attrs_entry_wins() {
+        let main = r#"
+module "m" {
+  source = "./t.bid"
+  region = "US"
+  for_each = {
+    a = { campaign_name = "A" }
+    b = { campaign_name = "B", region = "CA" }
+  }
+}
+"#;
+        let loaded = write_and_load(
+            "bidsmith-fe-merge",
+            &[("main.bid", main), ("t.bid", TEMPLATE)],
+        );
+        assert_eq!(errors(&loaded), Vec::<String>::new());
+        let a = loaded
+            .program
+            .scopes
+            .iter()
+            .find(|s| s.files[0].module == "m.a")
+            .unwrap();
+        let b = loaded
+            .program
+            .scopes
+            .iter()
+            .find(|s| s.files[0].module == "m.b")
+            .unwrap();
+        // shared `region` flows to instances that don't set it...
+        assert_eq!(a.inputs.vars.get("region"), Some(&"US".to_string()));
+        // ...and the entry value wins where it does.
+        assert_eq!(b.inputs.vars.get("region"), Some(&"CA".to_string()));
+    }
+
+    #[test]
+    fn for_each_accepts_string_keys() {
+        let main = r#"
+module "m" {
+  source = "./t.bid"
+  for_each = {
+    "sg-12" = { campaign_name = "SG 12" }
+  }
+}
+"#;
+        let loaded = write_and_load(
+            "bidsmith-fe-strkey",
+            &[("main.bid", main), ("t.bid", TEMPLATE)],
+        );
+        assert_eq!(errors(&loaded), Vec::<String>::new());
+        assert!(module_names(&loaded).contains("m.sg-12"));
+    }
+
+    #[test]
+    fn for_each_value_from_a_local_map() {
+        let main = r#"
+locals {
+  variants = {
+    a = { campaign_name = "A" }
+    b = { campaign_name = "B" }
+  }
+}
+
+module "m" {
+  source = "./t.bid"
+  for_each = local.variants
+}
+"#;
+        let loaded = write_and_load(
+            "bidsmith-fe-local",
+            &[("main.bid", main), ("t.bid", TEMPLATE)],
+        );
+        assert_eq!(errors(&loaded), Vec::<String>::new());
+        assert_eq!(
+            module_names(&loaded),
+            HashSet::from(["m.a".to_string(), "m.b".to_string()])
+        );
+    }
+
+    #[test]
+    fn for_each_empty_map_errors() {
+        let main = r#"
+module "m" {
+  source = "./t.bid"
+  for_each = {}
+}
+"#;
+        let loaded = write_and_load(
+            "bidsmith-fe-empty",
+            &[("main.bid", main), ("t.bid", TEMPLATE)],
+        );
+        assert!(errors(&loaded).iter().any(|m| m.contains("for_each map is empty")));
+    }
+
+    #[test]
+    fn for_each_non_object_errors() {
+        let main = r#"
+module "m" {
+  source = "./t.bid"
+  for_each = "oops"
+}
+"#;
+        let loaded = write_and_load(
+            "bidsmith-fe-nonobj",
+            &[("main.bid", main), ("t.bid", TEMPLATE)],
+        );
+        assert!(errors(&loaded).iter().any(|m| m.contains("for_each must be an object")));
+    }
+
+    #[test]
+    fn for_each_entry_not_object_errors() {
+        let main = r#"
+module "m" {
+  source = "./t.bid"
+  for_each = {
+    a = "not an object"
+  }
+}
+"#;
+        let loaded = write_and_load(
+            "bidsmith-fe-entry",
+            &[("main.bid", main), ("t.bid", TEMPLATE)],
+        );
+        assert!(errors(&loaded).iter().any(|m| m.contains("must be an object mapping input names")));
+    }
+
+    #[test]
+    fn for_each_entry_field_not_scalar_errors() {
+        let main = r#"
+module "m" {
+  source = "./t.bid"
+  for_each = {
+    a = { campaign_name = ["nope"] }
+  }
+}
+"#;
+        let loaded = write_and_load(
+            "bidsmith-fe-field",
+            &[("main.bid", main), ("t.bid", TEMPLATE)],
+        );
+        // build_inputs rejects non-literal inputs with the same message v1 uses.
+        assert!(errors(&loaded)
+            .iter()
+            .any(|m| m.contains("must be a literal")));
+    }
+
+    #[test]
+    fn module_source_excluded_from_root_scope() {
+        // The template declares a variable with no default; if it were loaded as
+        // a root file it would error. It must only appear in instance scopes.
+        let main = r#"
+module "m" {
+  source = "./t.bid"
+  for_each = {
+    a = { campaign_name = "A" }
+  }
+}
+"#;
+        let loaded = write_and_load(
+            "bidsmith-fe-exclude",
+            &[("main.bid", main), ("t.bid", TEMPLATE)],
+        );
+        assert_eq!(errors(&loaded), Vec::<String>::new());
+        // root scope holds only main.bid
+        assert_eq!(loaded.program.scopes[0].files.len(), 1);
+        assert_eq!(loaded.program.scopes[0].files[0].module, "main");
+    }
+
+    #[test]
+    fn for_each_and_plain_module_coexist() {
+        let main = r#"
+module "single" {
+  source = "./t.bid"
+  campaign_name = "Solo"
+}
+
+module "many" {
+  source = "./t.bid"
+  for_each = {
+    a = { campaign_name = "A" }
+  }
+}
+"#;
+        let loaded = write_and_load(
+            "bidsmith-fe-coexist",
+            &[("main.bid", main), ("t.bid", TEMPLATE)],
+        );
+        assert_eq!(errors(&loaded), Vec::<String>::new());
+        assert_eq!(
+            module_names(&loaded),
+            HashSet::from(["single".to_string(), "many.a".to_string()])
+        );
+    }
 
     #[test]
     fn collect_bid_files_walks_subdirectories() {

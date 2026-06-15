@@ -1,0 +1,88 @@
+variable "campaign_name" {
+  type = string
+  description = "Human-readable campaign + budget name, e.g. \"Ghostery 12sec\"."
+}
+
+variable "final_url" {
+  type = string
+  description = "Landing page including the per-variant utm_campaign tag."
+}
+
+variable "geo" {
+  type = string
+  description = "geoTargetConstants/<id> the campaign is limited to."
+}
+
+variable "daily_budget_micros" {
+  type = number
+  default = 5000000
+}
+
+resource "google_ads_campaign_budget" "budget" {
+  name = var.campaign_name
+  amount_micros = var.daily_budget_micros
+  delivery_method = "STANDARD"
+}
+
+resource "google_ads_campaign" "search" {
+  name = var.campaign_name
+  status = "ENABLED"
+  advertising_channel_type = "SEARCH"
+  campaign_budget = google_ads_campaign_budget.budget.id
+  contains_eu_political_advertising = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"
+
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+}
+
+resource "google_ads_ad_group" "default" {
+  name = "Default"
+  campaign = google_ads_campaign.search.id
+  status = "ENABLED"
+  type = "SEARCH_STANDARD"
+  cpc_bid_micros = 2000000
+}
+
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group = google_ads_ad_group.default.id
+  status = "ENABLED"
+
+  ad {
+    name = var.campaign_name
+    final_urls = [var.final_url]
+
+    responsive_search_ad {
+      headline {
+        text = "Block Ads & Trackers"
+        pin = "HEADLINE_1"
+      }
+
+      headline {
+        text = "Browse Faster, Privately"
+      }
+
+      headline {
+        text = "Free Privacy Extension"
+      }
+
+      description {
+        text = "Ghostery stops trackers and clutter on every site you visit."
+        pin = "DESCRIPTION_1"
+      }
+
+      description {
+        text = "Install the free browser extension in one click."
+      }
+    }
+  }
+}
+
+resource "google_ads_campaign_criterion" "geo" {
+  campaign = google_ads_campaign.search.id
+  status = "ENABLED"
+
+  location {
+    geo_target_constant = var.geo
+  }
+}
