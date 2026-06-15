@@ -1167,7 +1167,10 @@ fn expect_string_owned(ctx: &Ctx, attr: &Attribute) -> Option<String> {
 
 fn expect_i64(ctx: &Ctx, attr: &Attribute) -> Option<i64> {
     if let Expression::Number(n) = ctx.resolve_value(&attr.value) {
-        n.as_f64().map(|f| f as i64)
+        n.as_i64().or_else(|| {
+            let f = n.as_f64()?;
+            (f.is_finite() && f.fract() == 0.0 && f.abs() < 2f64.powi(53)).then_some(f as i64)
+        })
     } else {
         None
     }
