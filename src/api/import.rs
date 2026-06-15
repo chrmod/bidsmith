@@ -93,9 +93,12 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
                         "google_ads_campaign_budget" => emit(
                             import_budget(&ctx, b, &address).map(|x| input.campaign_budgets.push(x)),
                         ),
-                        "google_ads_campaign" => emit(
-                            import_campaign(&ctx, b, &address).map(|x| input.campaigns.push(x)),
-                        ),
+                        "google_ads_campaign" => emit(import_campaign(&ctx, b, &address).map(
+                            |(campaign, criteria)| {
+                                input.campaigns.push(campaign);
+                                input.campaign_criteria.extend(criteria);
+                            },
+                        )),
                         "google_ads_ad_group" => emit(
                             import_ad_group(&ctx, b, &address).map(|x| input.ad_groups.push(x)),
                         ),
@@ -234,7 +237,11 @@ fn import_budget(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonBudget, 
     })
 }
 
-fn import_campaign(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonCampaign, Diag> {
+fn import_campaign(
+    ctx: &Ctx,
+    block: &Block,
+    address: &str,
+) -> Result<(JsonCampaign, Vec<JsonCampaignCriterion>), Diag> {
     let mut name = None;
     let mut status = None;
     let mut channel = None;
@@ -242,6 +249,8 @@ fn import_campaign(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonCampai
     let mut eu_political = None;
     let mut manual_cpc = None;
     let mut network_settings = None;
+    let mut languages: Vec<String> = Vec::new();
+    let mut locations: Vec<String> = Vec::new();
 
     for s in block.body.iter() {
         match s {
@@ -251,6 +260,8 @@ fn import_campaign(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonCampai
                 "advertising_channel_type" => channel = expect_string_owned(ctx, a),
                 "campaign_budget" => budget_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r)),
                 "contains_eu_political_advertising" => eu_political = expect_string_owned(ctx, a),
+                "languages" => languages = expect_string_list(ctx, &a.value),
+                "locations" => locations = expect_string_list(ctx, &a.value),
                 _ => {}
             },
             Structure::Block(b) => match b.ident.as_str() {
@@ -265,16 +276,113 @@ fn import_campaign(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonCampai
     let channel = channel.ok_or_else(|| missing(ctx.file, block, address, "advertising_channel_type"))?;
     let budget = budget_ref.ok_or_else(|| missing(ctx.file, block, address, "campaign_budget"))?;
 
-    Ok(JsonCampaign {
-        id: address.to_string(),
-        name,
-        status,
-        advertising_channel_type: channel,
-        campaign_budget: budget,
-        contains_eu_political_advertising: eu_political,
-        manual_cpc,
-        network_settings,
-    })
+    let criteria = expand_inline_targeting(address, &languages, &locations);
+
+    Ok((
+        JsonCampaign {
+            id: address.to_string(),
+            name,
+            status,
+            advertising_channel_type: channel,
+            campaign_budget: budget,
+            contains_eu_political_advertising: eu_political,
+            manual_cpc,
+            network_settings,
+        },
+        criteria,
+    ))
+}
+
+/// Expand a campaign's inline `languages` / `locations` into one positive
+/// campaign criterion each. Matched by criterion value (constant) at diff time,
+/// so converting explicit criteria to inline — or adopting criteria already
+/// live — is drift-free. Codes that don't resolve are skipped here (they were
+/// already flagged by `validate`).
+fn expand_inline_targeting(
+    campaign_address: &str,
+    languages: &[String],
+    locations: &[String],
+) -> Vec<JsonCampaignCriterion> {
+    let (module, cname) = split_campaign_address(campaign_address);
+    let mut out = Vec::new();
+    let mut seen_lang: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for entry in languages {
+        let Some(constant) = crate::targeting::resolve_language(entry) else {
+            continue;
+        };
+        if !seen_lang.insert(constant.clone()) {
+            continue;
+        }
+        let slug = crate::targeting::language_code(&constant)
+            .map(str::to_string)
+            .unwrap_or_else(|| last_path_segment(&constant).to_string());
+        out.push(JsonCampaignCriterion {
+            id: criterion_address(module, cname, "language", &slug),
+            campaign: campaign_address.to_string(),
+            status: Some("ENABLED".to_string()),
+            negative: Some(false),
+            keyword: None,
+            location: None,
+            language: Some(JsonLanguage { language_constant: constant }),
+            proximity: None,
+        });
+    }
+    let mut seen_loc: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for entry in locations {
+        let Some(constant) = crate::targeting::resolve_location(entry) else {
+            continue;
+        };
+        if !seen_loc.insert(constant.clone()) {
+            continue;
+        }
+        let slug = crate::targeting::location_code(&constant)
+            .map(str::to_string)
+            .unwrap_or_else(|| last_path_segment(&constant).to_string());
+        out.push(JsonCampaignCriterion {
+            id: criterion_address(module, cname, "location", &slug),
+            campaign: campaign_address.to_string(),
+            status: Some("ENABLED".to_string()),
+            negative: Some(false),
+            keyword: None,
+            location: Some(JsonLocation { geo_target_constant: constant }),
+            language: None,
+            proximity: None,
+        });
+    }
+    out
+}
+
+// Campaign address is `<module>.google_ads_campaign.<name>`; module may itself
+// contain dots (a for_each instance), but the type and name segments never do.
+fn split_campaign_address(address: &str) -> (&str, &str) {
+    let (module_and_type, name) = address.rsplit_once('.').unwrap_or(("", address));
+    let (module, _ty) = module_and_type.rsplit_once('.').unwrap_or(("", module_and_type));
+    (module, name)
+}
+
+fn criterion_address(module: &str, campaign_name: &str, axis: &str, slug: &str) -> String {
+    let local = format!("google_ads_campaign_criterion.{campaign_name}_{axis}_{}", slugify_id(slug));
+    if module.is_empty() {
+        local
+    } else {
+        format!("{module}.{local}")
+    }
+}
+
+fn slugify_id(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push('_');
+        }
+    }
+    out
+}
+
+fn last_path_segment(s: &str) -> &str {
+    s.rsplit('/').next().unwrap_or(s)
 }
 
 fn import_manual_cpc(ctx: &Ctx, block: &Block) -> JsonManualCpc {
@@ -1299,6 +1407,95 @@ resource "google_ads_campaign_criterion" "neg" {
         assert_eq!(input.campaign_criteria.len(), 4);
         assert!(input.campaign_criteria.iter().all(|c| c.negative == Some(true)));
         assert!(input.campaign_criteria.iter().all(|c| c.keyword.is_some()));
+    }
+
+    #[test]
+    fn inline_languages_locations_expand_to_positive_criteria() {
+        let input = import_str(
+            "inline_targeting",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  languages                = ["en", "pl"]
+  locations                = ["US", "geoTargetConstants/2702"]
+}
+"#,
+        );
+        assert_eq!(input.campaign_criteria.len(), 4);
+        let mut constants: Vec<String> = input
+            .campaign_criteria
+            .iter()
+            .map(|c| {
+                assert_eq!(c.negative, Some(false));
+                assert_eq!(c.status.as_deref(), Some("ENABLED"));
+                if let Some(l) = &c.location {
+                    l.geo_target_constant.clone()
+                } else if let Some(l) = &c.language {
+                    l.language_constant.clone()
+                } else {
+                    panic!("expected a location or language criterion")
+                }
+            })
+            .collect();
+        constants.sort();
+        assert_eq!(
+            constants,
+            vec![
+                "geoTargetConstants/2702".to_string(),
+                "geoTargetConstants/2840".to_string(),
+                "languageConstants/1000".to_string(),
+                "languageConstants/1030".to_string(),
+            ]
+        );
+        // Every expanded criterion targets the campaign's address.
+        let camp = &input.campaigns[0].id;
+        assert!(input.campaign_criteria.iter().all(|c| &c.campaign == camp));
+    }
+
+    #[test]
+    fn inline_targeting_round_trips_against_explicit_live_state() {
+        let declared = import_str(
+            "inline_roundtrip",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                              = "C"
+  status                            = "ENABLED"
+  advertising_channel_type          = "SEARCH"
+  campaign_budget                   = google_ads_campaign_budget.b.id
+  contains_eu_political_advertising = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"
+  languages                         = ["pl"]
+  locations                         = ["US"]
+}
+"#,
+        );
+
+        // Live state as Google Ads would return it: the campaign already has the
+        // two positive criteria as explicit resources.
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"}},
+              {"campaignCriterion":{"resourceName":"customers/9/campaignCriteria/2~2840","campaign":"customers/9/campaigns/2","status":"ENABLED","negative":false,"location":{"geoTargetConstant":"geoTargetConstants/2840"}}},
+              {"campaignCriterion":{"resourceName":"customers/9/campaignCriteria/2~1030","campaign":"customers/9/campaigns/2","status":"ENABLED","negative":false,"language":{"languageConstant":"languageConstants/1030"}}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = crate::api::diff::diff(&declared, &live);
+        assert_eq!(report.create_count, 0, "diffs: {:?}", report.diffs);
+        assert_eq!(report.update_count, 0, "diffs: {:?}", report.diffs);
     }
 
     #[test]

@@ -20,6 +20,16 @@ negative keywords (excluded across every ad group), geo targets (which
 locations your ads can show in), language targets, and proximity
 (latitude / longitude radius around a point).
 
+<Aside type="tip">
+  For plain *positive* country and language targeting, prefer the inline
+  [`languages` / `locations`](./google_ads_campaign/#geo-and-language-targeting)
+  lists on the campaign — `locations = ["US"]` reads far better than a
+  `location {}` block per country, and round-trips identically. Reach for
+  an explicit `google_ads_campaign_criterion` for the things the inline
+  form deliberately leaves out: negative keywords, negative (excluded)
+  locations, proximity, and cities you'd rather keep as a separate block.
+</Aside>
+
 ## Example
 
 Block negative keywords campaign-wide:

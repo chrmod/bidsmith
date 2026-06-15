@@ -15,6 +15,8 @@ resource "google_ads_campaign" "summer_search" {
   advertising_channel_type = "SEARCH"
   campaign_budget = google_ads_campaign_budget.summer.id
   contains_eu_political_advertising = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"
+  languages = ["pl"]
+  locations = ["US"]
 
   manual_cpc {
     enhanced_cpc_enabled = false
@@ -115,24 +117,6 @@ resource "google_ads_customer_asset" "main_phone_link" {
   asset = google_ads_call_asset.main_phone.id
   field_type = "CALL"
   status = "ENABLED"
-}
-
-resource "google_ads_campaign_criterion" "summer_geo_us" {
-  campaign = google_ads_campaign.summer_search.id
-  status = "ENABLED"
-
-  location {
-    geo_target_constant = "geoTargetConstants/2840"
-  }
-}
-
-resource "google_ads_campaign_criterion" "summer_lang_polish" {
-  campaign = google_ads_campaign.summer_search.id
-  status = "ENABLED"
-
-  language {
-    language_constant = "languageConstants/1030"
-  }
 }
 
 resource "google_ads_campaign_criterion" "summer_proximity_warsaw" {
