@@ -361,7 +361,7 @@ pub fn build_mutate_with_diff(
         }
     }
 
-    for (i, c) in input.shared_criteria.iter().enumerate() {
+    for c in &input.shared_criteria {
         if !create_set.contains(&c.id) {
             continue;
         }
@@ -373,13 +373,9 @@ pub fn build_mutate_with_diff(
                 None => continue,
             }
         };
-        let set_idx = set_rn.rsplit('/').next().unwrap_or("0");
-        let crit_rn = format!(
-            "customers/{customer_id}/sharedCriteria/{set_idx}~{i}",
-        );
         mutate_ops.push(json!({
             "sharedCriterionOperation": {
-                "create": shared_criterion_create(&set_rn, &crit_rn, &c.keyword)
+                "create": shared_criterion_create(&set_rn, &c.keyword)
             }
         }));
         operations.push(PlanOperation {
@@ -1051,11 +1047,10 @@ fn shared_set_update_body(s: &JsonSharedSet, resource_name: &str, fields: &[Stri
 
 fn shared_criterion_create(
     shared_set_rn: &str,
-    resource_name: &str,
     kw: &crate::commands::export::JsonKeyword,
 ) -> Value {
+    // No resourceName: the API rejects creates that pin the server-assigned criterion_id.
     let mut m = Map::new();
-    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
     m.insert("sharedSet".into(), Value::String(shared_set_rn.to_string()));
     let mut keyword = Map::new();
     keyword.insert("text".into(), Value::String(kw.text.clone()));
@@ -1329,4 +1324,93 @@ fn campaign_criterion_create(
         m.insert("proximity".into(), Value::Object(sub));
     }
     Value::Object(m)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::diff::{Action, DiffReport, ResourceDiff};
+
+    fn create_diff(address: &str, kind: &'static str) -> ResourceDiff {
+        ResourceDiff {
+            address: address.to_string(),
+            kind,
+            action: Action::Create,
+        }
+    }
+
+    #[test]
+    fn new_shared_set_members_create_without_id() {
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "6571974784",
+            "shared_sets": [{
+                "id": "account.google_ads_shared_set.platform_negative_keywords",
+                "name": "platform campaigns negative keywords",
+                "type": "NEGATIVE_KEYWORDS",
+                "status": "ENABLED"
+            }],
+            "shared_criteria": [{
+                "id": "account.google_ads_shared_set.platform_negative_keywords~0",
+                "shared_set": "account.google_ads_shared_set.platform_negative_keywords",
+                "keyword": { "text": "ad blocker detector", "match_type": "PHRASE" }
+            }]
+        }))
+        .expect("valid ExportInput");
+
+        let report = DiffReport {
+            diffs: vec![
+                create_diff(
+                    "account.google_ads_shared_set.platform_negative_keywords",
+                    "shared_set",
+                ),
+                create_diff(
+                    "account.google_ads_shared_set.platform_negative_keywords~0",
+                    "shared_criterion",
+                ),
+            ],
+            noop_count: 0,
+            create_count: 2,
+            update_count: 0,
+        };
+
+        let plan = match build_mutate_with_diff(&input, &report, true) {
+            Ok(plan) => plan,
+            Err(errs) => panic!(
+                "plan should build: {}",
+                errs.iter()
+                    .map(|e| format!("{}: {}", e.address, e.message))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        };
+        let ops = plan.body["mutateOperations"].as_array().unwrap();
+
+        let set_create = ops
+            .iter()
+            .find_map(|op| op.get("sharedSetOperation").and_then(|o| o.get("create")))
+            .expect("shared set create op");
+        let set_rn = set_create["resourceName"].as_str().unwrap();
+        assert!(
+            set_rn.contains("/sharedSets/-"),
+            "new set should get a temp negative resource name, got {set_rn}"
+        );
+
+        let crit_create = ops
+            .iter()
+            .find_map(|op| {
+                op.get("sharedCriterionOperation")
+                    .and_then(|o| o.get("create"))
+            })
+            .expect("shared criterion create op");
+
+        assert!(
+            crit_create.get("resourceName").is_none(),
+            "shared criterion create must not pin an id/resource_name"
+        );
+        assert_eq!(
+            crit_create["sharedSet"].as_str().unwrap(),
+            set_rn,
+            "member must reference the parent set's temp resource name"
+        );
+    }
 }
