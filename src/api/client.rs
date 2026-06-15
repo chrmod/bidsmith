@@ -1,9 +1,14 @@
+use std::time::Duration;
+
 use serde_json::Value;
 
 use crate::api::creds;
 
 const DEFAULT_API_VERSION: &str = "v22";
 const USER_AGENT: &str = concat!("bidsmith/", env!("CARGO_PKG_VERSION"));
+const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const MAX_RETRIES: u32 = 3;
 
 pub fn api_version() -> String {
     std::env::var("BIDSMITH_API_VERSION")
@@ -64,6 +69,8 @@ impl Client {
         Ok(Self {
             http: reqwest::blocking::Client::builder()
                 .user_agent(USER_AGENT)
+                .timeout(HTTP_TIMEOUT)
+                .connect_timeout(CONNECT_TIMEOUT)
                 .build()?,
             customer_id,
             login_customer_id,
@@ -77,7 +84,8 @@ impl Client {
         access_token: &str,
         body: &Value,
     ) -> Result<MutateResponse, ApiError> {
-        self.post_json(access_token, "googleAds:mutate", body)
+        // Mutations aren't idempotent, so a timed-out write must not be retried.
+        self.post_json(access_token, "googleAds:mutate", body, false)
     }
 
     pub fn search_stream(
@@ -86,7 +94,7 @@ impl Client {
         query: &str,
     ) -> Result<MutateResponse, ApiError> {
         let body = serde_json::json!({ "query": query });
-        self.post_json(access_token, "googleAds:searchStream", &body)
+        self.post_json(access_token, "googleAds:searchStream", &body, true)
     }
 
     fn post_json(
@@ -94,29 +102,79 @@ impl Client {
         access_token: &str,
         endpoint: &str,
         body: &Value,
+        retry: bool,
     ) -> Result<MutateResponse, ApiError> {
         let version = api_version();
         let url = format!(
             "https://googleads.googleapis.com/{version}/customers/{}/{endpoint}",
             self.customer_id,
         );
-        let mut req = self
-            .http
-            .post(&url)
-            .bearer_auth(access_token)
-            .header("developer-token", &self.developer_token);
-        if let Some(login) = &self.login_customer_id {
-            req = req.header("login-customer-id", login);
+        let max = if retry { MAX_RETRIES } else { 0 };
+        let mut attempt = 0;
+        loop {
+            let mut req = self
+                .http
+                .post(&url)
+                .bearer_auth(access_token)
+                .header("developer-token", &self.developer_token);
+            if let Some(login) = &self.login_customer_id {
+                req = req.header("login-customer-id", login);
+            }
+            match req.json(body).send() {
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    if attempt < max && is_retryable_status(status) {
+                        attempt += 1;
+                        std::thread::sleep(backoff(attempt));
+                        continue;
+                    }
+                    let raw = response.text()?;
+                    let parsed = serde_json::from_str(&raw).unwrap_or(Value::String(raw.clone()));
+                    return Ok(MutateResponse {
+                        status,
+                        body: parsed,
+                        body_raw: raw,
+                    });
+                }
+                Err(e) => {
+                    if attempt < max && (e.is_timeout() || e.is_connect()) {
+                        attempt += 1;
+                        std::thread::sleep(backoff(attempt));
+                        continue;
+                    }
+                    return Err(e.into());
+                }
+            }
         }
-        let response = req.json(body).send()?;
-        let status = response.status().as_u16();
-        let raw = response.text()?;
-        let parsed = serde_json::from_str(&raw).unwrap_or(Value::String(raw.clone()));
-        Ok(MutateResponse {
-            status,
-            body: parsed,
-            body_raw: raw,
-        })
+    }
+}
+
+fn is_retryable_status(status: u16) -> bool {
+    matches!(status, 429 | 500 | 502 | 503 | 504)
+}
+
+fn backoff(attempt: u32) -> Duration {
+    Duration::from_millis(250 * 2u64.pow(attempt - 1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_transient_statuses_retry() {
+        for s in [429, 500, 502, 503, 504] {
+            assert!(is_retryable_status(s), "{s} should retry");
+        }
+        for s in [200, 400, 401, 403, 404, 409] {
+            assert!(!is_retryable_status(s), "{s} should not retry");
+        }
+    }
+
+    #[test]
+    fn backoff_increases_each_attempt() {
+        assert!(backoff(1) < backoff(2));
+        assert!(backoff(2) < backoff(3));
     }
 }
 
@@ -133,6 +191,8 @@ pub fn list_accessible_customers(
         format!("https://googleads.googleapis.com/{version}/customers:listAccessibleCustomers");
     let http = reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
+        .timeout(HTTP_TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
         .build()?;
     let response = http
         .get(&url)
