@@ -499,6 +499,118 @@ fn load_gads_search_response(path: &str) -> Result<ExportInput, ExitCode> {
     })
 }
 
+fn write_account_assets(
+    out: &mut String,
+    input: &ExportInput,
+    names: &mut NameAllocator,
+    conversion_action_addr: &mut HashMap<String, String>,
+    call_asset_addr: &mut HashMap<String, String>,
+) {
+    for c in &input.conversion_actions {
+        let name = names.allocate("google_ads_conversion_action", &slugify(&c.name));
+        conversion_action_addr.insert(c.id.clone(), format!("google_ads_conversion_action.{name}"));
+        write_conversion_action(out, &name, c);
+    }
+    for a in &input.call_assets {
+        let base = format!("call_{}_{}", a.country_code, a.phone_number);
+        let name = names.allocate("google_ads_call_asset", &slugify(&base));
+        call_asset_addr.insert(a.id.clone(), format!("google_ads_call_asset.{name}"));
+        write_call_asset(out, &name, a, conversion_action_addr);
+    }
+    for a in &input.customer_assets {
+        let base = call_asset_addr
+            .get(&a.asset)
+            .and_then(|addr| addr.strip_prefix("google_ads_call_asset."))
+            .map(|s| format!("link_{s}"))
+            .unwrap_or_else(|| slugify(&a.id));
+        let name = names.allocate("google_ads_customer_asset", &slugify(&base));
+        write_customer_asset(out, &name, a, call_asset_addr);
+    }
+}
+
+fn write_campaign_tree(
+    out: &mut String,
+    input: &ExportInput,
+    names: &mut NameAllocator,
+    inline: &InlineTargeting,
+    budget_addr: &mut HashMap<String, String>,
+    campaign_addr: &mut HashMap<String, String>,
+    ad_group_addr: &mut HashMap<String, String>,
+) {
+    for b in &input.campaign_budgets {
+        let name = names.allocate("google_ads_campaign_budget", &slugify(&b.name));
+        budget_addr.insert(b.id.clone(), format!("google_ads_campaign_budget.{name}"));
+        write_budget(out, &name, b);
+    }
+    for c in &input.campaigns {
+        let name = names.allocate("google_ads_campaign", &slugify(&c.name));
+        campaign_addr.insert(c.id.clone(), format!("google_ads_campaign.{name}"));
+        write_campaign(
+            out,
+            &name,
+            c,
+            budget_addr,
+            inline.languages_for(&c.id),
+            inline.locations_for(&c.id),
+        );
+    }
+    for g in &input.ad_groups {
+        let name = names.allocate("google_ads_ad_group", &slugify(&g.name));
+        ad_group_addr.insert(g.id.clone(), format!("google_ads_ad_group.{name}"));
+        write_ad_group(out, &name, g, campaign_addr);
+    }
+    for a in &input.ad_group_ads {
+        let base = ad_ad_base(a, ad_group_addr);
+        let name = names.allocate("google_ads_ad_group_ad", &base);
+        write_ad_group_ad(out, &name, a, ad_group_addr);
+    }
+    for group in group_ad_group_criteria(&input.ad_group_criteria) {
+        let base = ad_group_criterion_group_base(&group, ad_group_addr);
+        let name = names.allocate("google_ads_ad_group_criterion", &slugify(&base));
+        write_ad_group_criterion_group(out, &name, &group, ad_group_addr);
+    }
+    let remaining: Vec<&JsonCampaignCriterion> = input
+        .campaign_criteria
+        .iter()
+        .filter(|c| !inline.folded.contains(&c.id))
+        .collect();
+    let (negative_groups, singletons) = partition_campaign_criteria(&remaining);
+    for group in negative_groups {
+        let base = campaign_negative_group_base(&group, campaign_addr);
+        let name = names.allocate("google_ads_campaign_criterion", &slugify(&base));
+        write_campaign_negative_group(out, &name, &group, campaign_addr);
+    }
+    for c in singletons {
+        let base = criterion_base(c);
+        let name = names.allocate("google_ads_campaign_criterion", &slugify(&base));
+        write_campaign_criterion(out, &name, c, campaign_addr);
+    }
+}
+
+fn write_campaign_shared_sets(
+    out: &mut String,
+    input: &ExportInput,
+    names: &mut NameAllocator,
+    campaign_addr: &HashMap<String, String>,
+    shared_set_addr: &HashMap<String, String>,
+) {
+    for s in &input.campaign_shared_sets {
+        let base = match (
+            campaign_addr
+                .get(&s.campaign)
+                .and_then(|a| a.strip_prefix("google_ads_campaign.")),
+            shared_set_addr
+                .get(&s.shared_set)
+                .and_then(|a| a.strip_prefix("google_ads_shared_set.")),
+        ) {
+            (Some(c), Some(ss)) => format!("{c}_{ss}"),
+            _ => slugify(&s.id),
+        };
+        let name = names.allocate("google_ads_campaign_shared_set", &slugify(&base));
+        write_campaign_shared_set(out, &name, s, campaign_addr, shared_set_addr);
+    }
+}
+
 pub fn render_split(input: &ExportInput) -> (String, String) {
     let mut account = String::new();
     let mut campaigns = String::new();
@@ -513,31 +625,13 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
     let mut shared_set_addr: HashMap<String, String> = HashMap::new();
 
     write_provider(&mut account, input);
-
-    for c in &input.conversion_actions {
-        let name = names.allocate("google_ads_conversion_action", &slugify(&c.name));
-        conversion_action_addr
-            .insert(c.id.clone(), format!("google_ads_conversion_action.{name}"));
-        write_conversion_action(&mut account, &name, c);
-    }
-
-    for a in &input.call_assets {
-        let base = format!("call_{}_{}", a.country_code, a.phone_number);
-        let name = names.allocate("google_ads_call_asset", &slugify(&base));
-        call_asset_addr.insert(a.id.clone(), format!("google_ads_call_asset.{name}"));
-        write_call_asset(&mut account, &name, a, &conversion_action_addr);
-    }
-
-    for a in &input.customer_assets {
-        let base = call_asset_addr
-            .get(&a.asset)
-            .and_then(|addr| addr.strip_prefix("google_ads_call_asset."))
-            .map(|s| format!("link_{s}"))
-            .unwrap_or_else(|| slugify(&a.id));
-        let name = names.allocate("google_ads_customer_asset", &slugify(&base));
-        write_customer_asset(&mut account, &name, a, &call_asset_addr);
-    }
-
+    write_account_assets(
+        &mut account,
+        input,
+        &mut names,
+        &mut conversion_action_addr,
+        &mut call_asset_addr,
+    );
     write_shared_sets_and_criteria(&mut account, input, &mut names, &mut shared_set_addr);
 
     let has_campaign_resources = !input.campaign_budgets.is_empty()
@@ -550,76 +644,22 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
 
     if has_campaign_resources {
         write_provider(&mut campaigns, input);
-
-        for b in &input.campaign_budgets {
-            let name = names.allocate("google_ads_campaign_budget", &slugify(&b.name));
-            budget_addr.insert(b.id.clone(), format!("google_ads_campaign_budget.{name}"));
-            write_budget(&mut campaigns, &name, b);
-        }
-
-        for c in &input.campaigns {
-            let name = names.allocate("google_ads_campaign", &slugify(&c.name));
-            campaign_addr.insert(c.id.clone(), format!("google_ads_campaign.{name}"));
-            write_campaign(
-                &mut campaigns,
-                &name,
-                c,
-                &budget_addr,
-                inline.languages_for(&c.id),
-                inline.locations_for(&c.id),
-            );
-        }
-
-        for g in &input.ad_groups {
-            let name = names.allocate("google_ads_ad_group", &slugify(&g.name));
-            ad_group_addr.insert(g.id.clone(), format!("google_ads_ad_group.{name}"));
-            write_ad_group(&mut campaigns, &name, g, &campaign_addr);
-        }
-
-        for a in &input.ad_group_ads {
-            let base = ad_ad_base(a, &ad_group_addr);
-            let name = names.allocate("google_ads_ad_group_ad", &base);
-            write_ad_group_ad(&mut campaigns, &name, a, &ad_group_addr);
-        }
-
-        for group in group_ad_group_criteria(&input.ad_group_criteria) {
-            let base = ad_group_criterion_group_base(&group, &ad_group_addr);
-            let name = names.allocate("google_ads_ad_group_criterion", &slugify(&base));
-            write_ad_group_criterion_group(&mut campaigns, &name, &group, &ad_group_addr);
-        }
-
-        let remaining: Vec<&JsonCampaignCriterion> = input
-            .campaign_criteria
-            .iter()
-            .filter(|c| !inline.folded.contains(&c.id))
-            .collect();
-        let (negative_groups, singletons) = partition_campaign_criteria(&remaining);
-        for group in negative_groups {
-            let base = campaign_negative_group_base(&group, &campaign_addr);
-            let name = names.allocate("google_ads_campaign_criterion", &slugify(&base));
-            write_campaign_negative_group(&mut campaigns, &name, &group, &campaign_addr);
-        }
-        for c in singletons {
-            let base = criterion_base(c);
-            let name = names.allocate("google_ads_campaign_criterion", &slugify(&base));
-            write_campaign_criterion(&mut campaigns, &name, c, &campaign_addr);
-        }
-
-        for s in &input.campaign_shared_sets {
-            let base = match (
-                campaign_addr
-                    .get(&s.campaign)
-                    .and_then(|a| a.strip_prefix("google_ads_campaign.")),
-                shared_set_addr
-                    .get(&s.shared_set)
-                    .and_then(|a| a.strip_prefix("google_ads_shared_set.")),
-            ) {
-                (Some(c), Some(ss)) => format!("{c}_{ss}"),
-                _ => slugify(&s.id),
-            };
-            let name = names.allocate("google_ads_campaign_shared_set", &slugify(&base));
-            write_campaign_shared_set(&mut campaigns, &name, s, &campaign_addr, &shared_set_addr);
-        }
+        write_campaign_tree(
+            &mut campaigns,
+            input,
+            &mut names,
+            &inline,
+            &mut budget_addr,
+            &mut campaign_addr,
+            &mut ad_group_addr,
+        );
+        write_campaign_shared_sets(
+            &mut campaigns,
+            input,
+            &mut names,
+            &campaign_addr,
+            &shared_set_addr,
+        );
     }
 
     while account.ends_with("\n\n\n") {
@@ -645,102 +685,24 @@ fn render(input: &ExportInput) -> String {
     let mut shared_set_addr: HashMap<String, String> = HashMap::new();
 
     write_provider(&mut out, input);
-
-    for c in &input.conversion_actions {
-        let name = names.allocate("google_ads_conversion_action", &slugify(&c.name));
-        conversion_action_addr
-            .insert(c.id.clone(), format!("google_ads_conversion_action.{name}"));
-        write_conversion_action(&mut out, &name, c);
-    }
-
-    for a in &input.call_assets {
-        let base = format!("call_{}_{}", a.country_code, a.phone_number);
-        let name = names.allocate("google_ads_call_asset", &slugify(&base));
-        call_asset_addr.insert(a.id.clone(), format!("google_ads_call_asset.{name}"));
-        write_call_asset(&mut out, &name, a, &conversion_action_addr);
-    }
-
-    for a in &input.customer_assets {
-        let base = call_asset_addr
-            .get(&a.asset)
-            .and_then(|addr| addr.strip_prefix("google_ads_call_asset."))
-            .map(|s| format!("link_{s}"))
-            .unwrap_or_else(|| slugify(&a.id));
-        let name = names.allocate("google_ads_customer_asset", &slugify(&base));
-        write_customer_asset(&mut out, &name, a, &call_asset_addr);
-    }
-
-    for b in &input.campaign_budgets {
-        let name = names.allocate("google_ads_campaign_budget", &slugify(&b.name));
-        budget_addr.insert(b.id.clone(), format!("google_ads_campaign_budget.{name}"));
-        write_budget(&mut out, &name, b);
-    }
-
-    for c in &input.campaigns {
-        let name = names.allocate("google_ads_campaign", &slugify(&c.name));
-        campaign_addr.insert(c.id.clone(), format!("google_ads_campaign.{name}"));
-        write_campaign(
-            &mut out,
-            &name,
-            c,
-            &budget_addr,
-            inline.languages_for(&c.id),
-            inline.locations_for(&c.id),
-        );
-    }
-
-    for g in &input.ad_groups {
-        let name = names.allocate("google_ads_ad_group", &slugify(&g.name));
-        ad_group_addr.insert(g.id.clone(), format!("google_ads_ad_group.{name}"));
-        write_ad_group(&mut out, &name, g, &campaign_addr);
-    }
-
-    for a in &input.ad_group_ads {
-        let base = ad_ad_base(a, &ad_group_addr);
-        let name = names.allocate("google_ads_ad_group_ad", &base);
-        write_ad_group_ad(&mut out, &name, a, &ad_group_addr);
-    }
-
-    for group in group_ad_group_criteria(&input.ad_group_criteria) {
-        let base = ad_group_criterion_group_base(&group, &ad_group_addr);
-        let name = names.allocate("google_ads_ad_group_criterion", &slugify(&base));
-        write_ad_group_criterion_group(&mut out, &name, &group, &ad_group_addr);
-    }
-
-    let remaining: Vec<&JsonCampaignCriterion> = input
-        .campaign_criteria
-        .iter()
-        .filter(|c| !inline.folded.contains(&c.id))
-        .collect();
-    let (negative_groups, singletons) = partition_campaign_criteria(&remaining);
-    for group in negative_groups {
-        let base = campaign_negative_group_base(&group, &campaign_addr);
-        let name = names.allocate("google_ads_campaign_criterion", &slugify(&base));
-        write_campaign_negative_group(&mut out, &name, &group, &campaign_addr);
-    }
-    for c in singletons {
-        let base = criterion_base(c);
-        let name = names.allocate("google_ads_campaign_criterion", &slugify(&base));
-        write_campaign_criterion(&mut out, &name, c, &campaign_addr);
-    }
-
+    write_account_assets(
+        &mut out,
+        input,
+        &mut names,
+        &mut conversion_action_addr,
+        &mut call_asset_addr,
+    );
+    write_campaign_tree(
+        &mut out,
+        input,
+        &mut names,
+        &inline,
+        &mut budget_addr,
+        &mut campaign_addr,
+        &mut ad_group_addr,
+    );
     write_shared_sets_and_criteria(&mut out, input, &mut names, &mut shared_set_addr);
-
-    for s in &input.campaign_shared_sets {
-        let base = match (
-            campaign_addr
-                .get(&s.campaign)
-                .and_then(|a| a.strip_prefix("google_ads_campaign.")),
-            shared_set_addr
-                .get(&s.shared_set)
-                .and_then(|a| a.strip_prefix("google_ads_shared_set.")),
-        ) {
-            (Some(c), Some(ss)) => format!("{c}_{ss}"),
-            _ => slugify(&s.id),
-        };
-        let name = names.allocate("google_ads_campaign_shared_set", &slugify(&base));
-        write_campaign_shared_set(&mut out, &name, s, &campaign_addr, &shared_set_addr);
-    }
+    write_campaign_shared_sets(&mut out, input, &mut names, &campaign_addr, &shared_set_addr);
 
     while out.ends_with("\n\n\n") {
         out.pop();
