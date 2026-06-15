@@ -19,8 +19,12 @@ pub fn parse_file(path: &Path) -> Result<ParsedFile, Diag> {
         let empty = Arc::new(NamedSource::new(name, String::new()));
         Diag::new(empty, 0..0, format!("cannot read file: {e}"))
     })?;
+    parse_str(path, &raw)
+}
+
+pub fn parse_str(path: &Path, raw: &str) -> Result<ParsedFile, Diag> {
     let name = path.display().to_string();
-    let src = Arc::new(NamedSource::new(name, raw.clone()));
+    let src = Arc::new(NamedSource::new(name, raw.to_string()));
     let module = module_name(path);
     match raw.parse::<Body>() {
         Ok(body) => Ok(ParsedFile {

@@ -189,6 +189,27 @@ resource type, any file layout, modules, schema validation.
   `validateOnly=false`. Mutates are sent in dependency order (budgets
   → campaigns → ad_groups → ads → criteria) inside one atomic batch.
   If validateOnly rejects anything, the real mutate is skipped.
+- **Rename = `bidsmith mv`, source-only**: renaming a resource's
+  address (the `<name>` in `resource "<type>" "<name>"`) is a pure
+  source rewrite — `mv` renames the block label and every reference
+  that resolves to it, across all files, format-preserving. There is
+  **no live mutate**: today the planner identifies live resources by
+  content (campaign name, keyword text, geo/lang constant, …), not by
+  address, so an address rename is invisible to Google Ads — it never
+  becomes a delete+create, so performance history, learning state, and
+  ad-review status survive. This is what makes cleaning up
+  refresh-minted names (the `_2`/`_7`/`_19` dedupe suffixes) safe.
+  Chosen over Terraform-style `moved {}` blocks consumed at plan/apply:
+  a `moved` block's whole job is to rewrite the *stored* identity, and
+  bidsmith's identity is the (not-yet-implemented) `bidsmith:address`
+  label (Phase 3 v2). Until that label is the matching key, a `moved`
+  block would have nothing live to act on, so it's deferred — `mv` is
+  the complete mechanism now. When labels land, a move gains a second
+  half (rewrite the live `bidsmith:address` label) and `moved` blocks
+  can be reconsidered as the GitOps-friendly, plan-visible form.
+  File renames (which change a file's implicit module name) are
+  likewise address-neutral against live state for the same reason; they
+  only affect in-tree reference resolution.
 - **License**: MPL-2.0 (Mozilla Public License 2.0). Weak, file-level
   copyleft — the license Terraform itself shipped under for its entire
   open-source life. Using bidsmith (CLI, CI, managing clients'
@@ -485,6 +506,7 @@ Validator covers (so far):
 | Verb       | Status  | Purpose                                              |
 |------------|---------|------------------------------------------------------|
 | `fmt`      | partial | Canonicalize `.bid` files (in-place; `--check` for CI) |
+| `mv`       | working | Rename a resource address in source: rewrites the `resource` block label and every reference that resolves to it, across all `.bid` files under `--path` (default `.`). Addresses are `<type>.<name>`, or `<module>.<type>.<name>` to disambiguate a name shared across files. **Bulk mode** `--from-file <path>` (or `-` for stdin) renames a whole batch from a `<from> <to>`-per-line file (arrow optional, `#` comments) applied atomically against one snapshot — rejects missing sources, occupied targets, duplicate sources/targets, and rename chains (`a→b`,`b→c`); any bad rule writes nothing. Format-preserving (only the renamed identifiers change; comments and layout are byte-preserved). Refuses when the rename would raise the project's validation-error count above its pre-rename baseline (so it can still tidy a not-yet-fully-valid tree). **Source-only by design**: because the planner matches live resources by content (name / keyword / geo / …), not by address or label, an address rename is invisible to the account — no delete+create, no lost history or ad review. Once labels become identity (Phase 3 v2), a move will additionally rewrite the live `bidsmith:address` label; until then `mv` is the complete mechanism and `moved` blocks are deferred |
 | `validate` | partial | Syntax + schema + references + lint warnings (local only). `--var NAME=VALUE` (repeatable) supplies values for `variable` blocks; `BIDSMITH_VAR_<name>` env vars are the fallback |
 | `export`   | partial | Render a fmt-canonical `.bid` file from flat bidsmith JSON (`--from-json`) or raw Google Ads SearchStream JSON (`--from-gads-search-response`); always emits the compact form (one `google_ads_ad_group_criterion` per `(ad_group, match_type)` group with N `keyword {}` sub-blocks, one negatives resource per ad-group / campaign with N `negative_keyword {}` sub-blocks, RSAs as `headlines = [...]` / `descriptions = [...]` lists); drops REMOVED resources unless `--include-removed`; `--login-customer-id` / `--customer-id` (or env vars `GOOGLE_ADS_LOGIN_CUSTOMER_ID` / `GOOGLE_ADS_CUSTOMER_ID`) override the provider block |
 | `plan`     | partial | Diff `.bid` vs live (name-matched, scalar-level), validateOnly batch via googleAds:mutate; emits `+ create` / `~ update` / `no-op` per resource. Reuses cached SearchStream batches from `.bidsmith/cache/` when fresh (15-min TTL); `--refresh-state` forces a re-pull; `--offline` skips OAuth and the validateOnly mutate, diffing against the cache only (errors if no fresh cache). `--var NAME=VALUE` (repeatable) and `BIDSMITH_VAR_<name>` env vars supply values for `variable` blocks |

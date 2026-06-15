@@ -42,6 +42,44 @@ enum Cmd {
         #[arg(long)]
         check: bool,
     },
+    /// Rename a resource's address across .bid files (block + every reference)
+    #[command(after_help = "\
+mv rewrites source only: it renames the resource block and every reference
+to it. Because bidsmith matches live resources by their content (campaign
+name, keyword, ...), an address rename is invisible to the account — no
+delete + create, no lost performance history or ad review. plan stays a
+no-op afterward.
+
+Use it to clean up refresh-generated names (the `_2` / `_7` dedupe suffixes)
+without touching the live campaign.
+
+Addresses are `<type>.<name>`, or `<module>.<type>.<name>` to disambiguate
+a name shared across files.
+
+Bulk: pass --from-file to rename many at once. The file lists one
+`<from> <to>` pair per line (or `<from> -> <to>`); blank lines and lines
+starting with '#' are ignored. The whole batch is applied atomically —
+if any rule is invalid (missing source, occupied target, a rename
+chain), nothing is written. Use '-' to read the pairs from stdin.
+
+Examples:
+  bidsmith mv google_ads_ad_group_ad.reklama_1_7 google_ads_ad_group_ad.preroll_ad
+  bidsmith mv singapore_12sec.google_ads_ad_group.niestandardowa_wideo_2023_05_24_5 \\
+              singapore_12sec.google_ads_ad_group.instream_12sec
+  bidsmith mv google_ads_campaign.old google_ads_campaign.new --path campaigns/
+  bidsmith mv --from-file renames.txt          # rename a whole batch")]
+    Mv {
+        /// Current address: `<type>.<name>` (or `<module>.<type>.<name>`)
+        from: Option<String>,
+        /// New address: same type, a new name
+        to: Option<String>,
+        /// Read `<from> <to>` rename pairs from a file (one per line; `-` for stdin)
+        #[arg(long = "from-file", value_name = "PATH", conflicts_with_all = ["from", "to"])]
+        from_file: Option<String>,
+        /// File or directory to rewrite (references can span files)
+        #[arg(long, value_name = "PATH", default_value = ".")]
+        path: String,
+    },
     /// Check .bid syntax, schema, and references
     Validate {
         /// File or directory to validate
@@ -314,6 +352,9 @@ fn main() -> ExitCode {
             customer_id.as_deref(),
         ),
         Cmd::Fmt { path, check } => commands::fmt::run(&path, check),
+        Cmd::Mv { from, to, from_file, path } => {
+            commands::mv::run(from.as_deref(), to.as_deref(), from_file.as_deref(), &path)
+        }
         Cmd::Plan { path, whoami, read_live, refresh_state, offline, verbose, var } => {
             commands::plan::run(
                 path.as_deref(),
