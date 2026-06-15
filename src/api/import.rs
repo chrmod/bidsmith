@@ -12,7 +12,9 @@ use crate::commands::export::{
 use crate::diagnostics::Diag;
 use crate::parser::ParsedFile;
 use crate::program::Program;
-use crate::schema::{Bindings, InputBindings, ResourceRegistry, Resolution};
+use crate::schema::{
+    ad_template_ref_name, AdTemplateRegistry, Bindings, InputBindings, ResourceRegistry, Resolution,
+};
 
 pub struct ImportResult {
     pub input: ExportInput,
@@ -23,6 +25,7 @@ struct Ctx<'a> {
     file: &'a ParsedFile,
     registry: &'a ResourceRegistry,
     bindings: &'a Bindings,
+    templates: &'a AdTemplateRegistry,
 }
 
 impl<'a> Ctx<'a> {
@@ -49,6 +52,7 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
     let (registry, mut diags) = ResourceRegistry::build(files);
     let (bindings, binding_diags) = Bindings::build(files, inputs);
     diags.extend(binding_diags);
+    let (templates, _template_diags) = AdTemplateRegistry::build(files);
     let mut input = ExportInput {
         customer_id: String::new(),
         login_customer_id: None,
@@ -72,6 +76,7 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
             file: f,
             registry: &registry,
             bindings: &bindings,
+            templates: &templates,
         };
         for s in f.body.iter() {
             let Structure::Block(b) = s else { continue };
@@ -459,18 +464,27 @@ fn import_ad_group_ad(
     let mut ad_group_ref = None;
     let mut status = None;
     let mut ad = None;
+    let mut template: Option<&Attribute> = None;
 
     for s in block.body.iter() {
         match s {
             Structure::Attribute(a) => match a.key.as_str() {
                 "ad_group" => ad_group_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r)),
                 "status" => status = expect_string_owned(ctx, a),
+                "template" => template = Some(a),
                 _ => {}
             },
             Structure::Block(b) if b.ident.as_str() == "ad" => {
                 ad = Some(import_ad(ctx, b));
             }
             _ => {}
+        }
+    }
+
+    // Expand `template = ad_template.<name>` into the template's body — same mutate as an inline `ad {}`, own address kept.
+    if ad.is_none() {
+        if let Some(a) = template {
+            ad = Some(resolve_ad_template(ctx, a)?);
         }
     }
 
@@ -482,6 +496,28 @@ fn import_ad_group_ad(
         status,
         ad,
     })
+}
+
+fn resolve_ad_template(ctx: &Ctx, attr: &Attribute) -> Result<JsonAd, Diag> {
+    let invalid = || {
+        Diag::new(
+            ctx.file.src.clone(),
+            span_of(attr.value.span()),
+            "template must be a reference of the form ad_template.<name>".to_string(),
+        )
+    };
+    let name = ad_template_ref_name(&attr.value).ok_or_else(invalid)?;
+    match ctx.templates.resolve(&ctx.file.module, &name) {
+        Resolution::Found(q) => match ctx.templates.get(&q) {
+            Some(decl) => Ok(import_ad(ctx, &decl.block)),
+            None => Err(invalid()),
+        },
+        _ => Err(Diag::new(
+            ctx.file.src.clone(),
+            span_of(attr.value.span()),
+            format!("reference to undeclared ad_template 'ad_template.{name}'"),
+        )),
+    }
 }
 
 fn import_ad(ctx: &Ctx, block: &Block) -> JsonAd {
@@ -1668,6 +1704,48 @@ resource "google_ads_ad_group_ad" "rsa" {
         );
         let descriptions: Vec<&str> = rsa.descriptions.iter().map(|d| d.text.as_str()).collect();
         assert_eq!(descriptions, vec!["First description", "Second description"]);
+    }
+
+    #[test]
+    fn ad_template_expands_into_each_referencing_ad() {
+        let input = import_str(
+            "ad_template",
+            r#"
+ad_template "shared" {
+  final_urls = ["https://example.com/landing"]
+  responsive_search_ad {
+    headlines    = ["First Headline", "Second Headline", "Third Headline"]
+    descriptions = ["First description", "Second description"]
+    path1        = "shop"
+  }
+}
+
+resource "google_ads_ad_group_ad" "a" {
+  ad_group = google_ads_ad_group.ag_a.id
+  status   = "ENABLED"
+  template = ad_template.shared
+}
+
+resource "google_ads_ad_group_ad" "b" {
+  ad_group = google_ads_ad_group.ag_b.id
+  status   = "ENABLED"
+  template = ad_template.shared
+}
+"#,
+        );
+        assert_eq!(input.ad_group_ads.len(), 2);
+        for ad in &input.ad_group_ads {
+            assert_eq!(ad.ad.final_urls, vec!["https://example.com/landing".to_string()]);
+            let rsa = ad.ad.responsive_search_ad.as_ref().expect("rsa present");
+            let headlines: Vec<&str> = rsa.headlines.iter().map(|h| h.text.as_str()).collect();
+            assert_eq!(headlines, vec!["First Headline", "Second Headline", "Third Headline"]);
+            assert_eq!(rsa.descriptions.len(), 2);
+            assert_eq!(rsa.path1.as_deref(), Some("shop"));
+        }
+        // The two ads keep their own distinct per-ad-group addresses.
+        let ids: Vec<&str> = input.ad_group_ads.iter().map(|a| a.id.as_str()).collect();
+        assert!(ids.iter().any(|id| id.ends_with("google_ads_ad_group_ad.a")));
+        assert!(ids.iter().any(|id| id.ends_with("google_ads_ad_group_ad.b")));
     }
 
     #[test]

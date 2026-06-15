@@ -1,0 +1,109 @@
+---
+title: Reuse one ad across every ad group
+description: Run the same responsive search ad in every ad group of a campaign without pasting the body into each one. Declare it once as an ad_template and attach it by reference.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Search campaigns usually run **one ad in every ad group** — one ad group
+per keyword theme, the same creative everywhere. So the same 12 headlines
+and 4 descriptions get pasted into ad after ad. Change one headline and
+you're editing every copy by hand; miss one and the ads quietly drift
+apart.
+
+[Locals](/bidsmith/concepts/locals/) fix a repeated *headline list*, but
+here the whole **ad body** repeats — final URLs, headlines, descriptions,
+paths, all of it. An **`ad_template`** names that body once.
+
+## Declare the body once
+
+A top-level `ad_template "name" { … }` block holds exactly an `ad {}`
+body:
+
+```hcl
+ad_template "ublock_rsa" {
+  final_urls = ["https://ghostery.info/ublock?utm_source=google&utm_medium=cpc&utm_term={keyword}"]
+  responsive_search_ad {
+    headlines = [
+      "uBlock Gone? Try Ghostery",
+      "uBlock Replacement Found",
+      "Switch from uBlock Now",
+    ]
+    descriptions = [
+      "Blocks ads, trackers & popups. Manifest V3 ready.",
+      "The privacy suite millions of people trust.",
+    ]
+    path1 = "ublock"
+    path2 = "ghostery"
+  }
+}
+```
+
+## Attach it to each ad group
+
+Each ad is still its own `google_ads_ad_group_ad`. Instead of an inline
+`ad {}` block, point it at the template:
+
+```hcl
+resource "google_ads_ad_group_ad" "replacement_rsa" {
+  ad_group = google_ads_ad_group.replacement.id
+  status   = "ENABLED"
+  template = ad_template.ublock_rsa
+}
+
+resource "google_ads_ad_group_ad" "chrome_rsa" {
+  ad_group = google_ads_ad_group.chrome.id
+  status   = "ENABLED"
+  template = ad_template.ublock_rsa
+}
+
+resource "google_ads_ad_group_ad" "safari_rsa" {
+  ad_group = google_ads_ad_group.safari.id
+  status   = "ENABLED"
+  template = ad_template.ublock_rsa
+}
+```
+
+Three five-line stubs instead of three 30-line bodies. Edit the headline
+in `ad_template.ublock_rsa` once and `bidsmith plan` shows it landing on
+all three ads at the same time.
+
+<Aside type="note" title="One of ad or template — not both">
+  A `google_ads_ad_group_ad` needs **exactly one** of an inline `ad {}`
+  block or a `template`. Setting both, or neither, is a validate-time
+  error.
+</Aside>
+
+## Adopting it on a live account is safe
+
+Each ad keeps its own resource address, so folding existing ads onto a
+template is a pure source refactor: the body bidsmith sends is identical,
+and `plan` reports **no changes**. Nothing is recreated — your ads keep
+their history and review status.
+
+## Share one template across files
+
+An `ad_template` declared in one file can be referenced from any other —
+the same resolution rules as resources. Put the bodies that several
+campaigns share in one file (say `templates.bid`) and reference them from
+each campaign file:
+
+```hcl
+# campaigns/search/ublock.bid
+resource "google_ads_ad_group_ad" "replacement_rsa" {
+  ad_group = google_ads_ad_group.replacement.id
+  template = ad_template.ublock_rsa   # declared in templates.bid
+}
+```
+
+<Aside type="tip">
+  v1 templates are for **identical** bodies — every ad that references a
+  template gets exactly the same creative. Per-ad-group tweaks (a
+  different final URL per ad group, say) aren't supported yet; keep those
+  ads as inline `ad {}` blocks for now.
+</Aside>
+
+## See also
+
+- [`google_ads_ad_group_ad`](/bidsmith/resources/google_ads_ad_group_ad/) — the `template` attribute and `ad` block.
+- [Reuse a headline set across many ads](/bidsmith/recipes/reuse-a-headline-set/) — the locals version, for when only the headline *list* repeats.

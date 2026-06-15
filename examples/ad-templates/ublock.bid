@@ -1,0 +1,58 @@
+provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+resource "google_ads_campaign_budget" "budget" {
+  name = "uBlock — Daily"
+  amount_micros = 20000000
+}
+
+resource "google_ads_campaign" "ublock" {
+  name = "Ghostery — uBlock"
+  status = "ENABLED"
+  advertising_channel_type = "SEARCH"
+  campaign_budget = google_ads_campaign_budget.budget.id
+
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+}
+
+resource "google_ads_ad_group" "replacement" {
+  name = "uBlock — Replacement"
+  status = "ENABLED"
+  campaign = google_ads_campaign.ublock.id
+  cpc_bid_micros = 3000000
+}
+
+resource "google_ads_ad_group" "chrome" {
+  name = "uBlock — Chrome"
+  status = "ENABLED"
+  campaign = google_ads_campaign.ublock.id
+  cpc_bid_micros = 3000000
+}
+
+resource "google_ads_ad_group" "safari" {
+  name = "uBlock — Safari"
+  status = "ENABLED"
+  campaign = google_ads_campaign.ublock.id
+  cpc_bid_micros = 3000000
+}
+
+resource "google_ads_ad_group_ad" "replacement_rsa" {
+  ad_group = google_ads_ad_group.replacement.id
+  status = "ENABLED"
+  template = ad_template.ublock_rsa
+}
+
+resource "google_ads_ad_group_ad" "chrome_rsa" {
+  ad_group = google_ads_ad_group.chrome.id
+  status = "ENABLED"
+  template = ad_template.ublock_rsa
+}
+
+resource "google_ads_ad_group_ad" "safari_rsa" {
+  ad_group = google_ads_ad_group.safari.id
+  status = "ENABLED"
+  template = ad_template.ublock_rsa
+}

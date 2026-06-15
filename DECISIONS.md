@@ -79,6 +79,36 @@ resource type, any file layout, modules, schema validation.
   blocks stay scalar-only (`string` / `number` / `bool`) — a CLI-supplied
   list input has no obvious `--var` syntax, and the measured duplication
   is list **data**, which belongs in `locals`.
+- **`ad_template` block** (issue #40): list locals fold an RSA's
+  `headlines` / `descriptions`, but the duplication that remains is the
+  *whole ad body* run in every ad group of a campaign (measured: 142 RSAs,
+  44 distinct bodies, the top body repeated 20× across files). A top-level
+  `ad_template "name" { … }` block declares an `ad {}` body once — same
+  shape as the inline `ad` block (`final_urls`, `responsive_search_ad`,
+  paths) — and a `google_ads_ad_group_ad` attaches it with
+  `template = ad_template.<name>` instead of an inline `ad {}` block.
+  **Exactly one of the two is required** (validate-time XOR). Chosen over
+  the alternative "one ad resource fanned out to N ad groups via
+  `ad_groups = [...]`" (the issue's Option B) precisely because the
+  per-ad-group `google_ads_ad_group_ad` resources keep their existing
+  addresses: adopting a template is a pure source refactor that `plan`
+  sees as a no-op, whereas re-addressing live ads into a fanned-out
+  resource would plan as delete+create for every folded ad (address is
+  identity until the Phase 3 v2 label lands). Expansion is pure
+  load-time substitution — `import` resolves the reference to the
+  template's body and builds the same `ad_group_ad` mutate it would for an
+  inline body, so plan / apply are byte-identical to the unfolded form and
+  there is no new API surface (RSAs are per-ad-group entities; there is no
+  server-side shared-ad object). Templates resolve like resources / locals
+  — same-module first, then a single global declaration with an ambiguity
+  guard — so one template in a shared file serves campaigns across files
+  (the 20× body spans files). The template's RSA is linted once at its
+  declaration (`ad_template.<name>`), not per use site. **v1 requires
+  byte-identical bodies** (everything measured is); per-ad-group overrides
+  (e.g. a different `final_urls`), the Option B fan-out form, and
+  `export` / `refresh` detecting repeated bodies and emitting the folded
+  form are deferred follow-ups. `variable` blocks stay scalar; this is a
+  block-level reuse primitive, not a value one.
 - **`variable` block**: HCL2-style top-level
   `variable "name" { type = …, default = …, description = … }` blocks
   declare typed inputs that the same `.bid` can pivot on without
@@ -429,6 +459,13 @@ Verified locally:
   and a compact `keywords { texts = local.competitor_keywords }` block
   fans the shared list out into one criterion per keyword. No false RSA
   min-headline warnings; `fmt --check examples/lists` is a no-op.
+- `cargo run -- validate examples/ad-templates` → `OK: 2 file(s) valid.`
+  — exercises **reusable ad bodies** (issue #40). `templates.bid`
+  declares `ad_template "ublock_rsa"` / `"generic_rsa"` once; `ublock.bid`
+  attaches `ad_template.ublock_rsa` to three ad groups
+  (`template = ad_template.ublock_rsa`) across the file boundary, so three
+  `google_ads_ad_group_ad` resources share one body. `fmt --check
+  examples/ad-templates` is a no-op.
 - `cargo run -- validate examples/variable` → `OK: 1 file(s) valid.` —
   exercises the `variable "x" { type, default, description }` block
   plus `var.<name>` references for a string (campaign name), number
@@ -577,7 +614,12 @@ Validator covers (so far):
   plus an equivalent list-attribute form `headlines = [...]` /
   `descriptions = [...]` whose items are either bare strings or
   `{ text, pin? }` object literals — both forms can coexist, and
-  `final_urls` still uses `list<string>`),
+  `final_urls` still uses `list<string>`; in place of an inline `ad {}`
+  block the resource may carry `template = ad_template.<name>`, attaching
+  a reusable body declared in a top-level `ad_template "name" { … }` block
+  — exactly one of `ad {}` / `template` is required, and the template is
+  resolved and substituted at import time so the mutate is identical to
+  the inline form),
   `google_ads_ad_group_criterion` (positive/negative keyword with
   match_type, optional per-keyword `cpc_bid_micros`; also accepts a
   bulk form where repeating `keyword {}` and/or `negative_keyword {}`

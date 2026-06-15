@@ -240,6 +240,21 @@ Smaller follow-ups that can ride along:
   **Deferred:** map indexing (`local.headlines["ublock"]`) and other
   element-level expressions wait on the expression engine; `variable`
   blocks stay scalar-only (list data belongs in `locals`).
+- ✅ Reusable ad bodies via `ad_template` (issue #40) — a top-level
+  `ad_template "name" { … }` declares an `ad {}` body once, and a
+  `google_ads_ad_group_ad` attaches it with `template = ad_template.<name>`
+  instead of an inline `ad {}` block (exactly one of the two is required).
+  The reference is resolved and substituted at import time, so each
+  per-ad-group resource keeps its own address and the mutate is identical
+  to the inline body — adopting a template on a live account is a no-op
+  `plan` (chosen over the fan-out "one ad → N ad groups" form, which would
+  re-address live ads into delete+create). Templates resolve same-module
+  then global, so one template serves campaigns across files; the
+  template's RSA is linted at its declaration. `examples/ad-templates/`
+  covers it. **Deferred:** per-ad-group overrides (a different `final_urls`
+  per ad group), the `ad_groups = [...]` fan-out form, and `export` /
+  `refresh` detecting repeated bodies and emitting the folded form (same
+  direction as #14 — without it a refresh re-explodes the file).
 - Repeating-block field-level diff for RSA `headline` / `description`
   blocks and the `final_urls` list. Today these are matched
   all-or-nothing; per-asset add/remove/repin detection would close

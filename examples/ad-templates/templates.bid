@@ -1,0 +1,38 @@
+ad_template "ublock_rsa" {
+  final_urls = [
+    "https://ghostery.info/ublock?utm_source=google&utm_medium=cpc&utm_term={keyword}",
+  ]
+
+  responsive_search_ad {
+    headlines = [
+      "uBlock Gone? Try Ghostery",
+      "uBlock Replacement Found",
+      "Switch from uBlock Now",
+      { text = "Ghostery Blocks It All", pin = "HEADLINE_1" },
+    ]
+    descriptions = [
+      "Ghostery blocks ads, trackers, and popups. Manifest V3 ready.",
+      "The privacy extension millions of people already trust.",
+    ]
+    path1 = "ublock"
+    path2 = "ghostery"
+  }
+}
+
+ad_template "generic_rsa" {
+  final_urls = [
+    "https://ghostery.info/get?utm_source=google&utm_medium=cpc&utm_term={keyword}",
+  ]
+
+  responsive_search_ad {
+    headlines = [
+      "Private Browsing, Built In",
+      "Stop Ads Following You",
+      "Ghostery Privacy Suite",
+    ]
+    descriptions = [
+      "Block ads, trackers, and popups in one click. Free and open.",
+      "The privacy extension millions of people already trust.",
+    ]
+  }
+}

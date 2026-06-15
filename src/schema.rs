@@ -18,6 +18,7 @@ pub enum FieldType {
     Enum(&'static [&'static str]),
     Ref(&'static [&'static str]),
     RefOrResourceName(&'static [&'static str]),
+    AdTemplateRef,
     List(Box<FieldType>),
     RsaAssetList,
     LanguageList,
@@ -228,6 +229,31 @@ fn rsa_asset_block(name: &'static str) -> NestedBlockSchema {
                 attr("pin", FieldType::Enum(RSA_PIN), false),
             ],
             blocks: vec![],
+        },
+    }
+}
+
+// The `ad {}` body, shared by `google_ads_ad_group_ad` and the `ad_template` block.
+fn ad_block() -> NestedBlockSchema {
+    NestedBlockSchema {
+        name: "ad",
+        schema: BlockSchema {
+            attributes: vec![
+                attr("name", FieldType::String, false),
+                attr("final_urls", FieldType::list_of(FieldType::String), true),
+            ],
+            blocks: vec![NestedBlockSchema {
+                name: "responsive_search_ad",
+                schema: BlockSchema {
+                    attributes: vec![
+                        attr("path1", FieldType::String, false),
+                        attr("path2", FieldType::String, false),
+                        attr("headlines", FieldType::RsaAssetList, false),
+                        attr("descriptions", FieldType::RsaAssetList, false),
+                    ],
+                    blocks: vec![rsa_asset_block("headline"), rsa_asset_block("description")],
+                },
+            }],
         },
     }
 }
@@ -479,35 +505,9 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                     ),
                     attr("status", FieldType::Enum(STATUS), false)
                         .with_default(DefaultValue::Str(DEFAULT_STATUS)),
+                    attr("template", FieldType::AdTemplateRef, false),
                 ],
-                blocks: vec![NestedBlockSchema {
-                    name: "ad",
-                    schema: BlockSchema {
-                        attributes: vec![
-                            attr("name", FieldType::String, false),
-                            attr(
-                                "final_urls",
-                                FieldType::list_of(FieldType::String),
-                                true,
-                            ),
-                        ],
-                        blocks: vec![NestedBlockSchema {
-                            name: "responsive_search_ad",
-                            schema: BlockSchema {
-                                attributes: vec![
-                                    attr("path1", FieldType::String, false),
-                                    attr("path2", FieldType::String, false),
-                                    attr("headlines", FieldType::RsaAssetList, false),
-                                    attr("descriptions", FieldType::RsaAssetList, false),
-                                ],
-                                blocks: vec![
-                                    rsa_asset_block("headline"),
-                                    rsa_asset_block("description"),
-                                ],
-                            },
-                        }],
-                    },
-                }],
+                blocks: vec![ad_block()],
             },
         );
 
@@ -939,6 +939,94 @@ impl LocalsRegistry {
     }
 }
 
+pub struct AdTemplateDecl {
+    pub block: Block,
+}
+
+/// Reusable `ad {}` bodies attached via `template = ad_template.<name>`; resolves same-module then global, like resources.
+#[derive(Default)]
+pub struct AdTemplateRegistry {
+    by_qualified: HashMap<String, AdTemplateDecl>,
+    by_short: HashMap<String, Vec<String>>,
+}
+
+impl AdTemplateRegistry {
+    pub fn qualified(module: &str, name: &str) -> String {
+        format!("{module}.{name}")
+    }
+
+    pub fn resolve(&self, module: &str, name: &str) -> Resolution<'_> {
+        let qualified = Self::qualified(module, name);
+        if self.by_qualified.contains_key(&qualified) {
+            return Resolution::Found(qualified);
+        }
+        match self.by_short.get(name).map(Vec::as_slice).unwrap_or(&[]) {
+            [] => Resolution::Missing,
+            [only] => Resolution::Found(Self::qualified(only, name)),
+            many => Resolution::Ambiguous(many),
+        }
+    }
+
+    pub fn get(&self, qualified: &str) -> Option<&AdTemplateDecl> {
+        self.by_qualified.get(qualified)
+    }
+
+    pub fn build(files: &[ParsedFile]) -> (Self, Vec<Diag>) {
+        let mut registry = AdTemplateRegistry::default();
+        let mut diags = Vec::new();
+        for f in files {
+            for s in f.body.iter() {
+                let Structure::Block(b) = s else { continue };
+                if b.ident.as_str() != "ad_template" {
+                    continue;
+                }
+                if b.labels.len() != 1 {
+                    diags.push(Diag::new(
+                        f.src.clone(),
+                        span_of(b.ident.span()),
+                        format!(
+                            "'ad_template' block requires exactly one label (the template name), got {}",
+                            b.labels.len()
+                        ),
+                    ));
+                    continue;
+                }
+                let name = b.labels[0].as_str().to_string();
+                let qualified = Self::qualified(&f.module, &name);
+                if registry.by_qualified.contains_key(&qualified) {
+                    diags.push(Diag::new(
+                        f.src.clone(),
+                        span_of(b.labels[0].span()),
+                        format!("duplicate ad_template '{name}' in module '{}'", f.module),
+                    ));
+                    continue;
+                }
+                registry
+                    .by_qualified
+                    .insert(qualified, AdTemplateDecl { block: b.clone() });
+                registry
+                    .by_short
+                    .entry(name)
+                    .or_default()
+                    .push(f.module.clone());
+            }
+        }
+        (registry, diags)
+    }
+}
+
+/// The `<name>` in an `ad_template.<name>` traversal, else `None`.
+pub fn ad_template_ref_name(expr: &Expression) -> Option<String> {
+    let Expression::Traversal(t) = expr else {
+        return None;
+    };
+    let path = extract_traversal_path(t)?;
+    if path.len() != 2 || path[0] != "ad_template" {
+        return None;
+    }
+    Some(path[1].clone())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VarType {
     String,
@@ -1283,17 +1371,119 @@ pub fn validate_files(files: &[ParsedFile], inputs: &InputBindings) -> Vec<Diag>
     diags.extend(locals_diags);
     let (variables, variables_diags) = VariablesRegistry::build(files, inputs);
     diags.extend(variables_diags);
+    let (templates, template_diags) = AdTemplateRegistry::build(files);
+    diags.extend(template_diags);
 
     for f in files {
         validate_top_level(f, &registry, &locals, &variables, &mut diags);
     }
 
+    validate_ad_templates(files, &templates, &registry, &locals, &variables, &mut diags);
     validate_targeting_conflicts(files, &registry, &mut diags);
 
     diags.sort_by(|a, b| {
         (a.src.name(), a.span.offset()).cmp(&(b.src.name(), b.span.offset()))
     });
     diags
+}
+
+/// Validate `ad_template` bodies against the `ad {}` schema and enforce the per-ad ad/template XOR + reference resolution.
+fn validate_ad_templates(
+    files: &[ParsedFile],
+    templates: &AdTemplateRegistry,
+    registry: &ResourceRegistry,
+    locals: &LocalsRegistry,
+    variables: &VariablesRegistry,
+    diags: &mut Vec<Diag>,
+) {
+    let ad_schema = ad_block();
+    for f in files {
+        for s in f.body.iter() {
+            let Structure::Block(b) = s else { continue };
+            match b.ident.as_str() {
+                "ad_template" if b.labels.len() == 1 => {
+                    validate_body(
+                        f,
+                        b,
+                        &b.body,
+                        &ad_schema.schema,
+                        &format!("ad_template.{}", b.labels[0].as_str()),
+                        registry,
+                        locals,
+                        variables,
+                        diags,
+                    );
+                }
+                "resource"
+                    if b.labels.len() == 2
+                        && b.labels[0].as_str() == "google_ads_ad_group_ad" =>
+                {
+                    validate_ad_group_ad_template(f, b, templates, diags);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn validate_ad_group_ad_template(
+    file: &ParsedFile,
+    block: &Block,
+    templates: &AdTemplateRegistry,
+    diags: &mut Vec<Diag>,
+) {
+    let address = format!("google_ads_ad_group_ad.{}", block.labels[1].as_str());
+    let mut has_ad_block = false;
+    let mut template: Option<(std::ops::Range<usize>, &Expression)> = None;
+    for s in block.body.iter() {
+        match s {
+            Structure::Block(b) if b.ident.as_str() == "ad" => has_ad_block = true,
+            Structure::Attribute(a) if a.key.as_str() == "template" => {
+                template = Some((span_of(a.key.span()), &a.value));
+            }
+            _ => {}
+        }
+    }
+    match (has_ad_block, template) {
+        (true, Some((key_span, _))) => diags.push(Diag::new(
+            file.src.clone(),
+            key_span,
+            format!("{address} sets both an 'ad' block and 'template'; use one or the other"),
+        )),
+        (false, None) => diags.push(Diag::new(
+            file.src.clone(),
+            span_of(block.ident.span()),
+            format!(
+                "{address} must declare an ad: add an 'ad {{ … }}' block or 'template = ad_template.<name>'"
+            ),
+        )),
+        (false, Some((_, value))) => {
+            let Some(name) = ad_template_ref_name(value) else {
+                return;
+            };
+            match templates.resolve(&file.module, &name) {
+                Resolution::Found(_) => {}
+                Resolution::Missing => diags.push(Diag::new(
+                    file.src.clone(),
+                    span_of(value.span()),
+                    format!("reference to undeclared ad_template 'ad_template.{name}'"),
+                )),
+                Resolution::Ambiguous(modules) => {
+                    let mut sorted: Vec<&str> = modules.iter().map(String::as_str).collect();
+                    sorted.sort();
+                    diags.push(Diag::new(
+                        file.src.clone(),
+                        span_of(value.span()),
+                        format!(
+                            "ambiguous reference to 'ad_template.{name}'; declared in modules [{}] — rename one so each is unique within its module",
+                            sorted.join(", ")
+                        ),
+                    ));
+                }
+            }
+        }
+        (true, None) => {}
+    }
 }
 
 #[derive(Default, Clone, Copy)]
@@ -1442,7 +1632,7 @@ fn validate_top_level(
                     file.src.clone(),
                     span_of(a.key.span()),
                     format!(
-                        "top-level attributes are not allowed; place '{}' inside a 'provider', 'resource', 'locals', 'variable', or 'module' block",
+                        "top-level attributes are not allowed; place '{}' inside a 'provider', 'resource', 'locals', 'variable', 'module', or 'ad_template' block",
                         a.key.as_str()
                     ),
                 ));
@@ -1459,12 +1649,15 @@ fn validate_top_level(
                 "module" => {
                     let _ = b;
                 }
+                "ad_template" => {
+                    let _ = b;
+                }
                 other => {
                     diags.push(Diag::new(
                         file.src.clone(),
                         span_of(b.ident.span()),
                         format!(
-                            "unknown top-level block '{other}'; expected 'provider', 'resource', 'locals', 'variable', or 'module'"
+                            "unknown top-level block '{other}'; expected 'provider', 'resource', 'locals', 'variable', 'module', or 'ad_template'"
                         ),
                     ));
                 }
@@ -1864,6 +2057,19 @@ fn validate_value(
             }
             validate_ref(file, expr, span, targets, registry, diags, true);
         }
+        // Structural only; existence + the ad/template XOR are checked in validate_ad_templates.
+        FieldType::AdTemplateRef => {
+            if ad_template_ref_name(expr).is_none() {
+                diags.push(Diag::new(
+                    file.src.clone(),
+                    span,
+                    format!(
+                        "expected reference to ad_template (ad_template.<name>), got {}",
+                        describe_expr(expr)
+                    ),
+                ));
+            }
+        }
     }
 }
 
@@ -2170,6 +2376,7 @@ fn describe_field_type(ty: &FieldType) -> String {
             "reference to {} or resource-name string",
             join_or(targets)
         ),
+        FieldType::AdTemplateRef => "reference to ad_template".to_string(),
         FieldType::List(inner) => format!("list of {}", describe_field_type(inner)),
         FieldType::RsaAssetList => "list of strings or { text, pin? } objects".to_string(),
         FieldType::LanguageList => {
@@ -2413,6 +2620,9 @@ fn ty_to_doc(ty: &FieldType) -> TypeDoc {
         },
         FieldType::RefOrResourceName(targets) => TypeDoc::ReferenceOrResourceName {
             targets: targets.to_vec(),
+        },
+        FieldType::AdTemplateRef => TypeDoc::Reference {
+            targets: vec!["ad_template"],
         },
         FieldType::List(inner) => TypeDoc::List {
             element: Box::new(ty_to_doc(inner)),
@@ -2946,6 +3156,168 @@ resource "google_ads_ad_group_criterion" "kw" {
         );
         assert!(
             diags.iter().any(|d| d.message.contains("undeclared local 'local.missing'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    const AD_TEMPLATE_PREAMBLE: &str = r#"
+ad_template "shared" {
+  final_urls = ["https://example.com"]
+  responsive_search_ad {
+    headlines    = ["One Headline", "Two Headline", "Three Headline"]
+    descriptions = ["A description here", "Another description here"]
+  }
+}
+
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  manual_cpc { enhanced_cpc_enabled = false }
+}
+
+resource "google_ads_ad_group" "g" {
+  name           = "G"
+  campaign       = google_ads_campaign.c.id
+  cpc_bid_micros = 1000000
+}
+"#;
+
+    #[test]
+    fn ad_template_reference_validates() {
+        let mut content = String::from(
+            r#"
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group = google_ads_ad_group.g.id
+  status   = "ENABLED"
+  template = ad_template.shared
+}
+"#,
+        );
+        content.push_str(AD_TEMPLATE_PREAMBLE);
+        let diags = validate_str("ad_template_ok", &content);
+        let errors: Vec<&String> = diags
+            .iter()
+            .filter(|d| d.is_error())
+            .map(|d| &d.message)
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn ad_template_and_ad_block_together_errors() {
+        let diags = validate_str(
+            "ad_template_xor",
+            r#"
+ad_template "shared" {
+  final_urls = ["https://example.com"]
+  responsive_search_ad {
+    headlines    = ["One Headline", "Two Headline", "Three Headline"]
+    descriptions = ["A description here", "Another description here"]
+  }
+}
+
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group = google_ads_ad_group.g.id
+  template = ad_template.shared
+  ad {
+    final_urls = ["https://example.com"]
+    responsive_search_ad {
+      headlines    = ["One Headline", "Two Headline", "Three Headline"]
+      descriptions = ["A description here", "Another description here"]
+    }
+  }
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("sets both an 'ad' block and 'template'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ad_group_ad_without_ad_or_template_errors() {
+        let diags = validate_str(
+            "ad_template_neither",
+            r#"
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group = google_ads_ad_group.g.id
+  status   = "ENABLED"
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("must declare an ad")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn dangling_ad_template_reference_errors() {
+        let diags = validate_str(
+            "ad_template_dangling",
+            r#"
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group = google_ads_ad_group.g.id
+  template = ad_template.missing
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("undeclared ad_template 'ad_template.missing'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ad_template_body_type_error_reported() {
+        let diags = validate_str(
+            "ad_template_body",
+            r#"
+ad_template "shared" {
+  final_urls = ["https://example.com"]
+  responsive_search_ad {
+    headlines    = "not a list"
+    descriptions = ["A description here", "Another description here"]
+  }
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.is_error()
+                && d.message.contains("expected list of strings or")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn duplicate_ad_template_errors() {
+        let pf = parse_str(
+            "dup_tpl",
+            r#"
+ad_template "shared" {
+  final_urls = ["https://example.com"]
+}
+
+ad_template "shared" {
+  final_urls = ["https://example.org"]
+}
+"#,
+        );
+        let (_reg, diags) = AdTemplateRegistry::build(std::slice::from_ref(&pf));
+        assert!(
+            diags.iter().any(|d| d.message.contains("duplicate ad_template 'shared'")),
             "{:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );

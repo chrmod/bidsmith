@@ -51,6 +51,7 @@ export default defineConfig({
             { label: 'Target specific countries and languages', slug: 'recipes/target-countries-and-languages' },
             { label: 'Add a whole keyword list at once', slug: 'recipes/add-many-keywords' },
             { label: 'Reuse a headline set across many ads', slug: 'recipes/reuse-a-headline-set' },
+            { label: 'Reuse one ad across every ad group', slug: 'recipes/reuse-an-ad-across-ad-groups' },
             { label: 'Roll back a bad change', slug: 'recipes/roll-back-a-bad-change' },
             { label: 'Audit who changed what, when', slug: 'recipes/audit-who-changed-what' },
             { label: 'Cut Google Ads API quota usage', slug: 'recipes/reduce-api-calls' },
