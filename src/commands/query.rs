@@ -142,7 +142,7 @@ fn print_tsv(rows: &[Value]) {
 }
 
 fn sanitize_tsv(s: &str) -> String {
-    s.replace('\t', " ").replace('\n', " ")
+    s.replace(['\t', '\n'], " ")
 }
 
 fn print_table(rows: &[Value]) {
