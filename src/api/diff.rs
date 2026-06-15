@@ -120,19 +120,9 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         });
     }
 
-    // ---- ad_group_ads (match by mapped_ad_group_id, first ad) ------------
-    let mut live_ads_by_ag: HashMap<String, &JsonAdGroupAd> = HashMap::new();
-    for a in &live.ad_group_ads {
-        live_ads_by_ag.entry(a.ad_group.clone()).or_insert(a);
-    }
-    for d in &declared.ad_group_ads {
-        let action = match ad_group_match.get(&d.ad_group) {
-            Some(parent_id) => match live_ads_by_ag.get(parent_id) {
-                Some(l) => action_for_match(l.id.clone(), diff_ad_group_ad(d, l)),
-                None => Action::Create,
-            },
-            None => Action::Create,
-        };
+    // ---- ad_group_ads (match by mapped_ad_group_id + body, 1:1) ----------
+    let ad_actions = match_ad_group_ads(&declared.ad_group_ads, &live.ad_group_ads, &ad_group_match);
+    for (d, action) in declared.ad_group_ads.iter().zip(ad_actions) {
         diffs.push(ResourceDiff {
             address: d.id.clone(),
             kind: "ad_group_ad",
@@ -662,6 +652,101 @@ fn diff_ad_group_ad(d: &JsonAdGroupAd, l: &JsonAdGroupAd) -> Vec<String> {
     c
 }
 
+/// Match declared ads to live ads 1:1 within each ad group, keyed on the ad
+/// *body* (final URLs + RSA content), not on the ad group alone. Accounts often
+/// hold several ads with byte-identical bodies that differ only by status
+/// (`adblock_rsa_7/8/9`); keying on the ad group and taking the first live ad
+/// collapsed them all onto one live id, which surfaced as spurious status
+/// updates, "Cannot mutate the same resource twice" rejections, and bogus
+/// creates for the unmatched ads. Each live ad is consumed at most once: within
+/// a body bucket we first claim the live ads that already match (no diff), then
+/// assign the rest as status updates; a declared ad with no live body left is a
+/// create.
+fn match_ad_group_ads(
+    declared: &[JsonAdGroupAd],
+    live: &[JsonAdGroupAd],
+    ad_group_match: &HashMap<String, String>,
+) -> Vec<Action> {
+    let mut live_buckets: HashMap<(String, String), Vec<usize>> = HashMap::new();
+    for (i, l) in live.iter().enumerate() {
+        live_buckets
+            .entry((l.ad_group.clone(), ad_body_key(l)))
+            .or_default()
+            .push(i);
+    }
+
+    let mut actions: Vec<Action> = vec![Action::Create; declared.len()];
+    let mut declared_buckets: HashMap<(String, String), Vec<usize>> = HashMap::new();
+    for (i, d) in declared.iter().enumerate() {
+        if let Some(parent_id) = ad_group_match.get(&d.ad_group) {
+            declared_buckets
+                .entry((parent_id.clone(), ad_body_key(d)))
+                .or_default()
+                .push(i);
+        }
+    }
+
+    // Buckets are disjoint in both declared and live indices (a distinct body
+    // key never shares live ads), so the result is independent of bucket order.
+    let mut consumed = vec![false; live.len()];
+    for (key, decl_indices) in &declared_buckets {
+        let live_indices = live_buckets.get(key);
+        let mut pending: Vec<usize> = Vec::new();
+        for &di in decl_indices {
+            let claimed = live_indices.and_then(|lis| {
+                lis.iter()
+                    .copied()
+                    .find(|&li| !consumed[li] && diff_ad_group_ad(&declared[di], &live[li]).is_empty())
+            });
+            match claimed {
+                Some(li) => {
+                    consumed[li] = true;
+                    actions[di] = Action::NoOp {
+                        live_id: live[li].id.clone(),
+                    };
+                }
+                None => pending.push(di),
+            }
+        }
+        for di in pending {
+            let claimed = live_indices.and_then(|lis| lis.iter().copied().find(|&li| !consumed[li]));
+            if let Some(li) = claimed {
+                consumed[li] = true;
+                actions[di] =
+                    action_for_match(live[li].id.clone(), diff_ad_group_ad(&declared[di], &live[li]));
+            }
+        }
+    }
+
+    actions
+}
+
+/// A stable key for an ad's content (everything `diff_ad_group_ad` treats as
+/// creation-only). Status is deliberately excluded so identical-bodied ads in
+/// different states share a bucket and get assigned 1:1.
+fn ad_body_key(a: &JsonAdGroupAd) -> String {
+    use std::fmt::Write;
+    let mut k = String::new();
+    let _ = write!(k, "urls:{}", a.ad.final_urls.join("\u{1f}"));
+    if let Some(rsa) = &a.ad.responsive_search_ad {
+        k.push_str("\u{1e}h:");
+        for h in &rsa.headlines {
+            let _ = write!(k, "{}\u{1f}{}\u{1d}", h.text, h.pin.as_deref().unwrap_or(""));
+        }
+        k.push_str("\u{1e}d:");
+        for d in &rsa.descriptions {
+            let _ = write!(k, "{}\u{1f}{}\u{1d}", d.text, d.pin.as_deref().unwrap_or(""));
+        }
+        let _ = write!(
+            k,
+            "\u{1e}p1:{}\u{1e}p2:{}",
+            rsa.path1.as_deref().unwrap_or(""),
+            rsa.path2.as_deref().unwrap_or(""),
+        );
+    }
+    k
+}
+
 fn diff_ad_group_criterion(d: &JsonAdGroupCriterion, l: &JsonAdGroupCriterion) -> Vec<String> {
     let mut c = Vec::new();
     if d.status != l.status {
@@ -783,4 +868,134 @@ fn campaign_criterion_key(cr: &JsonCampaignCriterion) -> Option<String> {
         ));
     }
     None
+}
+
+#[cfg(test)]
+mod ad_match_tests {
+    use super::*;
+    use crate::commands::export::{JsonAd, JsonResponsiveSearchAd, JsonRsaAsset};
+
+    fn ad(id: &str, ad_group: &str, status: &str, headline: &str) -> JsonAdGroupAd {
+        JsonAdGroupAd {
+            id: id.to_string(),
+            ad_group: ad_group.to_string(),
+            status: Some(status.to_string()),
+            ad: JsonAd {
+                name: None,
+                final_urls: vec!["https://example.com".to_string()],
+                responsive_search_ad: Some(JsonResponsiveSearchAd {
+                    headlines: vec![JsonRsaAsset {
+                        text: headline.to_string(),
+                        pin: None,
+                    }],
+                    descriptions: vec![JsonRsaAsset {
+                        text: "Block ads everywhere.".to_string(),
+                        pin: None,
+                    }],
+                    path1: None,
+                    path2: None,
+                }),
+            },
+        }
+    }
+
+    fn identity_match() -> HashMap<String, String> {
+        // declared resources reference the same live ad-group id directly.
+        let mut m = HashMap::new();
+        m.insert("ag".to_string(), "ag".to_string());
+        m
+    }
+
+    #[test]
+    fn identical_bodies_match_one_to_one_after_refresh() {
+        // Three same-bodied ads differing only by status — the refresh scenario.
+        // Each declared ad must claim a distinct live id with no diff.
+        let declared = vec![
+            ad("rsa_7", "ag", "ENABLED", "Block ads now"),
+            ad("rsa_8", "ag", "PAUSED", "Block ads now"),
+            ad("rsa_9", "ag", "ENABLED", "Block ads now"),
+        ];
+        let live = vec![
+            ad("100", "ag", "ENABLED", "Block ads now"),
+            ad("101", "ag", "PAUSED", "Block ads now"),
+            ad("102", "ag", "ENABLED", "Block ads now"),
+        ];
+
+        let actions = match_ad_group_ads(&declared, &live, &identity_match());
+
+        assert!(
+            actions.iter().all(|a| matches!(a, Action::NoOp { .. })),
+            "expected all no-ops, got {actions:?}"
+        );
+        let mut ids: Vec<&str> = actions.iter().filter_map(|a| a.live_id()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["100", "101", "102"], "each live ad claimed once");
+    }
+
+    #[test]
+    fn exact_status_preferred_over_status_update() {
+        // declared [ENABLED, PAUSED] vs live [PAUSED, ENABLED]: a naive
+        // first-come match would update both; correct is two no-ops.
+        let declared = vec![
+            ad("a", "ag", "ENABLED", "Same body"),
+            ad("b", "ag", "PAUSED", "Same body"),
+        ];
+        let live = vec![
+            ad("200", "ag", "PAUSED", "Same body"),
+            ad("201", "ag", "ENABLED", "Same body"),
+        ];
+
+        let actions = match_ad_group_ads(&declared, &live, &identity_match());
+
+        assert!(matches!(&actions[0], Action::NoOp { live_id } if live_id == "201"));
+        assert!(matches!(&actions[1], Action::NoOp { live_id } if live_id == "200"));
+    }
+
+    #[test]
+    fn leftover_declared_status_becomes_update() {
+        // declared [ENABLED, ENABLED] vs live [ENABLED, PAUSED]: one no-op, one
+        // genuine status update — never two updates on the same id.
+        let declared = vec![
+            ad("a", "ag", "ENABLED", "Same body"),
+            ad("b", "ag", "ENABLED", "Same body"),
+        ];
+        let live = vec![
+            ad("300", "ag", "ENABLED", "Same body"),
+            ad("301", "ag", "PAUSED", "Same body"),
+        ];
+
+        let actions = match_ad_group_ads(&declared, &live, &identity_match());
+
+        let noops = actions.iter().filter(|a| matches!(a, Action::NoOp { .. })).count();
+        let updates = actions
+            .iter()
+            .filter(|a| matches!(a, Action::Update { .. }))
+            .count();
+        assert_eq!((noops, updates), (1, 1));
+        let mut ids: Vec<&str> = actions.iter().filter_map(|a| a.live_id()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["300", "301"], "no live id reused");
+    }
+
+    #[test]
+    fn distinct_bodies_do_not_cross_match() {
+        // A unique-bodied declared ad with no live counterpart is a create, not a
+        // false match against an unrelated live ad in the same group.
+        let declared = vec![ad("new", "ag", "ENABLED", "Brand new copy")];
+        let live = vec![ad("400", "ag", "ENABLED", "Old copy")];
+
+        let actions = match_ad_group_ads(&declared, &live, &identity_match());
+
+        assert!(matches!(&actions[0], Action::Create));
+    }
+
+    #[test]
+    fn unmapped_ad_group_is_create() {
+        let declared = vec![ad("x", "missing_ag", "ENABLED", "Copy")];
+        let live = vec![ad("500", "ag", "ENABLED", "Copy")];
+
+        let actions = match_ad_group_ads(&declared, &live, &identity_match());
+
+        assert!(matches!(&actions[0], Action::Create));
+    }
 }

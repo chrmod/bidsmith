@@ -114,6 +114,18 @@ declared HCL against live labeled state. Local cache is rebuildable.
 - ✅ Member-level removal detection (no labels needed): an orphaned
   criterion whose declared parent still exists → `- destroy`, scoped to
   the `(parent, category)` the file already owns.
+- ✅ 1:1 ad matching by body (issue #44): `plan` matches each declared
+  `google_ads_ad_group_ad` to a live ad keyed on the ad body (final
+  URLs + RSA content), not on the ad group alone. Accounts routinely
+  hold several same-bodied ads differing only by status; the old "first
+  ad in the group" key collapsed them all onto one live id, which read
+  as spurious `~ update (status)` rows, "Cannot mutate the same resource
+  twice" rejections, and bogus creates for the unmatched ads — leaving
+  the whole batch un-applyable. Within a body bucket, ads that already
+  match are claimed first (no diff), the rest become status updates, and
+  any declared ad with no live body left is a create, so a `plan`
+  straight after `refresh` is a clean no-op. Still content-keyed, not
+  label-keyed — true identity arrives with the Phase 3 v2 labels.
 - ⏳ Whole-resource removal detection: labeled live resources with no
   matching .bid entry → `- destroy` (needs identity labels).
 - ⏳ Once labels are identity, `bidsmith mv` grows a second half: a
