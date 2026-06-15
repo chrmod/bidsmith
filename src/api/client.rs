@@ -157,27 +157,6 @@ fn backoff(attempt: u32) -> Duration {
     Duration::from_millis(250 * 2u64.pow(attempt - 1))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_transient_statuses_retry() {
-        for s in [429, 500, 502, 503, 504] {
-            assert!(is_retryable_status(s), "{s} should retry");
-        }
-        for s in [200, 400, 401, 403, 404, 409] {
-            assert!(!is_retryable_status(s), "{s} should not retry");
-        }
-    }
-
-    #[test]
-    fn backoff_increases_each_attempt() {
-        assert!(backoff(1) < backoff(2));
-        assert!(backoff(2) < backoff(3));
-    }
-}
-
 /// `customers:listAccessibleCustomers` — the accounts the signed-in user can
 /// reach. Needs only the developer token + access token (no customer id, no
 /// login-customer-id), which makes it the ideal post-login verification call.
@@ -212,4 +191,25 @@ pub fn list_accessible_customers(
         })
         .unwrap_or_default();
     Ok(names)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_transient_statuses_retry() {
+        for s in [429, 500, 502, 503, 504] {
+            assert!(is_retryable_status(s), "{s} should retry");
+        }
+        for s in [200, 400, 401, 403, 404, 409] {
+            assert!(!is_retryable_status(s), "{s} should not retry");
+        }
+    }
+
+    #[test]
+    fn backoff_increases_each_attempt() {
+        assert!(backoff(1) < backoff(2));
+        assert!(backoff(2) < backoff(3));
+    }
 }
