@@ -328,7 +328,10 @@ pub fn build_mutate_with_diff(
         if create_set.contains(&a.id) {
             let action_rn = match a.call_conversion_action.as_ref() {
                 Some(addr) if addr.starts_with("customers/") => Some(addr.clone()),
-                Some(addr) => resolve(&refs, addr, &a.id, "call_conversion_action", &mut errors),
+                Some(addr) => match resolve(&refs, addr, &a.id, "call_conversion_action", &mut errors) {
+                    Some(s) => Some(s),
+                    None => continue,
+                },
                 None => None,
             };
             mutate_ops.push(json!({
