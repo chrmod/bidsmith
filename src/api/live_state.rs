@@ -15,6 +15,12 @@ pub enum LiveStateError {
         status: u16,
         body: String,
     },
+    #[error("query {query_label} returned an unparseable {status} response: {body}")]
+    MalformedResponse {
+        query_label: &'static str,
+        status: u16,
+        body: String,
+    },
     #[error("adapter error: {0}")]
     Adapter(String),
 }
@@ -201,6 +207,12 @@ pub fn fetch_raw(client: &Client, access_token: &str) -> Result<Vec<Value>, Live
             all_batches.extend(arr.iter().cloned());
         } else if response.body.is_object() {
             all_batches.push(response.body.clone());
+        } else {
+            return Err(LiveStateError::MalformedResponse {
+                query_label: label,
+                status: response.status,
+                body: response.body_raw,
+            });
         }
     }
     Ok(all_batches)

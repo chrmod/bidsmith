@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -57,10 +57,23 @@ pub struct StoredCreds {
     pub customer_id: Option<String>,
 }
 
+fn parse_toml_or_warn<T>(raw: &str, path: &Path) -> T
+where
+    T: Default + serde::de::DeserializeOwned,
+{
+    match toml::from_str(raw) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("warning: ignoring malformed {}: {e}", path.display());
+            T::default()
+        }
+    }
+}
+
 impl StoredCreds {
     pub fn load() -> Self {
         match std::fs::read_to_string(credentials_path()) {
-            Ok(raw) => toml::from_str(&raw).unwrap_or_default(),
+            Ok(raw) => parse_toml_or_warn(&raw, &credentials_path()),
             Err(_) => Self::default(),
         }
     }
@@ -114,7 +127,7 @@ impl ProjectConfig {
             return Self::default();
         };
         match std::fs::read_to_string(&path) {
-            Ok(raw) => toml::from_str(&raw).unwrap_or_default(),
+            Ok(raw) => parse_toml_or_warn(&raw, &path),
             Err(_) => Self::default(),
         }
     }
