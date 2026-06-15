@@ -538,11 +538,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
         write_customer_asset(&mut account, &name, a, &call_asset_addr);
     }
 
-    for s in &input.shared_sets {
-        let name = names.allocate("google_ads_shared_set", &slugify(&s.name));
-        shared_set_addr.insert(s.id.clone(), format!("google_ads_shared_set.{name}"));
-        write_shared_set(&mut account, &name, s);
-    }
+    write_shared_sets_and_criteria(&mut account, input, &mut names, &mut shared_set_addr);
 
     let has_campaign_resources = !input.campaign_budgets.is_empty()
         || !input.campaigns.is_empty()
@@ -728,11 +724,7 @@ fn render(input: &ExportInput) -> String {
         write_campaign_criterion(&mut out, &name, c, &campaign_addr);
     }
 
-    for s in &input.shared_sets {
-        let name = names.allocate("google_ads_shared_set", &slugify(&s.name));
-        shared_set_addr.insert(s.id.clone(), format!("google_ads_shared_set.{name}"));
-        write_shared_set(&mut out, &name, s);
-    }
+    write_shared_sets_and_criteria(&mut out, input, &mut names, &mut shared_set_addr);
 
     for s in &input.campaign_shared_sets {
         let base = match (
@@ -1251,7 +1243,7 @@ fn write_customer_asset(
     out.push_str("}\n\n");
 }
 
-fn write_shared_set(out: &mut String, name: &str, s: &JsonSharedSet) {
+fn write_shared_set(out: &mut String, name: &str, s: &JsonSharedSet, extra_members: &[&JsonKeyword]) {
     let _ = writeln!(out, "resource \"google_ads_shared_set\" \"{name}\" {{");
     write_attr(out, 1, "name", &fmt_string(&s.name));
     if let Some(t) = &s.ty {
@@ -1260,13 +1252,69 @@ fn write_shared_set(out: &mut String, name: &str, s: &JsonSharedSet) {
     if let Some(st) = &s.status {
         write_attr(out, 1, "status", &fmt_string(st));
     }
-    for kw in &s.negative_keywords {
+    let mut seen: HashSet<(&str, &str)> = HashSet::new();
+    for kw in s.negative_keywords.iter().chain(extra_members.iter().copied()) {
+        if !seen.insert((kw.text.as_str(), kw.match_type.as_str())) {
+            continue;
+        }
         out.push_str("\n  negative_keyword {\n");
         write_attr(out, 2, "text", &fmt_string(&kw.text));
         write_attr(out, 2, "match_type", &fmt_string(&kw.match_type));
         out.push_str("  }\n");
     }
     out.push_str("}\n\n");
+}
+
+fn write_shared_criterion(
+    out: &mut String,
+    name: &str,
+    c: &JsonSharedCriterion,
+    shared_set_addr: &HashMap<String, String>,
+) {
+    let _ = writeln!(out, "resource \"google_ads_shared_criterion\" \"{name}\" {{");
+    let shared_set_ref = match shared_set_addr.get(&c.shared_set) {
+        Some(addr) => format!("{addr}.id"),
+        None => fmt_string(&c.shared_set),
+    };
+    write_attr(out, 1, "shared_set", &shared_set_ref);
+    out.push_str("\n  keyword {\n");
+    write_attr(out, 2, "text", &fmt_string(&c.keyword.text));
+    write_attr(out, 2, "match_type", &fmt_string(&c.keyword.match_type));
+    out.push_str("  }\n");
+    out.push_str("}\n\n");
+}
+
+// Members can arrive both folded into the set and as standalone criteria; render the deduped union inline, only external sets standalone.
+fn write_shared_sets_and_criteria(
+    out: &mut String,
+    input: &ExportInput,
+    names: &mut NameAllocator,
+    shared_set_addr: &mut HashMap<String, String>,
+) {
+    let mut members_by_set: HashMap<&str, Vec<&JsonKeyword>> = HashMap::new();
+    for c in &input.shared_criteria {
+        members_by_set
+            .entry(c.shared_set.as_str())
+            .or_default()
+            .push(&c.keyword);
+    }
+    for s in &input.shared_sets {
+        let name = names.allocate("google_ads_shared_set", &slugify(&s.name));
+        shared_set_addr.insert(s.id.clone(), format!("google_ads_shared_set.{name}"));
+        let extra = members_by_set
+            .get(s.id.as_str())
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+        write_shared_set(out, &name, s, extra);
+    }
+    let rendered: HashSet<&str> = input.shared_sets.iter().map(|s| s.id.as_str()).collect();
+    for c in &input.shared_criteria {
+        if rendered.contains(c.shared_set.as_str()) {
+            continue;
+        }
+        let name = names.allocate("google_ads_shared_criterion", &slugify(&c.keyword.text));
+        write_shared_criterion(out, &name, c, shared_set_addr);
+    }
 }
 
 fn write_campaign_shared_set(
@@ -1653,5 +1701,48 @@ mod tests {
             !campaigns.contains("<unresolved"),
             "pruned render still has dangling refs:\n{campaigns}"
         );
+    }
+
+    #[test]
+    fn shared_criteria_survive_export_and_round_trip() {
+        // The --from-json shape: members live only in shared_criteria (the set's
+        // negative_keywords is empty). They must not be dropped on export.
+        let input: ExportInput = serde_json::from_str(
+            r#"{
+            "customer_id": "9",
+            "shared_sets": [
+                {"id":"google_ads_shared_set.negs","name":"Negatives","type":"NEGATIVE_KEYWORDS","status":"ENABLED"}
+            ],
+            "shared_criteria": [
+                {"id":"a","shared_set":"google_ads_shared_set.negs","keyword":{"text":"free","match_type":"BROAD"}},
+                {"id":"b","shared_set":"customers/9/sharedSets/77","keyword":{"text":"cheap","match_type":"PHRASE"}}
+            ]
+        }"#,
+        )
+        .expect("input");
+
+        let out = render(&input);
+        assert!(out.contains(r#""free""#), "in-snapshot member dropped:\n{out}");
+        assert!(out.contains("negative_keyword {"), "member not inlined:\n{out}");
+        assert!(out.contains(r#""cheap""#), "external-set member dropped:\n{out}");
+        assert!(
+            out.contains("resource \"google_ads_shared_criterion\""),
+            "criterion for a set outside the snapshot should be standalone:\n{out}"
+        );
+
+        let dir = std::env::temp_dir().join(format!("bidsmith-sc-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("main.bid");
+        std::fs::write(&path, &out).unwrap();
+        let parsed = vec![crate::parser::parse_file(&path).expect("parses")];
+        let diags = crate::schema::validate_files(&parsed, &crate::schema::InputBindings::default());
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(
+            errors.is_empty(),
+            "round-trip validate errors: {:?}\n{out}",
+            errors.iter().map(|d| d.message.clone()).collect::<Vec<_>>()
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
