@@ -96,11 +96,47 @@ resource "google_ads_ad_group_ad" "replacement_rsa" {
 }
 ```
 
+## Vary the landing page per ad group
+
+Often the creative is shared but each ad group points at a different
+landing page — homepage here, a comparison page there. You don't need a
+separate template for each URL. Drop `final_urls` from the template and
+let every ad supply its own; `path1` / `path2` work the same way:
+
+```hcl
+ad_template "ublock_rsa" {
+  responsive_search_ad {
+    headlines    = ["uBlock Gone? Try Ghostery", "uBlock Replacement Found", "Switch from uBlock Now"]
+    descriptions = ["Blocks ads, trackers & popups. Manifest V3 ready.", "The privacy suite millions trust."]
+    path2        = "ghostery"
+  }
+}
+
+resource "google_ads_ad_group_ad" "chrome_rsa" {
+  ad_group   = google_ads_ad_group.chrome.id
+  template   = ad_template.ublock_rsa
+  final_urls = ["https://ghostery.info/chrome?utm_term={keyword}"]
+  path1      = "chrome"
+}
+
+resource "google_ads_ad_group_ad" "safari_rsa" {
+  ad_group   = google_ads_ad_group.safari.id
+  template   = ad_template.ublock_rsa
+  final_urls = ["https://ghostery.info/safari?utm_term={keyword}"]
+  path1      = "safari"
+}
+```
+
+Anything you set on the resource (`final_urls`, `path1`, `path2`) wins
+over the template; anything you leave out is inherited. The headlines and
+descriptions still live in one place. If a template omits `final_urls`,
+every reference has to provide one — `validate` catches any that forget.
+
 <Aside type="tip">
-  v1 templates are for **identical** bodies — every ad that references a
-  template gets exactly the same creative. Per-ad-group tweaks (a
-  different final URL per ad group, say) aren't supported yet; keep those
-  ads as inline `ad {}` blocks for now.
+  Overrides only apply on top of a `template`. With an inline `ad {}`
+  block, set `final_urls` / `path1` / `path2` inside the block as usual.
+  Per-asset headline/description overrides aren't supported yet — vary
+  those by keeping separate templates.
 </Aside>
 
 ## See also

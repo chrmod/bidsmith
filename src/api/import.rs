@@ -465,6 +465,9 @@ fn import_ad_group_ad(
     let mut status = None;
     let mut ad = None;
     let mut template: Option<&Attribute> = None;
+    let mut final_urls_override: Option<Vec<String>> = None;
+    let mut path1_override: Option<String> = None;
+    let mut path2_override: Option<String> = None;
 
     for s in block.body.iter() {
         match s {
@@ -472,6 +475,9 @@ fn import_ad_group_ad(
                 "ad_group" => ad_group_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r)),
                 "status" => status = expect_string_owned(ctx, a),
                 "template" => template = Some(a),
+                "final_urls" => final_urls_override = Some(expect_string_list(ctx, &a.value)),
+                "path1" => path1_override = expect_string_owned(ctx, a),
+                "path2" => path2_override = expect_string_owned(ctx, a),
                 _ => {}
             },
             Structure::Block(b) if b.ident.as_str() == "ad" => {
@@ -482,9 +488,12 @@ fn import_ad_group_ad(
     }
 
     // Expand `template = ad_template.<name>` into the template's body — same mutate as an inline `ad {}`, own address kept.
+    // Per-instance overrides on the resource (final_urls, RSA path1/path2) take precedence over the template body.
     if ad.is_none() {
         if let Some(a) = template {
-            ad = Some(resolve_ad_template(ctx, a)?);
+            let mut resolved = resolve_ad_template(ctx, a)?;
+            apply_ad_overrides(&mut resolved, final_urls_override, path1_override, path2_override);
+            ad = Some(resolved);
         }
     }
 
@@ -517,6 +526,27 @@ fn resolve_ad_template(ctx: &Ctx, attr: &Attribute) -> Result<JsonAd, Diag> {
             span_of(attr.value.span()),
             format!("reference to undeclared ad_template 'ad_template.{name}'"),
         )),
+    }
+}
+
+fn apply_ad_overrides(
+    ad: &mut JsonAd,
+    final_urls: Option<Vec<String>>,
+    path1: Option<String>,
+    path2: Option<String>,
+) {
+    if let Some(urls) = final_urls {
+        if !urls.is_empty() {
+            ad.final_urls = urls;
+        }
+    }
+    if let Some(rsa) = ad.responsive_search_ad.as_mut() {
+        if path1.is_some() {
+            rsa.path1 = path1;
+        }
+        if path2.is_some() {
+            rsa.path2 = path2;
+        }
     }
 }
 
@@ -1749,6 +1779,61 @@ resource "google_ads_ad_group_ad" "b" {
         let ids: Vec<&str> = input.ad_group_ads.iter().map(|a| a.id.as_str()).collect();
         assert!(ids.iter().any(|id| id.ends_with("google_ads_ad_group_ad.a")));
         assert!(ids.iter().any(|id| id.ends_with("google_ads_ad_group_ad.b")));
+    }
+
+    #[test]
+    fn ad_template_overrides_apply_per_instance() {
+        let input = import_str(
+            "ad_template_overrides",
+            r#"
+ad_template "shared" {
+  final_urls = ["https://example.com/default"]
+  responsive_search_ad {
+    headlines    = ["First Headline", "Second Headline", "Third Headline"]
+    descriptions = ["First description", "Second description"]
+    path1        = "default"
+    path2        = "shop"
+  }
+}
+
+resource "google_ads_ad_group_ad" "base" {
+  ad_group = google_ads_ad_group.ag_base.id
+  template = ad_template.shared
+}
+
+resource "google_ads_ad_group_ad" "custom" {
+  ad_group   = google_ads_ad_group.ag_custom.id
+  template   = ad_template.shared
+  final_urls = ["https://example.com/custom"]
+  path1      = "custom"
+}
+"#,
+        );
+        let by_addr = |suffix: &str| {
+            input
+                .ad_group_ads
+                .iter()
+                .find(|a| a.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("missing {suffix}"))
+        };
+
+        // No overrides → the template body is used verbatim.
+        let base = &by_addr("google_ads_ad_group_ad.base").ad;
+        assert_eq!(base.final_urls, vec!["https://example.com/default".to_string()]);
+        let base_rsa = base.responsive_search_ad.as_ref().expect("rsa");
+        assert_eq!(base_rsa.path1.as_deref(), Some("default"));
+        assert_eq!(base_rsa.path2.as_deref(), Some("shop"));
+
+        // Overrides win for the fields they set; unset fields (descriptions, path2,
+        // headlines) inherit from the template.
+        let custom = &by_addr("google_ads_ad_group_ad.custom").ad;
+        assert_eq!(custom.final_urls, vec!["https://example.com/custom".to_string()]);
+        let custom_rsa = custom.responsive_search_ad.as_ref().expect("rsa");
+        assert_eq!(custom_rsa.path1.as_deref(), Some("custom"));
+        assert_eq!(custom_rsa.path2.as_deref(), Some("shop"));
+        let headlines: Vec<&str> = custom_rsa.headlines.iter().map(|h| h.text.as_str()).collect();
+        assert_eq!(headlines, vec!["First Headline", "Second Headline", "Third Headline"]);
+        assert_eq!(custom_rsa.descriptions.len(), 2);
     }
 
     fn diff_after_defaults(

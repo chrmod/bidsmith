@@ -49,10 +49,18 @@ resource "google_ads_ad_group_ad" "chrome_rsa" {
   ad_group = google_ads_ad_group.chrome.id
   status = "ENABLED"
   template = ad_template.ublock_rsa
+  final_urls = [
+    "https://ghostery.info/chrome?utm_source=google&utm_medium=cpc&utm_term={keyword}",
+  ]
+  path1 = "chrome"
 }
 
 resource "google_ads_ad_group_ad" "safari_rsa" {
   ad_group = google_ads_ad_group.safari.id
   status = "ENABLED"
   template = ad_template.ublock_rsa
+  final_urls = [
+    "https://ghostery.info/safari?utm_source=google&utm_medium=cpc&utm_term={keyword}",
+  ]
+  path1 = "safari"
 }

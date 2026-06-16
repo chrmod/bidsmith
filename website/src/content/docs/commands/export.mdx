@@ -104,6 +104,16 @@ The renderer emits the **compact form** of every resource type:
 - RSAs as `headlines = [...]` / `descriptions = [...]` list
   attributes when more concise than per-headline blocks.
 
+It also **folds repeated structure**: an ad body shared by two or more
+ads becomes one [`ad_template`](/bidsmith/resources/google_ads_ad_group_ad/)
+(URL-variant bodies share a single URL-agnostic template with per-ad
+`final_urls` / `path1` / `path2` overrides), and a headline/description
+list or a campaign negative list reused across resources is lifted into a
+[`locals`](/bidsmith/concepts/locals/) block. Folding is purely a source
+representation choice — the folded `.bid` expands to the same resources
+and plans against a live account with zero changes, identical to the
+long-hand form.
+
 The output is always canonical — `bidsmith fmt --check` on the
 result is a no-op.
 

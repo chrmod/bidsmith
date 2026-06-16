@@ -255,7 +255,7 @@ pub struct JsonResponsiveSearchAd {
     pub path2: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct JsonRsaAsset {
     pub text: String,
     #[serde(default)]
@@ -528,11 +528,13 @@ fn write_account_assets(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_campaign_tree(
     out: &mut String,
     input: &ExportInput,
     names: &mut NameAllocator,
     inline: &InlineTargeting,
+    plan: Option<&FoldPlan>,
     budget_addr: &mut HashMap<String, String>,
     campaign_addr: &mut HashMap<String, String>,
     ad_group_addr: &mut HashMap<String, String>,
@@ -559,10 +561,10 @@ fn write_campaign_tree(
         ad_group_addr.insert(g.id.clone(), format!("google_ads_ad_group.{name}"));
         write_ad_group(out, &name, g, campaign_addr);
     }
-    for a in &input.ad_group_ads {
+    for (i, a) in input.ad_group_ads.iter().enumerate() {
         let base = ad_ad_base(a, ad_group_addr);
         let name = names.allocate("google_ads_ad_group_ad", &base);
-        write_ad_group_ad(out, &name, a, ad_group_addr);
+        write_ad_group_ad(out, &name, a, ad_group_addr, plan, i);
     }
     for group in group_ad_group_criteria(&input.ad_group_criteria) {
         let base = ad_group_criterion_group_base(&group, ad_group_addr);
@@ -578,7 +580,7 @@ fn write_campaign_tree(
     for group in negative_groups {
         let base = campaign_negative_group_base(&group, campaign_addr);
         let name = names.allocate("google_ads_campaign_criterion", &slugify(&base));
-        write_campaign_negative_group(out, &name, &group, campaign_addr);
+        write_campaign_negative_group(out, &name, &group, campaign_addr, plan);
     }
     for c in singletons {
         let base = criterion_base(c);
@@ -616,6 +618,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
     let mut campaigns = String::new();
     let mut names = NameAllocator::default();
     let inline = compute_inline_targeting(input);
+    let plan = plan_fold(input);
 
     let mut budget_addr: HashMap<String, String> = HashMap::new();
     let mut campaign_addr: HashMap<String, String> = HashMap::new();
@@ -644,11 +647,15 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
 
     if has_campaign_resources {
         write_provider(&mut campaigns, input);
+        if plan.has_decls() {
+            write_fold_decls(&mut campaigns, &plan);
+        }
         write_campaign_tree(
             &mut campaigns,
             input,
             &mut names,
             &inline,
+            Some(&plan),
             &mut budget_addr,
             &mut campaign_addr,
             &mut ad_group_addr,
@@ -673,9 +680,14 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
 }
 
 fn render(input: &ExportInput) -> String {
+    render_inner(input, true)
+}
+
+fn render_inner(input: &ExportInput, fold: bool) -> String {
     let mut out = String::new();
     let mut names = NameAllocator::default();
     let inline = compute_inline_targeting(input);
+    let plan = fold.then(|| plan_fold(input));
 
     let mut budget_addr: HashMap<String, String> = HashMap::new();
     let mut campaign_addr: HashMap<String, String> = HashMap::new();
@@ -692,11 +704,17 @@ fn render(input: &ExportInput) -> String {
         &mut conversion_action_addr,
         &mut call_asset_addr,
     );
+    if let Some(p) = &plan {
+        if p.has_decls() {
+            write_fold_decls(&mut out, p);
+        }
+    }
     write_campaign_tree(
         &mut out,
         input,
         &mut names,
         &inline,
+        plan.as_ref(),
         &mut budget_addr,
         &mut campaign_addr,
         &mut ad_group_addr,
@@ -820,6 +838,8 @@ fn write_ad_group_ad(
     name: &str,
     a: &JsonAdGroupAd,
     ad_group_addr: &HashMap<String, String>,
+    plan: Option<&FoldPlan>,
+    idx: usize,
 ) {
     let _ = writeln!(out, "resource \"google_ads_ad_group_ad\" \"{name}\" {{");
     let ad_group_ref = match ad_group_addr.get(&a.ad_group) {
@@ -831,6 +851,21 @@ fn write_ad_group_ad(
         write_attr(out, 1, "status", &fmt_string(s));
     }
 
+    if let Some(ov) = plan.and_then(|p| p.ad_emit.get(&idx)) {
+        write_attr(out, 1, "template", &format!("ad_template.{}", ov.template));
+        if let Some(urls) = &ov.final_urls {
+            write_attr(out, 1, "final_urls", &fmt_string_list(urls));
+        }
+        if let Some(p) = &ov.path1 {
+            write_attr(out, 1, "path1", &fmt_string(p));
+        }
+        if let Some(p) = &ov.path2 {
+            write_attr(out, 1, "path2", &fmt_string(p));
+        }
+        out.push_str("}\n\n");
+        return;
+    }
+
     out.push_str("\n  ad {\n");
     if let Some(n) = &a.ad.name {
         write_attr(out, 2, "name", &fmt_string(n));
@@ -838,12 +873,8 @@ fn write_ad_group_ad(
     write_attr(out, 2, "final_urls", &fmt_string_list(&a.ad.final_urls));
     if let Some(rsa) = &a.ad.responsive_search_ad {
         out.push_str("\n    responsive_search_ad {\n");
-        if !rsa.headlines.is_empty() {
-            write_attr(out, 3, "headlines", &fmt_rsa_asset_list(&rsa.headlines));
-        }
-        if !rsa.descriptions.is_empty() {
-            write_attr(out, 3, "descriptions", &fmt_rsa_asset_list(&rsa.descriptions));
-        }
+        write_rsa_list_attr(out, 3, "headlines", &rsa.headlines, plan.map(|p| &p.headline_local_by_key));
+        write_rsa_list_attr(out, 3, "descriptions", &rsa.descriptions, plan.map(|p| &p.description_local_by_key));
         if let Some(p) = &rsa.path1 {
             write_attr(out, 3, "path1", &fmt_string(p));
         }
@@ -854,6 +885,67 @@ fn write_ad_group_ad(
     }
     out.push_str("  }\n");
     out.push_str("}\n\n");
+}
+
+fn write_rsa_list_attr(
+    out: &mut String,
+    indent: usize,
+    name: &str,
+    assets: &[JsonRsaAsset],
+    by_key: Option<&HashMap<AssetKey, String>>,
+) {
+    if assets.is_empty() {
+        return;
+    }
+    match by_key.and_then(|m| m.get(&asset_key(assets))) {
+        Some(local) => write_attr(out, indent, name, &format!("local.{local}")),
+        None => write_attr(out, indent, name, &fmt_rsa_asset_list(assets)),
+    }
+}
+
+fn write_fold_decls(out: &mut String, plan: &FoldPlan) {
+    if plan.has_locals() {
+        out.push_str("locals {\n");
+        for (name, key) in &plan.headline_locals {
+            write_attr(out, 1, name, &fmt_rsa_asset_list(&assets_from_key(key)));
+        }
+        for (name, key) in &plan.description_locals {
+            write_attr(out, 1, name, &fmt_rsa_asset_list(&assets_from_key(key)));
+        }
+        for (name, texts) in &plan.negative_locals {
+            write_attr(out, 1, name, &fmt_string_list(texts));
+        }
+        out.push_str("}\n\n");
+    }
+    for t in &plan.templates {
+        write_template(out, t, plan);
+    }
+}
+
+fn write_template(out: &mut String, t: &TemplateDecl, plan: &FoldPlan) {
+    let _ = writeln!(out, "ad_template \"{}\" {{", t.name);
+    let mut wrote_attr = false;
+    if let Some(n) = &t.ad_name {
+        write_attr(out, 1, "name", &fmt_string(n));
+        wrote_attr = true;
+    }
+    if let Some(urls) = &t.final_urls {
+        write_attr(out, 1, "final_urls", &fmt_string_list(urls));
+        wrote_attr = true;
+    }
+    if wrote_attr {
+        out.push('\n');
+    }
+    out.push_str("  responsive_search_ad {\n");
+    write_rsa_list_attr(out, 2, "headlines", &t.headlines, Some(&plan.headline_local_by_key));
+    write_rsa_list_attr(out, 2, "descriptions", &t.descriptions, Some(&plan.description_local_by_key));
+    if let Some(p) = &t.path1 {
+        write_attr(out, 2, "path1", &fmt_string(p));
+    }
+    if let Some(p) = &t.path2 {
+        write_attr(out, 2, "path2", &fmt_string(p));
+    }
+    out.push_str("  }\n}\n\n");
 }
 
 type AdGroupCriterionKey = (String, bool, Option<String>, Option<i64>, Option<String>);
@@ -1006,6 +1098,290 @@ fn compute_inline_targeting(input: &ExportInput) -> InlineTargeting {
     t
 }
 
+// ---- Folding (issue #57): collapse repeated structure into `ad_template` + `locals` ----
+//
+// `refresh` / `export` are bootstrap emitters: every run reflects live state, so
+// folding is a pure *source representation* change. The constructs all expand back
+// to the identical mutate at import time (templates → #40/#58, list `locals` → #39),
+// so the folded tree round-trips through `validate` / `plan` exactly like the
+// verbose one. This is enforced by `fold_roundtrips_to_verbose` in the test module.
+
+type AssetKey = Vec<(String, Option<String>)>;
+
+fn asset_key(assets: &[JsonRsaAsset]) -> AssetKey {
+    assets.iter().map(|a| (a.text.clone(), a.pin.clone())).collect()
+}
+
+fn assets_from_key(key: &AssetKey) -> Vec<JsonRsaAsset> {
+    key.iter()
+        .map(|(text, pin)| JsonRsaAsset {
+            text: text.clone(),
+            pin: pin.clone(),
+        })
+        .collect()
+}
+
+struct TemplateDecl {
+    name: String,
+    ad_name: Option<String>,
+    final_urls: Option<Vec<String>>,
+    headlines: Vec<JsonRsaAsset>,
+    descriptions: Vec<JsonRsaAsset>,
+    path1: Option<String>,
+    path2: Option<String>,
+}
+
+#[derive(Clone)]
+struct AdOverride {
+    template: String,
+    final_urls: Option<Vec<String>>,
+    path1: Option<String>,
+    path2: Option<String>,
+}
+
+#[derive(Default)]
+struct FoldPlan {
+    templates: Vec<TemplateDecl>,
+    ad_emit: HashMap<usize, AdOverride>,
+    headline_locals: Vec<(String, AssetKey)>,
+    description_locals: Vec<(String, AssetKey)>,
+    headline_local_by_key: HashMap<AssetKey, String>,
+    description_local_by_key: HashMap<AssetKey, String>,
+    negative_locals: Vec<(String, Vec<String>)>,
+    campaign_negative_fold: HashMap<(String, String), (String, String)>,
+}
+
+impl FoldPlan {
+    fn has_decls(&self) -> bool {
+        !self.templates.is_empty()
+            || !self.headline_locals.is_empty()
+            || !self.description_locals.is_empty()
+            || !self.negative_locals.is_empty()
+    }
+
+    fn has_locals(&self) -> bool {
+        !self.headline_locals.is_empty()
+            || !self.description_locals.is_empty()
+            || !self.negative_locals.is_empty()
+    }
+}
+
+fn truncate_slug(s: &str) -> String {
+    const MAX: usize = 40;
+    if s.chars().count() <= MAX {
+        return s.to_string();
+    }
+    let mut t: String = s.chars().take(MAX).collect();
+    while t.ends_with('_') {
+        t.pop();
+    }
+    t
+}
+
+fn template_base(a: &JsonAdGroupAd) -> String {
+    if let Some(rsa) = &a.ad.responsive_search_ad {
+        if let Some(h) = rsa.headlines.first() {
+            return format!("{}_rsa", truncate_slug(&slugify(&h.text)));
+        }
+    }
+    if let Some(name) = a.ad.name.as_deref().filter(|s| !s.trim().is_empty()) {
+        return format!("{}_rsa", truncate_slug(&slugify(name)));
+    }
+    "rsa".to_string()
+}
+
+type CreativeKey = (Option<String>, AssetKey, AssetKey);
+
+fn plan_fold(input: &ExportInput) -> FoldPlan {
+    let mut plan = FoldPlan::default();
+    let mut names = NameAllocator::default();
+
+    // Group RSA-bearing ads by creative content (name + headlines + descriptions);
+    // `final_urls` / `path1` / `path2` are deliberately excluded — they become
+    // per-instance overrides (#58) so URL-variant ads collapse onto one template.
+    let mut order: Vec<CreativeKey> = Vec::new();
+    let mut members: HashMap<CreativeKey, Vec<usize>> = HashMap::new();
+    for (i, a) in input.ad_group_ads.iter().enumerate() {
+        let Some(rsa) = &a.ad.responsive_search_ad else {
+            continue;
+        };
+        let key: CreativeKey = (
+            a.ad.name.clone(),
+            asset_key(&rsa.headlines),
+            asset_key(&rsa.descriptions),
+        );
+        if !members.contains_key(&key) {
+            order.push(key.clone());
+        }
+        members.entry(key).or_default().push(i);
+    }
+
+    for key in &order {
+        let idxs = &members[key];
+        if idxs.len() < 2 {
+            continue;
+        }
+        let first = &input.ad_group_ads[idxs[0]];
+        let first_rsa = first.ad.responsive_search_ad.as_ref().unwrap();
+
+        let final_uniform = idxs
+            .iter()
+            .all(|&i| input.ad_group_ads[i].ad.final_urls == first.ad.final_urls);
+        let path1_uniform = idxs.iter().all(|&i| {
+            rsa_path(input, i, |r| &r.path1) == first_rsa.path1.as_deref()
+        });
+        let path2_uniform = idxs.iter().all(|&i| {
+            rsa_path(input, i, |r| &r.path2) == first_rsa.path2.as_deref()
+        });
+
+        let tname = names.allocate("ad_template", &template_base(first));
+        plan.templates.push(TemplateDecl {
+            name: tname.clone(),
+            ad_name: first.ad.name.clone(),
+            final_urls: final_uniform.then(|| first.ad.final_urls.clone()),
+            headlines: first_rsa.headlines.clone(),
+            descriptions: first_rsa.descriptions.clone(),
+            path1: path1_uniform.then(|| first_rsa.path1.clone()).flatten(),
+            path2: path2_uniform.then(|| first_rsa.path2.clone()).flatten(),
+        });
+
+        for &i in idxs {
+            let a = &input.ad_group_ads[i];
+            let rsa = a.ad.responsive_search_ad.as_ref().unwrap();
+            plan.ad_emit.insert(
+                i,
+                AdOverride {
+                    template: tname.clone(),
+                    final_urls: (!final_uniform).then(|| a.ad.final_urls.clone()),
+                    path1: if path1_uniform { None } else { rsa.path1.clone() },
+                    path2: if path2_uniform { None } else { rsa.path2.clone() },
+                },
+            );
+        }
+    }
+
+    // Lift RSA arrays used by >= 2 emission sites (templates + still-inline ads) into
+    // `locals`. A template emits its array once regardless of how many ads it backs,
+    // so the count is per emission site, not per ad.
+    let mut h_sites: Vec<AssetKey> = Vec::new();
+    let mut d_sites: Vec<AssetKey> = Vec::new();
+    for t in &plan.templates {
+        h_sites.push(asset_key(&t.headlines));
+        d_sites.push(asset_key(&t.descriptions));
+    }
+    for (i, a) in input.ad_group_ads.iter().enumerate() {
+        if plan.ad_emit.contains_key(&i) {
+            continue;
+        }
+        if let Some(rsa) = &a.ad.responsive_search_ad {
+            h_sites.push(asset_key(&rsa.headlines));
+            d_sites.push(asset_key(&rsa.descriptions));
+        }
+    }
+    lift_locals(&mut names, &h_sites, "headlines", &mut plan.headline_locals, &mut plan.headline_local_by_key);
+    lift_locals(&mut names, &d_sites, "descriptions", &mut plan.description_locals, &mut plan.description_local_by_key);
+
+    plan_negative_locals(input, &mut names, &mut plan);
+    plan
+}
+
+// Campaign negative-keyword text lists shared by >= 2 campaigns become one shared
+// `local`, referenced via the compact `negative_keywords { texts = local.x }` form.
+// Deliberately NOT a `google_ads_shared_set`: live negatives are per-campaign
+// criteria, so emitting a SharedSet would plan as create-set + attach + destroy the
+// criteria — a real migration, not the zero-drift representation change a refresh must be.
+fn plan_negative_locals(input: &ExportInput, names: &mut NameAllocator, plan: &mut FoldPlan) {
+    type GroupKey = (String, String);
+    let mut order: Vec<GroupKey> = Vec::new();
+    let mut groups: HashMap<GroupKey, Vec<&JsonKeyword>> = HashMap::new();
+    for c in &input.campaign_criteria {
+        if !c.negative.unwrap_or(false) {
+            continue;
+        }
+        let Some(kw) = &c.keyword else { continue };
+        let key = (c.campaign.clone(), c.status.clone().unwrap_or_default());
+        if !groups.contains_key(&key) {
+            order.push(key.clone());
+        }
+        groups.entry(key).or_default().push(kw);
+    }
+
+    // A group folds only if all its negatives share one match_type (the shape the
+    // compact `texts` list collapses to).
+    type Combo = (String, Vec<String>);
+    let mut candidates: Vec<(GroupKey, Combo)> = Vec::new();
+    for key in &order {
+        let kws = &groups[key];
+        let mt = kws[0].match_type.clone();
+        if !kws.iter().all(|k| k.match_type == mt) {
+            continue;
+        }
+        let texts: Vec<String> = kws.iter().map(|k| k.text.clone()).collect();
+        candidates.push((key.clone(), (mt, texts)));
+    }
+
+    let mut counts: HashMap<&Combo, usize> = HashMap::new();
+    for (_, combo) in &candidates {
+        *counts.entry(combo).or_default() += 1;
+    }
+
+    let mut local_for: HashMap<Combo, String> = HashMap::new();
+    for (key, combo) in &candidates {
+        if counts[combo] < 2 {
+            continue;
+        }
+        let name = match local_for.get(combo) {
+            Some(n) => n.clone(),
+            None => {
+                let (_, texts) = combo;
+                let base = format!("{}_negatives", truncate_slug(&slugify(&texts[0])));
+                let n = names.allocate("local", &base);
+                local_for.insert(combo.clone(), n.clone());
+                plan.negative_locals.push((n.clone(), texts.clone()));
+                n
+            }
+        };
+        plan.campaign_negative_fold
+            .insert(key.clone(), (name, combo.0.clone()));
+    }
+}
+
+fn rsa_path<'a>(
+    input: &'a ExportInput,
+    i: usize,
+    f: impl Fn(&'a JsonResponsiveSearchAd) -> &'a Option<String>,
+) -> Option<&'a str> {
+    input.ad_group_ads[i]
+        .ad
+        .responsive_search_ad
+        .as_ref()
+        .and_then(|r| f(r).as_deref())
+}
+
+fn lift_locals(
+    names: &mut NameAllocator,
+    sites: &[AssetKey],
+    suffix: &str,
+    locals: &mut Vec<(String, AssetKey)>,
+    by_key: &mut HashMap<AssetKey, String>,
+) {
+    let mut counts: HashMap<&AssetKey, usize> = HashMap::new();
+    for k in sites {
+        if !k.is_empty() {
+            *counts.entry(k).or_default() += 1;
+        }
+    }
+    for k in sites {
+        if k.is_empty() || counts[k] < 2 || by_key.contains_key(k) {
+            continue;
+        }
+        let base = format!("{}_{suffix}", truncate_slug(&slugify(&k[0].0)));
+        let name = names.allocate("local", &base);
+        by_key.insert(k.clone(), name.clone());
+        locals.push((name, k.clone()));
+    }
+}
+
 fn partition_campaign_criteria<'a>(
     items: &[&'a JsonCampaignCriterion],
 ) -> (Vec<Vec<&'a JsonCampaignCriterion>>, Vec<&'a JsonCampaignCriterion>) {
@@ -1050,6 +1426,7 @@ fn write_campaign_negative_group(
     name: &str,
     group: &[&JsonCampaignCriterion],
     campaign_addr: &HashMap<String, String>,
+    plan: Option<&FoldPlan>,
 ) {
     let first = group[0];
     let _ = writeln!(
@@ -1064,12 +1441,20 @@ fn write_campaign_negative_group(
     if let Some(s) = &first.status {
         write_attr(out, 1, "status", &fmt_string(s));
     }
-    for c in group {
-        if let Some(kw) = &c.keyword {
-            out.push_str("\n  negative_keyword {\n");
-            write_attr(out, 2, "text", &fmt_string(&kw.text));
-            write_attr(out, 2, "match_type", &fmt_string(&kw.match_type));
-            out.push_str("  }\n");
+    let key = (first.campaign.clone(), first.status.clone().unwrap_or_default());
+    if let Some((local, match_type)) = plan.and_then(|p| p.campaign_negative_fold.get(&key)) {
+        out.push_str("\n  negative_keywords {\n");
+        write_attr(out, 2, "texts", &format!("local.{local}"));
+        write_attr(out, 2, "match_type", &fmt_string(match_type));
+        out.push_str("  }\n");
+    } else {
+        for c in group {
+            if let Some(kw) = &c.keyword {
+                out.push_str("\n  negative_keyword {\n");
+                write_attr(out, 2, "text", &fmt_string(&kw.text));
+                write_attr(out, 2, "match_type", &fmt_string(&kw.match_type));
+                out.push_str("  }\n");
+            }
         }
     }
     out.push_str("}\n\n");
@@ -1491,6 +1876,143 @@ mod tests {
             ]
         }
     ]"#;
+
+    // Four ads, two distinct creatives. The first two share headlines+descriptions
+    // but differ by final_urls/path1 (→ one URL-agnostic template + per-instance
+    // overrides). The second two are byte-identical (→ one template, no overrides).
+    // Both creatives reuse the same headline set (→ a lifted `local`).
+    const FOLD_FIXTURE: &str = r#"[
+        {
+            "results": [
+                { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget", "amountMicros": "5000000" } },
+                { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Privacy Search", "status": "ENABLED", "advertisingChannelType": "SEARCH", "campaignBudget": "customers/9/campaignBudgets/1001" } },
+                { "adGroup": { "resourceName": "customers/9/adGroups/3001", "id": "3001", "name": "Chrome", "campaign": "customers/9/campaigns/2001", "status": "ENABLED" } },
+                { "adGroup": { "resourceName": "customers/9/adGroups/3002", "id": "3002", "name": "Safari", "campaign": "customers/9/campaigns/2001", "status": "ENABLED" } },
+                { "adGroup": { "resourceName": "customers/9/adGroups/3003", "id": "3003", "name": "Edge", "campaign": "customers/9/campaigns/2001", "status": "ENABLED" } },
+                { "adGroup": { "resourceName": "customers/9/adGroups/3004", "id": "3004", "name": "Brave", "campaign": "customers/9/campaigns/2001", "status": "ENABLED" } },
+                { "adGroupAd": { "resourceName": "customers/9/adGroupAds/3001~4001", "adGroup": "customers/9/adGroups/3001", "status": "ENABLED", "ad": { "finalUrls": ["https://example.com/chrome"], "responsiveSearchAd": { "headlines": [{"text": "Block Ads Now"}, {"text": "Privacy First Browser"}, {"text": "Stop Trackers Fast"}], "descriptions": [{"text": "Fast private browsing."}, {"text": "Trusted by millions."}], "path1": "chrome" } } } },
+                { "adGroupAd": { "resourceName": "customers/9/adGroupAds/3002~4002", "adGroup": "customers/9/adGroups/3002", "status": "ENABLED", "ad": { "finalUrls": ["https://example.com/safari"], "responsiveSearchAd": { "headlines": [{"text": "Block Ads Now"}, {"text": "Privacy First Browser"}, {"text": "Stop Trackers Fast"}], "descriptions": [{"text": "Fast private browsing."}, {"text": "Trusted by millions."}], "path1": "safari" } } } },
+                { "adGroupAd": { "resourceName": "customers/9/adGroupAds/3003~4003", "adGroup": "customers/9/adGroups/3003", "status": "ENABLED", "ad": { "finalUrls": ["https://example.com/get"], "responsiveSearchAd": { "headlines": [{"text": "Block Ads Now"}, {"text": "Privacy First Browser"}, {"text": "Stop Trackers Fast"}], "descriptions": [{"text": "Switch in one click."}, {"text": "Free and open source."}], "path1": "get" } } } },
+                { "adGroupAd": { "resourceName": "customers/9/adGroupAds/3004~4004", "adGroup": "customers/9/adGroups/3004", "status": "ENABLED", "ad": { "finalUrls": ["https://example.com/get"], "responsiveSearchAd": { "headlines": [{"text": "Block Ads Now"}, {"text": "Privacy First Browser"}, {"text": "Stop Trackers Fast"}], "descriptions": [{"text": "Switch in one click."}, {"text": "Free and open source."}], "path1": "get" } } } }
+            ]
+        }
+    ]"#;
+
+    // Two campaigns carrying the same three-term negative list (all BROAD) →
+    // one lifted `local`, referenced via the compact `negative_keywords` form on each.
+    const NEG_FIXTURE: &str = r#"[
+        {
+            "results": [
+                { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget", "amountMicros": "5000000" } },
+                { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Search One", "status": "ENABLED", "advertisingChannelType": "SEARCH", "campaignBudget": "customers/9/campaignBudgets/1001" } },
+                { "campaign": { "resourceName": "customers/9/campaigns/2002", "id": "2002", "name": "Search Two", "status": "ENABLED", "advertisingChannelType": "SEARCH", "campaignBudget": "customers/9/campaignBudgets/1001" } },
+                { "campaignCriterion": { "resourceName": "customers/9/campaignCriteria/2001~6001", "campaign": "customers/9/campaigns/2001", "status": "ENABLED", "negative": true, "keyword": { "text": "free", "matchType": "BROAD" } } },
+                { "campaignCriterion": { "resourceName": "customers/9/campaignCriteria/2001~6002", "campaign": "customers/9/campaigns/2001", "status": "ENABLED", "negative": true, "keyword": { "text": "crack", "matchType": "BROAD" } } },
+                { "campaignCriterion": { "resourceName": "customers/9/campaignCriteria/2001~6003", "campaign": "customers/9/campaigns/2001", "status": "ENABLED", "negative": true, "keyword": { "text": "torrent", "matchType": "BROAD" } } },
+                { "campaignCriterion": { "resourceName": "customers/9/campaignCriteria/2002~6001", "campaign": "customers/9/campaigns/2002", "status": "ENABLED", "negative": true, "keyword": { "text": "free", "matchType": "BROAD" } } },
+                { "campaignCriterion": { "resourceName": "customers/9/campaignCriteria/2002~6002", "campaign": "customers/9/campaigns/2002", "status": "ENABLED", "negative": true, "keyword": { "text": "crack", "matchType": "BROAD" } } },
+                { "campaignCriterion": { "resourceName": "customers/9/campaignCriteria/2002~6003", "campaign": "customers/9/campaigns/2002", "status": "ENABLED", "negative": true, "keyword": { "text": "torrent", "matchType": "BROAD" } } }
+            ]
+        }
+    ]"#;
+
+    fn assert_fold_roundtrips(raw: &str) {
+        let input = from_search_response(raw).expect("adapter");
+        let folded = canonicalize(&render(&input));
+        let pf = crate::parser::parse_str(std::path::Path::new("rt.bid"), &folded)
+            .expect("folded parses");
+        let mut input2 = crate::api::import::import_files(
+            std::slice::from_ref(&pf),
+            &crate::schema::InputBindings::default(),
+        )
+        .expect("folded imports")
+        .input;
+        // Import resolves the provider target from ambient config (env / bidsmith.toml);
+        // folding never touches the provider, so normalize it out of the comparison.
+        input2.customer_id = input.customer_id.clone();
+        input2.login_customer_id = input.login_customer_id.clone();
+        // The folded tree must mean exactly what the input did: its verbose (unfolded)
+        // re-render is byte-identical to the input's. This is the offline stand-in for
+        // "plan reports zero drift after a refresh".
+        let v1 = canonicalize(&render_inner(&input, false));
+        let v2 = canonicalize(&render_inner(&input2, false));
+        assert_eq!(
+            v1, v2,
+            "fold did not round-trip\n=== folded ===\n{folded}\n=== verbose(original) ===\n{v1}\n=== verbose(roundtrip) ===\n{v2}"
+        );
+    }
+
+    #[test]
+    fn fold_collapses_url_variant_ads_into_one_template() {
+        let input = from_search_response(FOLD_FIXTURE).expect("adapter");
+        let out = render(&input);
+        assert_eq!(out.matches("ad_template \"").count(), 2, "{out}");
+        assert_eq!(out.matches("template = ad_template.").count(), 4, "{out}");
+        assert!(out.contains("locals {"), "expected a lifted local:\n{out}");
+        assert!(!out.contains("\n  ad {\n"), "no inline ad blocks should remain:\n{out}");
+    }
+
+    // Three ads: two share a creative (→ template), the third has the same
+    // headlines but a different description (→ stays inline, yet still references
+    // the headline list lifted into a local for the template).
+    const MIXED_FIXTURE: &str = r#"[
+        {
+            "results": [
+                { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget", "amountMicros": "5000000" } },
+                { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Privacy Search", "status": "ENABLED", "advertisingChannelType": "SEARCH", "campaignBudget": "customers/9/campaignBudgets/1001" } },
+                { "adGroup": { "resourceName": "customers/9/adGroups/3001", "id": "3001", "name": "Chrome", "campaign": "customers/9/campaigns/2001", "status": "ENABLED" } },
+                { "adGroup": { "resourceName": "customers/9/adGroups/3002", "id": "3002", "name": "Safari", "campaign": "customers/9/campaigns/2001", "status": "ENABLED" } },
+                { "adGroup": { "resourceName": "customers/9/adGroups/3003", "id": "3003", "name": "Edge", "campaign": "customers/9/campaigns/2001", "status": "ENABLED" } },
+                { "adGroupAd": { "resourceName": "customers/9/adGroupAds/3001~4001", "adGroup": "customers/9/adGroups/3001", "status": "ENABLED", "ad": { "finalUrls": ["https://example.com/a"], "responsiveSearchAd": { "headlines": [{"text": "Block Ads Now"}, {"text": "Privacy First Browser"}, {"text": "Stop Trackers Fast"}], "descriptions": [{"text": "Fast private browsing."}, {"text": "Trusted by millions."}] } } } },
+                { "adGroupAd": { "resourceName": "customers/9/adGroupAds/3002~4002", "adGroup": "customers/9/adGroups/3002", "status": "ENABLED", "ad": { "finalUrls": ["https://example.com/b"], "responsiveSearchAd": { "headlines": [{"text": "Block Ads Now"}, {"text": "Privacy First Browser"}, {"text": "Stop Trackers Fast"}], "descriptions": [{"text": "Fast private browsing."}, {"text": "Trusted by millions."}] } } } },
+                { "adGroupAd": { "resourceName": "customers/9/adGroupAds/3003~4003", "adGroup": "customers/9/adGroups/3003", "status": "ENABLED", "ad": { "finalUrls": ["https://example.com/c"], "responsiveSearchAd": { "headlines": [{"text": "Block Ads Now"}, {"text": "Privacy First Browser"}, {"text": "Stop Trackers Fast"}], "descriptions": [{"text": "One-of-a-kind copy."}, {"text": "Only on this ad group."}] } } } }
+            ]
+        }
+    ]"#;
+
+    #[test]
+    fn fold_roundtrips_to_verbose() {
+        assert_fold_roundtrips(FULL_FIXTURE);
+        assert_fold_roundtrips(FOLD_FIXTURE);
+        assert_fold_roundtrips(NEG_FIXTURE);
+        assert_fold_roundtrips(MIXED_FIXTURE);
+    }
+
+    #[test]
+    fn fold_inline_ad_shares_lifted_local_with_template() {
+        let input = from_search_response(MIXED_FIXTURE).expect("adapter");
+        let out = render(&input);
+        assert_eq!(out.matches("ad_template \"").count(), 1, "{out}");
+        assert!(out.contains("\n  ad {\n"), "singleton stays inline:\n{out}");
+        assert_eq!(out.matches("headlines = local.").count(), 2, "template + inline both ref the local:\n{out}");
+    }
+
+    #[test]
+    fn fold_lifts_shared_campaign_negatives_into_a_local() {
+        let input = from_search_response(NEG_FIXTURE).expect("adapter");
+        let out = render(&input);
+        assert_eq!(out.matches("_negatives = [").count(), 1, "one shared local:\n{out}");
+        assert_eq!(out.matches("texts = local.").count(), 2, "both campaigns reference it:\n{out}");
+        assert!(!out.contains("negative_keyword {"), "no expanded blocks:\n{out}");
+    }
+
+    #[test]
+    fn folded_output_validates_as_hcl() {
+        let input = from_search_response(FOLD_FIXTURE).expect("adapter");
+        let folded = canonicalize(&render(&input));
+        let pf = crate::parser::parse_str(std::path::Path::new("folded.bid"), &folded)
+            .expect("parses");
+        let diags = crate::schema::validate_files(
+            std::slice::from_ref(&pf),
+            &crate::schema::InputBindings::default(),
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(
+            errors.is_empty(),
+            "validate errors: {:?}\n{folded}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn render_split_separates_account_and_campaign_buckets() {

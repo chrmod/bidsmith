@@ -58,6 +58,8 @@ fn lint_resource(file: &ParsedFile, block: &Block, bindings: &Bindings, diags: &
                 lint_rsa(file, rsa_block, &address, bindings, diags);
             }
         }
+        // path1/path2 set at the resource level override a template's RSA paths; lint them too.
+        lint_rsa_paths(file, &block.body, &address, diags);
     }
 
     if ty == "google_ads_campaign_criterion" {
@@ -108,12 +110,12 @@ fn lint_rsa(file: &ParsedFile, rsa: &Block, address: &str, bindings: &Bindings, 
         bindings,
         diags,
     );
-    lint_rsa_paths(file, rsa, address, diags);
+    lint_rsa_paths(file, &rsa.body, address, diags);
 }
 
-fn lint_rsa_paths(file: &ParsedFile, rsa: &Block, address: &str, diags: &mut Vec<Diag>) {
+fn lint_rsa_paths(file: &ParsedFile, body: &Body, address: &str, diags: &mut Vec<Diag>) {
     for name in ["path1", "path2"] {
-        let Some(attr) = find_attr(&rsa.body, name) else {
+        let Some(attr) = find_attr(body, name) else {
             continue;
         };
         let Some(value) = attr.value.as_str() else {
@@ -427,6 +429,25 @@ ad_template "thin" {
             msgs.iter().any(|m| m.contains("ad_template.thin")
                 && m.contains("has only 1 headline")),
             "expected template min-headline warning: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn top_level_path_override_is_linted() {
+        let msgs = lint_str(
+            "path_override",
+            r#"
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group = google_ads_ad_group.g.id
+  template = ad_template.shared
+  path1    = "Get_Started"
+}
+"#,
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("path1 in google_ads_ad_group_ad.rsa")
+                && m.contains("outside [a-z0-9-]")),
+            "expected path-override charset warning: {msgs:?}"
         );
     }
 

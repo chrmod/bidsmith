@@ -103,12 +103,60 @@ resource type, any file layout, modules, schema validation.
   — same-module first, then a single global declaration with an ambiguity
   guard — so one template in a shared file serves campaigns across files
   (the 20× body spans files). The template's RSA is linted once at its
-  declaration (`ad_template.<name>`), not per use site. **v1 requires
-  byte-identical bodies** (everything measured is); per-ad-group overrides
-  (e.g. a different `final_urls`), the Option B fan-out form, and
-  `export` / `refresh` detecting repeated bodies and emitting the folded
-  form are deferred follow-ups. `variable` blocks stay scalar; this is a
-  block-level reuse primitive, not a value one.
+  declaration (`ad_template.<name>`), not per use site.
+- **`ad_template` per-instance overrides** (issue #58): a
+  `google_ads_ad_group_ad` that attaches a `template` may also set
+  `final_urls`, `path1`, and `path2` directly on the resource; each
+  overrides the template body's value while every unset field inherits.
+  Overrides apply at import time — the merged body is the same mutate as
+  writing it inline, so `plan` is unchanged and no live ad is
+  re-addressed. This collapses the near-duplicate templates that existed
+  only to vary the landing URL (the measured Ghostery case: 19 templates,
+  5 distinct `final_urls`). `final_urls` is therefore now **optional on
+  `ad_template`** (a URL-agnostic template lets every reference supply its
+  own) but stays **required on an inline `ad {}` block**; a reference to a
+  template that declares no `final_urls` and supplies no override fails
+  `validate` at the use site. Overrides are rejected alongside an inline
+  `ad {}` block (set the fields inside it instead). The merged path
+  overrides are linted like any RSA path; headline/description overrides
+  stay deferred (the measured duplication is URLs, not copy). The Option B
+  fan-out form remains a deferred follow-up. `variable` blocks
+  stay scalar; this is a block-level reuse primitive, not a value one.
+- **Folding emitter** (issue #57): `refresh` / `export` recognize repeated
+  structure and emit the compact constructs instead of re-exploding the
+  tree on every pull. Three folds, all computed in `plan_fold` and applied
+  during rendering: (1) **ad bodies → `ad_template`** — RSA-bearing ads
+  sharing the same creative (ad `name` + headlines + descriptions, keyed
+  *excluding* `final_urls` / `path1` / `path2`) collapse onto one
+  top-level `ad_template`; bodies that differ only by those overridable
+  fields collapse onto one URL-agnostic template plus per-instance
+  overrides (#58), with a field templated when uniform across the group
+  and overridden per-instance when it varies. (2) **repeated RSA arrays →
+  `locals`** — a `headlines` / `descriptions` array used by ≥ 2 emission
+  sites (templates + still-inline ads) is lifted into a `locals` block and
+  referenced as `local.<name>`. (3) **repeated campaign negative lists →
+  `locals`** — a campaign's negative-keyword text list, when its members
+  share one match_type and the same list backs ≥ 2 campaigns, is lifted to
+  a `local` referenced via the compact
+  `negative_keywords { texts = local.<name>, match_type }` form.
+  **Deliberately *not* a `google_ads_shared_set`** (the issue's literal
+  ask): live negatives are per-campaign criteria, so emitting a SharedSet
+  would plan as create-set + attach + destroy-the-criteria — a real
+  migration, not the zero-drift representation change a `refresh` must be.
+  Folding is purely source-level: every construct expands back to the
+  identical mutate at import time (templates #40/#58, list `locals` #39,
+  compact negatives), so the folded tree round-trips through
+  `validate` / `plan` exactly like the verbose one. This is the property
+  the issue calls out, enforced offline by `fold_roundtrips_to_verbose`
+  (render → import → re-render the *unfolded* form, assert byte-identical
+  to the input's). Folding is the default for every `render` path; a
+  test-only `render_inner(input, fold=false)` keeps the verbose form for
+  the round-trip oracle. Names are content-derived and deterministic
+  (`<first-headline>_rsa`, `<first-item>_headlines` / `_descriptions` /
+  `_negatives`), deduped in a dedicated namespace. **Deferred:** ad-group
+  negative lists (same mechanism, lower measured volume) and emitting an
+  actual `shared_set` (waits on the Phase 3 v2 labels that make adopting
+  one a no-op against live).
 - **`variable` block**: HCL2-style top-level
   `variable "name" { type = …, default = …, description = … }` blocks
   declare typed inputs that the same `.bid` can pivot on without
@@ -483,7 +531,9 @@ Verified locally:
   declares `ad_template "ublock_rsa"` / `"generic_rsa"` once; `ublock.bid`
   attaches `ad_template.ublock_rsa` to three ad groups
   (`template = ad_template.ublock_rsa`) across the file boundary, so three
-  `google_ads_ad_group_ad` resources share one body. `fmt --check
+  `google_ads_ad_group_ad` resources share one body. Two of them add
+  per-instance `final_urls` / `path1` overrides (issue #58) — same body,
+  different landing page — so one template serves all three. `fmt --check
   examples/ad-templates` is a no-op.
 - `cargo run -- validate examples/variable` → `OK: 1 file(s) valid.` —
   exercises the `variable "x" { type, default, description }` block
@@ -638,7 +688,9 @@ Validator covers (so far):
   a reusable body declared in a top-level `ad_template "name" { … }` block
   — exactly one of `ad {}` / `template` is required, and the template is
   resolved and substituted at import time so the mutate is identical to
-  the inline form),
+  the inline form; a templated resource may additionally set `final_urls`
+  / `path1` / `path2` to override those fields of the template body
+  per-instance),
   `google_ads_ad_group_criterion` (positive/negative keyword with
   match_type, optional per-keyword `cpc_bid_micros`; also accepts a
   bulk form where repeating `keyword {}` and/or `negative_keyword {}`
@@ -711,11 +763,11 @@ Validator covers (so far):
 | `fmt`      | partial | Canonicalize `.bid` files (in-place; `--check` for CI). `--minimal` also strips optional attributes left at their schema default — the form `refresh` / `export` emit — while `always_emit` compliance fields stay |
 | `mv`       | working | Rename a resource address in source: rewrites the `resource` block label and every reference that resolves to it, across all `.bid` files under `--path` (default `.`). Addresses are `<type>.<name>`, or `<module>.<type>.<name>` to disambiguate a name shared across files. **Bulk mode** `--from-file <path>` (or `-` for stdin) renames a whole batch from a `<from> <to>`-per-line file (arrow optional, `#` comments) applied atomically against one snapshot — rejects missing sources, occupied targets, duplicate sources/targets, and rename chains (`a→b`,`b→c`); any bad rule writes nothing. Format-preserving (only the renamed identifiers change; comments and layout are byte-preserved). Refuses when the rename would raise the project's validation-error count above its pre-rename baseline (so it can still tidy a not-yet-fully-valid tree). **Source-only by design**: because the planner matches live resources by content (name / keyword / geo / …), not by address or label, an address rename is invisible to the account — no delete+create, no lost history or ad review. Once labels become identity (Phase 3 v2), a move will additionally rewrite the live `bidsmith:address` label; until then `mv` is the complete mechanism and `moved` blocks are deferred |
 | `validate` | partial | Syntax + schema + references + lint warnings (local only). `--var NAME=VALUE` (repeatable) supplies values for `variable` blocks; `BIDSMITH_VAR_<name>` env vars are the fallback |
-| `export`   | partial | Render a fmt-canonical `.bid` file from flat bidsmith JSON (`--from-json`) or raw Google Ads SearchStream JSON (`--from-gads-search-response`); always emits the compact form (one `google_ads_ad_group_criterion` per `(ad_group, match_type)` group with N `keyword {}` sub-blocks, one negatives resource per ad-group / campaign with N `negative_keyword {}` sub-blocks, RSAs as `headlines = [...]` / `descriptions = [...]` lists); drops REMOVED resources unless `--include-removed`; `--login-customer-id` / `--customer-id` (or env vars `GOOGLE_ADS_LOGIN_CUSTOMER_ID` / `GOOGLE_ADS_CUSTOMER_ID`) override the provider block |
+| `export`   | partial | Render a fmt-canonical `.bid` file from flat bidsmith JSON (`--from-json`) or raw Google Ads SearchStream JSON (`--from-gads-search-response`); always emits the compact form (one `google_ads_ad_group_criterion` per `(ad_group, match_type)` group with N `keyword {}` sub-blocks, one negatives resource per ad-group / campaign with N `negative_keyword {}` sub-blocks, RSAs as `headlines = [...]` / `descriptions = [...]` lists). Also **folds repeated structure** (issue #57): ad bodies shared across ≥ 2 ads become a top-level `ad_template` (URL-variant bodies collapse onto one URL-agnostic template + per-instance `final_urls` / `path1` / `path2` overrides), RSA arrays used by ≥ 2 sites and campaign negative lists shared by ≥ 2 campaigns become `locals`. Folding is source-only — the tree round-trips through `validate` / `plan` identically to the verbose form. Drops REMOVED resources unless `--include-removed`; `--login-customer-id` / `--customer-id` (or env vars `GOOGLE_ADS_LOGIN_CUSTOMER_ID` / `GOOGLE_ADS_CUSTOMER_ID`) override the provider block |
 | `plan`     | partial | Diff `.bid` vs live (name-matched, scalar-level), validateOnly batch via googleAds:mutate; emits `+ create` / `~ update` / `- destroy` / `no-op` per resource. `- destroy` rows are orphaned criteria members (a `negative_keyword`/`keyword` block dropped from a still-declared parent) pruned within a `(parent, category)` the file owns; dropping a whole resource is **not** yet a destroy (waits on identity labels). Reuses cached SearchStream batches from `.bidsmith/cache/` when fresh (15-min TTL); `--refresh-state` forces a re-pull; `--offline` skips OAuth and the validateOnly mutate, diffing against the cache only (errors if no fresh cache). `--var NAME=VALUE` (repeatable) and `BIDSMITH_VAR_<name>` env vars supply values for `variable` blocks |
 | `apply`    | partial | Shows the validateOnly diff first, then prompts for `yes` (or skips the prompt with `--auto-approve`) before mutating. Refuses to prompt when stdin is not a TTY. Reuses the same cached live state as `plan`; invalidates the cache after a successful real mutate. Executes `- destroy` removes (orphaned criteria members) through the same prompt — no separate `--allow-destroy` flag. Does not yet write `bidsmith:address=…` labels or detect whole-resource removals (state-tracking is the v2 follow-up). Same `--var` / `BIDSMITH_VAR_<name>` plumbing as `plan` |
 | `pull`     | partial | Dump live state as raw SearchStream JSON (`-o PATH` or stdout). Reuses the same query list `plan --read-live` issues; output is the exact shape `export --from-gads-search-response` consumes, so the pair round-trips an account into a `.bid` |
-| `refresh`  | partial | Bootstrap-mode import of live state into `.bid` (no `-o`/`-d` → stdout, `-o PATH` → single file, `-d DIR` → split into `<DIR>/account.bid` for conversion actions / call assets / customer assets / shared sets and `<DIR>/campaigns.bid` for everything campaign-scoped). Reconcile-in-place against existing `.bid` and label-based matching wait on the Phase 3 v2 label work |
+| `refresh`  | partial | Bootstrap-mode import of live state into `.bid` (no `-o`/`-d` → stdout, `-o PATH` → single file, `-d DIR` → split into `<DIR>/account.bid` for conversion actions / call assets / customer assets / shared sets and `<DIR>/campaigns.bid` for everything campaign-scoped). Shares the `export` renderer, so it emits the same **folded** form (issue #57): repeated ad bodies → `ad_template`, repeated RSA arrays and shared campaign negative lists → `locals`. Folding is source-only and round-trips identically, so a re-`refresh` no longer re-explodes a hand-folded tree. Reconcile-in-place against existing `.bid` and label-based matching wait on the Phase 3 v2 label work |
 | `query`    | partial | Read-only GAQL passthrough; `--format table` (default), `json`, or `tsv`; uses the same OAuth + customer envelope as `plan` / `apply` |
 | `schema`   | partial | Dump the resource + provider schema as JSON (`-o PATH` or stdout). Powers the docs site's auto-generated reference under `website/src/content/docs/resources/`; `website/src/data/schema.json` is a build artifact regenerated by the docs site's `prebuild` / `predev` npm scripts, so it cannot drift from `src/schema.rs` |
 | `design-doc` | working | Generate the Google Ads API Basic-Access design document for an applicant to attach to their application. Two subcommands: `init` writes a commented `design-doc.toml` template; `render` reads the filled-in TOML plus bidsmith's own internals (API version, GAQL query list, RMF mapping) and emits `design-doc.html` for the user to print to PDF |
