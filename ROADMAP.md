@@ -1,10 +1,10 @@
 # Bidsmith — Roadmap
 
-> Phases 1, 2, and the core of 3 are landed against the real
-> rezolutnie `[W1]` campaign. The remaining items are the v2 work for
-> Phase 3 (labels + removal), Phase 4 (refresh), and account-scoped
-> resource types. Open decisions below; locked choices in
-> [DECISIONS.md](DECISIONS.md).
+> Phases 1, 2, and 3 (including the v2 identity labels + whole-resource
+> removal) are landed against the real rezolutnie `[W1]` campaign. The
+> remaining items are Phase 4 v2 (reconcile-mode refresh + `import`) and
+> the account-scoped resource types' live round-trip. Open decisions
+> below; locked choices in [DECISIONS.md](DECISIONS.md).
 
 ## Architecture (envisioned)
 
@@ -60,13 +60,13 @@ declared HCL against live labeled state. Local cache is rebuildable.
   per-asset). Open: detect added/removed/repinned assets and emit a
   granular update — or accept "replace the whole ad" as the only edit
   path (which matches how Google Ads operators usually edit RSAs).
-- Removal mechanics on `apply`: **partially resolved.** Orphaned
-  criteria *members* (a `negative_keyword`/`keyword` block dropped from
-  a still-declared parent) now plan as `- destroy` and apply
-  terraform-style through the normal `yes` prompt — no
-  `--allow-destroy` flag (see DECISIONS.md). Still open for *whole*
-  resources, which need identity labels: once labels land, do we delete
-  on apply or gate it behind a flag?
+- Removal mechanics on `apply`: **resolved.** Orphaned criteria
+  *members* and *whole* labeled resources (campaign / ad_group /
+  ad_group_ad) both plan as `- destroy` and apply terraform-style
+  through the normal `yes` prompt — no `--allow-destroy` flag. Whole
+  resources are identified by the `bidsmith:address` label (Phase 3 v2);
+  unlabeled UI-created resources are never destroyed (see DECISIONS.md
+  "Identity labels").
 
 ## Phases
 
@@ -108,9 +108,11 @@ declared HCL against live labeled state. Local cache is rebuildable.
   then mutates. `--auto-approve` skips the prompt (required for
   non-TTY runs). Same prepare stage as `plan`; validateOnly errors
   short-circuit before the prompt.
-- ⏳ Write `bidsmith:address=...` labels on created/updated resources
-  (state tracking via Google Ads Label + CampaignLabel / AdGroupLabel
-  / AdGroupAdLabel / AdGroupCriterionLabel associations)
+- ✅ Write `bidsmith:address=...` labels on created / adopted resources
+  (Label + CampaignLabel / AdGroupLabel / AdGroupAdLabel associations).
+  Labelable types only: campaign, ad_group, ad_group_ad — keywords stay
+  unlabeled (member removal already covers their lifecycle). See
+  **Identity labels (Phase 3 v2)** in DECISIONS.md.
 - ✅ Member-level removal detection (no labels needed): an orphaned
   criterion whose declared parent still exists → `- destroy`, scoped to
   the `(parent, category)` the file already owns.
@@ -124,15 +126,17 @@ declared HCL against live labeled state. Local cache is rebuildable.
   the whole batch un-applyable. Within a body bucket, ads that already
   match are claimed first (no diff), the rest become status updates, and
   any declared ad with no live body left is a create, so a `plan`
-  straight after `refresh` is a clean no-op. Still content-keyed, not
-  label-keyed — true identity arrives with the Phase 3 v2 labels.
-- ⏳ Whole-resource removal detection: labeled live resources with no
-  matching .bid entry → `- destroy` (needs identity labels).
-- ⏳ Once labels are identity, `bidsmith mv` grows a second half: a
-  rename also rewrites the live `bidsmith:address` label (one label
-  edit per resource, no statefile surgery), and Terraform-style
-  `moved {}` blocks become worth adding as the plan-visible form. The
-  source-rewrite half shipped already (see the `mv` follow-up below).
+  straight after `refresh` is a clean no-op. Ads still match by body
+  (copy is identity); the label authorizes their cleanup.
+- ✅ Whole-resource removal detection: a labeled live campaign /
+  ad_group / ad_group_ad with no matching `.bid` entry → `- destroy`
+  (children cascade, ordered child-first). Unlabeled live resources are
+  left untouched. Gated by the normal `apply` prompt.
+- ✅ `bidsmith mv` stays source-only — no second half needed. After a
+  rename the moved resource is re-adopted by content fallback and
+  `apply` reconciles its `bidsmith:address` label declaratively, so the
+  live label rewrite falls out of the normal flow. Terraform-style
+  `moved {}` blocks remain deferred (nothing forces them now).
 
 **Phase 4 — Refresh / Import**
 - ✅ `refresh`: bootstrap-mode import that pulls live state and writes
@@ -143,10 +147,13 @@ declared HCL against live labeled state. Local cache is rebuildable.
   renderer.
 - ⏳ Reconcile-in-place mode: match resources by
   `bidsmith:address=` label (or `(resource_type, name)` for unlabeled
-  ones), update fields without overwriting unrelated blocks. Blocked
-  on Phase 3 v2 labels.
+  ones), update fields without overwriting unrelated blocks. The
+  Phase 3 v2 labels it was blocked on now exist; this is the next
+  refresh piece.
 - ⏳ `import <address> <api-resource>`: adopt an unlabeled live
-  resource into a specific `.bid` address.
+  resource into a specific `.bid` address. Now unblocked — apply
+  already adopts unlabeled live resources by content and labels them;
+  `import` is the explicit, address-targeted form of that.
 
 **Phase 5 — Modules**
 - ✅ Files-as-modules: each `.bid` file's basename is its implicit
@@ -176,34 +183,30 @@ declared HCL against live labeled state. Local cache is rebuildable.
 
 ## Next session: start here
 
-Phases 1 and 2 are done; Phase 3 has its CREATE/UPDATE half landed; the
-live round-trip e2e test shipped (`tests/e2e.rs`, opt-in via
-`cargo test --features e2e` — `apply → pull → export → fmt --check →
-plan` against a dedicated test manager account, with `Drop`-based
-teardown via the hidden `_e2e-cleanup` verb). Priority order for what
-closes the most user-facing gaps:
+Phases 1 and 2 are done; Phase 3 is complete — the CREATE/UPDATE half,
+the live round-trip e2e test (`tests/e2e.rs`, opt-in via
+`cargo test --features e2e`), **and the v2 identity labels + whole-
+resource removal** all landed. Campaigns / ad groups / ads now match by
+their `bidsmith:address` label (content fallback adopts unlabeled live
+resources), a labeled resource dropped from the `.bid` is destroyed, and
+`mv` stays source-only because `apply` reconciles labels declaratively.
+See **Identity labels (Phase 3 v2)** in DECISIONS.md. Priority order for
+what closes the most user-facing gaps next:
 
-1. **Phase 3 v2 — labels + removal** (the keystone). Write
-   `bidsmith:address=<address>` labels on every resource bidsmith
-   creates / updates (via `Label` + `CampaignLabel` / `AdGroupLabel` /
-   `AdGroupAdLabel` / `AdGroupCriterionLabel` associations). Use those
-   labels at diff time to identify managed resources unambiguously
-   (no more "matched by name" guessing), and emit `- destroy` rows
-   for labeled live resources that no longer appear in `.bid`. Closes
-   the lifecycle and is the named blocker for items 2 below,
-   `import <address> <api-resource>`, and `mv`'s live-label half /
-   `moved {}` blocks — do this first.
-2. **Phase 4 v2 — reconcile-mode refresh** (blocked on 1). The
-   bootstrap-mode `refresh` shipped — `bidsmith refresh -d <DIR>` writes
-   `account.bid` + `campaigns.bid` from live, and `-o <FILE>` /
-   no-flag stdout variants exist for one-file workflows. What's still
-   missing: matching live resources against an *existing* `.bid` and
-   updating fields in place instead of overwriting. That needs the
-   `bidsmith:address=` label plumbing from Phase 3 v2 to identify
-   managed resources without name guessing. Until then, bootstrap
-   refresh + `git diff` is the recovery loop.
-3. **Account-scoped resource types in the live pipeline** (independent
-   of 1; can ride alongside). The schema, validator, renderer, adapter,
+1. **Phase 4 v2 — reconcile-mode refresh** (now unblocked by the
+   labels). The bootstrap-mode `refresh` shipped — `bidsmith refresh -d
+   <DIR>` writes `account.bid` + `campaigns.bid` from live, and `-o
+   <FILE>` / no-flag stdout variants exist for one-file workflows.
+   What's still missing: matching live resources against an *existing*
+   `.bid` by their `bidsmith:address` label and updating fields in place
+   instead of overwriting. Until then, bootstrap refresh + `git diff` is
+   the recovery loop.
+2. **`import <address> <api-resource>`** (also unblocked). `apply`
+   already adopts unlabeled live resources by content and labels them;
+   `import` is the explicit, address-targeted form — adopt one named
+   live resource into a chosen `.bid` address without a full refresh.
+3. **Account-scoped resource types in the live pipeline** (independent;
+   can ride alongside). The schema, validator, renderer, adapter,
    and `live_state` queries for `google_ads_conversion_action`,
    `google_ads_call_asset`, and `google_ads_customer_asset` are all in
    place; offline CI exercises them via `examples/exports/raw.json`.
@@ -239,13 +242,14 @@ Smaller follow-ups that can ride along:
   Because the planner matches live resources by content, not by
   address, the rename is a no-op against the account — the path from a
   refresh dump's counter-suffixed names to a hand-maintained tree
-  without recreating live resources (issue #35). Terraform-style
-  `moved {}` blocks were considered and **deferred**: a `moved` block
-  exists to rewrite *stored* identity, and bidsmith's identity is the
-  `bidsmith:address` label that arrives with Phase 3 v2 below. Once
-  that label is the matching key, a move grows a second half (rewrite
-  the live label) and `moved` blocks become the plan-visible,
-  PR-reviewable form worth adding then.
+  without recreating live resources (issue #35). Now that the
+  `bidsmith:address` label is the matching key (Phase 3 v2), `mv` still
+  needs no second half: after the source rewrite the moved resource is
+  re-adopted by content fallback and `apply` reconciles its label
+  declaratively (add the new association, drop the stale one). Terraform-
+  style `moved {}` blocks stay **deferred** — nothing forces a
+  plan-visible move construct now; revisit only if a content-ambiguous
+  rename ever needs to pin identity explicitly.
 - ✅ List / map locals (issue #39) — a `local` holds lists and maps, not
   just scalars, and a `local.<name>` that resolves to a list is usable
   in every list attribute (RSA `headlines` / `descriptions`,

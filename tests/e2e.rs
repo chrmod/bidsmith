@@ -94,9 +94,33 @@ fn live_round_trip() {
             .env("GOOGLE_ADS_CUSTOMER_ID", &cust),
     );
     let stdout = String::from_utf8_lossy(&plan_output.stdout);
+    // The round-trip .bid uses export-derived addresses, so the labels written
+    // under the fixture's addresses don't match — the labelable resources adopt
+    // (relabel). No resource fields differ and nothing is orphaned, so this is
+    // still a clean no-op at the resource level. That this plan succeeds also
+    // proves the label create / association / stale-removal ops validate live.
     assert!(
-        stdout.contains("0 to create, 0 to update"),
-        "plan was not a no-op after round-trip. stdout:\n{stdout}",
+        stdout.contains("0 to create, 0 to update, 0 to destroy"),
+        "plan was not resource-clean after round-trip. stdout:\n{stdout}",
+    );
+
+    // Re-planning the *original* fixture (the addresses apply labeled) must be
+    // fully label-clean: the bidsmith:address labels written on apply are read
+    // back and matched, so there is nothing left to adopt.
+    let fixture_plan = run_or_panic(
+        "plan (fixture, label-clean)",
+        Command::new(BINARY)
+            .args(["plan", fixture_path.to_str().unwrap()])
+            .env("GOOGLE_ADS_CUSTOMER_ID", &cust),
+    );
+    let stdout = String::from_utf8_lossy(&fixture_plan.stdout);
+    assert!(
+        stdout.contains("0 to create, 0 to update, 0 to destroy"),
+        "re-planning the applied fixture should be clean. stdout:\n{stdout}",
+    );
+    assert!(
+        !stdout.contains("to adopt"),
+        "labels written on apply should make the fixture re-plan label-clean. stdout:\n{stdout}",
     );
 }
 
