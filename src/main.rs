@@ -156,6 +156,10 @@ plan never modifies the account: its mutate is sent with validateOnly.")]
         /// Dump the outgoing request body and raw API response
         #[arg(long)]
         verbose: bool,
+        /// List every resource, including unchanged ones. By default plan shows
+        /// only resources that would be created, updated, or destroyed.
+        #[arg(long = "show-unchanged")]
+        show_unchanged: bool,
         /// Set a variable value (repeatable). Example: `--var city_radius_km=20`.
         /// Overrides any `default` in the matching `variable` block.
         #[arg(long = "var", value_name = "NAME=VALUE", action = clap::ArgAction::Append)]
@@ -360,7 +364,7 @@ fn main() -> ExitCode {
         Cmd::Mv { from, to, from_file, path } => {
             commands::mv::run(from.as_deref(), to.as_deref(), from_file.as_deref(), &path)
         }
-        Cmd::Plan { path, whoami, read_live, refresh_state, offline, verbose, var } => {
+        Cmd::Plan { path, whoami, read_live, refresh_state, offline, verbose, show_unchanged, var } => {
             commands::plan::run(
                 path.as_deref(),
                 whoami,
@@ -368,6 +372,7 @@ fn main() -> ExitCode {
                 refresh_state,
                 offline,
                 verbose,
+                show_unchanged,
                 &var,
             )
         }
