@@ -687,9 +687,29 @@ Verified locally:
   assets + customer assets + shared sets) and `<DIR>/campaigns.bid`
   (provider + budgets + campaigns + ad groups + RSAs + criteria +
   campaign-shared-sets). `-o <FILE>` collapses both into one file;
-  no flag writes the concatenation to stdout. Bootstrap-only — it
-  overwrites existing files; reconcile-in-place needs the Phase 3
-  v2 labels first.
+  no flag writes the concatenation to stdout. These are the
+  **bootstrap** modes — they overwrite their output files.
+- `bidsmith refresh --in-place [PATH]` is **reconcile mode** (Phase 4
+  v2, unblocked by the Phase 3 v2 identity labels): it reads the
+  existing `.bid` files at PATH (default `.`), diffs them against
+  live, and writes back only the **drifted scalar fields** on
+  resources bidsmith manages — updating attribute values in place
+  while leaving comments, block layout, ordering, and unmanaged
+  resources untouched. Matching reuses the planner's label-first
+  diff, so the live value is written to the resource the label
+  already points at. Scope is deliberately narrow: it only patches
+  attributes that already exist in source (an absent attribute is
+  reported, never inserted — formatting an insert is guesswork), and
+  only 1:1-block scalar kinds (budget, campaign incl. `manual_cpc.*`
+  / `network_settings.*`, ad_group, ad_group_ad, conversion_action,
+  customer_asset, shared_set, campaign_shared_set). Structural drift
+  (ad copy, keyword/criterion membership) is reported, not edited —
+  the diff engine only ever yields scalar `Update`s, so a changed RSA
+  is a create+destroy elsewhere, handled by `apply`, not this pass.
+  `--check` previews without writing. A `mv`-style baseline-error
+  guard re-validates the mutated tree and refuses to write if the
+  edit would break the project. Pure core (`reconcile_sources`) is
+  unit-tested offline; the live fetch reuses the plan/apply cache.
 - `bidsmith auth login` runs the browser OAuth loopback + PKCE flow and
   writes `~/.bidsmith/credentials.toml` (mode `0600`, home dir `0700`);
   `auth status` shows the resolved credentials and (given a developer

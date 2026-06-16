@@ -39,7 +39,7 @@ Validate, plan, and apply all work today.
 | `plan`     | Show the diff between your `.bid` files and what's live in Google Ads        |
 | `apply`    | Make Google Ads match the `.bid` files (prompts before changing anything)    |
 | `pull`     | Snapshot the live account                                                    |
-| `refresh`  | Pull the live account down into `.bid` files (so you can adopt bidsmith without starting from scratch) |
+| `refresh`  | Pull the live account into `.bid` files — bootstrap fresh ones (`-d`/`-o`), or `--in-place` to update existing files with live changes |
 | `query`    | Read stats and reports with a GAQL query (clicks, cost, conversions, search terms) |
 | `export`   | Render a `.bid` file from a JSON description                                 |
 | `mv`       | Rename a resource everywhere without recreating it in Google Ads             |

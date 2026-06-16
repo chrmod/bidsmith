@@ -1,36 +1,42 @@
 ---
 title: bidsmith refresh
-description: Pull the live Google Ads account into .bid files. Bootstrap mode.
+description: Pull the live Google Ads account into .bid files — bootstrap fresh ones, or reconcile existing ones in place.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
-`refresh` pulls the live Google Ads account and writes its current
-state as fmt-canonical `.bid` files. It's how you adopt bidsmith
-without rewriting your existing account by hand, and how you
-re-sync after somebody edits the UI directly.
+`refresh` pulls the live Google Ads account into `.bid` files. It's how
+you adopt bidsmith without rewriting your account by hand, and how you
+re-sync after somebody edits the UI directly. It has two modes:
 
-Today's `refresh` is **bootstrap-mode** — it writes a clean snapshot
-of the live account. The future "reconcile-mode" (update specific
-fields in an existing `.bid` without overwriting unrelated blocks)
-is on the roadmap.
+- **Bootstrap** (`-d` / `-o` / stdout) writes a clean snapshot of the
+  live account as fmt-canonical `.bid` files, overwriting its output.
+  This is how you start a project from an existing account.
+- **Reconcile** (`--in-place`) updates `.bid` files you already
+  maintain: it finds the fields that drifted live and writes the new
+  values back into your existing files, leaving comments, layout, and
+  everything bidsmith doesn't manage untouched.
 
 ## Synopsis
 
 ```sh
 bidsmith refresh [--output FILE | --dir DIR] [--include-removed] [--verbose]
+bidsmith refresh --in-place [PATH] [--check] [--verbose]
 ```
 
 ## Flags
 
 | Flag | Description |
 |---|---|
-| `-o`, `--output FILE` | Write everything to a single `.bid` file. Mutually exclusive with `--dir`. |
-| `-d`, `--dir DIR` | Split the output: `<DIR>/account.bid` for account-scoped resources, `<DIR>/campaigns.bid` for everything campaign-scoped. Mutually exclusive with `--output`. |
-| `--include-removed` | Include resources whose `status` is `REMOVED`. Default: drop them. |
+| `-o`, `--output FILE` | **Bootstrap:** write everything to a single `.bid` file. Mutually exclusive with `--dir`. |
+| `-d`, `--dir DIR` | **Bootstrap:** split the output into `<DIR>/account.bid` and `<DIR>/campaigns.bid`. Mutually exclusive with `--output`. |
+| `--in-place` | **Reconcile:** update the existing `.bid` files at `PATH` (default `.`) in place instead of writing fresh output. Mutually exclusive with `-o` / `-d`. |
+| `--check` | With `--in-place`: print what would change and write nothing. |
+| `--include-removed` | Include resources whose `status` is `REMOVED`. Default: drop them. (Bootstrap only.) |
 | `--verbose` | Print the outgoing API request envelope and raw response. |
 
-If neither `-o` nor `-d` is given, output goes to stdout.
+In bootstrap mode, if neither `-o` nor `-d` is given, output goes to
+stdout.
 
 ## Environment variables
 
@@ -91,13 +97,55 @@ canonical form `fmt` produces, so the diff is meaningful and
 minimal.
 
 <Aside type="tip">
-  After running `refresh`, the new `.bid` files are clean snapshots —
-  bidsmith doesn't try to merge them with anything that's already
-  there. For an existing project, write to a separate file (or a
-  separate directory) first, then compare and selectively copy
-  changes back into your real `.bid` files. The reconcile-in-place
-  mode that does this automatically is on the
-  [roadmap](https://github.com/chrmod/bidsmith/blob/main/ROADMAP.md).
+  Bootstrap `refresh` writes clean snapshots — it never merges into
+  files you already maintain. To pull live changes *into* an existing
+  project without losing your structure, use reconcile mode
+  (`--in-place`) below instead of copying diffs back by hand.
+</Aside>
+
+## Reconcile mode (`--in-place`)
+
+When you already maintain `.bid` files and somebody changes the
+account in the Google Ads UI — pauses a campaign, bumps a budget,
+renames an ad group — reconcile mode pulls just those changes back
+into your files:
+
+```sh
+bidsmith refresh --in-place ads/          # update ads/*.bid from live
+bidsmith refresh --in-place --check ads/  # preview only, write nothing
+```
+
+It matches each live resource to the resource in your files that
+carries its bidsmith label, then **updates only the scalar fields that
+drifted** — a `status`, a `name`, a budget `amount_micros`, a bid.
+Everything else is left exactly as you wrote it: comments, blank
+lines, block order, and any resource bidsmith doesn't manage.
+
+```
+  ~ campaigns.google_ads_campaign.summer_search (name, status)
+  ~ campaigns.google_ads_campaign_budget.summer (amount_micros)
+
+Updated 2 resources, 3 fields from live.
+```
+
+What reconcile **doesn't** touch, by design:
+
+- **New attributes.** If a field drifted but isn't written in your
+  file at all (you were relying on the default), reconcile reports it
+  rather than guessing where to insert it. Add it by hand, or
+  bootstrap a fresh copy to see the full picture.
+- **Structural changes** — rewritten ad copy, added or removed
+  keywords, changed targeting. Those aren't a single value to patch;
+  `bidsmith plan` shows them and `apply` is how you reconcile them.
+
+Reconcile re-checks the whole project after editing and refuses to
+write anything if an edit would make a file invalid — so a surprising
+live value can never leave your `.bid` files broken.
+
+<Aside type="note">
+  Reconcile only ever edits resources bidsmith manages (the ones it
+  created or adopted, which carry its label). A campaign someone
+  created in the UI that isn't in your files is left completely alone.
 </Aside>
 
 ## Compact, folded output
