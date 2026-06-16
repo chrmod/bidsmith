@@ -19,6 +19,7 @@ pub fn run(
     refresh_state: bool,
     offline: bool,
     verbose: bool,
+    show_unchanged: bool,
     cli_vars: &[String],
 ) -> ExitCode {
     if whoami {
@@ -51,7 +52,7 @@ pub fn run(
         Err(code) => return code,
     };
 
-    execute(&prepared, /* validate_only */ true, verbose, DisplayMode::PerResource)
+    execute(&prepared, /* validate_only */ true, verbose, show_unchanged, DisplayMode::PerResource)
 }
 
 /// State produced by the parse/import/diff stages, ready to be sent through
@@ -308,6 +309,7 @@ pub fn execute(
     prepared: &Prepared,
     validate_only: bool,
     verbose: bool,
+    show_unchanged: bool,
     display: DisplayMode,
 ) -> ExitCode {
     let report = &prepared.report;
@@ -316,7 +318,7 @@ pub fn execute(
     let strip = prepared.strip_module;
 
     if report.create_count == 0 && report.update_count == 0 && report.delete_count == 0 {
-        if matches!(display, DisplayMode::PerResource) {
+        if show_unchanged && matches!(display, DisplayMode::PerResource) {
             for d in &report.diffs {
                 println!(
                     "{addr:<width$}  no-op",
@@ -335,7 +337,7 @@ pub fn execute(
     }
 
     let Some((client, token)) = prepared.client.as_ref().zip(prepared.token.as_ref()) else {
-        return display_offline_diff(prepared, validate_only);
+        return display_offline_diff(prepared, validate_only, show_unchanged);
     };
 
     let plan_body =
@@ -427,9 +429,12 @@ pub fn execute(
                 rejected += 1;
             }
         }
-        let printable = matches!(display, DisplayMode::PerResource)
-            || (matches!(display, DisplayMode::Summary)
-                && errors_by_address.contains_key(&d.address));
+        let printable = row_is_visible(
+            &d.action,
+            &display,
+            show_unchanged,
+            errors_by_address.contains_key(&d.address),
+        );
         if printable {
             println!(
                 "{addr:<width$}  {verb}{detail}{outcome}",
@@ -489,11 +494,29 @@ fn summary_title(validate_only: bool) -> &'static str {
     if validate_only { "Plan" } else { "Apply" }
 }
 
-fn display_offline_diff(prepared: &Prepared, validate_only: bool) -> ExitCode {
+/// Whether a resource's row appears in the listing. By default the per-resource
+/// listing is focused on changes: unchanged (`no-op`) rows are hidden unless
+/// `show_unchanged` is set. In `Summary` mode only rejected rows surface.
+fn row_is_visible(
+    action: &diff::Action,
+    display: &DisplayMode,
+    show_unchanged: bool,
+    has_error: bool,
+) -> bool {
+    match display {
+        DisplayMode::PerResource => show_unchanged || !matches!(action, diff::Action::NoOp { .. }),
+        DisplayMode::Summary => has_error,
+    }
+}
+
+fn display_offline_diff(prepared: &Prepared, validate_only: bool, show_unchanged: bool) -> ExitCode {
     let report = &prepared.report;
     let width = prepared.width;
     let strip = prepared.strip_module;
     for d in &report.diffs {
+        if !row_is_visible(&d.action, &DisplayMode::PerResource, show_unchanged, false) {
+            continue;
+        }
         let (verb, detail): (&str, String) = match &d.action {
             diff::Action::NoOp { .. } => ("no-op", String::new()),
             diff::Action::Create => ("+ create", String::new()),
@@ -734,7 +757,42 @@ fn tail(s: &str, n: usize) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_address, module_of, split_module};
+    use super::{display_address, module_of, row_is_visible, split_module, DisplayMode};
+    use crate::api::diff::Action;
+
+    fn noop() -> Action {
+        Action::NoOp { live_id: "123".into() }
+    }
+
+    fn update() -> Action {
+        Action::Update { live_id: "123".into(), changed_fields: vec!["amount_micros".into()] }
+    }
+
+    #[test]
+    fn per_resource_hides_noops_by_default() {
+        assert!(!row_is_visible(&noop(), &DisplayMode::PerResource, false, false));
+        assert!(row_is_visible(&update(), &DisplayMode::PerResource, false, false));
+        assert!(row_is_visible(&Action::Create, &DisplayMode::PerResource, false, false));
+        assert!(row_is_visible(
+            &Action::Delete { live_id: "1".into() },
+            &DisplayMode::PerResource,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn show_unchanged_reveals_noops() {
+        assert!(row_is_visible(&noop(), &DisplayMode::PerResource, true, false));
+        assert!(row_is_visible(&update(), &DisplayMode::PerResource, true, false));
+    }
+
+    #[test]
+    fn summary_mode_only_shows_errored_rows() {
+        assert!(!row_is_visible(&update(), &DisplayMode::Summary, false, false));
+        assert!(row_is_visible(&update(), &DisplayMode::Summary, false, true));
+        assert!(!row_is_visible(&noop(), &DisplayMode::Summary, true, false));
+    }
 
     #[test]
     fn split_module_handles_plain_address() {

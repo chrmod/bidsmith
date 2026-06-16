@@ -10,14 +10,20 @@ state via the Google Ads API, diffs the two, and shows you what
 would change — without changing anything. Safe to run any number of
 times.
 
-If `plan` is empty, your `.bid` files and the live account already
-match. If `plan` has rows, [`apply`](/bidsmith/commands/apply/) is
-the next step.
+By default `plan` lists only the resources that would be created,
+updated, or destroyed, and ends with a one-line summary that counts the
+unchanged ones. If there are no changes you'll see just that summary —
+no per-resource rows. Pass `--show-unchanged` to list every resource,
+including `no-op` rows.
+
+If `plan` reports no changes, your `.bid` files and the live account
+already match. If `plan` has rows, [`apply`](/bidsmith/commands/apply/)
+is the next step.
 
 ## Synopsis
 
 ```sh
-bidsmith plan [PATH] [--refresh-state] [--offline] [--whoami] [--read-live] [--verbose]
+bidsmith plan [PATH] [--refresh-state] [--offline] [--show-unchanged] [--whoami] [--read-live] [--verbose]
 ```
 
 ## Arguments
@@ -32,6 +38,7 @@ bidsmith plan [PATH] [--refresh-state] [--offline] [--whoami] [--read-live] [--v
 |---|---|
 | `--refresh-state` | Ignore any cached live state and refetch from the API. The fresh fetch is then written back to the cache. Use when you suspect the cache is out of date. |
 | `--offline` | Diff against the cached live state without contacting Google Ads at all — no OAuth, no SearchStream, no validateOnly mutate. Errors if no fresh cache exists. See [Cut Google Ads API quota usage](/bidsmith/recipes/reduce-api-calls/). |
+| `--show-unchanged` | List every resource, including unchanged `no-op` rows. By default plan prints only resources that would change. Useful for auditing exactly what bidsmith is tracking. |
 | `--whoami` | Exchange the refresh token for an access token and print the result. Doesn't touch Google Ads. Useful for confirming credentials. |
 | `--read-live` | Print a summary of the live account state (resource counts per type). Doesn't require `.bid` files. Useful for debugging. |
 | `--verbose` | Print the outgoing API request envelope and the raw response. Useful when something looks wrong. |

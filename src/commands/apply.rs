@@ -35,6 +35,7 @@ pub fn run(
             &prepared,
             /* validate_only */ true,
             verbose,
+            /* show_unchanged */ false,
             plan::DisplayMode::PerResource,
         );
         eprintln!();
@@ -46,6 +47,7 @@ pub fn run(
         &prepared,
         /* validate_only */ true,
         verbose,
+        /* show_unchanged */ false,
         plan::DisplayMode::PerResource,
     );
     if plan_code != ExitCode::SUCCESS {
@@ -83,6 +85,7 @@ pub fn run(
         &prepared,
         /* validate_only */ false,
         verbose,
+        /* show_unchanged */ false,
         plan::DisplayMode::Summary,
     );
     live_state::invalidate_cache();
