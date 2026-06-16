@@ -898,6 +898,7 @@ mod ad_match_tests {
                     path2: None,
                 }),
             },
+            managed_address: None,
         }
     }
 

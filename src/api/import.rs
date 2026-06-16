@@ -293,6 +293,7 @@ fn import_campaign(
             contains_eu_political_advertising: eu_political,
             manual_cpc,
             network_settings,
+            managed_address: None,
         },
         criteria,
     ))
@@ -453,6 +454,7 @@ fn import_ad_group(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonAdGrou
         status,
         ty,
         cpc_bid_micros: cpc,
+        managed_address: None,
     })
 }
 
@@ -504,6 +506,7 @@ fn import_ad_group_ad(
         ad_group,
         status,
         ad,
+        managed_address: None,
     })
 }
 
@@ -724,6 +727,7 @@ fn import_ad_group_criterion(
                 negative: negative.or(Some(false)),
                 cpc_bid_micros: cpc,
                 keyword: kw,
+                managed_address: None,
             });
         }
         for (i, kw) in negative_keywords.into_iter().enumerate() {
@@ -734,6 +738,7 @@ fn import_ad_group_criterion(
                 negative: Some(true),
                 cpc_bid_micros: None,
                 keyword: kw,
+                managed_address: None,
             });
         }
         if out.is_empty() {
@@ -753,6 +758,7 @@ fn import_ad_group_criterion(
         negative: negative.or(Some(false)),
         cpc_bid_micros: cpc,
         keyword,
+        managed_address: None,
     }])
 }
 
