@@ -4,6 +4,12 @@ use std::process::ExitCode;
 
 use serde::Deserialize;
 
+/// Prefix of the Google Ads label name bidsmith writes on every managed
+/// resource to record its address: `bidsmith:address=<module>.<type>.<name>`.
+/// The label name is bidsmith's identity key for the four labelable resource
+/// types (campaign, ad_group, ad_group_ad, ad_group_criterion).
+pub const ADDRESS_LABEL_PREFIX: &str = "bidsmith:address=";
+
 #[derive(Deserialize)]
 pub struct ExportInput {
     pub customer_id: String,
@@ -33,6 +39,12 @@ pub struct ExportInput {
     pub shared_criteria: Vec<JsonSharedCriterion>,
     #[serde(default)]
     pub campaign_shared_sets: Vec<JsonCampaignSharedSet>,
+    /// Live `bidsmith:address=<addr>` labels keyed by address -> label
+    /// resource_name. Lets the mutate builder reuse an existing label instead
+    /// of re-creating one (a duplicate name is an API error). Live-only; empty
+    /// for declared state.
+    #[serde(default)]
+    pub labels: HashMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -60,6 +72,10 @@ pub struct JsonCampaign {
     pub manual_cpc: Option<JsonManualCpc>,
     #[serde(default)]
     pub network_settings: Option<JsonNetworkSettings>,
+    /// `bidsmith:address=<addr>` label read off a live resource. None for
+    /// declared resources (their address is `id`) and for unmanaged live ones.
+    #[serde(default)]
+    pub managed_address: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -91,6 +107,8 @@ pub struct JsonAdGroup {
     pub ty: Option<String>,
     #[serde(default)]
     pub cpc_bid_micros: Option<i64>,
+    #[serde(default)]
+    pub managed_address: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -101,6 +119,8 @@ pub struct JsonAdGroupAd {
     #[serde(default)]
     pub status: Option<String>,
     pub ad: JsonAd,
+    #[serde(default)]
+    pub managed_address: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -124,6 +144,8 @@ pub struct JsonAdGroupCriterion {
     #[serde(default)]
     pub cpc_bid_micros: Option<i64>,
     pub keyword: JsonKeyword,
+    #[serde(default)]
+    pub managed_address: Option<String>,
 }
 
 #[derive(Deserialize)]

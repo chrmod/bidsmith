@@ -71,6 +71,13 @@ struct AdapterState {
     // value: (real criterion resource-name segment `<setId>~<critId>`, keyword)
     shared_criteria: BTreeMap<String, Vec<(String, JsonKeyword)>>,
     campaign_shared_sets: BTreeMap<String, JsonCampaignSharedSet>,
+    // live entity id -> bidsmith:address, read from label associations.
+    campaign_addresses: BTreeMap<String, String>,
+    ad_group_addresses: BTreeMap<String, String>,
+    ad_group_ad_addresses: BTreeMap<String, String>,
+    ad_group_criterion_addresses: BTreeMap<String, String>,
+    // bidsmith:address -> label resource_name, read from the label resource.
+    labels: BTreeMap<String, String>,
 }
 
 impl AdapterState {
@@ -111,6 +118,62 @@ impl AdapterState {
         if let Some(v) = row.get("campaignSharedSet") {
             self.merge_campaign_shared_set(v);
         }
+        let label = row.get("label");
+        if let Some(v) = label {
+            self.merge_label_resource(v);
+        }
+        if let Some(v) = row.get("campaignLabel") {
+            self.merge_label(v, "campaign", label, |s| &mut s.campaign_addresses);
+        }
+        if let Some(v) = row.get("adGroupLabel") {
+            self.merge_label(v, "adGroup", label, |s| &mut s.ad_group_addresses);
+        }
+        if let Some(v) = row.get("adGroupAdLabel") {
+            self.merge_label(v, "adGroupAd", label, |s| &mut s.ad_group_ad_addresses);
+        }
+        if let Some(v) = row.get("adGroupCriterionLabel") {
+            self.merge_label(v, "adGroupCriterion", label, |s| {
+                &mut s.ad_group_criterion_addresses
+            });
+        }
+    }
+
+    /// Record a `bidsmith:address=<addr>` label resource (address -> its
+    /// resource_name) so the mutate builder can reuse an existing label rather
+    /// than re-create one. Rows from the association queries select only
+    /// `label.name` (no resource_name), so they no-op here; the standalone
+    /// `label` query carries both.
+    fn merge_label_resource(&mut self, label: &Value) {
+        let Some(address) = label_address(Some(label)) else {
+            return;
+        };
+        if let Some(rn) = label.get("resourceName").and_then(Value::as_str) {
+            self.labels.insert(address, rn.to_string());
+        }
+    }
+
+    /// Record a `bidsmith:address=<addr>` label association: read the address
+    /// off the joined `label.name`, the live entity id off the association's
+    /// entity-reference field, and store the id -> address mapping. Non-bidsmith
+    /// labels (no matching prefix) are ignored.
+    fn merge_label(
+        &mut self,
+        assoc: &Value,
+        entity_field: &str,
+        label: Option<&Value>,
+        select: impl FnOnce(&mut Self) -> &mut BTreeMap<String, String>,
+    ) {
+        let Some(address) = label_address(label) else {
+            return;
+        };
+        let Some(id) = assoc
+            .get(entity_field)
+            .and_then(Value::as_str)
+            .and_then(last_segment)
+        else {
+            return;
+        };
+        select(self).insert(id.to_string(), address);
     }
 
     fn note_customer(&mut self, resource_name: &str) {
@@ -167,6 +230,7 @@ impl AdapterState {
                 contains_eu_political_advertising: None,
                 manual_cpc: None,
                 network_settings: None,
+                managed_address: None,
             });
         if let Some(s) = v.get("name").and_then(Value::as_str) {
             entry.name = s.to_string();
@@ -219,6 +283,7 @@ impl AdapterState {
             status: None,
             ty: None,
             cpc_bid_micros: None,
+            managed_address: None,
         });
         if let Some(s) = v.get("name").and_then(Value::as_str) {
             entry.name = s.to_string();
@@ -270,6 +335,7 @@ impl AdapterState {
                     final_urls: Vec::new(),
                     responsive_search_ad: None,
                 },
+                managed_address: None,
             });
         if !ad_group_id.is_empty() {
             entry.ad_group = ad_group_id;
@@ -335,6 +401,7 @@ impl AdapterState {
                     text: String::new(),
                     match_type: String::new(),
                 },
+                managed_address: None,
             });
         if !ad_group_id.is_empty() {
             entry.ad_group = ad_group_id;
@@ -675,6 +742,28 @@ impl AdapterState {
         let customer_id = self
             .customer_id
             .ok_or_else(|| "could not determine customer_id from any resourceName".to_string())?;
+
+        for (id, addr) in std::mem::take(&mut self.campaign_addresses) {
+            if let Some(c) = self.campaigns.get_mut(&id) {
+                c.managed_address = Some(addr);
+            }
+        }
+        for (id, addr) in std::mem::take(&mut self.ad_group_addresses) {
+            if let Some(g) = self.ad_groups.get_mut(&id) {
+                g.managed_address = Some(addr);
+            }
+        }
+        for (id, addr) in std::mem::take(&mut self.ad_group_ad_addresses) {
+            if let Some(a) = self.ad_group_ads.get_mut(&id) {
+                a.managed_address = Some(addr);
+            }
+        }
+        for (id, addr) in std::mem::take(&mut self.ad_group_criterion_addresses) {
+            if let Some(c) = self.ad_group_criteria.get_mut(&id) {
+                c.managed_address = Some(addr);
+            }
+        }
+
         let mut shared_criteria_out: Vec<crate::commands::export::JsonSharedCriterion> = Vec::new();
         let shared_sets: Vec<JsonSharedSet> = self
             .shared_sets
@@ -725,6 +814,7 @@ impl AdapterState {
             shared_sets,
             shared_criteria: shared_criteria_out,
             campaign_shared_sets: self.campaign_shared_sets.into_values().collect(),
+            labels: self.labels.into_iter().collect(),
         })
     }
 }
@@ -746,6 +836,12 @@ fn extract_id(v: &Value) -> Option<String> {
 
 fn last_segment(s: &str) -> Option<&str> {
     s.rsplit('/').next()
+}
+
+fn label_address(label: Option<&Value>) -> Option<String> {
+    let name = label?.get("name").and_then(Value::as_str)?;
+    name.strip_prefix(crate::commands::export::ADDRESS_LABEL_PREFIX)
+        .map(str::to_string)
 }
 
 fn parse_i64(v: Option<&Value>) -> Option<i64> {
@@ -791,5 +887,105 @@ fn extract_rsa_assets(v: Option<&Value>) -> Vec<JsonRsaAsset> {
             Some(JsonRsaAsset { text, pin })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+
+    fn adapt(rows: Value) -> ExportInput {
+        from_search_response(&Value::Object(
+            [("results".to_string(), rows)].into_iter().collect(),
+        ).to_string())
+        .expect("adapter should succeed")
+    }
+
+    #[test]
+    fn campaign_label_populates_managed_address() {
+        let input = adapt(serde_json::json!([
+            {
+                "campaign": {
+                    "resourceName": "customers/123/campaigns/555",
+                    "id": "555",
+                    "name": "Summer",
+                    "advertisingChannelType": "SEARCH",
+                    "campaignBudget": "customers/123/campaignBudgets/999"
+                }
+            },
+            {
+                "campaignLabel": {
+                    "resourceName": "customers/123/campaignLabels/555~777",
+                    "campaign": "customers/123/campaigns/555",
+                    "label": "customers/123/labels/777"
+                },
+                "label": {
+                    "resourceName": "customers/123/labels/777",
+                    "name": "bidsmith:address=main.google_ads_campaign.summer"
+                }
+            }
+        ]));
+
+        let campaign = input.campaigns.iter().find(|c| c.id == "555").expect("campaign present");
+        assert_eq!(
+            campaign.managed_address.as_deref(),
+            Some("main.google_ads_campaign.summer")
+        );
+    }
+
+    #[test]
+    fn composite_criterion_label_maps_to_the_criterion() {
+        let input = adapt(serde_json::json!([
+            {
+                "adGroupCriterion": {
+                    "resourceName": "customers/123/adGroupCriteria/300~400",
+                    "adGroup": "customers/123/adGroups/300",
+                    "keyword": { "text": "shoes", "matchType": "BROAD" }
+                }
+            },
+            {
+                "adGroupCriterionLabel": {
+                    "resourceName": "customers/123/adGroupCriterionLabels/300~400~777",
+                    "adGroupCriterion": "customers/123/adGroupCriteria/300~400",
+                    "label": "customers/123/labels/777"
+                },
+                "label": { "name": "bidsmith:address=main.google_ads_ad_group_criterion.shoes" }
+            }
+        ]));
+
+        let crit = input
+            .ad_group_criteria
+            .iter()
+            .find(|c| c.id == "300~400")
+            .expect("criterion present");
+        assert_eq!(
+            crit.managed_address.as_deref(),
+            Some("main.google_ads_ad_group_criterion.shoes")
+        );
+    }
+
+    #[test]
+    fn non_bidsmith_label_is_ignored() {
+        let input = adapt(serde_json::json!([
+            {
+                "campaign": {
+                    "resourceName": "customers/123/campaigns/555",
+                    "id": "555",
+                    "name": "Summer",
+                    "advertisingChannelType": "SEARCH",
+                    "campaignBudget": "customers/123/campaignBudgets/999"
+                }
+            },
+            {
+                "campaignLabel": {
+                    "campaign": "customers/123/campaigns/555",
+                    "label": "customers/123/labels/888"
+                },
+                "label": { "name": "Q4 Promo" }
+            }
+        ]));
+
+        let campaign = input.campaigns.iter().find(|c| c.id == "555").expect("campaign present");
+        assert_eq!(campaign.managed_address, None);
+    }
 }
 

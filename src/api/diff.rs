@@ -42,19 +42,144 @@ pub struct ResourceDiff {
     pub action: Action,
 }
 
+/// A `bidsmith:address` label to write (or reconcile) on a resource as part of
+/// applying the diff. Carried alongside the per-resource actions because the
+/// label is bidsmith's identity key for the labelable kinds (campaign,
+/// ad_group, ad_group_ad).
+#[derive(Debug, Clone)]
+pub struct LabelPlanEntry {
+    /// Address of the resource the label attaches to (key into the mutate
+    /// builder's resource_name map).
+    pub address: String,
+    /// `campaign` | `ad_group` | `ad_group_ad`.
+    pub kind: &'static str,
+    /// The `bidsmith:address=<this>` value the resource should carry.
+    pub label_address: String,
+    /// An existing live label resource_name to reuse; None -> create one.
+    pub existing_label_rn: Option<String>,
+    /// A stale bidsmith label association to remove (relabel on a surviving
+    /// resource). None when the resource is new or already correctly labeled.
+    pub stale_assoc_rn: Option<String>,
+}
+
 pub struct DiffReport {
     pub diffs: Vec<ResourceDiff>,
+    pub label_plans: Vec<LabelPlanEntry>,
     pub noop_count: usize,
     pub create_count: usize,
     pub update_count: usize,
     pub delete_count: usize,
+    /// Resources that match live with no field change but still need a label
+    /// written (first-run adoption of an unlabeled resource). Counted so plan /
+    /// apply treat label-only work as a pending change rather than a no-op.
+    pub adopt_count: usize,
+}
+
+/// Label-first match with content fallback over parallel declared / live
+/// arrays. A declared resource matches the live one carrying its
+/// `bidsmith:address` label; failing that, it falls back to a content key
+/// (name / parent+name) to adopt an unlabeled live resource. Returns the
+/// matched live index per declared item (None = create); each live index is
+/// claimed at most once. The caller derives the claimed set (the `Some`
+/// values) for whole-resource removal detection.
+fn match_label_first(
+    declared_addr: &[&str],
+    declared_key: &[Option<String>],
+    live_addr: &[Option<&str>],
+    live_key: &[String],
+) -> Vec<Option<usize>> {
+    let mut claimed = vec![false; live_addr.len()];
+    let mut result: Vec<Option<usize>> = vec![None; declared_addr.len()];
+
+    let mut by_addr: HashMap<&str, usize> = HashMap::new();
+    for (i, a) in live_addr.iter().enumerate() {
+        if let Some(a) = a {
+            by_addr.entry(a).or_insert(i);
+        }
+    }
+    for (di, addr) in declared_addr.iter().enumerate() {
+        if let Some(&li) = by_addr.get(addr) {
+            if !claimed[li] {
+                claimed[li] = true;
+                result[di] = Some(li);
+            }
+        }
+    }
+
+    let mut by_key: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, k) in live_key.iter().enumerate() {
+        if !claimed[i] {
+            by_key.entry(k.as_str()).or_default().push(i);
+        }
+    }
+    for (di, key) in declared_key.iter().enumerate() {
+        if result[di].is_some() {
+            continue;
+        }
+        if let Some(key) = key {
+            if let Some(cands) = by_key.get(key.as_str()) {
+                if let Some(&li) = cands.iter().find(|&&li| !claimed[li]) {
+                    claimed[li] = true;
+                    result[di] = Some(li);
+                }
+            }
+        }
+    }
+    result
+}
+
+fn label_segment(kind: &str) -> &'static str {
+    match kind {
+        "campaign" => "campaignLabels",
+        "ad_group" => "adGroupLabels",
+        "ad_group_ad" => "adGroupAdLabels",
+        "ad_group_criterion" => "adGroupCriterionLabels",
+        _ => "labels",
+    }
+}
+
+/// Decide what label work a labelable resource needs. `matched` is the live
+/// resource it resolved to (id + its current `bidsmith:address`), or None for a
+/// create. Returns None when the resource already carries exactly the right
+/// label (a no-op).
+fn make_label_plan(
+    kind: &'static str,
+    address: &str,
+    matched: Option<(&str, Option<&str>)>,
+    customer_id: &str,
+    labels: &HashMap<String, String>,
+) -> Option<LabelPlanEntry> {
+    if let Some((_, Some(current))) = matched {
+        if current == address {
+            return None;
+        }
+    }
+    let stale_assoc_rn = match matched {
+        Some((live_id, Some(old))) if old != address => labels.get(old).map(|label_rn| {
+            let label_id = label_rn.rsplit('/').next().unwrap_or(label_rn);
+            format!(
+                "customers/{customer_id}/{}/{live_id}~{label_id}",
+                label_segment(kind)
+            )
+        }),
+        _ => None,
+    };
+    Some(LabelPlanEntry {
+        address: address.to_string(),
+        kind,
+        label_address: address.to_string(),
+        existing_label_rn: labels.get(address).cloned(),
+        stale_assoc_rn,
+    })
 }
 
 pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     let mut diffs: Vec<ResourceDiff> = Vec::new();
+    let mut label_plans: Vec<LabelPlanEntry> = Vec::new();
     let mut campaign_match: HashMap<String, String> = HashMap::new();
     let mut ad_group_match: HashMap<String, String> = HashMap::new();
     let mut call_asset_match: HashMap<String, String> = HashMap::new();
+    let customer_id = declared.customer_id.as_str();
 
     // ---- campaign_budgets (match by name) --------------------------------
     let live_budgets: HashMap<&str, &JsonBudget> = live
@@ -74,59 +199,133 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         });
     }
 
-    // ---- campaigns (match by name) ---------------------------------------
-    let live_campaigns: HashMap<&str, &JsonCampaign> = live
-        .campaigns
-        .iter()
-        .map(|c| (c.name.as_str(), c))
-        .collect();
-    for d in &declared.campaigns {
-        let action = match live_campaigns.get(d.name.as_str()) {
-            Some(l) => {
-                campaign_match.insert(d.id.clone(), l.id.clone());
-                action_for_match(l.id.clone(), diff_campaign(d, l))
-            }
-            None => Action::Create,
-        };
-        diffs.push(ResourceDiff {
-            address: d.id.clone(),
-            kind: "campaign",
-            action,
-        });
-    }
-
-    // ---- ad_groups (match by mapped_campaign_id + name) ------------------
-    let live_ad_groups: HashMap<(String, String), &JsonAdGroup> = live
-        .ad_groups
-        .iter()
-        .map(|g| ((g.campaign.clone(), g.name.clone()), g))
-        .collect();
-    for d in &declared.ad_groups {
-        let action = match campaign_match.get(&d.campaign) {
-            Some(parent_id) => match live_ad_groups.get(&(parent_id.clone(), d.name.clone())) {
-                Some(l) => {
-                    ad_group_match.insert(d.id.clone(), l.id.clone());
-                    action_for_match(l.id.clone(), diff_ad_group(d, l))
+    // ---- campaigns (label-first, content-fallback by name) ----------------
+    let live_campaigns: Vec<&JsonCampaign> = live.campaigns.iter().collect();
+    {
+        let decl_addr: Vec<&str> = declared.campaigns.iter().map(|c| c.id.as_str()).collect();
+        let decl_key: Vec<Option<String>> =
+            declared.campaigns.iter().map(|c| Some(c.name.clone())).collect();
+        let live_a: Vec<Option<&str>> =
+            live_campaigns.iter().map(|c| c.managed_address.as_deref()).collect();
+        let live_k: Vec<String> = live_campaigns.iter().map(|c| c.name.clone()).collect();
+        let matches = match_label_first(&decl_addr, &decl_key, &live_a, &live_k);
+        let mut claimed = vec![false; live_campaigns.len()];
+        for (di, m) in matches.iter().enumerate() {
+            let d = &declared.campaigns[di];
+            let (action, matched) = match m {
+                Some(li) => {
+                    let l = live_campaigns[*li];
+                    claimed[*li] = true;
+                    campaign_match.insert(d.id.clone(), l.id.clone());
+                    (
+                        action_for_match(l.id.clone(), diff_campaign(d, l)),
+                        Some((l.id.as_str(), l.managed_address.as_deref())),
+                    )
                 }
-                None => Action::Create,
-            },
-            None => Action::Create,
-        };
-        diffs.push(ResourceDiff {
-            address: d.id.clone(),
-            kind: "ad_group",
-            action,
-        });
+                None => (Action::Create, None),
+            };
+            if let Some(plan) =
+                make_label_plan("campaign", &d.id, matched, customer_id, &live.labels)
+            {
+                label_plans.push(plan);
+            }
+            diffs.push(ResourceDiff {
+                address: d.id.clone(),
+                kind: "campaign",
+                action,
+            });
+        }
+        for (li, l) in live_campaigns.iter().enumerate() {
+            if !claimed[li] {
+                if let Some(addr) = &l.managed_address {
+                    diffs.push(removal_diff("campaign", addr, &l.id));
+                }
+            }
+        }
     }
 
-    // ---- ad_group_ads (match by mapped_ad_group_id + body, 1:1) ----------
-    let ad_actions = match_ad_group_ads(&declared.ad_group_ads, &live.ad_group_ads, &ad_group_match);
-    for (d, action) in declared.ad_group_ads.iter().zip(ad_actions) {
+    // ---- ad_groups (label-first, content-fallback by campaign + name) -----
+    let live_ad_groups: Vec<&JsonAdGroup> = live.ad_groups.iter().collect();
+    {
+        let decl_addr: Vec<&str> = declared.ad_groups.iter().map(|g| g.id.as_str()).collect();
+        let decl_key: Vec<Option<String>> = declared
+            .ad_groups
+            .iter()
+            .map(|g| campaign_match.get(&g.campaign).map(|cid| format!("{cid}\u{1f}{}", g.name)))
+            .collect();
+        let live_a: Vec<Option<&str>> =
+            live_ad_groups.iter().map(|g| g.managed_address.as_deref()).collect();
+        let live_k: Vec<String> = live_ad_groups
+            .iter()
+            .map(|g| format!("{}\u{1f}{}", g.campaign, g.name))
+            .collect();
+        let matches = match_label_first(&decl_addr, &decl_key, &live_a, &live_k);
+        let mut claimed = vec![false; live_ad_groups.len()];
+        for (di, m) in matches.iter().enumerate() {
+            let d = &declared.ad_groups[di];
+            let (action, matched) = match m {
+                Some(li) => {
+                    let l = live_ad_groups[*li];
+                    claimed[*li] = true;
+                    ad_group_match.insert(d.id.clone(), l.id.clone());
+                    (
+                        action_for_match(l.id.clone(), diff_ad_group(d, l)),
+                        Some((l.id.as_str(), l.managed_address.as_deref())),
+                    )
+                }
+                None => (Action::Create, None),
+            };
+            if let Some(plan) =
+                make_label_plan("ad_group", &d.id, matched, customer_id, &live.labels)
+            {
+                label_plans.push(plan);
+            }
+            diffs.push(ResourceDiff {
+                address: d.id.clone(),
+                kind: "ad_group",
+                action,
+            });
+        }
+        for (li, l) in live_ad_groups.iter().enumerate() {
+            if !claimed[li] {
+                if let Some(addr) = &l.managed_address {
+                    diffs.push(removal_diff("ad_group", addr, &l.id));
+                }
+            }
+        }
+    }
+
+    // ---- ad_group_ads (label hit, else body 1:1; label authorizes destroy) -
+    let ad_outcomes =
+        match_ad_group_ads(&declared.ad_group_ads, &live.ad_group_ads, &ad_group_match);
+    let mut ad_claimed = vec![false; live.ad_group_ads.len()];
+    for (di, (action, li)) in ad_outcomes.iter().enumerate() {
+        let d = &declared.ad_group_ads[di];
+        let matched = match li {
+            Some(i) => {
+                ad_claimed[*i] = true;
+                let l = &live.ad_group_ads[*i];
+                Some((l.id.as_str(), l.managed_address.as_deref()))
+            }
+            None => None,
+        };
+        if let Some(plan) =
+            make_label_plan("ad_group_ad", &d.id, matched, customer_id, &live.labels)
+        {
+            label_plans.push(plan);
+        }
         diffs.push(ResourceDiff {
             address: d.id.clone(),
             kind: "ad_group_ad",
-            action,
+            action: action.clone(),
         });
+    }
+    for (i, l) in live.ad_group_ads.iter().enumerate() {
+        if !ad_claimed[i] {
+            if let Some(addr) = &l.managed_address {
+                diffs.push(removal_diff("ad_group_ad", addr, &l.id));
+            }
+        }
     }
 
     // ---- ad_group_criteria (match by ad_group + keyword) -----------------
@@ -360,12 +559,24 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         }
     }
 
+    let noop_addrs: std::collections::HashSet<&str> = diffs
+        .iter()
+        .filter(|d| matches!(d.action, Action::NoOp { .. }))
+        .map(|d| d.address.as_str())
+        .collect();
+    let adopt_count = label_plans
+        .iter()
+        .filter(|p| noop_addrs.contains(p.address.as_str()))
+        .count();
+
     DiffReport {
         diffs,
+        label_plans,
         noop_count,
         create_count,
         update_count,
         delete_count,
+        adopt_count,
     }
 }
 
@@ -501,6 +712,19 @@ fn orphan_criteria_deletes(
     }
 
     out
+}
+
+/// A whole labeled resource that is no longer declared — destroyed because its
+/// `bidsmith:address` label proves bidsmith owns it. Unlabeled live resources
+/// (UI-created, unmanaged) are never produced here.
+fn removal_diff(kind: &'static str, address: &str, live_id: &str) -> ResourceDiff {
+    ResourceDiff {
+        address: format!("{address} (managed, no longer declared)"),
+        kind,
+        action: Action::Delete {
+            live_id: live_id.to_string(),
+        },
+    }
 }
 
 fn delete_diff(
@@ -667,18 +891,49 @@ fn match_ad_group_ads(
     declared: &[JsonAdGroupAd],
     live: &[JsonAdGroupAd],
     ad_group_match: &HashMap<String, String>,
-) -> Vec<Action> {
+) -> Vec<(Action, Option<usize>)> {
+    let mut consumed = vec![false; live.len()];
+    let mut out: Vec<(Action, Option<usize>)> = vec![(Action::Create, None); declared.len()];
+
+    // Pass 0: label hits — a declared ad claims the live ad carrying its
+    // address, regardless of body. Body is creation-only, so a body edit on a
+    // labeled ad falls through to a create + a destroy of the old ad below.
+    let mut live_by_addr: HashMap<&str, usize> = HashMap::new();
+    for (i, l) in live.iter().enumerate() {
+        if let Some(a) = l.managed_address.as_deref() {
+            live_by_addr.entry(a).or_insert(i);
+        }
+    }
+    for (di, d) in declared.iter().enumerate() {
+        if let Some(&li) = live_by_addr.get(d.id.as_str()) {
+            if !consumed[li] && ad_body_key(d) == ad_body_key(&live[li]) {
+                consumed[li] = true;
+                out[di] = (
+                    action_for_match(live[li].id.clone(), diff_ad_group_ad(d, &live[li])),
+                    Some(li),
+                );
+            }
+        }
+    }
+
+    // Body 1:1 buckets for the rest, keyed on (live ad_group, body). Buckets are
+    // disjoint in both declared and live indices (a distinct body key never
+    // shares live ads), so the result is independent of bucket order.
     let mut live_buckets: HashMap<(String, String), Vec<usize>> = HashMap::new();
     for (i, l) in live.iter().enumerate() {
+        if consumed[i] {
+            continue;
+        }
         live_buckets
             .entry((l.ad_group.clone(), ad_body_key(l)))
             .or_default()
             .push(i);
     }
-
-    let mut actions: Vec<Action> = vec![Action::Create; declared.len()];
     let mut declared_buckets: HashMap<(String, String), Vec<usize>> = HashMap::new();
     for (i, d) in declared.iter().enumerate() {
+        if out[i].1.is_some() {
+            continue;
+        }
         if let Some(parent_id) = ad_group_match.get(&d.ad_group) {
             declared_buckets
                 .entry((parent_id.clone(), ad_body_key(d)))
@@ -687,9 +942,6 @@ fn match_ad_group_ads(
         }
     }
 
-    // Buckets are disjoint in both declared and live indices (a distinct body
-    // key never shares live ads), so the result is independent of bucket order.
-    let mut consumed = vec![false; live.len()];
     for (key, decl_indices) in &declared_buckets {
         let live_indices = live_buckets.get(key);
         let mut pending: Vec<usize> = Vec::new();
@@ -702,9 +954,12 @@ fn match_ad_group_ads(
             match claimed {
                 Some(li) => {
                     consumed[li] = true;
-                    actions[di] = Action::NoOp {
-                        live_id: live[li].id.clone(),
-                    };
+                    out[di] = (
+                        Action::NoOp {
+                            live_id: live[li].id.clone(),
+                        },
+                        Some(li),
+                    );
                 }
                 None => pending.push(di),
             }
@@ -713,13 +968,15 @@ fn match_ad_group_ads(
             let claimed = live_indices.and_then(|lis| lis.iter().copied().find(|&li| !consumed[li]));
             if let Some(li) = claimed {
                 consumed[li] = true;
-                actions[di] =
-                    action_for_match(live[li].id.clone(), diff_ad_group_ad(&declared[di], &live[li]));
+                out[di] = (
+                    action_for_match(live[li].id.clone(), diff_ad_group_ad(&declared[di], &live[li])),
+                    Some(li),
+                );
             }
         }
     }
 
-    actions
+    out
 }
 
 /// A stable key for an ad's content (everything `diff_ad_group_ad` treats as
@@ -898,6 +1155,7 @@ mod ad_match_tests {
                     path2: None,
                 }),
             },
+            managed_address: None,
         }
     }
 
@@ -923,7 +1181,10 @@ mod ad_match_tests {
             ad("102", "ag", "ENABLED", "Block ads now"),
         ];
 
-        let actions = match_ad_group_ads(&declared, &live, &identity_match());
+        let actions: Vec<Action> = match_ad_group_ads(&declared, &live, &identity_match())
+            .into_iter()
+            .map(|(a, _)| a)
+            .collect();
 
         assert!(
             actions.iter().all(|a| matches!(a, Action::NoOp { .. })),
@@ -947,7 +1208,10 @@ mod ad_match_tests {
             ad("201", "ag", "ENABLED", "Same body"),
         ];
 
-        let actions = match_ad_group_ads(&declared, &live, &identity_match());
+        let actions: Vec<Action> = match_ad_group_ads(&declared, &live, &identity_match())
+            .into_iter()
+            .map(|(a, _)| a)
+            .collect();
 
         assert!(matches!(&actions[0], Action::NoOp { live_id } if live_id == "201"));
         assert!(matches!(&actions[1], Action::NoOp { live_id } if live_id == "200"));
@@ -966,7 +1230,10 @@ mod ad_match_tests {
             ad("301", "ag", "PAUSED", "Same body"),
         ];
 
-        let actions = match_ad_group_ads(&declared, &live, &identity_match());
+        let actions: Vec<Action> = match_ad_group_ads(&declared, &live, &identity_match())
+            .into_iter()
+            .map(|(a, _)| a)
+            .collect();
 
         let noops = actions.iter().filter(|a| matches!(a, Action::NoOp { .. })).count();
         let updates = actions
@@ -986,7 +1253,10 @@ mod ad_match_tests {
         let declared = vec![ad("new", "ag", "ENABLED", "Brand new copy")];
         let live = vec![ad("400", "ag", "ENABLED", "Old copy")];
 
-        let actions = match_ad_group_ads(&declared, &live, &identity_match());
+        let actions: Vec<Action> = match_ad_group_ads(&declared, &live, &identity_match())
+            .into_iter()
+            .map(|(a, _)| a)
+            .collect();
 
         assert!(matches!(&actions[0], Action::Create));
     }
@@ -996,7 +1266,10 @@ mod ad_match_tests {
         let declared = vec![ad("x", "missing_ag", "ENABLED", "Copy")];
         let live = vec![ad("500", "ag", "ENABLED", "Copy")];
 
-        let actions = match_ad_group_ads(&declared, &live, &identity_match());
+        let actions: Vec<Action> = match_ad_group_ads(&declared, &live, &identity_match())
+            .into_iter()
+            .map(|(a, _)| a)
+            .collect();
 
         assert!(matches!(&actions[0], Action::Create));
     }
@@ -1057,6 +1330,159 @@ mod criterion_match_tests {
             matches!(&crit.action, Action::NoOp { live_id } if live_id == "400"),
             "declared positive keyword should match the live positive one, got {:?}",
             crit.action
+        );
+    }
+}
+
+#[cfg(test)]
+mod label_match_tests {
+    use super::*;
+
+    fn input(json: &str) -> ExportInput {
+        serde_json::from_str(json).expect("valid test input")
+    }
+
+    const DECLARED_SUMMER: &str = r#"{
+        "customer_id": "100",
+        "campaign_budgets": [{"id":"m.b","name":"B","amount_micros":1000}],
+        "campaigns": [{"id":"m.google_ads_campaign.summer","name":"Summer","advertising_channel_type":"SEARCH","campaign_budget":"m.b"}]
+    }"#;
+
+    fn campaign_diff(report: &DiffReport) -> &ResourceDiff {
+        report
+            .diffs
+            .iter()
+            .find(|d| d.kind == "campaign")
+            .expect("a campaign diff")
+    }
+
+    #[test]
+    fn adoption_labels_an_unlabeled_match() {
+        // Live campaign matches by name but carries no bidsmith label: adopt it
+        // (no field change) and schedule a fresh label write.
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "campaign_budgets": [{"id":"999","name":"B","amount_micros":1000}],
+            "campaigns": [{"id":"555","name":"Summer","advertising_channel_type":"SEARCH","campaign_budget":"999"}]
+        }"#,
+        );
+        let report = diff(&input(DECLARED_SUMMER), &live);
+
+        assert!(matches!(&campaign_diff(&report).action, Action::NoOp { live_id } if live_id == "555"));
+        assert_eq!(report.adopt_count, 1);
+        let plan = report
+            .label_plans
+            .iter()
+            .find(|p| p.kind == "campaign")
+            .expect("a label plan");
+        assert_eq!(plan.label_address, "m.google_ads_campaign.summer");
+        assert!(plan.existing_label_rn.is_none(), "fresh label is created");
+        assert!(plan.stale_assoc_rn.is_none());
+    }
+
+    #[test]
+    fn correct_label_is_a_clean_noop() {
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "campaign_budgets": [{"id":"999","name":"B","amount_micros":1000}],
+            "campaigns": [{"id":"555","name":"Summer","advertising_channel_type":"SEARCH","campaign_budget":"999","managed_address":"m.google_ads_campaign.summer"}],
+            "labels": {"m.google_ads_campaign.summer":"customers/100/labels/777"}
+        }"#,
+        );
+        let report = diff(&input(DECLARED_SUMMER), &live);
+
+        assert!(matches!(&campaign_diff(&report).action, Action::NoOp { .. }));
+        assert_eq!(report.adopt_count, 0);
+        assert!(report.label_plans.is_empty(), "label already correct");
+    }
+
+    #[test]
+    fn renaming_the_name_on_a_labeled_campaign_is_an_update() {
+        // The live campaign is identified by its label, so changing its display
+        // name is an in-place update — not a create + orphan.
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "campaign_budgets": [{"id":"999","name":"B","amount_micros":1000}],
+            "campaigns": [{"id":"555","name":"Old Name","advertising_channel_type":"SEARCH","campaign_budget":"999","managed_address":"m.google_ads_campaign.summer"}],
+            "labels": {"m.google_ads_campaign.summer":"customers/100/labels/777"}
+        }"#,
+        );
+        let report = diff(&input(DECLARED_SUMMER), &live);
+
+        assert!(
+            matches!(&campaign_diff(&report).action, Action::Update { changed_fields, .. } if changed_fields.iter().any(|f| f == "name")),
+            "expected a name update, got {:?}",
+            campaign_diff(&report).action
+        );
+        assert_eq!(report.create_count, 0);
+        assert!(report.label_plans.is_empty(), "label already correct");
+    }
+
+    #[test]
+    fn labeled_orphan_is_destroyed_unlabeled_is_left_alone() {
+        // Two undeclared live campaigns: the bidsmith-labeled one is destroyed,
+        // the UI-created (unlabeled) one is untouched.
+        let declared = input(r#"{"customer_id":"100","campaign_budgets":[{"id":"m.b","name":"B","amount_micros":1000}]}"#);
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "campaigns": [
+                {"id":"555","name":"Managed","advertising_channel_type":"SEARCH","campaign_budget":"999","managed_address":"m.google_ads_campaign.gone"},
+                {"id":"556","name":"Hand Made","advertising_channel_type":"SEARCH","campaign_budget":"999"}
+            ],
+            "labels": {"m.google_ads_campaign.gone":"customers/100/labels/777"}
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        let destroys: Vec<&ResourceDiff> = report
+            .diffs
+            .iter()
+            .filter(|d| d.kind == "campaign" && matches!(d.action, Action::Delete { .. }))
+            .collect();
+        assert_eq!(report.delete_count, 1);
+        assert_eq!(destroys.len(), 1);
+        assert!(matches!(&destroys[0].action, Action::Delete { live_id } if live_id == "555"));
+    }
+
+    #[test]
+    fn address_rename_relabels_via_content_fallback() {
+        // `bidsmith mv` changed the address in source (summer -> autumn) but the
+        // live campaign still carries the old label and the same name. Content
+        // fallback re-adopts it under the new address and reconciles the label —
+        // no destroy, no recreate.
+        let declared = input(
+            r#"{
+            "customer_id": "100",
+            "campaign_budgets": [{"id":"m.b","name":"B","amount_micros":1000}],
+            "campaigns": [{"id":"m.google_ads_campaign.autumn","name":"Summer","advertising_channel_type":"SEARCH","campaign_budget":"m.b"}]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "campaign_budgets": [{"id":"999","name":"B","amount_micros":1000}],
+            "campaigns": [{"id":"555","name":"Summer","advertising_channel_type":"SEARCH","campaign_budget":"999","managed_address":"m.google_ads_campaign.summer"}],
+            "labels": {"m.google_ads_campaign.summer":"customers/100/labels/777"}
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        assert!(matches!(&campaign_diff(&report).action, Action::NoOp { live_id } if live_id == "555"));
+        assert_eq!(report.delete_count, 0, "mv must never destroy");
+        let plan = report
+            .label_plans
+            .iter()
+            .find(|p| p.kind == "campaign")
+            .expect("a relabel plan");
+        assert_eq!(plan.label_address, "m.google_ads_campaign.autumn");
+        assert_eq!(
+            plan.stale_assoc_rn.as_deref(),
+            Some("customers/100/campaignLabels/555~777"),
+            "the old label association is removed"
         );
     }
 }

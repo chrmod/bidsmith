@@ -190,6 +190,36 @@ pub const QUERIES: &[(&str, &str)] = &[
         FROM campaign_shared_set
         WHERE campaign_shared_set.status != 'REMOVED'",
     ),
+    (
+        "label",
+        "SELECT label.resource_name, label.name
+        FROM label
+        WHERE label.name LIKE 'bidsmith:address=%'",
+    ),
+    (
+        "campaign_label",
+        "SELECT campaign_label.campaign, label.name
+        FROM campaign_label
+        WHERE label.name LIKE 'bidsmith:address=%'",
+    ),
+    (
+        "ad_group_label",
+        "SELECT ad_group_label.ad_group, label.name
+        FROM ad_group_label
+        WHERE label.name LIKE 'bidsmith:address=%'",
+    ),
+    (
+        "ad_group_ad_label",
+        "SELECT ad_group_ad_label.ad_group_ad, label.name
+        FROM ad_group_ad_label
+        WHERE label.name LIKE 'bidsmith:address=%'",
+    ),
+    (
+        "ad_group_criterion_label",
+        "SELECT ad_group_criterion_label.ad_group_criterion, label.name
+        FROM ad_group_criterion_label
+        WHERE label.name LIKE 'bidsmith:address=%'",
+    ),
 ];
 
 pub fn queries_fingerprint() -> String {

@@ -451,24 +451,76 @@ pub fn build_mutate_with_diff(
         }
     }
 
-    // Removes for orphaned criteria members (parent still declared, member
-    // dropped from its blocks). Appended after creates/updates: the planner
-    // only deletes members no longer declared, so they never collide with a
-    // create of the same (text, match_type) in the same batch.
+    // Label writes: ensure each created / adopted / relabeled resource carries
+    // its bidsmith:address label. A brand-new label gets a temp id; an existing
+    // one is reused by resource_name (a duplicate label name is an API error).
+    // Emitted after the resource creates so the association can reference the
+    // resource's own (temp or live) resource_name. A stale association from a
+    // prior address is removed.
+    let mut next_label: i32 = -1;
+    for plan in &report.label_plans {
+        let Some(resource_rn) = refs.get(&plan.address).cloned() else {
+            errors.push(PlanBuildError {
+                address: plan.address.clone(),
+                message: "internal error: no resource name for label target".to_string(),
+            });
+            continue;
+        };
+        let label_rn = match &plan.existing_label_rn {
+            Some(rn) => rn.clone(),
+            None => {
+                let rn = format!("customers/{customer_id}/labels/{next_label}");
+                next_label -= 1;
+                mutate_ops.push(json!({
+                    "labelOperation": {
+                        "create": {
+                            "resourceName": rn,
+                            "name": format!(
+                                "{}{}",
+                                crate::commands::export::ADDRESS_LABEL_PREFIX,
+                                plan.label_address
+                            ),
+                        }
+                    }
+                }));
+                operations.push(PlanOperation { address: plan.address.clone(), kind: "label" });
+                rn
+            }
+        };
+        let (assoc_env, entity_field) = label_assoc_op(plan.kind);
+        let mut assoc = Map::new();
+        assoc.insert(entity_field.into(), Value::String(resource_rn));
+        assoc.insert("label".into(), Value::String(label_rn));
+        mutate_ops.push(json!({ assoc_env: { "create": Value::Object(assoc) } }));
+        operations.push(PlanOperation { address: plan.address.clone(), kind: "label" });
+
+        if let Some(stale) = &plan.stale_assoc_rn {
+            mutate_ops.push(json!({ assoc_env: { "remove": stale } }));
+            operations.push(PlanOperation { address: plan.address.clone(), kind: "label" });
+        }
+    }
+
+    // Removes: orphaned criteria members (parent still declared, member dropped)
+    // plus whole labeled resources no longer declared. Sorted child-first so a
+    // campaign and one of its ad groups can be destroyed in the same batch.
+    let mut deletes: Vec<(&'static str, String, String)> = Vec::new();
     for d in &report.diffs {
         if let Action::Delete { live_id } = &d.action {
             let Some(segment) = remove_segment_for(d.kind) else {
                 continue;
             };
-            let Some(env) = remove_envelope_for(d.kind) else {
-                continue;
-            };
-            let rn = format!("customers/{customer_id}/{segment}/{live_id}");
+            deletes.push((
+                d.kind,
+                format!("customers/{customer_id}/{segment}/{live_id}"),
+                d.address.clone(),
+            ));
+        }
+    }
+    deletes.sort_by_key(|(kind, _, _)| removal_order_index(kind));
+    for (kind, rn, address) in deletes {
+        if let Some(env) = remove_envelope_for(kind) {
             mutate_ops.push(json!({ env: { "remove": rn } }));
-            operations.push(PlanOperation {
-                address: d.address.clone(),
-                kind: d.kind,
-            });
+            operations.push(PlanOperation { address, kind });
         }
     }
 
@@ -512,6 +564,16 @@ pub fn build_remove_only_mutate(operations: &[(&str, String)], validate_only: bo
         "mutateOperations": mutate_ops,
         "validateOnly": validate_only,
     })
+}
+
+/// The mutate envelope and entity-reference field for a label association of a
+/// given labelable kind.
+fn label_assoc_op(kind: &str) -> (&'static str, &'static str) {
+    match kind {
+        "ad_group" => ("adGroupLabelOperation", "adGroup"),
+        "ad_group_ad" => ("adGroupAdLabelOperation", "adGroupAd"),
+        _ => ("campaignLabelOperation", "campaign"),
+    }
 }
 
 fn remove_envelope_for(kind: &str) -> Option<&'static str> {
@@ -1282,7 +1344,7 @@ fn campaign_criterion_create(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::diff::{Action, DiffReport, ResourceDiff};
+    use crate::api::diff::{Action, DiffReport, LabelPlanEntry, ResourceDiff};
 
     fn create_diff(address: &str, kind: &'static str) -> ResourceDiff {
         ResourceDiff {
@@ -1290,6 +1352,73 @@ mod tests {
             kind,
             action: Action::Create,
         }
+    }
+
+    #[test]
+    fn label_plan_emits_create_label_and_association() {
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "campaigns": [{
+                "id": "m.c",
+                "name": "C",
+                "advertising_channel_type": "SEARCH",
+                "campaign_budget": "customers/100/campaignBudgets/999"
+            }]
+        }))
+        .expect("valid ExportInput");
+
+        let report = DiffReport {
+            diffs: vec![ResourceDiff {
+                address: "m.c".to_string(),
+                kind: "campaign",
+                action: Action::NoOp { live_id: "555".to_string() },
+            }],
+            label_plans: vec![LabelPlanEntry {
+                address: "m.c".to_string(),
+                kind: "campaign",
+                label_address: "m.c".to_string(),
+                existing_label_rn: None,
+                stale_assoc_rn: Some("customers/100/campaignLabels/555~111".to_string()),
+            }],
+            noop_count: 1,
+            create_count: 0,
+            update_count: 0,
+            delete_count: 0,
+            adopt_count: 1,
+        };
+
+        let plan = match build_mutate_with_diff(&input, &report, true) {
+            Ok(plan) => plan,
+            Err(errs) => panic!(
+                "plan should build: {}",
+                errs.iter()
+                    .map(|e| format!("{}: {}", e.address, e.message))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        };
+        let ops = plan.body["mutateOperations"].as_array().unwrap();
+
+        let label = ops
+            .iter()
+            .find_map(|o| o.get("labelOperation").and_then(|x| x.get("create")))
+            .expect("a label create op");
+        assert_eq!(label["name"].as_str().unwrap(), "bidsmith:address=m.c");
+        let label_rn = label["resourceName"].as_str().unwrap();
+        assert!(label_rn.contains("/labels/-"), "new label gets a temp id");
+
+        let assoc = ops
+            .iter()
+            .find_map(|o| o.get("campaignLabelOperation").and_then(|x| x.get("create")))
+            .expect("a campaign label association create");
+        assert_eq!(assoc["campaign"].as_str().unwrap(), "customers/100/campaigns/555");
+        assert_eq!(assoc["label"].as_str().unwrap(), label_rn);
+
+        let removed = ops
+            .iter()
+            .find_map(|o| o.get("campaignLabelOperation").and_then(|x| x.get("remove")))
+            .expect("the stale association is removed");
+        assert_eq!(removed.as_str().unwrap(), "customers/100/campaignLabels/555~111");
     }
 
     #[test]
@@ -1312,10 +1441,12 @@ mod tests {
                     action: Action::Delete { live_id: "50~201".to_string() },
                 },
             ],
+            label_plans: Vec::new(),
             noop_count: 0,
             create_count: 0,
             update_count: 0,
             delete_count: 2,
+            adopt_count: 0,
         };
 
         let plan = match build_mutate_with_diff(&input, &report, true) {
@@ -1379,10 +1510,12 @@ mod tests {
                     "shared_criterion",
                 ),
             ],
+            label_plans: Vec::new(),
             noop_count: 0,
             create_count: 2,
             update_count: 0,
             delete_count: 0,
+            adopt_count: 0,
         };
 
         let plan = match build_mutate_with_diff(&input, &report, true) {
@@ -1466,10 +1599,12 @@ mod tests {
                     "campaign_shared_set",
                 ),
             ],
+            label_plans: Vec::new(),
             noop_count: 0,
             create_count: 3,
             update_count: 0,
             delete_count: 0,
+            adopt_count: 0,
         };
 
         let plan = match build_mutate_with_diff(&input, &report, true) {

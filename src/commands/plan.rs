@@ -317,7 +317,11 @@ pub fn execute(
     let label = prepared.label;
     let strip = prepared.strip_module;
 
-    if report.create_count == 0 && report.update_count == 0 && report.delete_count == 0 {
+    if report.create_count == 0
+        && report.update_count == 0
+        && report.delete_count == 0
+        && report.adopt_count == 0
+    {
         if show_unchanged && matches!(display, DisplayMode::PerResource) {
             for d in &report.diffs {
                 println!(
@@ -398,10 +402,13 @@ pub fn execute(
         }
     }
 
+    let adopted = adopted_addresses(report);
     let mut accepted = 0usize;
     let mut rejected = 0usize;
     for d in &report.diffs {
+        let is_adopt = adopted.contains(d.address.as_str());
         let (verb, detail): (&str, String) = match &d.action {
+            diff::Action::NoOp { .. } if is_adopt => ("~ adopt", " (label)".to_string()),
             diff::Action::NoOp { .. } => ("no-op", String::new()),
             diff::Action::Create => ("+ create", String::new()),
             diff::Action::Update { changed_fields, .. } => {
@@ -409,18 +416,17 @@ pub fn execute(
             }
             diff::Action::Delete { .. } => ("- destroy", String::new()),
         };
-        let outcome = match &d.action {
-            diff::Action::NoOp { .. } => "".to_string(),
-            _ => match errors_by_address.get(&d.address) {
+        let is_mutating = is_adopt || !matches!(d.action, diff::Action::NoOp { .. });
+        let outcome = if is_mutating {
+            match errors_by_address.get(&d.address) {
                 Some(msgs) => format!("  err: {}", msgs.first().copied().unwrap_or("(unknown)")),
                 None if success => "  ok".to_string(),
                 None => "  (no result — batch rejected)".to_string(),
-            },
+            }
+        } else {
+            String::new()
         };
-        if matches!(
-            d.action,
-            diff::Action::Create | diff::Action::Update { .. } | diff::Action::Delete { .. }
-        ) {
+        if is_mutating {
             if errors_by_address.contains_key(&d.address) {
                 rejected += 1;
             } else if success {
@@ -429,12 +435,13 @@ pub fn execute(
                 rejected += 1;
             }
         }
-        let printable = row_is_visible(
-            &d.action,
-            &display,
-            show_unchanged,
-            errors_by_address.contains_key(&d.address),
-        );
+        let printable = (is_adopt && matches!(display, DisplayMode::PerResource))
+            || row_is_visible(
+                &d.action,
+                &display,
+                show_unchanged,
+                errors_by_address.contains_key(&d.address),
+            );
         if printable {
             println!(
                 "{addr:<width$}  {verb}{detail}{outcome}",
@@ -450,13 +457,15 @@ pub fn execute(
     let title = summary_title(validate_only);
     if validate_only {
         println!(
-            "{title}: {} to create, {} to update, {} to destroy, {} unchanged. ({} accepted, {} rejected)",
-            report.create_count, report.update_count, report.delete_count, report.noop_count, accepted, rejected,
+            "{title}: {} to create, {} to update, {} to destroy, {}{} unchanged. ({} accepted, {} rejected)",
+            report.create_count, report.update_count, report.delete_count,
+            adopt_clause(report, false), report.noop_count - report.adopt_count, accepted, rejected,
         );
     } else {
         println!(
-            "{title}: {} created, {} updated, {} destroyed, {} unchanged. ({} succeeded, {} failed)",
-            report.create_count, report.update_count, report.delete_count, report.noop_count, accepted, rejected,
+            "{title}: {} created, {} updated, {} destroyed, {}{} unchanged. ({} succeeded, {} failed)",
+            report.create_count, report.update_count, report.delete_count,
+            adopt_clause(report, true), report.noop_count - report.adopt_count, accepted, rejected,
         );
     }
 
@@ -494,6 +503,38 @@ fn summary_title(validate_only: bool) -> &'static str {
     if validate_only { "Plan" } else { "Apply" }
 }
 
+/// Addresses that match live unchanged but still need their `bidsmith:address`
+/// label written — first-run adoption. Rendered as a visible `~ adopt` row and
+/// counted separately from `no-op`.
+fn adopted_addresses(report: &diff::DiffReport) -> std::collections::HashSet<&str> {
+    if report.adopt_count == 0 {
+        return std::collections::HashSet::new();
+    }
+    let noop: std::collections::HashSet<&str> = report
+        .diffs
+        .iter()
+        .filter(|d| matches!(d.action, diff::Action::NoOp { .. }))
+        .map(|d| d.address.as_str())
+        .collect();
+    report
+        .label_plans
+        .iter()
+        .map(|p| p.address.as_str())
+        .filter(|a| noop.contains(a))
+        .collect()
+}
+
+/// The `", N to adopt"` (or `", N adopted"`) clause, empty when nothing adopts.
+fn adopt_clause(report: &diff::DiffReport, past: bool) -> String {
+    if report.adopt_count == 0 {
+        String::new()
+    } else if past {
+        format!("{} adopted, ", report.adopt_count)
+    } else {
+        format!("{} to adopt, ", report.adopt_count)
+    }
+}
+
 /// Whether a resource's row appears in the listing. By default the per-resource
 /// listing is focused on changes: unchanged (`no-op`) rows are hidden unless
 /// `show_unchanged` is set. In `Summary` mode only rejected rows surface.
@@ -513,11 +554,14 @@ fn display_offline_diff(prepared: &Prepared, validate_only: bool, show_unchanged
     let report = &prepared.report;
     let width = prepared.width;
     let strip = prepared.strip_module;
+    let adopted = adopted_addresses(report);
     for d in &report.diffs {
-        if !row_is_visible(&d.action, &DisplayMode::PerResource, show_unchanged, false) {
+        let is_adopt = adopted.contains(d.address.as_str());
+        if !is_adopt && !row_is_visible(&d.action, &DisplayMode::PerResource, show_unchanged, false) {
             continue;
         }
         let (verb, detail): (&str, String) = match &d.action {
+            diff::Action::NoOp { .. } if is_adopt => ("~ adopt", " (label)".to_string()),
             diff::Action::NoOp { .. } => ("no-op", String::new()),
             diff::Action::Create => ("+ create", String::new()),
             diff::Action::Update { changed_fields, .. } => {
@@ -534,8 +578,9 @@ fn display_offline_diff(prepared: &Prepared, validate_only: bool, show_unchanged
     println!();
     let title = summary_title(validate_only);
     println!(
-        "{title}: {} to create, {} to update, {} to destroy, {} unchanged. (offline — diff only, not server-validated)",
-        report.create_count, report.update_count, report.delete_count, report.noop_count,
+        "{title}: {} to create, {} to update, {} to destroy, {}{} unchanged. (offline — diff only, not server-validated)",
+        report.create_count, report.update_count, report.delete_count,
+        adopt_clause(report, false), report.noop_count - report.adopt_count,
     );
     ExitCode::SUCCESS
 }
@@ -545,6 +590,7 @@ pub fn has_pending_changes(prepared: &Prepared) -> bool {
     prepared.report.create_count > 0
         || prepared.report.update_count > 0
         || prepared.report.delete_count > 0
+        || prepared.report.adopt_count > 0
 }
 
 /// Reference to the underlying ExportInput, exposed so apply can print
