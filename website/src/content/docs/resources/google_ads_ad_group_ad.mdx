@@ -148,6 +148,44 @@ resources), so a body shared across campaigns lives in one place.
   still enforced.
 </Aside>
 
+### Overriding part of a template
+
+Most templates are split apart only because the landing page differs —
+the headlines and descriptions are identical. Instead of forking the
+template, keep one and override the bits that change at the reference.
+Set `final_urls`, `path1`, or `path2` directly on the
+`google_ads_ad_group_ad`; they take precedence over the template's
+values, and anything you leave unset is inherited:
+
+```hcl
+ad_template "ublock_rsa" {
+  responsive_search_ad {
+    headlines    = ["uBlock Gone? Try Ghostery", "uBlock Replacement Found", "Switch from uBlock Now"]
+    descriptions = ["Blocks ads, trackers & popups. Manifest V3 ready.", "The privacy suite millions trust."]
+    path2        = "ghostery"
+  }
+}
+
+resource "google_ads_ad_group_ad" "chrome_rsa" {
+  ad_group   = google_ads_ad_group.chrome.id
+  template   = ad_template.ublock_rsa
+  final_urls = ["https://ghostery.info/chrome?utm_term={keyword}"]
+  path1      = "chrome"
+}
+
+resource "google_ads_ad_group_ad" "safari_rsa" {
+  ad_group   = google_ads_ad_group.safari.id
+  template   = ad_template.ublock_rsa
+  final_urls = ["https://ghostery.info/safari?utm_term={keyword}"]
+  path1      = "safari"
+}
+```
+
+A template that's meant to be URL-agnostic can omit `final_urls`
+entirely, as above — but then every reference **must** supply its own,
+or `validate` flags it. Overrides only apply on top of a `template`;
+with an inline `ad {}` block, set these fields inside the block instead.
+
 See the recipe [Reuse one ad across every ad group](/bidsmith/recipes/reuse-an-ad-across-ad-groups/)
 for the before/after on a real campaign.
 

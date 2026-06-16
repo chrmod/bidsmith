@@ -270,10 +270,34 @@ Smaller follow-ups that can ride along:
   re-address live ads into delete+create). Templates resolve same-module
   then global, so one template serves campaigns across files; the
   template's RSA is linted at its declaration. `examples/ad-templates/`
-  covers it. **Deferred:** per-ad-group overrides (a different `final_urls`
-  per ad group), the `ad_groups = [...]` fan-out form, and `export` /
-  `refresh` detecting repeated bodies and emitting the folded form (same
-  direction as #14 — without it a refresh re-explodes the file).
+  covers it.
+- ✅ Per-instance `ad_template` overrides (issue #58) — a
+  `google_ads_ad_group_ad` attaching a `template` may also set
+  `final_urls` / `path1` / `path2` on the resource; each overrides the
+  template body field, unset fields inherit. Applied at import time, so
+  the merged mutate matches an inline body and `plan` is unchanged.
+  `final_urls` is now optional on `ad_template` (a URL-agnostic template
+  lets every reference supply its own; a reference that supplies none
+  fails `validate`) but stays required on an inline `ad {}` block.
+  Collapses the near-duplicate templates that existed only to vary the
+  landing URL. **Deferred:** per-asset headline/description overrides and
+  the `ad_groups = [...]` fan-out form.
+- ✅ Folding emitter (issue #57) — `refresh` / `export` recognize repeated
+  structure and emit the compact constructs instead of re-exploding the
+  tree every pull. Repeated ad bodies fold into one `ad_template`
+  (URL-variant bodies onto one URL-agnostic template + #58 per-instance
+  overrides); RSA arrays used by ≥ 2 sites and campaign negative lists
+  shared by ≥ 2 campaigns fold into `locals`. Folding is source-only —
+  every construct expands to the identical mutate at import time, so the
+  folded tree round-trips through `validate` / `plan` exactly like the
+  verbose one (enforced offline by `fold_roundtrips_to_verbose`:
+  render → import → re-render unfolded, assert identical). Chosen `locals`
+  over the issue's literal `google_ads_shared_set` for the negatives fold:
+  live negatives are per-campaign criteria, so emitting a SharedSet would
+  plan as a real create+attach+destroy migration, breaking the zero-drift
+  property a refresh must hold. **Deferred:** ad-group negative lists, and
+  emitting an actual `shared_set` once Phase 3 v2 labels make adopting one
+  a no-op against live.
 - Repeating-block field-level diff for RSA `headline` / `description`
   blocks and the `final_urls` list. Today these are matched
   all-or-nothing; per-asset add/remove/repin detection would close

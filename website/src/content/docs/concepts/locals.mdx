@@ -263,10 +263,14 @@ If your use case needs `module`, the
 lists it under "Open decisions."
 
 <Aside type="tip">
-  `refresh` writes flat state — it doesn't preserve `local.<name>`
-  references. Treat hand-authored `.bid` files (with locals) as the
-  source of truth, and use `refresh` only for the initial import or
-  for spot-checking what's live.
+  `refresh` introduces locals on its own: when the same headline /
+  description list or campaign negative list shows up on two or more
+  resources, it lifts that list into a `locals` block and references it by
+  name — so a fresh pull comes back already de-duplicated. It won't
+  reproduce *your* exact local names if you re-pull a hand-authored tree
+  (the names are derived from the content), so keep hand-authored files as
+  the source of truth and diff a refresh into a scratch file when you want
+  to compare against live.
 </Aside>
 
 ## Next

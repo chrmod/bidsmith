@@ -234,13 +234,20 @@ fn rsa_asset_block(name: &'static str) -> NestedBlockSchema {
 }
 
 // The `ad {}` body, shared by `google_ads_ad_group_ad` and the `ad_template` block.
-fn ad_block() -> NestedBlockSchema {
+// `final_urls` is required on an inline `ad {}` (an RSA needs a landing page) but
+// optional on an `ad_template`, which may be URL-agnostic and let every reference
+// supply `final_urls` via an override.
+fn ad_block(final_urls_required: bool) -> NestedBlockSchema {
     NestedBlockSchema {
         name: "ad",
         schema: BlockSchema {
             attributes: vec![
                 attr("name", FieldType::String, false),
-                attr("final_urls", FieldType::list_of(FieldType::String), true),
+                attr(
+                    "final_urls",
+                    FieldType::list_of(FieldType::String),
+                    final_urls_required,
+                ),
             ],
             blocks: vec![NestedBlockSchema {
                 name: "responsive_search_ad",
@@ -506,8 +513,11 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                     attr("status", FieldType::Enum(STATUS), false)
                         .with_default(DefaultValue::Str(DEFAULT_STATUS)),
                     attr("template", FieldType::AdTemplateRef, false),
+                    attr("final_urls", FieldType::list_of(FieldType::String), false),
+                    attr("path1", FieldType::String, false),
+                    attr("path2", FieldType::String, false),
                 ],
-                blocks: vec![ad_block()],
+                blocks: vec![ad_block(true)],
             },
         );
 
@@ -1385,7 +1395,7 @@ fn validate_ad_templates(
     variables: &VariablesRegistry,
     diags: &mut Vec<Diag>,
 ) {
-    let ad_schema = ad_block();
+    let ad_schema = ad_block(false);
     for f in files {
         for s in f.body.iter() {
             let Structure::Block(b) = s else { continue };
@@ -1424,15 +1434,50 @@ fn validate_ad_group_ad_template(
     let address = format!("google_ads_ad_group_ad.{}", block.labels[1].as_str());
     let mut has_ad_block = false;
     let mut template: Option<(std::ops::Range<usize>, &Expression)> = None;
+    let mut overrides: Vec<(&str, std::ops::Range<usize>)> = Vec::new();
+    let mut has_final_urls_override = false;
     for s in block.body.iter() {
         match s {
             Structure::Block(b) if b.ident.as_str() == "ad" => has_ad_block = true,
-            Structure::Attribute(a) if a.key.as_str() == "template" => {
-                template = Some((span_of(a.key.span()), &a.value));
-            }
+            Structure::Attribute(a) => match a.key.as_str() {
+                "template" => template = Some((span_of(a.key.span()), &a.value)),
+                "final_urls" => {
+                    overrides.push(("final_urls", span_of(a.key.span())));
+                    if !is_empty_array_literal(&a.value) {
+                        has_final_urls_override = true;
+                    }
+                }
+                "path1" | "path2" => overrides.push((a.key.as_str(), span_of(a.key.span()))),
+                _ => {}
+            },
             _ => {}
         }
     }
+
+    // `final_urls` / `path1` / `path2` on the resource override a `template` body. With
+    // an inline `ad {}` they belong inside it; with neither they have nothing to override.
+    if has_ad_block {
+        for (name, key_span) in &overrides {
+            diags.push(Diag::new(
+                file.src.clone(),
+                key_span.clone(),
+                format!(
+                    "{address} sets '{name}' alongside an inline 'ad' block; move it inside the ad block ('{name}' on the resource overrides a 'template' body)"
+                ),
+            ));
+        }
+    } else if template.is_none() {
+        for (name, key_span) in &overrides {
+            diags.push(Diag::new(
+                file.src.clone(),
+                key_span.clone(),
+                format!(
+                    "{address} sets '{name}' without a 'template'; it only overrides a 'template = ad_template.<name>' body"
+                ),
+            ));
+        }
+    }
+
     match (has_ad_block, template) {
         (true, Some((key_span, _))) => diags.push(Diag::new(
             file.src.clone(),
@@ -1451,7 +1496,21 @@ fn validate_ad_group_ad_template(
                 return;
             };
             match templates.resolve(&file.module, &name) {
-                Resolution::Found(_) => {}
+                Resolution::Found(qualified) => {
+                    let template_has_final_urls = templates
+                        .get(&qualified)
+                        .map(|d| body_has_attr(&d.block.body, "final_urls"))
+                        .unwrap_or(false);
+                    if !template_has_final_urls && !has_final_urls_override {
+                        diags.push(Diag::new(
+                            file.src.clone(),
+                            span_of(value.span()),
+                            format!(
+                                "{address} uses 'ad_template.{name}', which declares no final_urls; add 'final_urls = [...]' to {address}"
+                            ),
+                        ));
+                    }
+                }
                 Resolution::Missing => diags.push(Diag::new(
                     file.src.clone(),
                     span_of(value.span()),
@@ -2499,6 +2558,15 @@ fn join_or(items: &[&str]) -> String {
     items.join(" or ")
 }
 
+fn is_empty_array_literal(expr: &Expression) -> bool {
+    matches!(expr, Expression::Array(arr) if arr.is_empty())
+}
+
+fn body_has_attr(body: &Body, name: &str) -> bool {
+    body.iter()
+        .any(|s| matches!(s, Structure::Attribute(a) if a.key.as_str() == name))
+}
+
 fn block_span(b: &Block) -> std::ops::Range<usize> {
     let start = b.ident.span().map(|r| r.start).unwrap_or(0);
     let end = b
@@ -3278,6 +3346,34 @@ resource "google_ads_ad_group" "g" {
 }
 "#;
 
+    // A template that omits `final_urls` — every reference must supply it via an override.
+    const URL_AGNOSTIC_PREAMBLE: &str = r#"
+ad_template "agnostic" {
+  responsive_search_ad {
+    headlines    = ["One Headline", "Two Headline", "Three Headline"]
+    descriptions = ["A description here", "Another description here"]
+  }
+}
+
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  manual_cpc { enhanced_cpc_enabled = false }
+}
+
+resource "google_ads_ad_group" "g" {
+  name           = "G"
+  campaign       = google_ads_campaign.c.id
+  cpc_bid_micros = 1000000
+}
+"#;
+
     #[test]
     fn ad_template_reference_validates() {
         let mut content = String::from(
@@ -3407,6 +3503,111 @@ ad_template "shared" {
         let (_reg, diags) = AdTemplateRegistry::build(std::slice::from_ref(&pf));
         assert!(
             diags.iter().any(|d| d.message.contains("duplicate ad_template 'shared'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ad_template_final_urls_override_validates() {
+        let mut content = String::from(
+            r#"
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group   = google_ads_ad_group.g.id
+  template   = ad_template.shared
+  final_urls = ["https://example.com/override"]
+  path1      = "shop"
+}
+"#,
+        );
+        content.push_str(AD_TEMPLATE_PREAMBLE);
+        let diags = validate_str("ad_template_override_ok", &content);
+        let errors: Vec<&String> = diags
+            .iter()
+            .filter(|d| d.is_error())
+            .map(|d| &d.message)
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn url_agnostic_template_with_override_validates() {
+        let mut content = String::from(
+            r#"
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group   = google_ads_ad_group.g.id
+  template   = ad_template.agnostic
+  final_urls = ["https://example.com/landing"]
+}
+"#,
+        );
+        content.push_str(URL_AGNOSTIC_PREAMBLE);
+        let diags = validate_str("agnostic_ok", &content);
+        let errors: Vec<&String> = diags
+            .iter()
+            .filter(|d| d.is_error())
+            .map(|d| &d.message)
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn url_agnostic_template_without_override_errors() {
+        let mut content = String::from(
+            r#"
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group = google_ads_ad_group.g.id
+  template = ad_template.agnostic
+}
+"#,
+        );
+        content.push_str(URL_AGNOSTIC_PREAMBLE);
+        let diags = validate_str("agnostic_missing_url", &content);
+        assert!(
+            diags.iter().any(|d| d.message.contains("which declares no final_urls")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn override_with_inline_ad_block_errors() {
+        let diags = validate_str(
+            "override_inline_ad",
+            r#"
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group   = google_ads_ad_group.g.id
+  final_urls = ["https://example.com/override"]
+  ad {
+    final_urls = ["https://example.com"]
+    responsive_search_ad {
+      headlines    = ["One Headline", "Two Headline", "Three Headline"]
+      descriptions = ["A description here", "Another description here"]
+    }
+  }
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("alongside an inline 'ad' block")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn override_without_template_errors() {
+        let diags = validate_str(
+            "override_no_template",
+            r#"
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group   = google_ads_ad_group.g.id
+  final_urls = ["https://example.com/override"]
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("without a 'template'")),
             "{:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
