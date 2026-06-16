@@ -26,6 +26,12 @@ Running `apply` twice in a row does nothing the second time. This
 property is called **idempotency**, and it's what makes bidsmith
 safe to run from automation.
 
+bidsmith only acts on resources it manages — the ones carrying its
+label. A campaign with no matching `.bid` resource is never
+modified, deleted, or included in a plan. You can keep paused or
+legacy campaigns in the same account and bidsmith will leave them
+untouched.
+
 ## What `plan` does
 
 1. **Parse and validate** every `.bid` file. Same checks `bidsmith

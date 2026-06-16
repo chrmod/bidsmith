@@ -9,6 +9,22 @@ If you're getting `RESOURCE_EXHAUSTED` errors from Google Ads, or
 just hitting your daily-operations limit in tight authoring loops,
 this page is for you.
 
+## Untracked campaigns cost you nothing
+
+bidsmith only touches what you declare. A campaign with no matching
+`.bid` resource is never modified, deleted, or sent as a change —
+bidsmith only acts on resources it manages (the ones carrying its
+label). So a pile of paused or obsolete campaigns you don't track
+costs you nothing: no per-campaign API calls, no mutate operations,
+no risk of being changed.
+
+They're still included in the one account-wide read bidsmith does on
+each `plan` — but that read is a **fixed set of `SearchStream`
+queries** regardless of how many campaigns the account holds. Five
+campaigns or five thousand, the number of queries is the same; extra
+campaigns only make the response payload a little larger. You don't
+need to delete or hide old campaigns to keep bidsmith fast or cheap.
+
 ## What bidsmith already does
 
 Every `plan` or `apply` writes the live state it pulls from Google
