@@ -68,6 +68,7 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
         shared_sets: Vec::new(),
         shared_criteria: Vec::new(),
         campaign_shared_sets: Vec::new(),
+        labels: Default::default(),
     };
     let mut skipped: Vec<(String, String)> = Vec::new();
 
@@ -1297,6 +1298,7 @@ pub fn import_program(program: &Program) -> Result<ImportResult, Vec<Diag>> {
         shared_sets: Vec::new(),
         shared_criteria: Vec::new(),
         campaign_shared_sets: Vec::new(),
+        labels: Default::default(),
     };
     let mut skipped: Vec<(String, String)> = Vec::new();
     let mut diags: Vec<Diag> = Vec::new();

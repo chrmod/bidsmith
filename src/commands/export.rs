@@ -39,6 +39,12 @@ pub struct ExportInput {
     pub shared_criteria: Vec<JsonSharedCriterion>,
     #[serde(default)]
     pub campaign_shared_sets: Vec<JsonCampaignSharedSet>,
+    /// Live `bidsmith:address=<addr>` labels keyed by address -> label
+    /// resource_name. Lets the mutate builder reuse an existing label instead
+    /// of re-creating one (a duplicate name is an API error). Live-only; empty
+    /// for declared state.
+    #[serde(default)]
+    pub labels: HashMap<String, String>,
 }
 
 #[derive(Deserialize)]

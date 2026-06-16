@@ -76,6 +76,8 @@ struct AdapterState {
     ad_group_addresses: BTreeMap<String, String>,
     ad_group_ad_addresses: BTreeMap<String, String>,
     ad_group_criterion_addresses: BTreeMap<String, String>,
+    // bidsmith:address -> label resource_name, read from the label resource.
+    labels: BTreeMap<String, String>,
 }
 
 impl AdapterState {
@@ -117,6 +119,9 @@ impl AdapterState {
             self.merge_campaign_shared_set(v);
         }
         let label = row.get("label");
+        if let Some(v) = label {
+            self.merge_label_resource(v);
+        }
         if let Some(v) = row.get("campaignLabel") {
             self.merge_label(v, "campaign", label, |s| &mut s.campaign_addresses);
         }
@@ -130,6 +135,20 @@ impl AdapterState {
             self.merge_label(v, "adGroupCriterion", label, |s| {
                 &mut s.ad_group_criterion_addresses
             });
+        }
+    }
+
+    /// Record a `bidsmith:address=<addr>` label resource (address -> its
+    /// resource_name) so the mutate builder can reuse an existing label rather
+    /// than re-create one. Rows from the association queries select only
+    /// `label.name` (no resource_name), so they no-op here; the standalone
+    /// `label` query carries both.
+    fn merge_label_resource(&mut self, label: &Value) {
+        let Some(address) = label_address(Some(label)) else {
+            return;
+        };
+        if let Some(rn) = label.get("resourceName").and_then(Value::as_str) {
+            self.labels.insert(address, rn.to_string());
         }
     }
 
@@ -795,6 +814,7 @@ impl AdapterState {
             shared_sets,
             shared_criteria: shared_criteria_out,
             campaign_shared_sets: self.campaign_shared_sets.into_values().collect(),
+            labels: self.labels.into_iter().collect(),
         })
     }
 }

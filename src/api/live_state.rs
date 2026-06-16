@@ -191,6 +191,12 @@ pub const QUERIES: &[(&str, &str)] = &[
         WHERE campaign_shared_set.status != 'REMOVED'",
     ),
     (
+        "label",
+        "SELECT label.resource_name, label.name
+        FROM label
+        WHERE label.name LIKE 'bidsmith:address=%'",
+    ),
+    (
         "campaign_label",
         "SELECT campaign_label.campaign, label.name
         FROM campaign_label
