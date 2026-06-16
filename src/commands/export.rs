@@ -10,6 +10,44 @@ use serde::Deserialize;
 /// types (campaign, ad_group, ad_group_ad, ad_group_criterion).
 pub const ADDRESS_LABEL_PREFIX: &str = "bidsmith:address=";
 
+/// Google Ads caps `label.name` at 80 characters and rejects any longer name
+/// with `Too long.` — sinking the whole atomic adoption batch.
+pub const MAX_LABEL_NAME_LEN: usize = 80;
+
+/// The label-name payload (the part after `ADDRESS_LABEL_PREFIX`) for an
+/// address. Short addresses are kept verbatim — backward compatible with labels
+/// already in the account. An address that would push the label past the 80-char
+/// cap is encoded as a legible head plus a stable SHA-256 suffix that always
+/// fits and stays unique. Matching, label reuse, and relabeling all run in this
+/// payload space, so both sides agree regardless of which form an address took.
+pub fn address_label_payload(address: &str) -> String {
+    let budget = MAX_LABEL_NAME_LEN - ADDRESS_LABEL_PREFIX.len();
+    if address.len() <= budget {
+        return address.to_string();
+    }
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+    const HASH_BYTES: usize = 12;
+    const SEP: char = '~';
+    let mut hasher = Sha256::new();
+    hasher.update(address.as_bytes());
+    let hash = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(&hasher.finalize()[..HASH_BYTES]);
+    let head = truncate_on_char_boundary(address, budget - SEP.len_utf8() - hash.len());
+    format!("{head}{SEP}{hash}")
+}
+
+fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 #[derive(Deserialize)]
 pub struct ExportInput {
     pub customer_id: String,
@@ -2260,5 +2298,51 @@ mod tests {
         let big = 1e20;
         assert_ne!(format_number(big), i64::MAX.to_string());
         assert_eq!(format_number(big).parse::<f64>().unwrap(), big);
+    }
+
+    #[test]
+    fn short_address_label_is_verbatim() {
+        let addr = "main.google_ads_campaign.summer_search";
+        assert_eq!(address_label_payload(addr), addr);
+        assert!(address_label_name(addr) == format!("{ADDRESS_LABEL_PREFIX}{addr}"));
+        assert!(address_label_name(addr).len() <= MAX_LABEL_NAME_LEN);
+    }
+
+    #[test]
+    fn long_address_label_fits_eighty_chars() {
+        let addr =
+            "instream.google_ads_campaign.instream_preroll_a_rather_long_campaign_family_identifier_2026";
+        assert!(addr.len() + ADDRESS_LABEL_PREFIX.len() > MAX_LABEL_NAME_LEN);
+        let name = address_label_name(addr);
+        assert!(name.len() <= MAX_LABEL_NAME_LEN, "label {name:?} is {} chars", name.len());
+        assert_ne!(address_label_payload(addr), addr, "long address must be encoded");
+        assert!(
+            name.starts_with(ADDRESS_LABEL_PREFIX),
+            "still a bidsmith address label"
+        );
+    }
+
+    #[test]
+    fn long_address_label_is_deterministic_and_unique() {
+        let a = "m.google_ads_campaign.instream_preroll_a_rather_long_campaign_family_identifier_aaa";
+        let b = "m.google_ads_campaign.instream_preroll_a_rather_long_campaign_family_identifier_bbb";
+        assert_eq!(address_label_payload(a), address_label_payload(a));
+        assert_ne!(
+            address_label_payload(a),
+            address_label_payload(b),
+            "distinct addresses must not collide even when their truncated head matches"
+        );
+    }
+
+    #[test]
+    fn multibyte_address_truncates_on_char_boundary() {
+        let addr = format!("m.google_ads_campaign.{}", "é".repeat(60));
+        let name = address_label_name(&addr);
+        assert!(name.len() <= MAX_LABEL_NAME_LEN);
+        assert!(name.is_char_boundary(name.len()));
+    }
+
+    fn address_label_name(address: &str) -> String {
+        format!("{ADDRESS_LABEL_PREFIX}{}", address_label_payload(address))
     }
 }
