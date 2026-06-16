@@ -145,11 +145,19 @@ declared HCL against live labeled state. Local cache is rebuildable.
   account-level resources, `campaigns.bid` for campaign-scoped).
   Reuses `live_state::fetch` + the new `export::render_split`
   renderer.
-- ⏳ Reconcile-in-place mode: match resources by
-  `bidsmith:address=` label (or `(resource_type, name)` for unlabeled
-  ones), update fields without overwriting unrelated blocks. The
-  Phase 3 v2 labels it was blocked on now exist; this is the next
-  refresh piece.
+- ✅ Reconcile-in-place mode (`refresh --in-place [PATH]`): match
+  resources by `bidsmith:address=` label (reusing the planner's
+  label-first diff), then write back only the drifted **scalar**
+  fields, updating attribute values in place without overwriting
+  unrelated blocks, comments, ordering, or unmanaged resources.
+  `--check` previews without writing; a `mv`-style baseline-error
+  guard refuses to write a project-breaking edit. Scope is narrow by
+  design: it patches only attributes already present in source (an
+  absent attribute is reported, not inserted) and only 1:1-block
+  scalar kinds. Structural drift (ad copy, keyword/criterion
+  membership) is reported, not edited — the diff engine only emits
+  scalar `Update`s, so changed copy is a create+destroy handled by
+  `apply`. Pure core (`reconcile_sources`) is unit-tested offline.
 - ⏳ `import <address> <api-resource>`: adopt an unlabeled live
   resource into a specific `.bid` address. Now unblocked — apply
   already adopts unlabeled live resources by content and labels them;
@@ -193,15 +201,16 @@ resources), a labeled resource dropped from the `.bid` is destroyed, and
 See **Identity labels (Phase 3 v2)** in DECISIONS.md. Priority order for
 what closes the most user-facing gaps next:
 
-1. **Phase 4 v2 — reconcile-mode refresh** (now unblocked by the
-   labels). The bootstrap-mode `refresh` shipped — `bidsmith refresh -d
-   <DIR>` writes `account.bid` + `campaigns.bid` from live, and `-o
-   <FILE>` / no-flag stdout variants exist for one-file workflows.
-   What's still missing: matching live resources against an *existing*
-   `.bid` by their `bidsmith:address` label and updating fields in place
-   instead of overwriting. Until then, bootstrap refresh + `git diff` is
-   the recovery loop.
-2. **`import <address> <api-resource>`** (also unblocked). `apply`
+1. ✅ **Phase 4 v2 — reconcile-mode refresh** (shipped). `bidsmith
+   refresh --in-place [PATH]` matches live resources to an *existing*
+   `.bid` by their `bidsmith:address` label and writes back drifted
+   scalar fields in place, leaving structure intact. The bootstrap
+   modes (`-d` / `-o` / stdout) still exist for first-time pulls.
+   Remaining reconcile follow-ups: inserting an attribute that's
+   absent from source (today reported, not written) and per-asset RSA
+   / criterion-membership reconcile (waits on the per-asset RSA diff
+   below). Next priorities:
+2. **`import <address> <api-resource>`** (unblocked). `apply`
    already adopts unlabeled live resources by content and labels them;
    `import` is the explicit, address-targeted form — adopt one named
    live resource into a chosen `.bid` address without a full refresh.

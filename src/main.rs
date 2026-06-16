@@ -205,11 +205,26 @@ Examples:
     /// Pull live state into .bid files
     #[command(after_help = "\
 Examples:
-  bidsmith refresh -d ads/       # ads/account.bid + ads/campaigns.bid
-  bidsmith refresh -o main.bid   # everything in one file
+  bidsmith refresh -d ads/            # ads/account.bid + ads/campaigns.bid (bootstrap)
+  bidsmith refresh -o main.bid        # everything in one file (bootstrap)
+  bidsmith refresh --in-place ads/    # update existing .bid in place (reconcile)
+  bidsmith refresh --in-place --check ads/   # preview the reconcile, write nothing
 
-Bootstrap mode: existing output files are overwritten, not merged.")]
+Bootstrap mode (-o / -d) overwrites output files from live. Reconcile
+mode (--in-place) edits the .bid files at PATH, updating drifted scalar
+fields on resources bidsmith manages and leaving everything else intact.")]
     Refresh {
+        /// Reconcile target: existing .bid file or directory (--in-place only)
+        #[arg(value_name = "PATH")]
+        path: Option<String>,
+        /// Update existing .bid files at PATH in place instead of rendering
+        /// fresh output. Matches live resources to your files by bidsmith
+        /// label and writes back drifted scalar fields.
+        #[arg(long = "in-place", conflicts_with_all = ["output", "dir"])]
+        in_place: bool,
+        /// With --in-place: show what would change without writing.
+        #[arg(long, requires = "in_place")]
+        check: bool,
         /// Write everything to a single .bid file
         #[arg(short = 'o', long, value_name = "PATH", conflicts_with = "dir")]
         output: Option<String>,
@@ -386,12 +401,18 @@ fn main() -> ExitCode {
         Cmd::Pull { output, verbose } => {
             commands::pull::run(output.as_deref(), verbose)
         }
-        Cmd::Refresh { output, dir, include_removed, verbose } => commands::refresh::run(
-            output.as_deref(),
-            dir.as_deref(),
-            include_removed,
-            verbose,
-        ),
+        Cmd::Refresh { path, in_place, check, output, dir, include_removed, verbose } => {
+            if in_place {
+                commands::refresh::run_reconcile(path.as_deref(), check, verbose)
+            } else {
+                commands::refresh::run(
+                    output.as_deref(),
+                    dir.as_deref(),
+                    include_removed,
+                    verbose,
+                )
+            }
+        }
         Cmd::Schema { output } => commands::schema::run(output.as_deref()),
         Cmd::Auth(sub) => match sub {
             AuthCmd::Login {
