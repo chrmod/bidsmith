@@ -458,6 +458,13 @@ resource type, any file layout, modules, schema validation.
     association. First-run adoption of an already-matching resource
     surfaces as a visible `~ adopt (label)` row and counts as a pending
     change, so the label write is never silent.
+  - **80-char cap**: Google Ads caps `label.name` at 80 chars and rejects
+    a longer one with `Too long.`, sinking the whole atomic adoption batch.
+    `address_label_payload` keeps the address verbatim when it fits and
+    otherwise encodes it as a legible head plus a stable SHA-256 suffix
+    that always fits. Matching, label reuse, and relabel all run in this
+    payload space, so a hash-encoded long address still resolves to its
+    live label instead of re-adopting every run.
   - Chosen over a single `bidsmith-managed` marker (the per-address label
     *is* the identity, not just an ownership flag) and over label-first
     matching for *all* types (which would mask ad copy edits and bloat

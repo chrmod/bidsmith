@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use crate::commands::export::{
-    ExportInput, JsonAdGroup, JsonAdGroupAd, JsonAdGroupCriterion, JsonBudget, JsonCallAsset,
-    JsonCampaign, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
-    JsonCustomerAsset, JsonSharedCriterion, JsonSharedSet,
+    address_label_payload, ExportInput, JsonAdGroup, JsonAdGroupAd, JsonAdGroupCriterion,
+    JsonBudget, JsonCallAsset, JsonCampaign, JsonCampaignCriterion, JsonCampaignSharedSet,
+    JsonConversionAction, JsonCustomerAsset, JsonSharedCriterion, JsonSharedSet,
 };
 
 #[derive(Debug, Clone)]
@@ -139,9 +139,10 @@ fn label_segment(kind: &str) -> &'static str {
 }
 
 /// Decide what label work a labelable resource needs. `matched` is the live
-/// resource it resolved to (id + its current `bidsmith:address`), or None for a
-/// create. Returns None when the resource already carries exactly the right
-/// label (a no-op).
+/// resource it resolved to (id + its current `bidsmith:address` payload), or
+/// None for a create. Returns None when the resource already carries exactly the
+/// right label (a no-op). All comparisons run in label-payload space so long
+/// addresses (whose labels are hash-encoded to fit the 80-char cap) still match.
 fn make_label_plan(
     kind: &'static str,
     address: &str,
@@ -149,13 +150,14 @@ fn make_label_plan(
     customer_id: &str,
     labels: &HashMap<String, String>,
 ) -> Option<LabelPlanEntry> {
+    let payload = address_label_payload(address);
     if let Some((_, Some(current))) = matched {
-        if current == address {
+        if current == payload {
             return None;
         }
     }
     let stale_assoc_rn = match matched {
-        Some((live_id, Some(old))) if old != address => labels.get(old).map(|label_rn| {
+        Some((live_id, Some(old))) if old != payload => labels.get(old).map(|label_rn| {
             let label_id = label_rn.rsplit('/').next().unwrap_or(label_rn);
             format!(
                 "customers/{customer_id}/{}/{live_id}~{label_id}",
@@ -167,8 +169,8 @@ fn make_label_plan(
     Some(LabelPlanEntry {
         address: address.to_string(),
         kind,
-        label_address: address.to_string(),
-        existing_label_rn: labels.get(address).cloned(),
+        existing_label_rn: labels.get(&payload).cloned(),
+        label_address: payload,
         stale_assoc_rn,
     })
 }
@@ -202,7 +204,9 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     // ---- campaigns (label-first, content-fallback by name) ----------------
     let live_campaigns: Vec<&JsonCampaign> = live.campaigns.iter().collect();
     {
-        let decl_addr: Vec<&str> = declared.campaigns.iter().map(|c| c.id.as_str()).collect();
+        let decl_payloads: Vec<String> =
+            declared.campaigns.iter().map(|c| address_label_payload(&c.id)).collect();
+        let decl_addr: Vec<&str> = decl_payloads.iter().map(String::as_str).collect();
         let decl_key: Vec<Option<String>> =
             declared.campaigns.iter().map(|c| Some(c.name.clone())).collect();
         let live_a: Vec<Option<&str>> =
@@ -247,7 +251,9 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     // ---- ad_groups (label-first, content-fallback by campaign + name) -----
     let live_ad_groups: Vec<&JsonAdGroup> = live.ad_groups.iter().collect();
     {
-        let decl_addr: Vec<&str> = declared.ad_groups.iter().map(|g| g.id.as_str()).collect();
+        let decl_payloads: Vec<String> =
+            declared.ad_groups.iter().map(|g| address_label_payload(&g.id)).collect();
+        let decl_addr: Vec<&str> = decl_payloads.iter().map(String::as_str).collect();
         let decl_key: Vec<Option<String>> = declared
             .ad_groups
             .iter()
@@ -905,7 +911,7 @@ fn match_ad_group_ads(
         }
     }
     for (di, d) in declared.iter().enumerate() {
-        if let Some(&li) = live_by_addr.get(d.id.as_str()) {
+        if let Some(&li) = live_by_addr.get(address_label_payload(&d.id).as_str()) {
             if !consumed[li] && ad_body_key(d) == ad_body_key(&live[li]) {
                 consumed[li] = true;
                 out[di] = (
@@ -1484,5 +1490,71 @@ mod label_match_tests {
             Some("customers/100/campaignLabels/555~777"),
             "the old label association is removed"
         );
+    }
+
+    const LONG_ADDR: &str =
+        "instream.google_ads_campaign.instream_preroll_a_rather_long_campaign_family_identifier_2026";
+
+    fn long_declared() -> String {
+        format!(
+            r#"{{
+            "customer_id": "100",
+            "campaign_budgets": [{{"id":"m.b","name":"B","amount_micros":1000}}],
+            "campaigns": [{{"id":"{LONG_ADDR}","name":"Preroll","advertising_channel_type":"SEARCH","campaign_budget":"m.b"}}]
+        }}"#
+        )
+    }
+
+    #[test]
+    fn adopting_a_long_address_writes_a_label_that_fits_eighty_chars() {
+        // The reported bug: an unlabeled live campaign whose address overflows the
+        // 80-char label cap. Adoption must encode the label so the API accepts it.
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "campaign_budgets": [{"id":"999","name":"B","amount_micros":1000}],
+            "campaigns": [{"id":"555","name":"Preroll","advertising_channel_type":"SEARCH","campaign_budget":"999"}]
+        }"#,
+        );
+        let report = diff(&input(&long_declared()), &live);
+
+        assert!(matches!(&campaign_diff(&report).action, Action::NoOp { live_id } if live_id == "555"));
+        assert_eq!(report.adopt_count, 1);
+        let plan = report
+            .label_plans
+            .iter()
+            .find(|p| p.kind == "campaign")
+            .expect("a label plan");
+        let label_name = format!(
+            "{}{}",
+            crate::commands::export::ADDRESS_LABEL_PREFIX,
+            plan.label_address
+        );
+        assert!(
+            label_name.len() <= crate::commands::export::MAX_LABEL_NAME_LEN,
+            "label {label_name:?} is {} chars",
+            label_name.len()
+        );
+        assert_ne!(plan.label_address, LONG_ADDR, "the long address is encoded");
+    }
+
+    #[test]
+    fn a_long_address_already_labeled_is_a_clean_noop() {
+        // Second run after adoption: the live campaign carries the encoded payload.
+        // It must read as already-labeled, not re-adopt forever.
+        let payload = address_label_payload(LONG_ADDR);
+        let live = input(&format!(
+            r#"{{
+            "customer_id": "100",
+            "campaign_budgets": [{{"id":"999","name":"B","amount_micros":1000}}],
+            "campaigns": [{{"id":"555","name":"Preroll","advertising_channel_type":"SEARCH","campaign_budget":"999","managed_address":"{payload}"}}],
+            "labels": {{"{payload}":"customers/100/labels/777"}}
+        }}"#
+        ));
+        let report = diff(&input(&long_declared()), &live);
+
+        assert!(matches!(&campaign_diff(&report).action, Action::NoOp { .. }));
+        assert_eq!(report.adopt_count, 0, "must not re-adopt an already-labeled resource");
+        assert!(report.label_plans.is_empty(), "label already correct");
     }
 }
