@@ -176,34 +176,25 @@ declared HCL against live labeled state. Local cache is rebuildable.
 
 ## Next session: start here
 
-Phases 1 and 2 are done; Phase 3 has its CREATE/UPDATE half landed.
-Priority order for what closes the most user-facing gaps:
+Phases 1 and 2 are done; Phase 3 has its CREATE/UPDATE half landed; the
+live round-trip e2e test shipped (`tests/e2e.rs`, opt-in via
+`cargo test --features e2e` — `apply → pull → export → fmt --check →
+plan` against a dedicated test manager account, with `Drop`-based
+teardown via the hidden `_e2e-cleanup` verb). Priority order for what
+closes the most user-facing gaps:
 
-1. **Live round-trip e2e test**. The `pull` verb landed — it runs
-   the same SearchStream queries `plan --read-live` issues and writes
-   the raw API JSON in the shape `export --from-gads-search-response`
-   consumes (`bidsmith pull -o dump.json`). The remaining piece is the
-   test loop itself: wire
-   `apply → pull → export --from-gads-search-response → plan` as an
-   opt-in `cargo test --features e2e` (or `bidsmith self-test --live`)
-   that asserts the final `plan` reports `0 to create, 0 to update`
-   against a dedicated Google Ads **test manager account**. Highest-
-   value test the project can have: Google Ads itself is the oracle,
-   the read path uses real bytes off the wire, and the write path is
-   exercised end-to-end without invented mock assumptions. Details and
-   design notes in
-   [§ `pull` verb + live round-trip e2e](#pull-verb--live-round-trip-e2e)
-   below.
-2. **Phase 3 v2 — labels + removal**. Write
+1. **Phase 3 v2 — labels + removal** (the keystone). Write
    `bidsmith:address=<address>` labels on every resource bidsmith
    creates / updates (via `Label` + `CampaignLabel` / `AdGroupLabel` /
    `AdGroupAdLabel` / `AdGroupCriterionLabel` associations). Use those
    labels at diff time to identify managed resources unambiguously
    (no more "matched by name" guessing), and emit `- destroy` rows
    for labeled live resources that no longer appear in `.bid`. Closes
-   the lifecycle and makes adoption (`import`) and refresh tractable.
-3. **Phase 4 v2 — reconcile-mode refresh**. The bootstrap-mode
-   `refresh` shipped — `bidsmith refresh -d <DIR>` writes
+   the lifecycle and is the named blocker for items 2 below,
+   `import <address> <api-resource>`, and `mv`'s live-label half /
+   `moved {}` blocks — do this first.
+2. **Phase 4 v2 — reconcile-mode refresh** (blocked on 1). The
+   bootstrap-mode `refresh` shipped — `bidsmith refresh -d <DIR>` writes
    `account.bid` + `campaigns.bid` from live, and `-o <FILE>` /
    no-flag stdout variants exist for one-file workflows. What's still
    missing: matching live resources against an *existing* `.bid` and
@@ -211,15 +202,25 @@ Priority order for what closes the most user-facing gaps:
    `bidsmith:address=` label plumbing from Phase 3 v2 to identify
    managed resources without name guessing. Until then, bootstrap
    refresh + `git diff` is the recovery loop.
-4. **Account-scoped resource types in the live pipeline**. The
-   schema, validator, renderer, adapter, and `live_state` queries
-   for `google_ads_conversion_action`, `google_ads_call_asset`, and
-   `google_ads_customer_asset` are all in place; offline CI exercises
-   them via `examples/exports/raw.json`. Outstanding work is the live
-   `apply` round-trip (needs the test manager account fixture to
-   include account-level resources), and operator-side adoption —
-   feeding bidsmith the Rezolutnie account's Lead/Phone conversion
-   actions and `+48 510 019 081` call asset via `refresh -d`.
+3. **Account-scoped resource types in the live pipeline** (independent
+   of 1; can ride alongside). The schema, validator, renderer, adapter,
+   and `live_state` queries for `google_ads_conversion_action`,
+   `google_ads_call_asset`, and `google_ads_customer_asset` are all in
+   place; offline CI exercises them via `examples/exports/raw.json`.
+   Outstanding work is the live `apply` round-trip (extend the
+   `tests/e2e.rs` fixture to include account-level resources), and
+   operator-side adoption — feeding bidsmith the Rezolutnie account's
+   Lead/Phone conversion actions and `+48 510 019 081` call asset via
+   `refresh -d`.
+
+Smaller independent wins that need no labels: expand the **lint
+catalog** (missing-negatives on search campaigns, PL declension hints,
+RSA pinning advice, policy-wordlist patterns), **per-asset RSA
+diff** (today `headline` / `description` blocks + `final_urls` match
+all-or-nothing — the last drift gap below the apply layer), and
+**Windows binary distribution** (`.exe` via `cargo-dist` / `cross` +
+scoop / winget). See the follow-ups list above and "Open decisions" for
+the full set.
 
 Smaller follow-ups that can ride along:
 
@@ -332,11 +333,14 @@ Smaller follow-ups that can ride along:
 
 ## `pull` verb + live round-trip e2e
 
-> Status: `pull` shipped (signature `run(output, verbose)`); e2e test
-> still to write. The `--customer-id` / `--campaign-id` scoping flags
-> in the original sketch below were skipped for v1 — the verb dumps
-> everything for the customer in env, matching what `plan --read-live`
-> reads. Add scoping flags when there's a concrete need.
+> Status: both shipped. `pull` (signature `run(output, verbose)`) and
+> the live round-trip e2e test (`tests/e2e.rs`, gated on the `e2e` Cargo
+> feature + `BIDSMITH_E2E_CUSTOMER_ID`) are in the tree; the design
+> notes below are retained as the rationale. The `--customer-id` /
+> `--campaign-id` scoping flags in the original sketch were skipped for
+> v1 — the verb dumps everything for the customer in env, matching what
+> `plan --read-live` reads. Add scoping flags when there's a concrete
+> need.
 
 ### Why
 
@@ -408,10 +412,11 @@ under `tests/fixtures/` as offline test inputs for the read path.
 Opt-in tier. Gated on a single env var (`BIDSMITH_E2E_CUSTOMER_ID`)
 that points at a dedicated Google Ads **test manager account** — a
 free, non-serving account flagged at MCC creation time. If the var
-isn't set, the test is skipped (not failed). Either a Cargo feature
-(`cargo test --features e2e`) or a hidden CLI verb
-(`bidsmith self-test --live`); the latter is friendlier for ad-hoc
-runs against a real account without a Rust toolchain.
+isn't set, the test is skipped (not failed). Shipped as the Cargo
+feature path (`cargo test --features e2e`, `tests/e2e.rs`); the
+alternative hidden CLI verb (`bidsmith self-test --live`, friendlier
+for ad-hoc runs without a Rust toolchain) was considered and not built
+— add it later if a no-toolchain run is wanted.
 
 The loop:
 
