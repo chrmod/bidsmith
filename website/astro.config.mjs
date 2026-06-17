@@ -8,6 +8,7 @@ export default defineConfig({
     starlight({
       title: 'bidsmith',
       description: 'Manage Google Ads campaigns as code. Version-controlled, reviewable, replayable.',
+      customCss: ['./src/styles/landing.css'],
       social: {
         github: 'https://github.com/chrmod/bidsmith',
       },

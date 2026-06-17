@@ -4,6 +4,27 @@ description: Manage Google Ads campaigns as code. Version-controlled, reviewable
 template: splash
 hero:
   tagline: Manage Google Ads campaigns as code. Version-controlled, reviewable, replayable.
+  image:
+    html: |
+      <div class="code-window">
+        <div class="code-window__bar">
+          <span class="code-window__dot code-window__dot--r"></span>
+          <span class="code-window__dot code-window__dot--y"></span>
+          <span class="code-window__dot code-window__dot--g"></span>
+          <span class="code-window__name">spring-sale.bid</span>
+        </div>
+        <div class="code-window__body">
+          <span class="cline"><span class="tok-kw">resource</span> <span class="tok-type">"google_ads_campaign"</span> <span class="tok-name">"spring_sale"</span> <span class="tok-punc">{</span></span>
+          <span class="cline cline--1"><span class="tok-prop">name</span> <span class="tok-punc">=</span> <span class="tok-str">"Spring Sale 2026"</span></span>
+          <span class="cline cline--1"><span class="tok-prop">status</span> <span class="tok-punc">=</span> <span class="tok-str">"ENABLED"</span></span>
+          <span class="cline cline--gap"></span>
+          <span class="cline cline--1"><span class="tok-prop">advertising_channel_type</span> <span class="tok-punc">=</span> <span class="tok-str">"SEARCH"</span></span>
+          <span class="cline cline--1"><span class="tok-prop">campaign_budget</span> <span class="tok-punc">=</span> <span class="tok-ref">google_ads_campaign_budget.daily.id</span></span>
+          <span class="cline cline--gap"></span>
+          <span class="cline cline--1"><span class="tok-prop">locations</span> <span class="tok-punc">= [</span><span class="tok-str">"US"</span><span class="tok-punc">,</span> <span class="tok-str">"CA"</span><span class="tok-punc">]</span></span>
+          <span class="cline"><span class="tok-punc">}</span></span>
+        </div>
+      </div>
   actions:
     - text: Get started
       link: /bidsmith/before-you-start/install/
@@ -12,13 +33,16 @@ hero:
     - text: View on GitHub
       link: https://github.com/chrmod/bidsmith
       icon: external
+      variant: secondary
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
 ## Why bidsmith
 
-<CardGrid stagger>
+<p class="section-intro">Four reasons teams move their Google Ads out of the dashboard and into version control.</p>
+
+<CardGrid>
   <Card title="Every change is a pull request" icon="approve-check">
     Edit a file, open a PR, get a teammate to review. No more "who paused
     that campaign last Friday?" — Git tells you.
@@ -36,6 +60,28 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     plain text files in any editor, commit, push, apply.
   </Card>
 </CardGrid>
+
+## How it works
+
+<p class="section-intro">From a plain-text file to a live campaign in three commands.</p>
+
+<div class="how not-content">
+  <article class="how__step">
+    <span class="how__num">1</span>
+    <h3 class="how__title">Write</h3>
+    <p>Describe the campaigns, ad groups, and keywords you want in <code class="how__cmd">.bid</code> files — and version them in Git like any other code.</p>
+  </article>
+  <article class="how__step">
+    <span class="how__num">2</span>
+    <h3 class="how__title">Preview</h3>
+    <p>Run <code class="how__cmd">bidsmith plan</code> for a line-by-line diff of what will change. Nothing touches your account yet.</p>
+  </article>
+  <article class="how__step">
+    <span class="how__num">3</span>
+    <h3 class="how__title">Apply</h3>
+    <p>Run <code class="how__cmd">bidsmith apply</code> and bidsmith makes Google Ads match your files — exactly what the plan showed.</p>
+  </article>
+</div>
 
 ## Where to next
 
