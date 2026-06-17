@@ -46,6 +46,9 @@ jobs:
           cargo run --quiet -- export --from-gads-search-response examples/exports/raw.json -o /tmp/raw.bid
           cargo run --quiet -- validate /tmp/raw.bid
           cargo run --quiet -- fmt --check /tmp/raw.bid
+          cargo run --quiet -- init /tmp/bidsmith-init
+          cargo run --quiet -- validate /tmp/bidsmith-init
+          cargo run --quiet -- fmt --check /tmp/bidsmith-init/campaigns.bid
 
       - name: schema dump still parses as JSON
         run: cargo run --quiet -- schema | python3 -c "import json,sys; json.load(sys.stdin)"

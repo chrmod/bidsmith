@@ -1,6 +1,6 @@
 ---
 name: bidsmith
-description: Authoring, validating, and applying .bid files with the bidsmith CLI — declarative Google Ads (HCL2-syntax resources, plan/apply against the live account). Use when the user mentions bidsmith, edits or creates .bid files, asks to install or upgrade bidsmith, needs to validate/export/plan/apply Google Ads campaigns, or wants campaign performance data (stats, metrics, search terms) from an account bidsmith manages. Covers the Homebrew install (`chrmod/tap/bidsmith`), the .bid file shape, the prompt-before-apply convention, and read-only GAQL reporting via `bidsmith query`.
+description: Authoring, validating, and applying .bid files with the bidsmith CLI — declarative Google Ads (HCL2-syntax resources, plan/apply against the live account). Use when the user mentions bidsmith, edits or creates .bid files, asks to install or upgrade bidsmith, needs to validate/export/plan/apply Google Ads campaigns, wants to set up a Google Ads GitOps repo (CI that plans on pull requests and applies on merge), or wants campaign performance data (stats, metrics, search terms) from an account bidsmith manages. Covers the Homebrew install (`chrmod/tap/bidsmith`), `bidsmith init` project scaffolding, the .bid file shape, the prompt-before-apply convention, the GitHub Actions GitOps flow, and read-only GAQL reporting via `bidsmith query`.
 allowed-tools: Bash, Read, Write, Edit
 ---
 
@@ -29,10 +29,12 @@ above — do not silently substitute other tooling.
 ## Commands
 
 ```
+bidsmith init [path]                            # scaffold a GitOps project (config, starter .bid, CI workflow)
 bidsmith validate [path]                        # parse + schema-check .bid files
 bidsmith fmt [path]                             # canonicalize formatting
 bidsmith export --from-json input.json [-o out.bid]
 bidsmith plan                                   # diff .bid vs. live Google Ads
+bidsmith plan --format markdown --detailed-exitcode  # PR-comment table; exit 2 on a non-empty diff (CI)
 bidsmith apply                                  # apply the plan; prompts unless --auto-approve
 bidsmith refresh [-d DIR | -o FILE]             # import live state into fresh .bid files
 bidsmith query "GAQL" [--format table|json|tsv] # read-only stats/reporting passthrough
@@ -212,6 +214,36 @@ Never run `bidsmith apply --auto-approve` without first showing the user
 the `plan` output. State lives on Google Ads itself (no local `.tfstate`);
 `plan` and `refresh` match live resources against `.bid` declarations by
 name.
+
+## GitOps: repos with CI
+
+The intended home for `.bid` files is a user-controlled GitHub repo.
+`bidsmith init` scaffolds exactly that: a starter `campaigns.bid`, a
+`bidsmith.toml` (the account ids), `.gitignore`, a README, and a
+`.github/workflows/bidsmith.yml` that runs `plan` on every pull request
+(posting the diff as a sticky comment) and `apply` on merge to `main`.
+**The merge is the approval gate.**
+
+When you're working in a repo that already has that workflow — look for
+`.github/workflows/bidsmith.yml` alongside a `bidsmith.toml` — change the
+flow:
+
+- Make edits on a branch, run `bidsmith validate` and `bidsmith plan`
+  locally to check your work, then open a pull request. Let CI post the
+  authoritative plan and let a human merge to apply.
+- **Do not run `bidsmith apply` locally in this setup.** Apply belongs to
+  CI on merge; running it by hand bypasses the review gate and can race
+  the workflow. (If the user explicitly asks for a one-off local apply,
+  fall back to the normal prompt-before-apply rule.)
+- `apply --auto-approve` is correct *only* inside the CI job, where the
+  merge already supplied the approval — never as a local shortcut.
+
+To set a repo up from scratch, run `bidsmith init`, then point the user
+at the generated `README.md` for the one-time steps: fill in
+`bidsmith.toml`, and add the four `GOOGLE_ADS_*` values as GitHub Actions
+secrets (Settings → Secrets and variables → Actions). `bidsmith auth
+login` mints the refresh token; `bidsmith auth profile --with-client`
+prints the values to paste.
 
 ## Reading performance data
 

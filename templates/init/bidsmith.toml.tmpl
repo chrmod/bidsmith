@@ -1,0 +1,16 @@
+# bidsmith project config — committed to Git, non-secret.
+#
+# This is the routing axis: which Google Ads account these .bid files
+# manage. Find the ids in the Google Ads UI (top-right account switcher);
+# write them with no dashes.
+
+# The account whose campaigns live in this repo.
+customer_id = "INSERT_CUSTOMER_ID"
+
+# The manager (MCC) account you log in through. Often the same agency
+# account across every client repo.
+login_customer_id = "INSERT_MANAGER_ACCOUNT_ID"
+
+# Do NOT put the developer token here — it is a secret. Provide it as the
+# GOOGLE_ADS_DEVELOPER_TOKEN environment variable (locally) or a GitHub
+# Actions secret (in CI). See README.md.

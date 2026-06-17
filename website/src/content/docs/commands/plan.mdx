@@ -23,7 +23,7 @@ is the next step.
 ## Synopsis
 
 ```sh
-bidsmith plan [PATH] [--refresh-state] [--offline] [--show-unchanged] [--whoami] [--read-live] [--verbose]
+bidsmith plan [PATH] [--refresh-state] [--offline] [--show-unchanged] [--format text|markdown] [--detailed-exitcode] [--whoami] [--read-live] [--verbose]
 ```
 
 ## Arguments
@@ -39,6 +39,8 @@ bidsmith plan [PATH] [--refresh-state] [--offline] [--show-unchanged] [--whoami]
 | `--refresh-state` | Ignore any cached live state and refetch from the API. The fresh fetch is then written back to the cache. Use when you suspect the cache is out of date. |
 | `--offline` | Diff against the cached live state without contacting Google Ads at all — no OAuth, no SearchStream, no validateOnly mutate. Errors if no fresh cache exists. See [Cut Google Ads API quota usage](/bidsmith/recipes/reduce-api-calls/). |
 | `--show-unchanged` | List every resource, including unchanged `no-op` rows. By default plan prints only resources that would change. Useful for auditing exactly what bidsmith is tracking. |
+| `--format <text\|markdown>` | Output format. `text` (default) is the aligned per-resource listing. `markdown` renders the diff as a table suited to posting as a pull-request comment — this is what the workflow [`bidsmith init`](/bidsmith/commands/init/) scaffolds uses. |
+| `--detailed-exitcode` | Exit `2` (instead of `0`) when the diff is non-empty, keeping `1` for errors — like `terraform plan -detailed-exitcode`. Lets CI tell "changes are pending" apart from "the plan failed." |
 | `--whoami` | Exchange the refresh token for an access token and print the result. Doesn't touch Google Ads. Useful for confirming credentials. |
 | `--read-live` | Print a summary of the live account state (resource counts per type). Doesn't require `.bid` files. Useful for debugging. |
 | `--verbose` | Print the outgoing API request envelope and the raw response. Useful when something looks wrong. |
@@ -62,8 +64,9 @@ for how to obtain these.
 
 | Code | Meaning |
 |---|---|
-| `0` | Plan completed (whether or not changes are pending). |
+| `0` | Plan completed. Without `--detailed-exitcode`, this covers both "no changes" and "changes pending." With `--detailed-exitcode`, `0` means **no changes**. |
 | `1` | Local validation failed, authentication failed, Google rejected the validate-only request, or any other error. |
+| `2` | **Only with `--detailed-exitcode`:** the plan succeeded and the diff is non-empty (changes are pending). |
 
 ## Examples
 
@@ -110,6 +113,18 @@ bidsmith plan . --verbose
 Prints the request body bidsmith sent and the response Google
 returned. Useful when bidsmith's interpretation of the diff doesn't
 match yours.
+
+### Render the diff for a pull-request comment
+
+```sh
+bidsmith plan . --format markdown --detailed-exitcode
+```
+
+Prints a Markdown table — `Resource | Action | Result` — followed by a
+bold summary line. `bidsmith init` scaffolds a GitHub Actions workflow
+that captures this output and posts it as a comment on every pull
+request; `--detailed-exitcode` lets the job exit `2` for "changes
+pending" and reserve `1` for a genuine failure.
 
 ## How the diff is computed
 

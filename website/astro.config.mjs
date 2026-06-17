@@ -86,6 +86,7 @@ export default defineConfig({
             {
               label: 'Local',
               items: [
+                { label: 'bidsmith init', slug: 'commands/init' },
                 { label: 'bidsmith validate', slug: 'commands/validate' },
                 { label: 'bidsmith mv', slug: 'commands/mv' },
                 { label: 'bidsmith fmt', slug: 'commands/fmt' },

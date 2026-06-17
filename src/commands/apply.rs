@@ -37,6 +37,8 @@ pub fn run(
             verbose,
             /* show_unchanged */ false,
             plan::DisplayMode::PerResource,
+            plan::Format::Text,
+            /* detailed_exitcode */ false,
         );
         eprintln!();
         eprintln!("apply: no changes. Account already matches the .bid.");
@@ -49,6 +51,8 @@ pub fn run(
         verbose,
         /* show_unchanged */ false,
         plan::DisplayMode::PerResource,
+        plan::Format::Text,
+        /* detailed_exitcode */ false,
     );
     if plan_code != ExitCode::SUCCESS {
         eprintln!();
@@ -87,6 +91,8 @@ pub fn run(
         verbose,
         /* show_unchanged */ false,
         plan::DisplayMode::Summary,
+        plan::Format::Text,
+        /* detailed_exitcode */ false,
     );
     live_state::invalidate_cache();
     code

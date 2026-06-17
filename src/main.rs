@@ -34,6 +34,27 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Scaffold a GitOps project: bidsmith.toml, a starter .bid, a GitHub
+    /// Actions workflow (plan on PRs, apply on merge), .gitignore, README
+    #[command(after_help = "\
+init writes the skeleton for managing a Google Ads account as code in a
+GitHub repository: a starter campaigns.bid, a bidsmith.toml for the
+account ids, a .github/workflows/bidsmith.yml that runs `plan` on every
+pull request and `apply` on merge to main, plus a .gitignore and README.
+
+Existing files are left untouched unless you pass --force.
+
+Examples:
+  bidsmith init               # scaffold into the current directory
+  bidsmith init ./my-account  # scaffold into a new directory")]
+    Init {
+        /// Directory to scaffold into (created if missing)
+        #[arg(default_value = ".")]
+        path: String,
+        /// Overwrite files that already exist
+        #[arg(long)]
+        force: bool,
+    },
     /// Rewrite .bid files in canonical format
     Fmt {
         /// File or directory to format
@@ -127,9 +148,11 @@ pull + export round-trips a live account into a .bid file.")]
     /// Show what would change against the live Google Ads account
     #[command(after_help = "\
 Examples:
-  bidsmith plan .                  # diff against live, server-validated
-  bidsmith plan --offline .        # diff against the cache, no API calls
-  bidsmith plan --refresh-state .  # force a fresh live-state fetch
+  bidsmith plan .                          # diff against live, server-validated
+  bidsmith plan --offline .                # diff against the cache, no API calls
+  bidsmith plan --refresh-state .          # force a fresh live-state fetch
+  bidsmith plan --format markdown .        # render the diff as a Markdown table (PR comments)
+  bidsmith plan --detailed-exitcode .      # exit 2 when the diff is non-empty (CI gating)
 
 Live reads are cached in .bidsmith/cache/ (15-min TTL) to save quota.
 plan never modifies the account: its mutate is sent with validateOnly.")]
@@ -160,6 +183,15 @@ plan never modifies the account: its mutate is sent with validateOnly.")]
         /// only resources that would be created, updated, or destroyed.
         #[arg(long = "show-unchanged")]
         show_unchanged: bool,
+        /// Render the diff as `text` (default, the aligned per-resource listing)
+        /// or `markdown` (a table suited to posting as a pull-request comment).
+        #[arg(long, value_enum, default_value_t = PlanFormat::Text)]
+        format: PlanFormat,
+        /// Exit 2 (not 0) when the diff is non-empty, keeping 1 for errors —
+        /// like `terraform plan -detailed-exitcode`. Lets CI tell "changes
+        /// pending" apart from "plan failed".
+        #[arg(long = "detailed-exitcode")]
+        detailed_exitcode: bool,
         /// Set a variable value (repeatable). Example: `--var city_radius_km=20`.
         /// Overrides any `default` in the matching `variable` block.
         #[arg(long = "var", value_name = "NAME=VALUE", action = clap::ArgAction::Append)]
@@ -298,6 +330,12 @@ enum QueryFormat {
     Tsv,
 }
 
+#[derive(Copy, Clone, ValueEnum)]
+enum PlanFormat {
+    Text,
+    Markdown,
+}
+
 #[derive(Subcommand)]
 enum AuthCmd {
     /// Sign in with Google in your browser and save the credentials
@@ -359,6 +397,7 @@ enum DesignDocCmd {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
+        Cmd::Init { path, force } => commands::init::run(&path, force),
         Cmd::Validate { path, var } => commands::validate::run(&path, &var),
         Cmd::Export {
             from_json,
@@ -379,7 +418,11 @@ fn main() -> ExitCode {
         Cmd::Mv { from, to, from_file, path } => {
             commands::mv::run(from.as_deref(), to.as_deref(), from_file.as_deref(), &path)
         }
-        Cmd::Plan { path, whoami, read_live, refresh_state, offline, verbose, show_unchanged, var } => {
+        Cmd::Plan { path, whoami, read_live, refresh_state, offline, verbose, show_unchanged, format, detailed_exitcode, var } => {
+            let fmt = match format {
+                PlanFormat::Text => commands::plan::Format::Text,
+                PlanFormat::Markdown => commands::plan::Format::Markdown,
+            };
             commands::plan::run(
                 path.as_deref(),
                 whoami,
@@ -388,6 +431,8 @@ fn main() -> ExitCode {
                 offline,
                 verbose,
                 show_unchanged,
+                fmt,
+                detailed_exitcode,
                 &var,
             )
         }

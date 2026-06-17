@@ -1,0 +1,122 @@
+---
+title: bidsmith init
+description: Scaffold a GitOps project — a starter campaign, project config, and a GitHub Actions workflow that plans on PRs and applies on merge.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`init` writes the skeleton for managing a Google Ads account as code in
+a GitHub repository. One command gives you a starter campaign, the
+project config that points at your account, and a CI workflow that turns
+every pull request into a reviewable plan and every merge into an apply.
+
+It never overwrites existing files unless you pass `--force`, so it's
+safe to run in a folder you've already started.
+
+## Synopsis
+
+```sh
+bidsmith init [PATH] [--force]
+```
+
+## Arguments
+
+| Argument | Default | Description |
+|---|---|---|
+| `PATH` | `.` | Directory to scaffold into. Created if it doesn't exist. |
+
+## Flags
+
+| Flag | Description |
+|---|---|
+| `--force` | Overwrite files that already exist. Without it, existing files are left untouched and reported as skipped. |
+
+## Environment variables
+
+None. `init` runs entirely offline.
+
+## What it writes
+
+| File | Purpose |
+|---|---|
+| `campaigns.bid` | A starter campaign (everything `PAUSED`) you edit into your own. |
+| `bidsmith.toml` | The account this repo manages — `customer_id` and `login_customer_id`. |
+| `.github/workflows/bidsmith.yml` | CI: `plan` on pull requests, `apply` on merge to `main`. |
+| `.gitignore` | Ignores the `.bidsmith/` cache and local `.env` files. |
+| `README.md` | The setup checklist and a description of the flow. |
+
+## The GitOps flow
+
+```
+edit a .bid file  ──►  open a pull request  ──►  CI posts the plan
+                                                       │
+                                              review + merge to main
+                                                       │
+                                              CI runs bidsmith apply
+                                                       │
+                                                 Google Ads updated
+```
+
+The scaffolded workflow has two jobs:
+
+- **On a pull request** it installs bidsmith, runs `bidsmith validate`,
+  then `bidsmith plan --format markdown --detailed-exitcode` and posts
+  the diff as a comment on the PR — updating the same comment on each
+  push so the thread stays clean.
+- **On a merge to `main`** it runs `bidsmith apply --auto-approve`.
+
+The pull-request review *is* the approval. `apply` only runs after a
+human merges, and the Google Ads credentials live solely in the repo's
+GitHub Actions secrets — never on anyone's laptop.
+
+<Aside type="caution">
+  `apply` on merge mutates the live account. Protect `main` with a
+  required pull-request review so nothing reaches Google Ads without a
+  second pair of eyes on the plan.
+</Aside>
+
+## After running it
+
+1. **Point at your account.** Edit `bidsmith.toml` and set `customer_id`
+   and `login_customer_id` (no dashes).
+2. **Add the credentials as GitHub Actions secrets** —
+   `GOOGLE_ADS_DEVELOPER_TOKEN`, `GOOGLE_ADS_CLIENT_ID`,
+   `GOOGLE_ADS_CLIENT_SECRET`, `GOOGLE_ADS_REFRESH_TOKEN`. Run
+   [`bidsmith auth login`](/bidsmith/commands/auth/) once locally to mint
+   the refresh token, then `bidsmith auth profile --with-client` to read
+   back the values to paste.
+3. **Edit `campaigns.bid`**, then `bidsmith validate .` and
+   `bidsmith plan .` to preview against live before you push.
+
+## Examples
+
+### Scaffold the current directory
+
+```sh
+bidsmith init
+```
+
+### Scaffold a new project folder
+
+```sh
+bidsmith init ./acme-google-ads
+```
+
+### Refresh the workflow file after an upgrade
+
+```sh
+bidsmith init --force
+```
+
+Overwrites the scaffolded files with the current version's templates.
+Useful for pulling in an updated CI workflow — review the `git diff`
+afterwards so your own edits to `campaigns.bid` aren't lost.
+
+## See also
+
+- [`bidsmith plan`](/bidsmith/commands/plan/) — the diff the CI workflow
+  posts on pull requests.
+- [`bidsmith apply`](/bidsmith/commands/apply/) — what the workflow runs
+  on merge.
+- [`bidsmith auth`](/bidsmith/commands/auth/) — minting the refresh token
+  for the GitHub Actions secret.

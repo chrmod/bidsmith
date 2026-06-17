@@ -12,6 +12,14 @@ use crate::diagnostics::Diag;
 use crate::program::{collect_bid_files, Program};
 use crate::schema::{InputBindings, validate_files};
 
+/// How the diff is rendered. `Text` is the aligned per-resource listing;
+/// `Markdown` is a table suited to a pull-request comment.
+#[derive(Copy, Clone, PartialEq)]
+pub enum Format {
+    Text,
+    Markdown,
+}
+
 pub fn run(
     path: Option<&str>,
     whoami: bool,
@@ -20,6 +28,8 @@ pub fn run(
     offline: bool,
     verbose: bool,
     show_unchanged: bool,
+    format: Format,
+    detailed_exitcode: bool,
     cli_vars: &[String],
 ) -> ExitCode {
     if whoami {
@@ -52,7 +62,15 @@ pub fn run(
         Err(code) => return code,
     };
 
-    execute(&prepared, /* validate_only */ true, verbose, show_unchanged, DisplayMode::PerResource)
+    execute(
+        &prepared,
+        /* validate_only */ true,
+        verbose,
+        show_unchanged,
+        DisplayMode::PerResource,
+        format,
+        detailed_exitcode,
+    )
 }
 
 /// State produced by the parse/import/diff stages, ready to be sent through
@@ -311,6 +329,8 @@ pub fn execute(
     verbose: bool,
     show_unchanged: bool,
     display: DisplayMode,
+    format: Format,
+    detailed_exitcode: bool,
 ) -> ExitCode {
     let report = &prepared.report;
     let width = prepared.width;
@@ -322,6 +342,11 @@ pub fn execute(
         && report.delete_count == 0
         && report.adopt_count == 0
     {
+        if format == Format::Markdown {
+            println!("## bidsmith {}\n", summary_title(validate_only).to_lowercase());
+            println!("**No changes.** Your `.bid` files match the live Google Ads account.");
+            return ExitCode::SUCCESS;
+        }
         if show_unchanged && matches!(display, DisplayMode::PerResource) {
             for d in &report.diffs {
                 println!(
@@ -341,7 +366,7 @@ pub fn execute(
     }
 
     let Some((client, token)) = prepared.client.as_ref().zip(prepared.token.as_ref()) else {
-        return display_offline_diff(prepared, validate_only, show_unchanged);
+        return display_offline_diff(prepared, validate_only, show_unchanged, format, detailed_exitcode);
     };
 
     let plan_body =
@@ -405,6 +430,7 @@ pub fn execute(
     let adopted = adopted_addresses(report);
     let mut accepted = 0usize;
     let mut rejected = 0usize;
+    let mut md_rows: Vec<(String, String, String)> = Vec::new();
     for d in &report.diffs {
         let is_adopt = adopted.contains(d.address.as_str());
         let (verb, detail): (&str, String) = match &d.action {
@@ -417,43 +443,96 @@ pub fn execute(
             diff::Action::Delete { .. } => ("- destroy", String::new()),
         };
         let is_mutating = is_adopt || !matches!(d.action, diff::Action::NoOp { .. });
-        let outcome = if is_mutating {
-            match errors_by_address.get(&d.address) {
-                Some(msgs) => format!("  err: {}", msgs.first().copied().unwrap_or("(unknown)")),
-                None if success => "  ok".to_string(),
-                None => "  (no result — batch rejected)".to_string(),
-            }
-        } else {
-            String::new()
-        };
+        let has_err = errors_by_address.contains_key(&d.address);
         if is_mutating {
-            if errors_by_address.contains_key(&d.address) {
+            if has_err || !success {
                 rejected += 1;
-            } else if success {
-                accepted += 1;
             } else {
-                rejected += 1;
+                accepted += 1;
             }
         }
         let printable = (is_adopt && matches!(display, DisplayMode::PerResource))
-            || row_is_visible(
-                &d.action,
-                &display,
-                show_unchanged,
-                errors_by_address.contains_key(&d.address),
-            );
-        if printable {
-            println!(
-                "{addr:<width$}  {verb}{detail}{outcome}",
-                addr = display_address(&d.address, strip),
-                width = width,
-            );
+            || row_is_visible(&d.action, &display, show_unchanged, has_err);
+        if !printable {
+            continue;
+        }
+        let addr = display_address(&d.address, strip);
+        match format {
+            Format::Text => {
+                let outcome = if is_mutating {
+                    match errors_by_address.get(&d.address) {
+                        Some(msgs) => format!("  err: {}", msgs.first().copied().unwrap_or("(unknown)")),
+                        None if success => "  ok".to_string(),
+                        None => "  (no result — batch rejected)".to_string(),
+                    }
+                } else {
+                    String::new()
+                };
+                println!("{addr:<width$}  {verb}{detail}{outcome}", width = width);
+            }
+            Format::Markdown => {
+                let result = if !is_mutating {
+                    String::new()
+                } else {
+                    match errors_by_address.get(&d.address) {
+                        Some(msgs) => {
+                            format!("❌ {}", md_cell(msgs.first().copied().unwrap_or("(unknown)")))
+                        }
+                        None if success => "✅".to_string(),
+                        None => "⚠️ batch rejected".to_string(),
+                    }
+                };
+                let action = format!("{}{}", md_action(verb), detail);
+                md_rows.push((addr.to_string(), action, result));
+            }
         }
     }
 
-    if matches!(display, DisplayMode::PerResource) {
-        println!();
+    let unattributed: Vec<&GoogleAdsErrorEntry> = parsed_errors
+        .iter()
+        .filter(|e| {
+            e.op_index
+                .and_then(|i| plan_body.operations.get(i))
+                .map(|op| !errors_by_address.contains_key(&op.address))
+                .unwrap_or(true)
+        })
+        .collect();
+
+    match format {
+        Format::Text => {
+            if matches!(display, DisplayMode::PerResource) {
+                println!();
+            }
+            print_text_summary(report, validate_only, accepted, rejected);
+            if !success && !unattributed.is_empty() {
+                eprintln!();
+                eprintln!("Other errors:");
+                for err in &unattributed {
+                    eprintln!("  - {}", err.message);
+                    if !err.path.is_empty() {
+                        eprintln!("    at {}", err.path);
+                    }
+                    for topic in &err.policy_topics {
+                        eprintln!("    policy: {topic}");
+                    }
+                }
+            }
+        }
+        Format::Markdown => {
+            print_markdown(report, validate_only, accepted, rejected, &md_rows, &unattributed);
+        }
     }
+
+    if rejected > 0 || !success {
+        ExitCode::from(1)
+    } else if detailed_exitcode {
+        ExitCode::from(2)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn print_text_summary(report: &diff::DiffReport, validate_only: bool, accepted: usize, rejected: usize) {
     let title = summary_title(validate_only);
     if validate_only {
         println!(
@@ -468,35 +547,57 @@ pub fn execute(
             adopt_clause(report, true), report.noop_count - report.adopt_count, accepted, rejected,
         );
     }
+}
 
-    let unattributed: Vec<_> = parsed_errors
-        .iter()
-        .filter(|e| {
-            e.op_index
-                .and_then(|i| plan_body.operations.get(i))
-                .map(|op| !errors_by_address.contains_key(&op.address))
-                .unwrap_or(true)
-        })
-        .collect();
-    if !success && !unattributed.is_empty() {
-        eprintln!();
-        eprintln!("Other errors:");
-        for err in &unattributed {
-            eprintln!("  - {}", err.message);
-            if !err.path.is_empty() {
-                eprintln!("    at {}", err.path);
+/// Render the diff as a GitHub-flavoured Markdown table — the shape the
+/// scaffolded CI posts as a pull-request comment.
+fn print_markdown(
+    report: &diff::DiffReport,
+    validate_only: bool,
+    accepted: usize,
+    rejected: usize,
+    rows: &[(String, String, String)],
+    unattributed: &[&GoogleAdsErrorEntry],
+) {
+    println!("## bidsmith {}\n", summary_title(validate_only).to_lowercase());
+    if !rows.is_empty() {
+        println!("| Resource | Action | Result |");
+        println!("| --- | --- | --- |");
+        for (addr, action, result) in rows {
+            println!("| `{addr}` | {action} | {result} |");
+        }
+        println!();
+    }
+    println!(
+        "**Plan:** {} to create, {} to update, {} to destroy, {}{} unchanged. ({} accepted, {} rejected)",
+        report.create_count, report.update_count, report.delete_count,
+        adopt_clause(report, false), report.noop_count - report.adopt_count, accepted, rejected,
+    );
+    if !unattributed.is_empty() {
+        println!("\n### Other errors\n");
+        for err in unattributed {
+            if err.path.is_empty() {
+                println!("- {}", md_cell(&err.message));
+            } else {
+                println!("- {} _(at {})_", md_cell(&err.message), md_cell(&err.path));
             }
             for topic in &err.policy_topics {
-                eprintln!("    policy: {topic}");
+                println!("  - policy: {}", md_cell(topic));
             }
         }
     }
+}
 
-    if rejected > 0 || !success {
-        ExitCode::from(1)
-    } else {
-        ExitCode::SUCCESS
-    }
+/// Escape a string for a single Markdown table cell / list item: pipes break
+/// table columns, newlines break rows.
+fn md_cell(s: &str) -> String {
+    s.replace('|', "\\|").replace(['\n', '\r'], " ")
+}
+
+/// The text-listing verb (`+ create`, `~ update`, `- destroy`, `~ adopt`,
+/// `no-op`) without its leading diff symbol, for the Markdown "Action" column.
+fn md_action(verb: &str) -> &str {
+    verb.trim_start_matches(['+', '~', '-', ' '])
 }
 
 fn summary_title(validate_only: bool) -> &'static str {
@@ -550,11 +651,18 @@ fn row_is_visible(
     }
 }
 
-fn display_offline_diff(prepared: &Prepared, validate_only: bool, show_unchanged: bool) -> ExitCode {
+fn display_offline_diff(
+    prepared: &Prepared,
+    validate_only: bool,
+    show_unchanged: bool,
+    format: Format,
+    detailed_exitcode: bool,
+) -> ExitCode {
     let report = &prepared.report;
     let width = prepared.width;
     let strip = prepared.strip_module;
     let adopted = adopted_addresses(report);
+    let mut md_rows: Vec<(String, String)> = Vec::new();
     for d in &report.diffs {
         let is_adopt = adopted.contains(d.address.as_str());
         if !is_adopt && !row_is_visible(&d.action, &DisplayMode::PerResource, show_unchanged, false) {
@@ -569,20 +677,49 @@ fn display_offline_diff(prepared: &Prepared, validate_only: bool, show_unchanged
             }
             diff::Action::Delete { .. } => ("- destroy", String::new()),
         };
-        println!(
-            "{addr:<width$}  {verb}{detail}",
-            addr = display_address(&d.address, strip),
-            width = width,
-        );
+        let addr = display_address(&d.address, strip);
+        match format {
+            Format::Text => {
+                println!("{addr:<width$}  {verb}{detail}", width = width);
+            }
+            Format::Markdown => {
+                let action = format!("{}{}", md_action(verb), detail);
+                md_rows.push((addr.to_string(), action));
+            }
+        }
     }
-    println!();
-    let title = summary_title(validate_only);
-    println!(
-        "{title}: {} to create, {} to update, {} to destroy, {}{} unchanged. (offline — diff only, not server-validated)",
-        report.create_count, report.update_count, report.delete_count,
-        adopt_clause(report, false), report.noop_count - report.adopt_count,
-    );
-    ExitCode::SUCCESS
+    match format {
+        Format::Text => {
+            println!();
+            let title = summary_title(validate_only);
+            println!(
+                "{title}: {} to create, {} to update, {} to destroy, {}{} unchanged. (offline — diff only, not server-validated)",
+                report.create_count, report.update_count, report.delete_count,
+                adopt_clause(report, false), report.noop_count - report.adopt_count,
+            );
+        }
+        Format::Markdown => {
+            println!("## bidsmith {}\n", summary_title(validate_only).to_lowercase());
+            if !md_rows.is_empty() {
+                println!("| Resource | Action |");
+                println!("| --- | --- |");
+                for (addr, action) in &md_rows {
+                    println!("| `{addr}` | {action} |");
+                }
+                println!();
+            }
+            println!(
+                "**Plan:** {} to create, {} to update, {} to destroy, {}{} unchanged. _(offline — diff only, not server-validated)_",
+                report.create_count, report.update_count, report.delete_count,
+                adopt_clause(report, false), report.noop_count - report.adopt_count,
+            );
+        }
+    }
+    if detailed_exitcode {
+        ExitCode::from(2)
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// Convenience: returns `true` iff the prepared diff would touch anything.
@@ -803,8 +940,24 @@ fn tail(s: &str, n: usize) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_address, module_of, row_is_visible, split_module, DisplayMode};
+    use super::{display_address, md_action, md_cell, module_of, row_is_visible, split_module, DisplayMode};
     use crate::api::diff::Action;
+
+    #[test]
+    fn md_cell_escapes_table_breakers() {
+        assert_eq!(md_cell("a|b"), "a\\|b");
+        assert_eq!(md_cell("line1\nline2"), "line1 line2");
+        assert_eq!(md_cell("plain text"), "plain text");
+    }
+
+    #[test]
+    fn md_action_drops_the_diff_symbol() {
+        assert_eq!(md_action("+ create"), "create");
+        assert_eq!(md_action("~ update"), "update");
+        assert_eq!(md_action("- destroy"), "destroy");
+        assert_eq!(md_action("~ adopt"), "adopt");
+        assert_eq!(md_action("no-op"), "no-op");
+    }
 
     fn noop() -> Action {
         Action::NoOp { live_id: "123".into() }
