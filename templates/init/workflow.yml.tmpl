@@ -1,0 +1,110 @@
+name: bidsmith
+
+# GitOps for Google Ads:
+#   - on a pull request, run `bidsmith plan` and post the diff as a comment
+#   - on merge to main, run `bidsmith apply` to reconcile the live account
+#
+# The pull-request review IS the approval gate — `apply` only runs after a
+# human merges. The Google Ads credentials live only in this repo's Actions
+# secrets, never on anyone's laptop.
+
+on:
+  pull_request:
+    paths:
+      - "**.bid"
+      - "bidsmith.toml"
+      - ".github/workflows/bidsmith.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**.bid"
+      - "bidsmith.toml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: bidsmith-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GOOGLE_ADS_DEVELOPER_TOKEN: ${{ secrets.GOOGLE_ADS_DEVELOPER_TOKEN }}
+  GOOGLE_ADS_CLIENT_ID: ${{ secrets.GOOGLE_ADS_CLIENT_ID }}
+  GOOGLE_ADS_CLIENT_SECRET: ${{ secrets.GOOGLE_ADS_CLIENT_SECRET }}
+  GOOGLE_ADS_REFRESH_TOKEN: ${{ secrets.GOOGLE_ADS_REFRESH_TOKEN }}
+
+jobs:
+  plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bidsmith
+        run: |
+          curl -fsSL https://github.com/chrmod/bidsmith/releases/latest/download/bidsmith-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C /tmp
+          sudo install -m 0755 /tmp/bidsmith /usr/local/bin/bidsmith
+          bidsmith --version
+
+      - name: Validate
+        run: bidsmith validate .
+
+      - name: Plan
+        id: plan
+        run: |
+          set +e
+          bidsmith plan . --format markdown --detailed-exitcode > plan.md 2> plan.err
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" -eq 1 ]; then
+            {
+              echo "## bidsmith plan — failed"
+              echo
+              echo '```'
+              cat plan.err
+              echo '```'
+            } >> plan.md
+          fi
+
+      - name: Comment plan on the pull request
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- bidsmith-plan -->';
+            const body = marker + '\n' + fs.readFileSync('plan.md', 'utf8');
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+      - name: Fail if the plan errored
+        if: steps.plan.outputs.code == '1'
+        run: |
+          echo "bidsmith plan reported errors — see the pull-request comment." >&2
+          exit 1
+
+  apply:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bidsmith
+        run: |
+          curl -fsSL https://github.com/chrmod/bidsmith/releases/latest/download/bidsmith-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C /tmp
+          sudo install -m 0755 /tmp/bidsmith /usr/local/bin/bidsmith
+          bidsmith --version
+
+      # The merge was the approval. --auto-approve is required for non-TTY runs.
+      - name: Apply
+        run: bidsmith apply . --auto-approve

@@ -1,0 +1,60 @@
+# Google Ads, managed with bidsmith
+
+This repository describes a Google Ads account as code. The `.bid` files
+are the source of truth; [bidsmith](https://github.com/chrmod/bidsmith)
+makes the live account match them.
+
+Every change goes through a pull request. The PR shows a `bidsmith plan`
+diff — exactly what would change in Google Ads — and merging it applies
+the change. Nothing touches the live account until a human merges.
+
+## How it works
+
+```
+edit a .bid file  ──►  open a pull request  ──►  CI posts the plan
+                                                       │
+                                              review + merge to main
+                                                       │
+                                              CI runs `bidsmith apply`
+                                                       │
+                                                 Google Ads updated
+```
+
+- **Pull request** → `.github/workflows/bidsmith.yml` runs `bidsmith plan`
+  and comments the diff on the PR.
+- **Merge to main** → the same workflow runs `bidsmith apply` to reconcile
+  the account.
+
+## One-time setup
+
+1. **Point at your account.** Edit [`bidsmith.toml`](./bidsmith.toml) and
+   set `customer_id` and `login_customer_id` (no dashes).
+
+2. **Add the credentials as GitHub Actions secrets.** In the repo:
+   Settings → Secrets and variables → Actions → *New repository secret*.
+   Add all four:
+
+   | Secret | Where it comes from |
+   | --- | --- |
+   | `GOOGLE_ADS_DEVELOPER_TOKEN` | Your Google Ads manager account API centre |
+   | `GOOGLE_ADS_CLIENT_ID` | Your OAuth client (or bidsmith's bundled one) |
+   | `GOOGLE_ADS_CLIENT_SECRET` | Same OAuth client |
+   | `GOOGLE_ADS_REFRESH_TOKEN` | `bidsmith auth login` prints/stores this |
+
+   Run `bidsmith auth login` once locally to mint the refresh token, then
+   `bidsmith auth profile --with-client` to read back the values to paste.
+
+3. **Edit your campaigns.** Replace the placeholder content in
+   [`campaigns.bid`](./campaigns.bid) and open a pull request.
+
+## Working locally
+
+```sh
+bidsmith validate .     # check syntax, schema, references
+bidsmith plan .         # preview the diff against the live account
+```
+
+`apply` runs in CI on merge — you rarely need to run it by hand. If you do,
+`bidsmith apply .` prompts before changing anything.
+
+Full docs: https://chrmod.github.io/bidsmith/

@@ -8,7 +8,7 @@
     {
       "name": "bidsmith",
       "source": "./",
-      "description": "Claude Code skill for bidsmith — declarative Google Ads via .bid files"
+      "description": "Claude Code skill for bidsmith — declarative Google Ads via .bid files (GitOps: plan on PRs, apply on merge)"
     }
   ]
 }

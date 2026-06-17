@@ -185,9 +185,14 @@ declared HCL against live labeled state. Local cache is rebuildable.
 **Phase 6 — AI integration**
 - `.claude/skills/` — `/add-campaign`, `/review-search-terms`,
   `/explain-not-serving`
-- `.github/workflows/` — agent PR review, apply on merge, nightly
-  recommendation issues
-- Template repo for fresh installs + Renovate-style upgrade bot
+- `.github/workflows/` — ✅ apply on merge + plan-on-PR (scaffolded by
+  `bidsmith init`: `plan --format markdown --detailed-exitcode` posts a
+  sticky PR comment, `apply --auto-approve` runs on merge to `main`).
+  Remaining: agent PR review, nightly recommendation issues.
+- Template repo for fresh installs + Renovate-style upgrade bot —
+  ✅ partial: `bidsmith init` generates the skeleton (starter `.bid`,
+  `bidsmith.toml`, GitOps workflow, `.gitignore`, README). A hosted
+  template repo and the upgrade bot remain.
 
 ## Next session: start here
 

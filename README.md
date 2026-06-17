@@ -34,6 +34,7 @@ Validate, plan, and apply all work today.
 
 | Command    | What it does                                                                 |
 |------------|------------------------------------------------------------------------------|
+| `init`     | Scaffold a GitOps project: starter campaign, config, and a plan-on-PR / apply-on-merge GitHub Actions workflow |
 | `auth`     | Sign in to Google Ads in your browser (`bidsmith auth login`)                |
 | `validate` | Check that your `.bid` files are well-formed                                 |
 | `plan`     | Show the diff between your `.bid` files and what's live in Google Ads        |

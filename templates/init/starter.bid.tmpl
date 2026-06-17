@@ -1,0 +1,50 @@
+resource "google_ads_campaign_budget" "starter" {
+  name = "Starter budget"
+  amount_micros = 5000000
+}
+
+resource "google_ads_campaign" "starter" {
+  name = "Starter — Search"
+  status = "PAUSED"
+  advertising_channel_type = "SEARCH"
+  campaign_budget = google_ads_campaign_budget.starter.id
+
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+}
+
+resource "google_ads_ad_group" "starter" {
+  name = "Starter ad group"
+  campaign = google_ads_campaign.starter.id
+  status = "PAUSED"
+  type = "SEARCH_STANDARD"
+  cpc_bid_micros = 1000000
+}
+
+resource "google_ads_ad_group_criterion" "starter_keywords" {
+  ad_group = google_ads_ad_group.starter.id
+  status = "PAUSED"
+
+  keywords {
+    match_type = "PHRASE"
+    texts = ["replace me with a real keyword", "and another keyword"]
+  }
+}
+
+resource "google_ads_ad_group_ad" "starter_ad" {
+  ad_group = google_ads_ad_group.starter.id
+  status = "PAUSED"
+
+  ad {
+    final_urls = ["https://example.com/"]
+
+    responsive_search_ad {
+      headlines = ["Replace this headline", "Add a second headline", "And a third one here"]
+      descriptions = [
+        "Replace this description with your own copy.",
+        "Add a second description line here.",
+      ]
+    }
+  }
+}

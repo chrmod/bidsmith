@@ -469,6 +469,30 @@ resource type, any file layout, modules, schema validation.
     *is* the identity, not just an ownership flag) and over label-first
     matching for *all* types (which would mask ad copy edits and bloat
     keyword label volume).
+- **GitOps CI scaffold (`init`)**: the `.bid` files are meant to live in
+  a user-controlled GitHub repo, and `bidsmith init` writes the skeleton
+  for that — a starter `campaigns.bid`, a `bidsmith.toml` routing file,
+  `.gitignore`, README, and a `.github/workflows/bidsmith.yml` that runs
+  `bidsmith plan --format markdown --detailed-exitcode` on pull requests
+  (posting the diff as a sticky PR comment) and `bidsmith apply
+  --auto-approve` on merge to `main`. The **pull-request merge is the
+  approval gate** — this is the one sanctioned use of `--auto-approve`,
+  because a human has already reviewed the rendered plan before merging —
+  and Google Ads credentials live solely in Actions secrets, never on a
+  laptop. Two CLI affordances back the flow, both on `plan`:
+  `--format markdown` (a `Resource | Action | Result` table for the PR
+  comment) and `--detailed-exitcode` (terraform-style: `0` = no changes,
+  `2` = changes pending, `1` = error), so the workflow can post the plan
+  and reserve a red check for genuine failures. CI installs bidsmith by
+  downloading the linux release asset directly rather than via Homebrew —
+  the tap formula's ad-hoc `codesign` step is macOS-only and would fail
+  on a Linux runner. Templates live in `templates/init/`, `include_str!`'d
+  into `src/commands/init.rs`; the offline CI checklist runs
+  `init` → `validate` → `fmt --check` so the starter `.bid` can't drift
+  from the schema or the formatter. Chosen over a remote/hosted runner
+  for `apply`: keeping execution in the user's own GitHub Actions means
+  the account stays under their control and there's no bidsmith-operated
+  service holding live-mutation credentials.
 
 ## Current state
 
@@ -507,6 +531,7 @@ bidsmith/
 │       ├── e2e_cleanup.rs # hidden _e2e-cleanup verb: sweep bidsmith-e2e-* resources
 │       ├── export.rs     # render .bid from a JSON source description
 │       ├── fmt.rs        # canonical re-emitter (in-place / --check)
+│       ├── init.rs       # scaffold a GitOps project (templates/init/ → repo skeleton)
 │       ├── plan.rs       # parse + validate + import + diff + validateOnly batch
 │       ├── pull.rs       # dump raw SearchStream batches as JSON
 │       ├── query.rs      # read-only GAQL passthrough (table / json / tsv)
@@ -832,7 +857,7 @@ Validator covers (so far):
 | `mv`       | working | Rename a resource address in source: rewrites the `resource` block label and every reference that resolves to it, across all `.bid` files under `--path` (default `.`). Addresses are `<type>.<name>`, or `<module>.<type>.<name>` to disambiguate a name shared across files. **Bulk mode** `--from-file <path>` (or `-` for stdin) renames a whole batch from a `<from> <to>`-per-line file (arrow optional, `#` comments) applied atomically against one snapshot — rejects missing sources, occupied targets, duplicate sources/targets, and rename chains (`a→b`,`b→c`); any bad rule writes nothing. Format-preserving (only the renamed identifiers change; comments and layout are byte-preserved). Refuses when the rename would raise the project's validation-error count above its pre-rename baseline (so it can still tidy a not-yet-fully-valid tree). **Source-only by design**: because the planner matches live resources by content (name / keyword / geo / …), not by address or label, an address rename is invisible to the account — no delete+create, no lost history or ad review. Once labels become identity (Phase 3 v2), a move will additionally rewrite the live `bidsmith:address` label; until then `mv` is the complete mechanism and `moved` blocks are deferred |
 | `validate` | partial | Syntax + schema + references + lint warnings (local only). `--var NAME=VALUE` (repeatable) supplies values for `variable` blocks; `BIDSMITH_VAR_<name>` env vars are the fallback |
 | `export`   | partial | Render a fmt-canonical `.bid` file from flat bidsmith JSON (`--from-json`) or raw Google Ads SearchStream JSON (`--from-gads-search-response`); always emits the compact form (one `google_ads_ad_group_criterion` per `(ad_group, match_type)` group with N `keyword {}` sub-blocks, one negatives resource per ad-group / campaign with N `negative_keyword {}` sub-blocks, RSAs as `headlines = [...]` / `descriptions = [...]` lists). Also **folds repeated structure** (issue #57): ad bodies shared across ≥ 2 ads become a top-level `ad_template` (URL-variant bodies collapse onto one URL-agnostic template + per-instance `final_urls` / `path1` / `path2` overrides), RSA arrays used by ≥ 2 sites and campaign negative lists shared by ≥ 2 campaigns become `locals`. Folding is source-only — the tree round-trips through `validate` / `plan` identically to the verbose form. Drops REMOVED resources unless `--include-removed`; `--login-customer-id` / `--customer-id` (or env vars `GOOGLE_ADS_LOGIN_CUSTOMER_ID` / `GOOGLE_ADS_CUSTOMER_ID`) override the provider block |
-| `plan`     | partial | Diff `.bid` vs live, validateOnly batch via googleAds:mutate; emits `+ create` / `~ update` / `~ adopt` / `- destroy` / `no-op` per resource. Campaigns and ad groups match by their `bidsmith:address` label first, then by content (name) to adopt an unlabeled live resource; ads match by body; keywords by text. `- destroy` rows are orphaned criteria members **and** whole labeled resources (campaign / ad_group / ad_group_ad) dropped from the `.bid`; an unlabeled UI-created resource is never destroyed. `~ adopt` rows are first-run label writes onto an already-matching resource. Reuses cached SearchStream batches from `.bidsmith/cache/` when fresh (15-min TTL); `--refresh-state` forces a re-pull; `--offline` skips OAuth and the validateOnly mutate, diffing against the cache only (errors if no fresh cache). `--var NAME=VALUE` (repeatable) and `BIDSMITH_VAR_<name>` env vars supply values for `variable` blocks |
+| `plan`     | partial | Diff `.bid` vs live, validateOnly batch via googleAds:mutate; emits `+ create` / `~ update` / `~ adopt` / `- destroy` / `no-op` per resource. Campaigns and ad groups match by their `bidsmith:address` label first, then by content (name) to adopt an unlabeled live resource; ads match by body; keywords by text. `- destroy` rows are orphaned criteria members **and** whole labeled resources (campaign / ad_group / ad_group_ad) dropped from the `.bid`; an unlabeled UI-created resource is never destroyed. `~ adopt` rows are first-run label writes onto an already-matching resource. Reuses cached SearchStream batches from `.bidsmith/cache/` when fresh (15-min TTL); `--refresh-state` forces a re-pull; `--offline` skips OAuth and the validateOnly mutate, diffing against the cache only (errors if no fresh cache). `--var NAME=VALUE` (repeatable) and `BIDSMITH_VAR_<name>` env vars supply values for `variable` blocks. `--format markdown` renders the diff as a PR-comment table (`Resource \| Action \| Result`) instead of the default aligned `text` listing; `--detailed-exitcode` makes a non-empty diff exit `2` (terraform-style) while keeping `1` for errors, so CI can distinguish "changes pending" from "plan failed" |
 | `apply`    | partial | Shows the validateOnly diff first, then prompts for `yes` (or skips the prompt with `--auto-approve`) before mutating. Refuses to prompt when stdin is not a TTY. Reuses the same cached live state as `plan`; invalidates the cache after a successful real mutate. Executes `- destroy` removes (orphaned criteria members and whole labeled resources) through the same prompt — no separate `--allow-destroy` flag. Writes `bidsmith:address=…` identity labels on created / adopted campaigns, ad groups, and ads (reusing an existing label by name) and reconciles stale associations on rename. Same `--var` / `BIDSMITH_VAR_<name>` plumbing as `plan` |
 | `pull`     | partial | Dump live state as raw SearchStream JSON (`-o PATH` or stdout). Reuses the same query list `plan --read-live` issues; output is the exact shape `export --from-gads-search-response` consumes, so the pair round-trips an account into a `.bid` |
 | `refresh`  | partial | Bootstrap-mode import of live state into `.bid` (no `-o`/`-d` → stdout, `-o PATH` → single file, `-d DIR` → split into `<DIR>/account.bid` for conversion actions / call assets / customer assets / shared sets and `<DIR>/campaigns.bid` for everything campaign-scoped). Shares the `export` renderer, so it emits the same **folded** form (issue #57): repeated ad bodies → `ad_template`, repeated RSA arrays and shared campaign negative lists → `locals`. Folding is source-only and round-trips identically, so a re-`refresh` no longer re-explodes a hand-folded tree. Reconcile-in-place against existing `.bid` and label-based matching wait on the Phase 3 v2 label work |
@@ -840,7 +865,7 @@ Validator covers (so far):
 | `schema`   | partial | Dump the resource + provider schema as JSON (`-o PATH` or stdout). Powers the docs site's auto-generated reference under `website/src/content/docs/resources/`; `website/src/data/schema.json` is a build artifact regenerated by the docs site's `prebuild` / `predev` npm scripts, so it cannot drift from `src/schema.rs` |
 | `design-doc` | working | Generate the Google Ads API Basic-Access design document for an applicant to attach to their application. Two subcommands: `init` writes a commented `design-doc.toml` template; `render` reads the filled-in TOML plus bidsmith's own internals (API version, GAQL query list, RMF mapping) and emits `design-doc.html` for the user to print to PDF |
 | `auth`     | working | Sign in to Google Ads and manage saved credentials. `login` runs a browser OAuth loopback + PKCE flow, then writes `~/.bidsmith/credentials.toml` (`0600`) — prompts for the developer token + MCC id when not passed, and ends by listing the accounts `listAccessibleCustomers` returns; `status` shows which credentials resolve and verifies them live; `logout` clears the sign-in (keeps the developer-token + MCC "team profile" unless `--all`); `profile` emits that shareable team blob. Uses the bundled OAuth client when present, else `--client-id`/`--client-secret` |
-| `init`     | —       | (later) Bootstrap project skeleton                   |
+| `init`     | working | Scaffold a GitOps project skeleton into a directory (default `.`): a fmt-canonical starter `campaigns.bid` (everything `PAUSED`), a `bidsmith.toml` for the account ids, a `.github/workflows/bidsmith.yml` (plan on PRs → sticky comment, apply on merge to `main`), `.gitignore`, and a README setup checklist. Per-file idempotent — an existing file is reported and skipped unless `--force`. Templates live in `templates/init/` (`include_str!`'d) and are guarded offline by the CI checklist (`init` → `validate` → `fmt --check`) so the starter can't drift from the schema/formatter |
 | `graph`    | —       | (later) Visualize resource graph                     |
 | `import`   | —       | (later) Adopt an unlabeled existing resource         |
 
