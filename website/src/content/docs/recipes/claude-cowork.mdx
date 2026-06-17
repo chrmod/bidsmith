@@ -1,0 +1,166 @@
+---
+title: Use bidsmith in Claude Cowork
+description: Run bidsmith inside Claude Cowork — mount your credentials, allow the domains it needs, and cache the Linux binary so each session is one step.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+[Claude Cowork](https://claude.com/product/cowork) is Anthropic's desktop
+agent for knowledge work. It runs everything inside an **ephemeral Linux
+virtual machine** (Apple Silicon only), so it can **only see folders you
+mount** and **only reach domains you allow**. With a small one-time
+setup you can let Cowork author `.bid` files and run bidsmith live
+against your account — `validate`, `plan`, even `apply` — through the
+bidsmith plugin.
+
+<Aside type="tip" title="Prefer the hands-off path?">
+  This page is the do-it-yourself setup on a single Mac. For a team — or
+  to avoid the sandbox plumbing entirely — use the
+  [GitHub Actions flow](/bidsmith/commands/init/): `bidsmith init`
+  scaffolds a repo where CI runs `plan` on pull requests and `apply` on
+  merge. Cowork then only edits files and opens PRs, and your credentials
+  live in GitHub secrets — nothing to mount or allow.
+</Aside>
+
+## How the sandbox behaves
+
+Three facts explain why the steps below look the way they do:
+
+- **It's per-session.** The sandbox home is wiped between sessions, so
+  anything installed into it is gone next time. Only your **mounted
+  folders** persist.
+- **Each command is independent.** `PATH` and environment don't carry
+  from one command to the next, so every call has to put `bidsmith` on
+  `PATH` itself.
+- **It's Linux** (usually `aarch64`), not macOS — so your Mac's
+  Homebrew `bidsmith` can't run there; the sandbox needs its own Linux
+  build.
+
+The setup works *with* these facts: mount a folder that persists, cache
+the Linux binary in it, and re-point `PATH` at it each session.
+
+## Before you begin
+
+- **An Apple Silicon Mac.** Cowork's virtual machine requires it.
+- **bidsmith installed and signed in on your Mac.** Run
+  [`brew install chrmod/tap/bidsmith`](/bidsmith/before-you-start/install/),
+  then [`bidsmith auth login`](/bidsmith/before-you-start/connect-google-ads/)
+  once. That writes `~/.bidsmith/credentials.toml`. The sign-in must
+  happen on your Mac — the sandbox has no browser for the Google consent
+  screen.
+- **The bidsmith plugin added to Cowork.** Customize → Plugins → Add
+  marketplace → enter `chrmod/bidsmith`, then install the **bidsmith**
+  plugin.
+
+## Set it up
+
+<Steps>
+
+1. **Mount two folders into your Cowork project.** Cowork only sees what
+   you grant it, so add **both**:
+   - your campaigns repo (the folder with your `.bid` files), and
+   - **`~/.bidsmith`** — the folder holding `credentials.toml` (and,
+     after step 3, the cached Linux binary).
+
+2. **Allow the domains bidsmith needs.** Open Claude → **Settings →
+   Capabilities** and add these to the allow list:
+
+   ```
+   release-assets.githubusercontent.com
+   codeload.github.com
+   oauth2.googleapis.com
+   googleads.googleapis.com
+   ```
+
+   | Domain | Why bidsmith needs it |
+   |---|---|
+   | `release-assets.githubusercontent.com`, `codeload.github.com` | Download the Linux binary from GitHub Releases |
+   | `oauth2.googleapis.com` | Exchange your refresh token for a short-lived access token |
+   | `googleads.googleapis.com` | The Google Ads API itself — `plan`, `apply`, `query` |
+
+   These are `github.com` release-download hosts. (Cowork may block
+   `api.github.com`, which bidsmith doesn't need.) If the binary download
+   is still refused, also allow `github.com`.
+
+3. **Install bidsmith into the sandbox.** The simplest path: just ask
+   Cowork to *"set up bidsmith in this sandbox"* — the plugin downloads
+   the matching Linux build and puts it on `PATH`.
+
+   To make it **survive future sessions**, cache the binary in your
+   mounted `~/.bidsmith`. The repo ships
+   [`scripts/cowork-bootstrap.sh`](https://github.com/chrmod/bidsmith/blob/main/scripts/cowork-bootstrap.sh):
+   copy it once to `~/.bidsmith/bin/bootstrap.sh`, then have Cowork
+   `source` it at the start of each session:
+
+   ```sh
+   source ~/.bidsmith/bin/bootstrap.sh   # puts bidsmith on PATH
+   ```
+
+   It downloads the binary only the first time (caching it in the mounted
+   folder), verifies the checksum, and re-establishes `PATH` on every
+   call. Because each Cowork command runs fresh, the agent re-sources it
+   before running `bidsmith`.
+
+4. **Credentials just work — if `~/.bidsmith` is mounted.** bidsmith
+   reads `~/.bidsmith/credentials.toml` automatically, so once the folder
+   is mounted there's nothing to export and no `.env` to source.
+   `bidsmith auth status`, `query`, `plan`, and `apply` all pick it up.
+   (Re-minting a token still has to happen on your Mac — the browser
+   sign-in can't run in the sandbox.)
+
+5. **Verify.** Ask Cowork to run `bidsmith plan --whoami` — it succeeds
+   only when the credentials resolve and the token exchange works. Then
+   try `bidsmith validate .` and `bidsmith plan .` against your repo.
+
+</Steps>
+
+## What works now
+
+- **Author / edit `.bid` files, `validate`, `fmt`, `init`** — fully
+  offline, no credentials needed.
+- **`plan` and `query`** — live and read-only.
+- **`apply`** — mutates the live account. Cowork shows you the
+  [plan](/bidsmith/concepts/plan-and-apply/) first; read it before you
+  approve.
+
+## Keep it simple next time
+
+Once it's set up, a returning session is nearly one step:
+
+- The **two mounts** and the **allow list** persist — set them once.
+- The **cached binary** lives in mounted `~/.bidsmith/bin/`, so later
+  sessions skip the download; sourcing `bootstrap.sh` just re-points
+  `PATH`.
+- **Credentials** are already there via the mount.
+
+So a fresh session is really: open the project (mounts restore) → Cowork
+sources the bootstrap → you're live.
+
+## Simpler alternatives
+
+If this is still more than you want to manage, two paths skip most of it:
+
+- **GitHub Actions (GitOps)** — `bidsmith init` scaffolds a repo where CI
+  runs `plan` on PRs and `apply` on merge. Cowork only edits files and
+  opens PRs; credentials live in GitHub secrets, nothing to mount.
+- **A hosted bidsmith connector** (planned) — would hold the Google Ads
+  sign-in server-side, removing the mounts and the domain allow list
+  entirely.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `bidsmith: command not found` | `PATH` doesn't carry between commands — re-`source ~/.bidsmith/bin/bootstrap.sh` (or reinstall) at the start of the call. |
+| Download / network error during install | Allow the GitHub domains above (and `github.com`); note `api.github.com` may be blocked but isn't needed. |
+| `plan` / `apply` can't reach Google | Allow `oauth2.googleapis.com` and `googleads.googleapis.com`. |
+| "no credentials" or auth errors | Mount `~/.bidsmith`; make sure you ran `bidsmith auth login` on your Mac first so `credentials.toml` exists. |
+
+## See also
+
+- [`bidsmith init`](/bidsmith/commands/init/) — the GitHub Actions flow,
+  the lower-setup alternative.
+- [Connect to Google Ads](/bidsmith/before-you-start/connect-google-ads/)
+  — minting the credentials this page mounts.
+- [Manage multiple client accounts](/bidsmith/recipes/manage-multiple-accounts/)
+  — `bidsmith.toml` routing if you mount more than one campaign repo.

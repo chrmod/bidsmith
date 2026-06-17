@@ -12,6 +12,8 @@ diffs (`plan`), and reconciles (`apply`) against the live account.
 
 ## Install / upgrade
 
+On macOS or any normal shell, use Homebrew:
+
 ```sh
 brew install chrmod/tap/bidsmith     # first time
 brew upgrade chrmod/tap/bidsmith     # later
@@ -19,12 +21,73 @@ bidsmith --version                   # confirm
 ```
 
 The Homebrew tap is `chrmod/homebrew-tap`. The formula ad-hoc signs the
-binary on install (no Apple Developer ID involved). If `brew` is
-unavailable, fall back to `cargo install --git https://github.com/chrmod/bidsmith`
-(slower; requires Rust 1.89+).
+binary on install (no Apple Developer ID involved).
 
-If `bidsmith` is not on `$PATH`, tell the user to run the install command
-above — do not silently substitute other tooling.
+### Running inside Cowork (Linux sandbox)
+
+Cowork runs this skill in an **ephemeral Linux sandbox**, not on the
+macOS host: `brew` is not the path there, and a host-installed `bidsmith`
+is a macOS build that won't run in the sandbox. Three sandbox facts shape
+the install:
+
+- **Per-session**: the sandbox home is wiped between sessions, so an
+  install into `~/.local/bin` does not survive. Only the user's **mounted
+  folders** persist (e.g. `~/.bidsmith`, the campaigns repo).
+- **Each bash call is independent**: `PATH`/env do not carry over, so
+  every call must put `bidsmith` on `PATH` itself.
+- **It is Linux** — usually `aarch64`, sometimes `x86_64`. Pick the
+  matching release target.
+
+**One-time install in a session** — download the matching release
+tarball, verify its checksum, put it on `PATH`:
+
+```sh
+case "$(uname -m)" in
+  aarch64|arm64) tgt=aarch64-unknown-linux-gnu ;;
+  x86_64|amd64)  tgt=x86_64-unknown-linux-gnu  ;;
+esac
+url="https://github.com/chrmod/bidsmith/releases/latest/download/bidsmith-$tgt.tar.gz"
+curl -fsSL "$url" -o /tmp/bidsmith.tar.gz
+echo "$(curl -fsSL "$url.sha256" | awk '{print $1}')  /tmp/bidsmith.tar.gz" | sha256sum -c -
+tar xzf /tmp/bidsmith.tar.gz -C /tmp
+mkdir -p "$HOME/.local/bin"
+install -m 0755 /tmp/bidsmith "$HOME/.local/bin/bidsmith"
+export PATH="$HOME/.local/bin:$PATH"
+bidsmith --version
+```
+
+`github.com` release-download URLs work; direct `curl` to
+`api.github.com` may be proxy-blocked, so don't depend on it. If the
+network is fully blocked, `cargo install --git
+https://github.com/chrmod/bidsmith` is the last resort (needs Rust).
+Never fall back to hand-editing HCL the validator would reject.
+
+**Persist across sessions (recommended)** — cache the binary in a
+**mounted** folder so later sessions skip the download. `~/.bidsmith`
+already persists (it's where bidsmith reads `credentials.toml`), so it's
+a natural home. The repo ships `scripts/cowork-bootstrap.sh`: copy it to
+`~/.bidsmith/bin/bootstrap.sh` once, then **source it at the top of each
+bash call** — it puts `bidsmith` on `PATH`, downloading only on a cache
+miss:
+
+```sh
+source ~/.bidsmith/bin/bootstrap.sh
+```
+
+### Credentials in the sandbox
+
+bidsmith reads `~/.bidsmith/credentials.toml` automatically. As long as
+that folder is **mounted**, `bidsmith auth status`, read-only
+`bidsmith query`, `plan`, and `apply` work with no extra setup — no
+`source .env`. The browser `bidsmith auth login` flow **cannot run in the
+sandbox**; mint/refresh the token on the host (or any machine with a
+browser) and rely on the mounted `credentials.toml`.
+
+If neither the mounted `~/.bidsmith/credentials.toml` nor `GOOGLE_ADS_*`
+env vars are present, do **not** attempt a live command — author /
+`validate` / `fmt` / `init` offline and open a pull request so CI runs
+`plan` / `apply` (see "GitOps" below), or hand the live command to the
+user. `bidsmith plan --whoami` exits `0` only when credentials resolve.
 
 ## Commands
 
@@ -244,6 +307,24 @@ at the generated `README.md` for the one-time steps: fill in
 secrets (Settings → Secrets and variables → Actions). `bidsmith auth
 login` mints the refresh token; `bidsmith auth profile --with-client`
 prints the values to paste.
+
+### Opening pull requests from a sandbox
+
+In a sandbox (e.g. Claude Cowork) there is **no GitHub plugin** — drive
+GitHub through the `gh` CLI or a GitHub MCP server:
+
+- **`gh` CLI**: install it in-session the same way as the bidsmith binary
+  (pin a `gh` release URL on `github.com` — `api.github.com` may be
+  proxy-blocked), then authenticate non-interactively with `GH_TOKEN` set
+  to a fine-grained, repo-scoped Personal Access Token, and use
+  `gh pr create` / `gh pr view` / `gh pr comment`. A repo-scoped PAT is a
+  much smaller blast radius than the Google Ads credentials — keep them
+  separate.
+- **GitHub MCP server**: add it as a remote connector; it carries its
+  own auth, so no token sits in the sandbox env.
+
+Plain `git` against the mounted repo also works for branch + commit if a
+remote credential is present; `gh` / MCP is the path for the PR itself.
 
 ## Reading performance data
 
