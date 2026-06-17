@@ -46,6 +46,7 @@ export default defineConfig({
           collapsed: true,
           items: [
             { label: 'Overview', slug: 'recipes' },
+            { label: 'Use bidsmith in Claude Cowork', slug: 'recipes/claude-cowork' },
             { label: 'Pause everything for the holidays', slug: 'recipes/pause-for-holidays' },
             { label: 'Move a keyword between match types', slug: 'recipes/change-keyword-match-type' },
             { label: 'Target specific countries and languages', slug: 'recipes/target-countries-and-languages' },
