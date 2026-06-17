@@ -86,25 +86,6 @@ pub fn build_mutate_with_diff(
                         .unwrap_or("");
                     composite_rn(customer_id, segment, &refs, parent_addr, next)
                 }
-                "campaign_criterion" => {
-                    let cr = input.campaign_criteria.iter().find(|c| c.id == d.address);
-                    let criterion_segment =
-                        if let Some(loc) = cr.and_then(|c| c.location.as_ref()) {
-                            last_segment(&loc.geo_target_constant).to_string()
-                        } else if let Some(lang) = cr.and_then(|c| c.language.as_ref()) {
-                            last_segment(&lang.language_constant).to_string()
-                        } else {
-                            next.to_string()
-                        };
-                    let parent_addr = cr.map(|c| c.campaign.as_str()).unwrap_or("");
-                    let parent_id = refs
-                        .get(parent_addr)
-                        .and_then(|rn| rn.rsplit('/').next())
-                        .unwrap_or("0");
-                    format!(
-                        "customers/{customer_id}/{segment}/{parent_id}~{criterion_segment}"
-                    )
-                }
                 "campaign_shared_set" => {
                     let css = input
                         .campaign_shared_sets
@@ -286,7 +267,7 @@ pub fn build_mutate_with_diff(
             };
             mutate_ops.push(json!({
                 "campaignCriterionOperation": {
-                    "create": campaign_criterion_create(cr, rn, &camp_rn)
+                    "create": campaign_criterion_create(cr, &camp_rn)
                 }
             }));
             operations.push(PlanOperation { address: cr.id.clone(), kind: "campaign_criterion" });
@@ -621,10 +602,6 @@ fn composite_rn(
         .and_then(|rn| rn.rsplit('/').next())
         .unwrap_or("0");
     format!("customers/{customer_id}/{segment}/{parent_id}~{idx}")
-}
-
-fn last_segment(s: &str) -> &str {
-    s.rsplit('/').next().unwrap_or(s)
 }
 
 fn budget_update_body(b: &JsonBudget, resource_name: &str, fields: &[String]) -> Value {
@@ -1278,13 +1255,9 @@ fn ad_group_criterion_create(
     Value::Object(m)
 }
 
-fn campaign_criterion_create(
-    cr: &JsonCampaignCriterion,
-    resource_name: &str,
-    camp_rn: &str,
-) -> Value {
+fn campaign_criterion_create(cr: &JsonCampaignCriterion, camp_rn: &str) -> Value {
+    // No resourceName: a pinned composite id re-claims the new campaign's temp id, which the API rejects as a duplicate.
     let mut m = Map::new();
-    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
     m.insert("campaign".into(), Value::String(camp_rn.to_string()));
     if let Some(s) = &cr.status {
         m.insert("status".into(), Value::String(s.clone()));
@@ -1557,6 +1530,93 @@ mod tests {
             set_rn,
             "member must reference the parent set's temp resource name"
         );
+    }
+
+    #[test]
+    fn new_campaign_criteria_do_not_reclaim_the_campaign_temp_id() {
+        // Green-field US/English campaign: location/language criteria have no own negative id, so a pinned composite resource_name re-claimed the new campaign's temp id (-2) and the API rejected the whole batch.
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "6571974784",
+            "campaign_budgets": [{"id": "m.b", "name": "B", "amount_micros": 15000000}],
+            "campaigns": [{
+                "id": "m.c", "name": "HBO", "advertising_channel_type": "SEARCH",
+                "campaign_budget": "m.b"
+            }],
+            "campaign_criteria": [
+                {"id": "m.loc", "campaign": "m.c", "location": {"geo_target_constant": "geoTargetConstants/2840"}},
+                {"id": "m.lang", "campaign": "m.c", "language": {"language_constant": "languageConstants/1000"}},
+                {"id": "m.neg", "campaign": "m.c", "negative": true, "keyword": {"text": "free", "match_type": "BROAD"}}
+            ]
+        }))
+        .expect("valid ExportInput");
+
+        let report = DiffReport {
+            diffs: vec![
+                create_diff("m.b", "campaign_budget"),
+                create_diff("m.c", "campaign"),
+                create_diff("m.loc", "campaign_criterion"),
+                create_diff("m.lang", "campaign_criterion"),
+                create_diff("m.neg", "campaign_criterion"),
+            ],
+            label_plans: Vec::new(),
+            noop_count: 0,
+            create_count: 5,
+            update_count: 0,
+            delete_count: 0,
+            adopt_count: 0,
+        };
+
+        let plan = match build_mutate_with_diff(&input, &report, true) {
+            Ok(plan) => plan,
+            Err(errs) => panic!(
+                "plan should build: {}",
+                errs.iter()
+                    .map(|e| format!("{}: {}", e.address, e.message))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        };
+        let ops = plan.body["mutateOperations"].as_array().unwrap();
+
+        let campaign_rn = ops
+            .iter()
+            .find_map(|op| op.get("campaignOperation").and_then(|o| o.get("create")))
+            .and_then(|c| c.get("resourceName"))
+            .and_then(Value::as_str)
+            .expect("campaign create op");
+        assert_eq!(campaign_rn, "customers/6571974784/campaigns/-2");
+
+        let criteria: Vec<&Value> = ops
+            .iter()
+            .filter_map(|op| {
+                op.get("campaignCriterionOperation").and_then(|o| o.get("create"))
+            })
+            .collect();
+        assert_eq!(criteria.len(), 3, "every declared criterion emits a create op");
+
+        for create in &criteria {
+            assert!(
+                create.get("resourceName").is_none(),
+                "criterion create must not pin a resource_name that re-claims the campaign temp id: {create}"
+            );
+            assert_eq!(
+                create["campaign"].as_str().unwrap(),
+                campaign_rn,
+                "the criterion references the campaign by its temp resource name"
+            );
+        }
+
+        // The campaign temp id (-2) is claimed exactly once across the batch: by
+        // the campaign op itself. No other op pins it in its own id.
+        let claims = ops
+            .iter()
+            .filter_map(|op| op.as_object())
+            .flat_map(|m| m.values())
+            .filter_map(|o| o.get("create"))
+            .filter_map(|c| c.get("resourceName").and_then(Value::as_str))
+            .filter(|rn| rn.split('/').next_back() == Some("-2"))
+            .count();
+        assert_eq!(claims, 1, "only the campaign claims temp id -2");
     }
 
     #[test]
