@@ -5,7 +5,7 @@ use hcl_edit::structure::{Attribute, Block, Structure};
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupCriterion, JsonBudget,
     JsonCallAsset, JsonCampaign, JsonCampaignCriterion, JsonCampaignSharedSet,
-    JsonConversionAction, JsonCustomerAsset, JsonKeyword, JsonLanguage, JsonLocation,
+    JsonConversionAction, JsonCustomerAsset, JsonDevice, JsonKeyword, JsonLanguage, JsonLocation,
     JsonManualCpc, JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset,
     JsonSharedCriterion, JsonSharedSet, JsonValueSettings,
 };
@@ -328,10 +328,12 @@ fn expand_inline_targeting(
             campaign: campaign_address.to_string(),
             status: Some("ENABLED".to_string()),
             negative: Some(false),
+            bid_modifier: None,
             keyword: None,
             location: None,
             language: Some(JsonLanguage { language_constant: constant }),
             proximity: None,
+            device: None,
         });
     }
     let mut seen_loc: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -350,10 +352,12 @@ fn expand_inline_targeting(
             campaign: campaign_address.to_string(),
             status: Some("ENABLED".to_string()),
             negative: Some(false),
+            bid_modifier: None,
             keyword: None,
             location: Some(JsonLocation { geo_target_constant: constant }),
             language: None,
             proximity: None,
+            device: None,
         });
     }
     out
@@ -771,10 +775,12 @@ fn import_campaign_criterion(
     let mut campaign_ref = None;
     let mut status = None;
     let mut negative = None;
+    let mut bid_modifier = None;
     let mut keyword = None;
     let mut location = None;
     let mut language = None;
     let mut proximity = None;
+    let mut device = None;
     let mut bulk_negatives: Vec<JsonKeyword> = Vec::new();
 
     for s in block.body.iter() {
@@ -783,6 +789,7 @@ fn import_campaign_criterion(
                 "campaign" => campaign_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r)),
                 "status" => status = expect_string_owned(ctx, a),
                 "negative" => negative = expect_bool(ctx, a),
+                "bid_modifier" => bid_modifier = expect_f64(ctx, a),
                 _ => {}
             },
             Structure::Block(b) => match b.ident.as_str() {
@@ -796,6 +803,7 @@ fn import_campaign_criterion(
                 "location" => location = import_location(ctx, b),
                 "language" => language = import_language(ctx, b),
                 "proximity" => proximity = import_proximity(ctx, b),
+                "device" => device = import_device(ctx, b),
                 _ => {}
             },
         }
@@ -804,7 +812,12 @@ fn import_campaign_criterion(
     let campaign = campaign_ref.ok_or_else(|| missing(ctx.file, block, address, "campaign"))?;
 
     if !bulk_negatives.is_empty() {
-        if keyword.is_some() || location.is_some() || language.is_some() || proximity.is_some() {
+        if keyword.is_some()
+            || location.is_some()
+            || language.is_some()
+            || proximity.is_some()
+            || device.is_some()
+        {
             return Err(Diag::new(
                 ctx.file.src.clone(),
                 span_of(block.ident.span()),
@@ -820,26 +833,33 @@ fn import_campaign_criterion(
                 campaign: campaign.clone(),
                 status: status.clone(),
                 negative: Some(true),
+                bid_modifier: None,
                 keyword: Some(kw),
                 location: None,
                 language: None,
                 proximity: None,
+                device: None,
             });
         }
         return Ok(out);
     }
 
-    let has_positive_shape =
-        keyword.is_some() || location.is_some() || language.is_some() || proximity.is_some();
+    let has_positive_shape = keyword.is_some()
+        || location.is_some()
+        || language.is_some()
+        || proximity.is_some()
+        || device.is_some();
     Ok(vec![JsonCampaignCriterion {
         id: address.to_string(),
         campaign,
         status,
         negative: if has_positive_shape { negative.or(Some(false)) } else { negative },
+        bid_modifier,
         keyword,
         location,
         language,
         proximity,
+        device,
     }])
 }
 
@@ -1179,6 +1199,18 @@ fn import_proximity(ctx: &Ctx, block: &Block) -> Option<JsonProximity> {
         radius: radius?,
         radius_units: units?,
     })
+}
+
+fn import_device(ctx: &Ctx, block: &Block) -> Option<JsonDevice> {
+    let mut ty = None;
+    for s in block.body.iter() {
+        if let Structure::Attribute(a) = s {
+            if a.key.as_str() == "type" {
+                ty = expect_string_owned(ctx, a);
+            }
+        }
+    }
+    Some(JsonDevice { ty: ty? })
 }
 
 fn expect_string(ctx: &Ctx, attr: &Attribute, diags: &mut Vec<Diag>) -> Option<String> {

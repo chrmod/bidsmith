@@ -766,6 +766,8 @@ fn campaign_criterion_category(cr: &JsonCampaignCriterion) -> &'static str {
         "language"
     } else if cr.proximity.is_some() {
         "proximity"
+    } else if cr.device.is_some() {
+        "device"
     } else {
         "other"
     }
@@ -783,6 +785,8 @@ fn campaign_criterion_descriptor(cr: &JsonCampaignCriterion) -> Option<String> {
         Some(format!("location {}", loc.geo_target_constant))
     } else if let Some(lang) = &cr.language {
         Some(format!("language {}", lang.language_constant))
+    } else if let Some(dev) = &cr.device {
+        Some(format!("device {}", dev.ty))
     } else {
         cr.proximity.as_ref().map(|_| "proximity".to_string())
     }
@@ -1034,7 +1038,18 @@ fn diff_campaign_criterion(d: &JsonCampaignCriterion, l: &JsonCampaignCriterion)
     if d.negative != l.negative {
         c.push("negative".into());
     }
+    if bid_modifier_changed(d.bid_modifier, l.bid_modifier) {
+        c.push("bid_modifier".into());
+    }
     c
+}
+
+fn bid_modifier_changed(d: Option<f64>, l: Option<f64>) -> bool {
+    match (d, l) {
+        (Some(a), Some(b)) => (a - b).abs() > 1e-6,
+        (None, None) => false,
+        _ => true,
+    }
 }
 
 fn diff_conversion_action(d: &JsonConversionAction, l: &JsonConversionAction) -> Vec<String> {
@@ -1131,6 +1146,9 @@ fn campaign_criterion_key(cr: &JsonCampaignCriterion) -> Option<String> {
             p.radius,
             p.radius_units,
         ));
+    }
+    if let Some(d) = &cr.device {
+        return Some(format!("dev:{}", d.ty));
     }
     None
 }
@@ -1336,6 +1354,76 @@ mod criterion_match_tests {
             matches!(&crit.action, Action::NoOp { live_id } if live_id == "400"),
             "declared positive keyword should match the live positive one, got {:?}",
             crit.action
+        );
+    }
+
+    fn device_criteria(declared_extra: &str, live_extra: &str) -> DiffReport {
+        let declared = input(&format!(
+            r#"{{
+            "customer_id": "1",
+            "campaigns": [{{"id":"c","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"b"}}],
+            "campaign_criteria": [{declared_extra}]
+        }}"#,
+        ));
+        let live = input(&format!(
+            r#"{{
+            "customer_id": "1",
+            "campaigns": [{{"id":"100","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"200"}}],
+            "campaign_criteria": [{live_extra}]
+        }}"#,
+        ));
+        diff(&declared, &live)
+    }
+
+    fn crit_action(report: &DiffReport, address: &str) -> Action {
+        report
+            .diffs
+            .iter()
+            .find(|d| d.kind == "campaign_criterion" && d.address == address)
+            .unwrap_or_else(|| panic!("criterion {address} present"))
+            .action
+            .clone()
+    }
+
+    #[test]
+    fn device_criterion_matches_by_type_and_diffs_bid_modifier() {
+        // Same device type, same modifier → no-op; changed modifier → in-place
+        // update (device type is the match key, bid_modifier a scalar field).
+        let same = device_criteria(
+            r#"{"id":"d","campaign":"c","bid_modifier":0.0,"device":{"type":"MOBILE"}}"#,
+            r#"{"id":"500","campaign":"100","bid_modifier":0.0,"device":{"type":"MOBILE"}}"#,
+        );
+        assert!(
+            matches!(crit_action(&same, "d"), Action::NoOp { live_id } if live_id == "500"),
+            "identical device modifier should be a no-op, got {:?}",
+            crit_action(&same, "d")
+        );
+
+        let changed = device_criteria(
+            r#"{"id":"d","campaign":"c","bid_modifier":0.7,"device":{"type":"MOBILE"}}"#,
+            r#"{"id":"500","campaign":"100","bid_modifier":0.0,"device":{"type":"MOBILE"}}"#,
+        );
+        assert!(
+            matches!(
+                crit_action(&changed, "d"),
+                Action::Update { ref changed_fields, .. } if changed_fields == &["bid_modifier".to_string()]
+            ),
+            "changed device modifier should update bid_modifier, got {:?}",
+            crit_action(&changed, "d")
+        );
+    }
+
+    #[test]
+    fn device_criterion_of_new_type_is_created_not_matched() {
+        // A declared DESKTOP modifier must not match a live MOBILE one.
+        let report = device_criteria(
+            r#"{"id":"d","campaign":"c","bid_modifier":1.2,"device":{"type":"DESKTOP"}}"#,
+            r#"{"id":"500","campaign":"100","bid_modifier":0.0,"device":{"type":"MOBILE"}}"#,
+        );
+        assert!(
+            matches!(crit_action(&report, "d"), Action::Create),
+            "a different device type should create, got {:?}",
+            crit_action(&report, "d")
         );
     }
 }

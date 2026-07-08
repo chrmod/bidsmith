@@ -112,6 +112,7 @@ const RSA_PIN: &[&str] = &[
     "DESCRIPTION_2",
 ];
 const PROXIMITY_RADIUS_UNITS: &[&str] = &["MILES", "KILOMETERS"];
+const DEVICE_TYPE: &[&str] = &["MOBILE", "DESKTOP", "TABLET", "CONNECTED_TV", "OTHER"];
 const CONVERSION_ACTION_TYPE: &[&str] = &[
     "UNKNOWN",
     "AD_CALL",
@@ -454,11 +455,23 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         .with_default(DefaultValue::Str(DEFAULT_STATUS)),
                     attr("negative", FieldType::Bool, false)
                         .with_default(DefaultValue::Bool(DEFAULT_NEGATIVE)),
+                    attr("bid_modifier", FieldType::Number, false),
                 ],
                 blocks: vec![
                     keyword_block(),
                     negative_keyword_block(),
                     compact_keywords_block("negative_keywords"),
+                    NestedBlockSchema {
+                        name: "device",
+                        schema: BlockSchema {
+                            attributes: vec![attr(
+                                "type",
+                                FieldType::Enum(DEVICE_TYPE),
+                                true,
+                            )],
+                            blocks: vec![],
+                        },
+                    },
                     NestedBlockSchema {
                         name: "location",
                         schema: BlockSchema {

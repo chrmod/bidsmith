@@ -105,6 +105,7 @@ pub const QUERIES: &[(&str, &str)] = &[
           campaign_criterion.campaign,
           campaign_criterion.status,
           campaign_criterion.negative,
+          campaign_criterion.bid_modifier,
           campaign_criterion.keyword.text,
           campaign_criterion.keyword.match_type,
           campaign_criterion.location.geo_target_constant,
@@ -112,9 +113,10 @@ pub const QUERIES: &[(&str, &str)] = &[
           campaign_criterion.proximity.geo_point.latitude_in_micro_degrees,
           campaign_criterion.proximity.geo_point.longitude_in_micro_degrees,
           campaign_criterion.proximity.radius,
-          campaign_criterion.proximity.radius_units
+          campaign_criterion.proximity.radius_units,
+          campaign_criterion.device.type
         FROM campaign_criterion
-        WHERE campaign_criterion.type IN (KEYWORD, LOCATION, LANGUAGE, PROXIMITY)
+        WHERE campaign_criterion.type IN (KEYWORD, LOCATION, LANGUAGE, PROXIMITY, DEVICE)
           AND campaign_criterion.status != 'REMOVED'",
     ),
     (

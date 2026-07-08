@@ -131,6 +131,15 @@ resource "google_ads_campaign_criterion" "summer_proximity_warsaw" {
   }
 }
 
+resource "google_ads_campaign_criterion" "summer_no_mobile" {
+  campaign = google_ads_campaign.summer_search.id
+  bid_modifier = 0
+
+  device {
+    type = "MOBILE"
+  }
+}
+
 resource "google_ads_ad_group_ad" "summer_search_default_rsa" {
   ad_group = google_ads_ad_group.summer_search_default.id
   status = "ENABLED"

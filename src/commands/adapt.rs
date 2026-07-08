@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupCriterion, JsonBudget,
     JsonCallAsset, JsonCampaign, JsonCampaignCriterion, JsonCampaignSharedSet,
-    JsonConversionAction, JsonCustomerAsset, JsonKeyword, JsonLanguage, JsonLocation,
+    JsonConversionAction, JsonCustomerAsset, JsonDevice, JsonKeyword, JsonLanguage, JsonLocation,
     JsonManualCpc, JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset,
     JsonSharedSet, JsonValueSettings,
 };
@@ -455,10 +455,12 @@ impl AdapterState {
                 campaign: String::new(),
                 status: None,
                 negative: None,
+                bid_modifier: None,
                 keyword: None,
                 location: None,
                 language: None,
                 proximity: None,
+                device: None,
             });
         if !campaign_id.is_empty() {
             entry.campaign = campaign_id;
@@ -468,6 +470,18 @@ impl AdapterState {
         }
         if let Some(b) = v.get("negative").and_then(Value::as_bool) {
             entry.negative = Some(b);
+        }
+        if let Some(bm) = v.get("bidModifier").and_then(parse_f64_value) {
+            entry.bid_modifier = Some(bm);
+        }
+        if let Some(dev) = v.get("device") {
+            if let Some(t) = dev
+                .get("type")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty() && *s != "UNSPECIFIED" && *s != "UNKNOWN")
+            {
+                entry.device = Some(JsonDevice { ty: t.to_string() });
+            }
         }
         if let Some(kw) = v.get("keyword") {
             entry.keyword = Some(JsonKeyword {

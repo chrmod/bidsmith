@@ -195,6 +195,8 @@ pub struct JsonCampaignCriterion {
     #[serde(default)]
     pub negative: Option<bool>,
     #[serde(default)]
+    pub bid_modifier: Option<f64>,
+    #[serde(default)]
     pub keyword: Option<JsonKeyword>,
     #[serde(default)]
     pub location: Option<JsonLocation>,
@@ -202,6 +204,8 @@ pub struct JsonCampaignCriterion {
     pub language: Option<JsonLanguage>,
     #[serde(default)]
     pub proximity: Option<JsonProximity>,
+    #[serde(default)]
+    pub device: Option<JsonDevice>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -226,6 +230,12 @@ pub struct JsonProximity {
     pub longitude: f64,
     pub radius: f64,
     pub radius_units: String,
+}
+
+#[derive(Deserialize)]
+pub struct JsonDevice {
+    #[serde(rename = "type")]
+    pub ty: String,
 }
 
 #[derive(Deserialize)]
@@ -1128,8 +1138,10 @@ fn compute_inline_targeting(input: &ExportInput) -> InlineTargeting {
         }
         let foldable = !c.negative.unwrap_or(false)
             && matches!(c.status.as_deref(), None | Some("ENABLED"))
+            && c.bid_modifier.is_none()
             && c.keyword.is_none()
-            && c.proximity.is_none();
+            && c.proximity.is_none()
+            && c.device.is_none();
         if !foldable {
             continue;
         }
@@ -1538,6 +1550,9 @@ fn write_campaign_criterion(
     if let Some(s) = &c.status {
         write_attr(out, 1, "status", &fmt_string(s));
     }
+    if let Some(bm) = c.bid_modifier {
+        write_attr(out, 1, "bid_modifier", &format_number(bm));
+    }
     if let Some(kw) = &c.keyword {
         write_keyword(out, kw);
     }
@@ -1567,6 +1582,11 @@ fn write_campaign_criterion(
         write_attr(out, 2, "longitude", &format_number(prox.longitude));
         write_attr(out, 2, "radius", &format_number(prox.radius));
         write_attr(out, 2, "radius_units", &fmt_string(&prox.radius_units));
+        out.push_str("  }\n");
+    }
+    if let Some(dev) = &c.device {
+        out.push_str("\n  device {\n");
+        write_attr(out, 2, "type", &fmt_string(&dev.ty));
         out.push_str("  }\n");
     }
     out.push_str("}\n\n");
@@ -1807,6 +1827,9 @@ fn criterion_base(c: &JsonCampaignCriterion) -> String {
             prox.radius_units.to_ascii_lowercase(),
             format_number(prox.radius),
         );
+    }
+    if let Some(dev) = &c.device {
+        return format!("device_{}", dev.ty.to_ascii_lowercase());
     }
     c.id.clone()
 }
