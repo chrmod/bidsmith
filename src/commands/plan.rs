@@ -151,7 +151,7 @@ fn run_read_live(refresh_state: bool, verbose: bool) -> ExitCode {
     println!("  ad_group_ads        : {}", state.ad_group_ads.len());
     println!("  ad_group_criteria   : {}", state.ad_group_criteria.len());
     println!(
-        "  campaign_criteria   : {} (keyword / location / language / proximity only)",
+        "  campaign_criteria   : {} (keyword / location / language / proximity / device only)",
         state.campaign_criteria.len(),
     );
 

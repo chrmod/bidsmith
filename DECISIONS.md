@@ -804,7 +804,13 @@ Validator covers (so far):
   `google_ads_campaign_criterion` (single negative keyword, location,
   language, proximity with flat `latitude` / `longitude` in decimal
   degrees plus `radius` + `radius_units`; the adapter rounds to the
-  API's micro-degree integers at the wire boundary), plus a bulk
+  API's micro-degree integers at the wire boundary; plus a `device`
+  block (`type` = `MOBILE` / `DESKTOP` / `TABLET` / `CONNECTED_TV` /
+  `OTHER`) paired with a top-level `bid_modifier` number for device bid
+  adjustments — `0.0` = −100% = opt the device out, the desktop-only /
+  mobile-excluded case from issue #71; the device type is the match key
+  and `bid_modifier` is a scalar field diff, so retuning a modifier is an
+  in-place update, not a recreate), plus a bulk
   syntactic-sugar form where repeating `negative_keyword { text,
   match_type }` sub-blocks in one resource expand into N individual
   negative criteria at import time (same `negative`-from-block-shape

@@ -812,6 +812,13 @@ fn campaign_criterion_update_body(
                     m.insert("negative".into(), Value::Bool(n));
                 }
             }
+            "bid_modifier" => {
+                if let Some(bm) = cr.bid_modifier {
+                    if let Some(n) = serde_json::Number::from_f64(bm) {
+                        m.insert("bidModifier".into(), Value::Number(n));
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -1266,6 +1273,11 @@ fn campaign_criterion_create(cr: &JsonCampaignCriterion, camp_rn: &str) -> Value
     if let Some(n) = cr.negative {
         m.insert("negative".into(), Value::Bool(n));
     }
+    if let Some(bm) = cr.bid_modifier {
+        if let Some(n) = serde_json::Number::from_f64(bm) {
+            m.insert("bidModifier".into(), Value::Number(n));
+        }
+    }
     if let Some(kw) = &cr.keyword {
         let mut sub = Map::new();
         sub.insert("text".into(), Value::String(kw.text.clone()));
@@ -1311,6 +1323,11 @@ fn campaign_criterion_create(cr: &JsonCampaignCriterion, camp_rn: &str) -> Value
             Value::String(prox.radius_units.clone()),
         );
         m.insert("proximity".into(), Value::Object(sub));
+    }
+    if let Some(dev) = &cr.device {
+        let mut sub = Map::new();
+        sub.insert("type".into(), Value::String(dev.ty.clone()));
+        m.insert("device".into(), Value::Object(sub));
     }
     Value::Object(m)
 }

@@ -1,6 +1,6 @@
 ---
 title: google_ads_campaign_criterion
-description: Campaign-wide targeting — negative keywords, geo, language, proximity.
+description: Campaign-wide targeting — negative keywords, geo, language, proximity, device.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -14,11 +14,13 @@ export const negative_keywords = resource.blocks.find((b) => b.name === 'negativ
 export const location = resource.blocks.find((b) => b.name === 'location');
 export const language = resource.blocks.find((b) => b.name === 'language');
 export const proximity = resource.blocks.find((b) => b.name === 'proximity');
+export const device = resource.blocks.find((b) => b.name === 'device');
 
 A **campaign criterion** is targeting that applies to a whole campaign:
 negative keywords (excluded across every ad group), geo targets (which
-locations your ads can show in), language targets, and proximity
-(latitude / longitude radius around a point).
+locations your ads can show in), language targets, proximity
+(latitude / longitude radius around a point), and device bid
+adjustments (spend more or less — or nothing at all — on a device type).
 
 <Aside type="tip">
   For plain *positive* country and language targeting, prefer the inline
@@ -113,6 +115,45 @@ resource "google_ads_campaign_criterion" "summer_warsaw" {
 }
 ```
 
+Stop showing on mobile entirely — a `bid_modifier` of `0` is a −100%
+adjustment, so nothing spends there. This is the classic setup for a
+browser-extension campaign, where installs only happen on desktop and
+mobile clicks are wasted budget:
+
+```hcl
+resource "google_ads_campaign_criterion" "no_mobile" {
+  campaign     = google_ads_campaign.extension_installs.id
+  bid_modifier = 0.0
+
+  device {
+    type = "MOBILE"
+  }
+}
+```
+
+Or nudge bids rather than switch a device off — bid 20% more on desktop
+(`bid_modifier = 1.2`) and 30% less on tablets (`bid_modifier = 0.7`):
+
+```hcl
+resource "google_ads_campaign_criterion" "desktop_boost" {
+  campaign     = google_ads_campaign.summer_search.id
+  bid_modifier = 1.2
+
+  device {
+    type = "DESKTOP"
+  }
+}
+
+resource "google_ads_campaign_criterion" "tablet_trim" {
+  campaign     = google_ads_campaign.summer_search.id
+  bid_modifier = 0.7
+
+  device {
+    type = "TABLET"
+  }
+}
+```
+
 ## Schema
 
 <AttributeTable block={resource} headingLevel={3} />
@@ -165,6 +206,20 @@ A circular radius target — ads only show to users within `radius` of
 the given (latitude, longitude). Use for hyperlocal campaigns.
 
 <AttributeTable block={proximity} headingLevel={4} />
+
+### `device`
+
+A device bid adjustment. Pair a `device` block with the resource's
+`bid_modifier` attribute to spend more, less, or nothing on a device
+type. `type` is one of `MOBILE`, `DESKTOP`, `TABLET`, `CONNECTED_TV`,
+or `OTHER`.
+
+`bid_modifier` is a multiplier on your bid: `1.0` is no change, `1.25`
+bids 25% more, `0.5` bids 50% less, and `0.0` is a −100% adjustment that
+opts the device out completely. Editing the modifier later is an
+in-place update — Google Ads keeps the campaign's history.
+
+<AttributeTable block={device} headingLevel={4} />
 
 ## See also
 
