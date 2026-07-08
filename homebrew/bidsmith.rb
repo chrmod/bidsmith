@@ -1,28 +1,28 @@
 class Bidsmith < Formula
   desc "Declarative, AI-friendly tooling for Google Ads campaigns"
   homepage "https://github.com/chrmod/bidsmith"
-  version "0.16.0"
+  version "0.16.1"
   license "MPL-2.0"
 
   on_macos do
     on_arm do
       url "https://github.com/chrmod/bidsmith/releases/download/v#{version}/bidsmith-aarch64-apple-darwin.tar.gz"
-      sha256 "2cbce6a217b413d7fa0bac5e769de31d2931133a3b55cb2f2a4fdeadc4e97ae0"
+      sha256 "fed2ba789216519e2e37c4e5f191680e30b9f3a356bb33f4ba8a9f292f8b30bf"
     end
     on_intel do
       url "https://github.com/chrmod/bidsmith/releases/download/v#{version}/bidsmith-x86_64-apple-darwin.tar.gz"
-      sha256 "d0d47a333da36ff21686c985e8f08c212753227945e15e55ae13718e70f993ae"
+      sha256 "60650c16e8bd9b52ed0291e6313128b66e7eab19308d018db7e16e0de2610a74"
     end
   end
 
   on_linux do
     on_arm do
       url "https://github.com/chrmod/bidsmith/releases/download/v#{version}/bidsmith-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "2d4c1a39e0d9a9d02c242f5ff9ad87c141d6a7d82ef36bfe0049006e554bebc4"
+      sha256 "cca506fe207e404de96f3bf7bdf7aeb0de05bb5b844e53fed87c1d078efa8da2"
     end
     on_intel do
       url "https://github.com/chrmod/bidsmith/releases/download/v#{version}/bidsmith-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "afd102b31f1cb501fd44306ee25bf428132c9e243c0a23174d9bebea20c2b103"
+      sha256 "799b39bc037d77ec42f0548b1988e7527fb479db160eb7fc22c4d22e622b224a"
     end
   end
 
