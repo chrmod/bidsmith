@@ -12,11 +12,14 @@ export const ad = resource.blocks.find((b) => b.name === 'ad');
 export const rsa = ad.blocks.find((b) => b.name === 'responsive_search_ad');
 export const headline = rsa.blocks.find((b) => b.name === 'headline');
 export const description = rsa.blocks.find((b) => b.name === 'description');
+export const video = ad.blocks.find((b) => b.name === 'video_responsive_ad');
 
 An **ad** is the creative that runs inside an ad group. Bidsmith
-currently supports **responsive search ads** (RSAs) — Google's
-recommended search ad format, where you supply 3–15 headlines and 2–4
-descriptions and Google permutes them at serve time.
+supports **responsive search ads** (RSAs) — Google's recommended search
+ad format, where you supply 3–15 headlines and 2–4 descriptions and
+Google permutes them at serve time — and **video ads** (see
+[Video ads](#video-ads) below) for YouTube preroll and bumper
+campaigns. An `ad` carries **one** creative: an RSA *or* a video ad.
 
 <Aside type="note">
   Google requires a **minimum of 3 headlines and 2 descriptions** per
@@ -101,6 +104,56 @@ ad copy (≤ 90 characters); `pin` optionally locks the description to
 `DESCRIPTION_1` or `DESCRIPTION_2`.
 
 <AttributeTable block={description} headingLevel={5} />
+
+### `video_responsive_ad`
+
+A **video ad** for a YouTube campaign (preroll / in-stream / bumper /
+non-skippable). Goes inside the `ad` block, in place of a
+`responsive_search_ad`. The `video` attribute references a
+[`google_ads_youtube_video_asset`](./google_ads_youtube_video_asset/) —
+the video that plays.
+
+```hcl
+resource "google_ads_youtube_video_asset" "brand_12s" {
+  youtube_video_id = "dQw4w9WgXcQ"
+}
+
+resource "google_ads_ad_group_ad" "preroll" {
+  ad_group = google_ads_ad_group.instream.id
+  status   = "PAUSED"
+
+  ad {
+    name       = "Preroll 12s"
+    final_urls = ["https://example.com/?utm_source=youtube"]
+
+    video_responsive_ad {
+      video           = google_ads_youtube_video_asset.brand_12s.id
+      headlines       = ["Block Ads & Trackers"]
+      long_headlines  = ["Ghostery blocks ads and trackers on every site"]
+      descriptions    = ["Install the free privacy extension in one click."]
+      call_to_actions = ["Install"]
+    }
+  }
+}
+```
+
+The ad group must be a video type (`VIDEO_TRUE_VIEW_IN_STREAM`,
+`VIDEO_BUMPER`, `VIDEO_NON_SKIPPABLE_IN_STREAM`, …) and its campaign
+must be `advertising_channel_type = "VIDEO"`.
+
+<Aside type="caution" title="bidsmith does not upload video, and does not apply video creatives yet">
+  The video must **already be published on YouTube** — bidsmith
+  references it by id and cannot upload video files. And while `plan` /
+  `apply` manage the campaign scaffold (budget, targeting, status, final
+  URLs), they do **not** create or update the video ad creative on the
+  live account yet. Build the video ad in the Google Ads UI, then pull it
+  into your `.bid` files with `bidsmith refresh`. The CLI warns you about
+  both limits whenever a configuration includes video. See
+  [`google_ads_youtube_video_asset`](./google_ads_youtube_video_asset/)
+  for the full workflow.
+</Aside>
+
+<AttributeTable block={video} headingLevel={4} />
 
 ## Reusing one body across ad groups
 
@@ -192,5 +245,6 @@ for the before/after on a real campaign.
 ## See also
 
 - [`google_ads_ad_group`](./google_ads_ad_group/) — required parent.
+- [`google_ads_youtube_video_asset`](./google_ads_youtube_video_asset/) — the video a `video_responsive_ad` plays.
 - [Tutorial: Launch a new search campaign](/bidsmith/tutorials/launch-search-campaign/) — includes a full RSA example.
 - [Reuse one ad across every ad group](/bidsmith/recipes/reuse-an-ad-across-ad-groups/) — the `ad_template` recipe.

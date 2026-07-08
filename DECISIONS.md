@@ -499,6 +499,35 @@ resource type, any file layout, modules, schema validation.
   for `apply`: keeping execution in the user's own GitHub Actions means
   the account stays under their control and there's no bidsmith-operated
   service holding live-mutation credentials.
+- **YouTube video ads — reference the video, don't upload it, and say so
+  from the CLI**: a `google_ads_youtube_video_asset` records a video that
+  is *already published on YouTube* by its `youtube_video_id`; a
+  `video_responsive_ad` block inside an `ad {}` attaches that asset as the
+  creative for a `VIDEO`-channel campaign's in-stream / bumper ad. bidsmith
+  deliberately does **not** upload video files — that is the YouTube Data
+  API's job (a separate system, separate OAuth scope, resumable binary
+  upload), and the Google Ads API itself only ever *references* a video, it
+  never hosts one. The current build models the **authoring + offline**
+  path only (schema / validate / `fmt` / `export` / `refresh` renderer +
+  round-trip); the **live** path for video assets and video-ad creatives is
+  intentionally out of `plan` / `apply` (video assets aren't diffed/mutated,
+  and `ad_value` ignores `video_responsive_ad`, so a video ad mutates as a
+  scaffold-only stub — matching how UI-built video ads are adopted today).
+  Because a partially-supported feature must never *silently* drop work, the
+  limit is surfaced **from the CLI**, per the "facts live in the binary"
+  rule: `validate` warns on every `google_ads_youtube_video_asset` and every
+  `video_responsive_ad` (the upload-out-of-band + adopt-via-UI workflow),
+  and `plan` / `apply` print an aggregate video notice
+  (`export::video_limitation_notice`) whenever the desired state contains a
+  `VIDEO` campaign, a `VIDEO_*` ad group, a video ad, or a video asset — so
+  an operator or an agent driving bidsmith learns the workaround without
+  reading source. Chosen over (a) an `apply`-time upload (breaks the
+  no-networking-beyond-Google-Ads scope and can't be idempotent — YouTube
+  has no `bidsmith:address` label to dedupe re-uploads, and there is no
+  `.tfstate`), and (b) silently modelling video with no CLI signal (the
+  exact silent-partial-apply footgun the notice exists to prevent). The
+  live video-asset / video-ad-creative mutate path is a deferred follow-up
+  in ROADMAP.md.
 
 ## Current state
 
@@ -843,7 +872,15 @@ Validator covers (so far):
   Google Ads resource-name string so refreshes against accounts that
   reference removed or out-of-scope conversion actions still
   round-trip), `google_ads_customer_asset` (links
-  a call asset to the account via `field_type = "CALL"`)
+  a call asset to the account via `field_type = "CALL"`),
+  `google_ads_youtube_video_asset` (a reference to a video already
+  published on YouTube — `youtube_video_id` required, optional
+  `youtube_video_title`; the creative side of a `video_responsive_ad`).
+  The `ad {}` body also accepts a `video_responsive_ad` block (a
+  `video` reference to a `google_ads_youtube_video_asset` plus optional
+  `headlines` / `long_headlines` / `descriptions` / `call_to_actions`
+  string lists) as an alternative to `responsive_search_ad` — an `ad`
+  carries at most one creative, enforced at validate time
 - `provider "google_ads"` (`customer_id` optional — resolved from
   `bidsmith.toml` / env / global credentials when omitted, so `.bid`
   files can be account-agnostic; `login_customer_id` optional —

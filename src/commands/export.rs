@@ -77,6 +77,8 @@ pub struct ExportInput {
     pub shared_criteria: Vec<JsonSharedCriterion>,
     #[serde(default)]
     pub campaign_shared_sets: Vec<JsonCampaignSharedSet>,
+    #[serde(default)]
+    pub youtube_video_assets: Vec<JsonYoutubeVideoAsset>,
     /// Live `bidsmith:address=<addr>` labels keyed by address -> label
     /// resource_name. Lets the mutate builder reuse an existing label instead
     /// of re-creating one (a duplicate name is an API error). Live-only; empty
@@ -168,6 +170,33 @@ pub struct JsonAd {
     pub final_urls: Vec<String>,
     #[serde(default)]
     pub responsive_search_ad: Option<JsonResponsiveSearchAd>,
+    #[serde(default)]
+    pub video_responsive_ad: Option<JsonVideoResponsiveAd>,
+}
+
+/// A YouTube video ad body. `video` is the address of a
+/// `google_ads_youtube_video_asset` (the uploaded video, referenced by id).
+/// bidsmith records this creative but does not create/update it on the live
+/// account — see the `plan` video notice.
+#[derive(Deserialize)]
+pub struct JsonVideoResponsiveAd {
+    pub video: String,
+    #[serde(default)]
+    pub headlines: Vec<String>,
+    #[serde(default)]
+    pub long_headlines: Vec<String>,
+    #[serde(default)]
+    pub descriptions: Vec<String>,
+    #[serde(default)]
+    pub call_to_actions: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct JsonYoutubeVideoAsset {
+    pub id: String,
+    pub youtube_video_id: String,
+    #[serde(default)]
+    pub youtube_video_title: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -547,6 +576,60 @@ pub fn report_orphans(command: &str, orphans: Vec<String>) {
     }
 }
 
+/// A CLI-facing notice describing what bidsmith does and does *not* do for
+/// YouTube video advertising in this configuration, so an operator (or an agent
+/// driving bidsmith) knows the manual workaround before running `apply`.
+///
+/// Returns `None` when the desired state has no video content. Surfaced by
+/// `plan`/`apply` (which run `validate_files` but not the warning-level lints,
+/// so this is how the boundary reaches those verbs).
+pub fn video_limitation_notice(input: &ExportInput) -> Option<String> {
+    let video_campaigns = input
+        .campaigns
+        .iter()
+        .filter(|c| c.advertising_channel_type == "VIDEO")
+        .count();
+    let video_ad_groups = input
+        .ad_groups
+        .iter()
+        .filter(|g| g.ty.as_deref().is_some_and(|t| t.starts_with("VIDEO_")))
+        .count();
+    let video_ads = input
+        .ad_group_ads
+        .iter()
+        .filter(|a| a.ad.video_responsive_ad.is_some())
+        .count();
+    let video_assets = input.youtube_video_assets.len();
+
+    if video_campaigns == 0 && video_ad_groups == 0 && video_ads == 0 && video_assets == 0 {
+        return None;
+    }
+
+    let mut msg = String::from(
+        "note: this configuration includes YouTube video advertising, which bidsmith manages only partially:\n",
+    );
+    msg.push_str(
+        "  - bidsmith cannot upload video files. The video must already exist on your YouTube\n",
+    );
+    msg.push_str(
+        "    channel (upload via YouTube Studio or the YouTube Data API), then be referenced by id\n",
+    );
+    msg.push_str("    in a google_ads_youtube_video_asset.\n");
+    msg.push_str(
+        "  - plan/apply manage the campaign scaffold (budget, targeting, status, final URLs) but do\n",
+    );
+    msg.push_str(
+        "    NOT create or update the video ad creative or the video-asset link on the live account.\n",
+    );
+    msg.push_str(
+        "    Build/attach the video ad in the Google Ads UI, then adopt the scaffold with `bidsmith refresh`.\n",
+    );
+    msg.push_str(&format!(
+        "  found: {video_campaigns} video campaign(s), {video_ad_groups} video ad group(s), {video_ads} video ad(s), {video_assets} youtube video asset(s).",
+    ));
+    Some(msg)
+}
+
 fn load_flat_json(path: &str) -> Result<ExportInput, ExitCode> {
     let raw = std::fs::read_to_string(path).map_err(|e| {
         eprintln!("failed to read {path}: {e}");
@@ -575,7 +658,22 @@ fn write_account_assets(
     names: &mut NameAllocator,
     conversion_action_addr: &mut HashMap<String, String>,
     call_asset_addr: &mut HashMap<String, String>,
+    youtube_asset_addr: &mut HashMap<String, String>,
 ) {
+    for v in &input.youtube_video_assets {
+        let base = v
+            .youtube_video_title
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .map(slugify)
+            .unwrap_or_else(|| format!("video_{}", slugify(&v.youtube_video_id)));
+        let name = names.allocate("google_ads_youtube_video_asset", &base);
+        youtube_asset_addr.insert(
+            v.id.clone(),
+            format!("google_ads_youtube_video_asset.{name}"),
+        );
+        write_youtube_video_asset(out, &name, v);
+    }
     for c in &input.conversion_actions {
         let name = names.allocate("google_ads_conversion_action", &slugify(&c.name));
         conversion_action_addr.insert(c.id.clone(), format!("google_ads_conversion_action.{name}"));
@@ -608,6 +706,7 @@ fn write_campaign_tree(
     budget_addr: &mut HashMap<String, String>,
     campaign_addr: &mut HashMap<String, String>,
     ad_group_addr: &mut HashMap<String, String>,
+    youtube_asset_addr: &HashMap<String, String>,
 ) {
     for b in &input.campaign_budgets {
         let name = names.allocate("google_ads_campaign_budget", &slugify(&b.name));
@@ -634,7 +733,7 @@ fn write_campaign_tree(
     for (i, a) in input.ad_group_ads.iter().enumerate() {
         let base = ad_ad_base(a, ad_group_addr);
         let name = names.allocate("google_ads_ad_group_ad", &base);
-        write_ad_group_ad(out, &name, a, ad_group_addr, plan, i);
+        write_ad_group_ad(out, &name, a, ad_group_addr, youtube_asset_addr, plan, i);
     }
     for group in group_ad_group_criteria(&input.ad_group_criteria) {
         let base = ad_group_criterion_group_base(&group, ad_group_addr);
@@ -695,6 +794,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
     let mut ad_group_addr: HashMap<String, String> = HashMap::new();
     let mut conversion_action_addr: HashMap<String, String> = HashMap::new();
     let mut call_asset_addr: HashMap<String, String> = HashMap::new();
+    let mut youtube_asset_addr: HashMap<String, String> = HashMap::new();
     let mut shared_set_addr: HashMap<String, String> = HashMap::new();
 
     write_provider(&mut account, input);
@@ -704,6 +804,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
         &mut names,
         &mut conversion_action_addr,
         &mut call_asset_addr,
+        &mut youtube_asset_addr,
     );
     write_shared_sets_and_criteria(&mut account, input, &mut names, &mut shared_set_addr);
 
@@ -729,6 +830,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
             &mut budget_addr,
             &mut campaign_addr,
             &mut ad_group_addr,
+            &youtube_asset_addr,
         );
         write_campaign_shared_sets(
             &mut campaigns,
@@ -764,6 +866,7 @@ fn render_inner(input: &ExportInput, fold: bool) -> String {
     let mut ad_group_addr: HashMap<String, String> = HashMap::new();
     let mut conversion_action_addr: HashMap<String, String> = HashMap::new();
     let mut call_asset_addr: HashMap<String, String> = HashMap::new();
+    let mut youtube_asset_addr: HashMap<String, String> = HashMap::new();
     let mut shared_set_addr: HashMap<String, String> = HashMap::new();
 
     write_provider(&mut out, input);
@@ -773,6 +876,7 @@ fn render_inner(input: &ExportInput, fold: bool) -> String {
         &mut names,
         &mut conversion_action_addr,
         &mut call_asset_addr,
+        &mut youtube_asset_addr,
     );
     if let Some(p) = &plan {
         if p.has_decls() {
@@ -788,6 +892,7 @@ fn render_inner(input: &ExportInput, fold: bool) -> String {
         &mut budget_addr,
         &mut campaign_addr,
         &mut ad_group_addr,
+        &youtube_asset_addr,
     );
     write_shared_sets_and_criteria(&mut out, input, &mut names, &mut shared_set_addr);
     write_campaign_shared_sets(&mut out, input, &mut names, &campaign_addr, &shared_set_addr);
@@ -908,6 +1013,7 @@ fn write_ad_group_ad(
     name: &str,
     a: &JsonAdGroupAd,
     ad_group_addr: &HashMap<String, String>,
+    youtube_asset_addr: &HashMap<String, String>,
     plan: Option<&FoldPlan>,
     idx: usize,
 ) {
@@ -953,7 +1059,38 @@ fn write_ad_group_ad(
         }
         out.push_str("    }\n");
     }
+    if let Some(video) = &a.ad.video_responsive_ad {
+        out.push_str("\n    video_responsive_ad {\n");
+        let video_ref = match youtube_asset_addr.get(&video.video) {
+            Some(addr) => format!("{addr}.id"),
+            None => format!("\"<unresolved video {}>\"", video.video),
+        };
+        write_attr(out, 3, "video", &video_ref);
+        for (attr, items) in [
+            ("headlines", &video.headlines),
+            ("long_headlines", &video.long_headlines),
+            ("descriptions", &video.descriptions),
+            ("call_to_actions", &video.call_to_actions),
+        ] {
+            if !items.is_empty() {
+                write_attr(out, 3, attr, &fmt_string_list(items));
+            }
+        }
+        out.push_str("    }\n");
+    }
     out.push_str("  }\n");
+    out.push_str("}\n\n");
+}
+
+fn write_youtube_video_asset(out: &mut String, name: &str, v: &JsonYoutubeVideoAsset) {
+    let _ = writeln!(
+        out,
+        "resource \"google_ads_youtube_video_asset\" \"{name}\" {{"
+    );
+    write_attr(out, 1, "youtube_video_id", &fmt_string(&v.youtube_video_id));
+    if let Some(t) = &v.youtube_video_title {
+        write_attr(out, 1, "youtube_video_title", &fmt_string(t));
+    }
     out.push_str("}\n\n");
 }
 
@@ -2022,6 +2159,90 @@ mod tests {
         assert_eq!(
             v1, v2,
             "fold did not round-trip\n=== folded ===\n{folded}\n=== verbose(original) ===\n{v1}\n=== verbose(roundtrip) ===\n{v2}"
+        );
+    }
+
+    #[test]
+    fn video_notice_fires_only_on_video_content() {
+        let plain: ExportInput = serde_json::from_value(json!({
+            "customer_id": "1",
+            "campaigns": [{ "id": "c", "name": "Search", "advertising_channel_type": "SEARCH", "campaign_budget": "b" }]
+        }))
+        .unwrap();
+        assert!(video_limitation_notice(&plain).is_none());
+
+        let video: ExportInput = serde_json::from_value(json!({
+            "customer_id": "1",
+            "youtube_video_assets": [{ "id": "v", "youtube_video_id": "abc12345678" }],
+            "campaigns": [{ "id": "c", "name": "Preroll", "advertising_channel_type": "VIDEO", "campaign_budget": "b" }]
+        }))
+        .unwrap();
+        let notice = video_limitation_notice(&video).expect("video content triggers the notice");
+        assert!(notice.contains("cannot upload video files"));
+        assert!(notice.contains("bidsmith refresh"));
+        assert!(notice.contains("1 video campaign(s)"));
+        assert!(notice.contains("1 youtube video asset(s)"));
+    }
+
+    use serde_json::json;
+
+    #[test]
+    fn video_asset_and_video_ad_round_trip() {
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "9",
+            "youtube_video_assets": [
+                { "id": "m.google_ads_youtube_video_asset.brand", "youtube_video_id": "dQw4w9WgXcQ", "youtube_video_title": "Brand 12s" }
+            ],
+            "campaign_budgets": [{ "id": "m.google_ads_campaign_budget.b", "name": "Preroll", "amount_micros": 10000000 }],
+            "campaigns": [{ "id": "m.google_ads_campaign.c", "name": "Preroll", "advertising_channel_type": "VIDEO", "campaign_budget": "m.google_ads_campaign_budget.b", "status": "PAUSED" }],
+            "ad_groups": [{ "id": "m.google_ads_ad_group.g", "name": "In-stream", "campaign": "m.google_ads_campaign.c", "type": "VIDEO_TRUE_VIEW_IN_STREAM" }],
+            "ad_group_ads": [{
+                "id": "m.google_ads_ad_group_ad.ad",
+                "ad_group": "m.google_ads_ad_group.g",
+                "status": "PAUSED",
+                "ad": {
+                    "name": "Preroll",
+                    "final_urls": ["https://example.com"],
+                    "video_responsive_ad": {
+                        "video": "m.google_ads_youtube_video_asset.brand",
+                        "headlines": ["Block Ads"],
+                        "call_to_actions": ["Install"]
+                    }
+                }
+            }]
+        }))
+        .unwrap();
+
+        let rendered = canonicalize(&render(&input));
+        assert!(rendered.contains("resource \"google_ads_youtube_video_asset\""), "{rendered}");
+        assert!(rendered.contains("video_responsive_ad {"), "{rendered}");
+
+        let pf = crate::parser::parse_str(std::path::Path::new("video.bid"), &rendered)
+            .expect("rendered video parses");
+        let diags = crate::schema::validate_files(
+            std::slice::from_ref(&pf),
+            &crate::schema::InputBindings::default(),
+        );
+        assert!(
+            diags.iter().all(|d| !d.is_error()),
+            "validate errors: {:?}",
+            diags.iter().filter(|d| d.is_error()).map(|d| &d.message).collect::<Vec<_>>()
+        );
+
+        let mut input2 = crate::api::import::import_files(
+            std::slice::from_ref(&pf),
+            &crate::schema::InputBindings::default(),
+        )
+        .expect("rendered video imports")
+        .input;
+        input2.customer_id = input.customer_id.clone();
+        input2.login_customer_id = input.login_customer_id.clone();
+
+        // Re-render the imported tree: identical means the video asset + video ad
+        // body survived render → import → render with no drift.
+        assert_eq!(
+            canonicalize(&render_inner(&input, false)),
+            canonicalize(&render_inner(&input2, false)),
         );
     }
 

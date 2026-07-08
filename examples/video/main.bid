@@ -1,0 +1,57 @@
+provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+resource "google_ads_youtube_video_asset" "brand_12s" {
+  youtube_video_id = "dQw4w9WgXcQ"
+  youtube_video_title = "Ghostery — Block Ads & Trackers (12s)"
+}
+
+resource "google_ads_campaign_budget" "preroll" {
+  name = "Instream Preroll India 12sec"
+  amount_micros = 10000000
+}
+
+resource "google_ads_campaign" "preroll" {
+  name = "Instream Preroll India 12sec"
+  status = "PAUSED"
+  advertising_channel_type = "VIDEO"
+  campaign_budget = google_ads_campaign_budget.preroll.id
+  contains_eu_political_advertising = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"
+  languages = ["en"]
+  locations = ["IN"]
+
+  network_settings {
+    target_google_search = false
+    target_search_network = false
+    target_content_network = false
+    target_partner_search_network = false
+  }
+}
+
+resource "google_ads_ad_group" "instream" {
+  name = "In-stream"
+  campaign = google_ads_campaign.preroll.id
+  type = "VIDEO_TRUE_VIEW_IN_STREAM"
+  cpc_bid_micros = 0
+}
+
+resource "google_ads_ad_group_ad" "preroll" {
+  ad_group = google_ads_ad_group.instream.id
+  status = "PAUSED"
+
+  ad {
+    name = "Preroll 12s"
+    final_urls = [
+      "https://www.ghostery.com/ghostery-ad-blocker?utm_source=youtube&utm_campaign=12sec_india",
+    ]
+
+    video_responsive_ad {
+      video = google_ads_youtube_video_asset.brand_12s.id
+      headlines = ["Block Ads & Trackers"]
+      long_headlines = ["Ghostery blocks ads and trackers on every site"]
+      descriptions = ["Install the free privacy extension in one click."]
+      call_to_actions = ["Install"]
+    }
+  }
+}

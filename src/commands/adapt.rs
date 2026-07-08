@@ -334,6 +334,7 @@ impl AdapterState {
                     name: None,
                     final_urls: Vec::new(),
                     responsive_search_ad: None,
+                    video_responsive_ad: None,
                 },
                 managed_address: None,
             });
@@ -828,6 +829,7 @@ impl AdapterState {
             shared_sets,
             shared_criteria: shared_criteria_out,
             campaign_shared_sets: self.campaign_shared_sets.into_values().collect(),
+            youtube_video_assets: Vec::new(),
             labels: self.labels.into_iter().collect(),
         })
     }

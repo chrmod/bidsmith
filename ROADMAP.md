@@ -317,6 +317,24 @@ Smaller follow-ups that can ride along:
   property a refresh must hold. **Deferred:** ad-group negative lists, and
   emitting an actual `shared_set` once Phase 3 v2 labels make adopting one
   a no-op against live.
+- ✅ YouTube video ads — authoring + offline path. A
+  `google_ads_youtube_video_asset` references an already-published
+  YouTube video by `youtube_video_id`; a `video_responsive_ad` block
+  inside an `ad {}` attaches it as the creative for a `VIDEO`-channel
+  campaign (schema / validate / `fmt` / `export` / `refresh` renderer +
+  round-trip, `examples/video/`). bidsmith never uploads the video
+  (that's the YouTube Data API); the boundary is communicated from the
+  CLI — `validate` warns on each video asset / video ad, and
+  `plan` / `apply` print `export::video_limitation_notice`. See
+  DECISIONS.md "YouTube video ads". **Deferred:** the live mutate path
+  for video assets and video-ad creatives (create/update/link on the
+  account) — video assets aren't diffed/mutated and `ad_value` treats a
+  video ad as a scaffold-only stub, matching how UI-built video ads are
+  adopted today. Landing it needs a `youtube_video_asset` live_state
+  query + adapter + Asset create/`AdVideoAsset` wiring in `mutate.rs`,
+  and extending the `tests/e2e.rs` fixture with a video campaign. Also
+  deferred: multiple `videos` per ad (today one `video` ref),
+  companion banners, and per-asset RSA/video-asset diffs.
 - Repeating-block field-level diff for RSA `headline` / `description`
   blocks and the `final_urls` list. Today these are matched
   all-or-nothing; per-asset add/remove/repin detection would close

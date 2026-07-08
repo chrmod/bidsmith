@@ -57,9 +57,28 @@ fn lint_resource(file: &ParsedFile, block: &Block, bindings: &Bindings, diags: &
             if let Some(rsa_block) = find_block(&ad_block.body, "responsive_search_ad") {
                 lint_rsa(file, rsa_block, &address, bindings, diags);
             }
+            if let Some(video_block) = find_block(&ad_block.body, "video_responsive_ad") {
+                diags.push(Diag::warning(
+                    file.src.clone(),
+                    span_of(video_block.ident.span()),
+                    format!(
+                        "{address} declares a video ad: bidsmith records the creative but `plan`/`apply` do not create or update video ad creatives on the live account — build/attach the video ad in the Google Ads UI, then adopt the campaign scaffold with `bidsmith refresh`"
+                    ),
+                ));
+            }
         }
         // path1/path2 set at the resource level override a template's RSA paths; lint them too.
         lint_rsa_paths(file, &block.body, &address, diags);
+    }
+
+    if ty == "google_ads_youtube_video_asset" {
+        diags.push(Diag::warning(
+            file.src.clone(),
+            span_of(block.ident.span()),
+            format!(
+                "{address} references a YouTube video by id: bidsmith cannot upload video files — the video must already be published on your YouTube channel (upload via YouTube Studio or the YouTube Data API). `plan`/`apply` do not create or link video assets on the live account yet; attach the creative in the Google Ads UI and adopt the scaffold with `bidsmith refresh`"
+            ),
+        ));
     }
 
     if ty == "google_ads_campaign_criterion" {
