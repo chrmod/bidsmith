@@ -1178,6 +1178,7 @@ mod ad_match_tests {
                     path1: None,
                     path2: None,
                 }),
+                video_responsive_ad: None,
             },
             managed_address: None,
         }

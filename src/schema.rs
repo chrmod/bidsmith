@@ -250,18 +250,49 @@ fn ad_block(final_urls_required: bool) -> NestedBlockSchema {
                     final_urls_required,
                 ),
             ],
-            blocks: vec![NestedBlockSchema {
-                name: "responsive_search_ad",
-                schema: BlockSchema {
-                    attributes: vec![
-                        attr("path1", FieldType::String, false),
-                        attr("path2", FieldType::String, false),
-                        attr("headlines", FieldType::RsaAssetList, false),
-                        attr("descriptions", FieldType::RsaAssetList, false),
-                    ],
-                    blocks: vec![rsa_asset_block("headline"), rsa_asset_block("description")],
+            blocks: vec![
+                NestedBlockSchema {
+                    name: "responsive_search_ad",
+                    schema: BlockSchema {
+                        attributes: vec![
+                            attr("path1", FieldType::String, false),
+                            attr("path2", FieldType::String, false),
+                            attr("headlines", FieldType::RsaAssetList, false),
+                            attr("descriptions", FieldType::RsaAssetList, false),
+                        ],
+                        blocks: vec![rsa_asset_block("headline"), rsa_asset_block("description")],
+                    },
                 },
-            }],
+                // A YouTube in-stream / bumper / non-skippable video ad. `video`
+                // references an already-uploaded YouTube video by id — bidsmith does
+                // not (and cannot) upload the video file itself; see the CLI limitation
+                // notice surfaced by `plan` and the `google_ads_youtube_video_asset` lint.
+                NestedBlockSchema {
+                    name: "video_responsive_ad",
+                    schema: BlockSchema {
+                        attributes: vec![
+                            attr(
+                                "video",
+                                FieldType::Ref(&["google_ads_youtube_video_asset"]),
+                                true,
+                            ),
+                            attr("headlines", FieldType::list_of(FieldType::String), false),
+                            attr(
+                                "long_headlines",
+                                FieldType::list_of(FieldType::String),
+                                false,
+                            ),
+                            attr("descriptions", FieldType::list_of(FieldType::String), false),
+                            attr(
+                                "call_to_actions",
+                                FieldType::list_of(FieldType::String),
+                                false,
+                            ),
+                        ],
+                        blocks: vec![],
+                    },
+                },
+            ],
         },
     }
 }
@@ -633,6 +664,22 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         FieldType::RefOrResourceName(&["google_ads_conversion_action"]),
                         false,
                     ),
+                ],
+                blocks: vec![],
+            },
+        );
+
+        // A YouTube video Asset — a reference to a video already published on a
+        // YouTube channel, addressed by its 11-char video id. bidsmith records the
+        // reference so a video ad can point at it; it never uploads the video file
+        // (that is the YouTube Data API's job, a separate system). See the lint in
+        // `lint.rs` and the `plan` video notice for the full workflow.
+        m.insert(
+            "google_ads_youtube_video_asset",
+            BlockSchema {
+                attributes: vec![
+                    attr("youtube_video_id", FieldType::String, true),
+                    attr("youtube_video_title", FieldType::String, false),
                 ],
                 blocks: vec![],
             },
@@ -1414,23 +1461,29 @@ fn validate_ad_templates(
             let Structure::Block(b) = s else { continue };
             match b.ident.as_str() {
                 "ad_template" if b.labels.len() == 1 => {
+                    let address = format!("ad_template.{}", b.labels[0].as_str());
                     validate_body(
                         f,
                         b,
                         &b.body,
                         &ad_schema.schema,
-                        &format!("ad_template.{}", b.labels[0].as_str()),
+                        &address,
                         registry,
                         locals,
                         variables,
                         diags,
                     );
+                    validate_ad_creative_exclusivity(f, &b.body, &address, diags);
                 }
                 "resource"
                     if b.labels.len() == 2
                         && b.labels[0].as_str() == "google_ads_ad_group_ad" =>
                 {
                     validate_ad_group_ad_template(f, b, templates, diags);
+                    if let Some(ad) = find_child_block(&b.body, "ad") {
+                        let address = format!("google_ads_ad_group_ad.{}", b.labels[1].as_str());
+                        validate_ad_creative_exclusivity(f, &ad.body, &address, diags);
+                    }
                 }
                 _ => {}
             }
@@ -1544,6 +1597,34 @@ fn validate_ad_group_ad_template(
             }
         }
         (true, None) => {}
+    }
+}
+
+fn find_child_block<'a>(body: &'a Body, name: &str) -> Option<&'a Block> {
+    body.iter().find_map(|s| match s {
+        Structure::Block(b) if b.ident.as_str() == name => Some(b),
+        _ => None,
+    })
+}
+
+/// An `ad {}` body (inline or in an `ad_template`) may carry at most one creative:
+/// a `responsive_search_ad` or a `video_responsive_ad`, never both.
+fn validate_ad_creative_exclusivity(
+    file: &ParsedFile,
+    ad_body: &Body,
+    address: &str,
+    diags: &mut Vec<Diag>,
+) {
+    let rsa = find_child_block(ad_body, "responsive_search_ad");
+    let video = find_child_block(ad_body, "video_responsive_ad");
+    if let (Some(_), Some(video)) = (rsa, video) {
+        diags.push(Diag::new(
+            file.src.clone(),
+            span_of(video.ident.span()),
+            format!(
+                "{address} declares both 'responsive_search_ad' and 'video_responsive_ad'; an ad has one creative — use one or the other"
+            ),
+        ));
     }
 }
 

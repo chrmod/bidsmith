@@ -201,6 +201,10 @@ pub fn prepare(
         return Ok(None);
     }
 
+    if let Some(notice) = crate::commands::export::video_limitation_notice(&imported.input) {
+        eprintln!("{label}: {notice}");
+    }
+
     let live = if offline {
         load_live_from_cache(label, &mut imported.input)?
     } else {

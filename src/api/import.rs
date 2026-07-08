@@ -7,7 +7,8 @@ use crate::commands::export::{
     JsonCallAsset, JsonCampaign, JsonCampaignCriterion, JsonCampaignSharedSet,
     JsonConversionAction, JsonCustomerAsset, JsonDevice, JsonKeyword, JsonLanguage, JsonLocation,
     JsonManualCpc, JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset,
-    JsonSharedCriterion, JsonSharedSet, JsonValueSettings,
+    JsonSharedCriterion, JsonSharedSet, JsonValueSettings, JsonVideoResponsiveAd,
+    JsonYoutubeVideoAsset,
 };
 use crate::diagnostics::Diag;
 use crate::parser::ParsedFile;
@@ -68,6 +69,7 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
         shared_sets: Vec::new(),
         shared_criteria: Vec::new(),
         campaign_shared_sets: Vec::new(),
+        youtube_video_assets: Vec::new(),
         labels: Default::default(),
     };
     let mut skipped: Vec<(String, String)> = Vec::new();
@@ -136,6 +138,10 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
                         "google_ads_customer_asset" => emit(
                             import_customer_asset(&ctx, b, &address)
                                 .map(|x| input.customer_assets.push(x)),
+                        ),
+                        "google_ads_youtube_video_asset" => emit(
+                            import_youtube_video_asset(&ctx, b, &address)
+                                .map(|x| input.youtube_video_assets.push(x)),
                         ),
                         "google_ads_shared_set" => emit(
                             import_shared_set(&ctx, b, &address).map(|mut x| {
@@ -562,6 +568,7 @@ fn import_ad(ctx: &Ctx, block: &Block) -> JsonAd {
     let mut name = None;
     let mut final_urls: Vec<String> = Vec::new();
     let mut rsa = None;
+    let mut video = None;
 
     for s in block.body.iter() {
         match s {
@@ -570,10 +577,11 @@ fn import_ad(ctx: &Ctx, block: &Block) -> JsonAd {
                 "final_urls" => final_urls = expect_string_list(ctx, &a.value),
                 _ => {}
             },
-            Structure::Block(b) if b.ident.as_str() == "responsive_search_ad" => {
-                rsa = Some(import_rsa(ctx, b));
-            }
-            _ => {}
+            Structure::Block(b) => match b.ident.as_str() {
+                "responsive_search_ad" => rsa = Some(import_rsa(ctx, b)),
+                "video_responsive_ad" => video = Some(import_video_ad(ctx, b)),
+                _ => {}
+            },
         }
     }
 
@@ -581,7 +589,61 @@ fn import_ad(ctx: &Ctx, block: &Block) -> JsonAd {
         name,
         final_urls,
         responsive_search_ad: rsa,
+        video_responsive_ad: video,
     }
+}
+
+fn import_video_ad(ctx: &Ctx, block: &Block) -> JsonVideoResponsiveAd {
+    let mut video = None;
+    let mut headlines: Vec<String> = Vec::new();
+    let mut long_headlines: Vec<String> = Vec::new();
+    let mut descriptions: Vec<String> = Vec::new();
+    let mut call_to_actions: Vec<String> = Vec::new();
+    for s in block.body.iter() {
+        let Structure::Attribute(a) = s else { continue };
+        match a.key.as_str() {
+            "video" => {
+                video = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r));
+            }
+            "headlines" => headlines = expect_string_list(ctx, &a.value),
+            "long_headlines" => long_headlines = expect_string_list(ctx, &a.value),
+            "descriptions" => descriptions = expect_string_list(ctx, &a.value),
+            "call_to_actions" => call_to_actions = expect_string_list(ctx, &a.value),
+            _ => {}
+        }
+    }
+    JsonVideoResponsiveAd {
+        video: video.unwrap_or_default(),
+        headlines,
+        long_headlines,
+        descriptions,
+        call_to_actions,
+    }
+}
+
+fn import_youtube_video_asset(
+    ctx: &Ctx,
+    block: &Block,
+    address: &str,
+) -> Result<JsonYoutubeVideoAsset, Diag> {
+    let mut youtube_video_id = None;
+    let mut youtube_video_title = None;
+    for s in block.body.iter() {
+        if let Structure::Attribute(a) = s {
+            match a.key.as_str() {
+                "youtube_video_id" => youtube_video_id = expect_string_owned(ctx, a),
+                "youtube_video_title" => youtube_video_title = expect_string_owned(ctx, a),
+                _ => {}
+            }
+        }
+    }
+    let youtube_video_id =
+        youtube_video_id.ok_or_else(|| missing(ctx.file, block, address, "youtube_video_id"))?;
+    Ok(JsonYoutubeVideoAsset {
+        id: address.to_string(),
+        youtube_video_id,
+        youtube_video_title,
+    })
 }
 
 fn import_rsa(ctx: &Ctx, block: &Block) -> JsonResponsiveSearchAd {
@@ -1330,6 +1392,7 @@ pub fn import_program(program: &Program) -> Result<ImportResult, Vec<Diag>> {
         shared_sets: Vec::new(),
         shared_criteria: Vec::new(),
         campaign_shared_sets: Vec::new(),
+        youtube_video_assets: Vec::new(),
         labels: Default::default(),
     };
     let mut skipped: Vec<(String, String)> = Vec::new();
@@ -1355,6 +1418,7 @@ pub fn import_program(program: &Program) -> Result<ImportResult, Vec<Diag>> {
                 combined.shared_sets.extend(r.input.shared_sets);
                 combined.shared_criteria.extend(r.input.shared_criteria);
                 combined.campaign_shared_sets.extend(r.input.campaign_shared_sets);
+                combined.youtube_video_assets.extend(r.input.youtube_video_assets);
                 skipped.extend(r.skipped);
             }
             Err(ds) => diags.extend(ds),
@@ -1475,6 +1539,55 @@ resource "google_ads_ad_group_criterion" "kw" {
             keyword_set(&compact.ad_group_criteria),
             keyword_set(&verbose.ad_group_criteria)
         );
+    }
+
+    #[test]
+    fn imports_youtube_video_asset_and_video_ad() {
+        let input = import_str(
+            "video",
+            r#"
+resource "google_ads_youtube_video_asset" "brand" {
+  youtube_video_id    = "dQw4w9WgXcQ"
+  youtube_video_title = "Brand 12s"
+}
+
+resource "google_ads_ad_group_ad" "preroll" {
+  ad_group = google_ads_ad_group.ig.id
+
+  ad {
+    name       = "Preroll"
+    final_urls = ["https://example.com"]
+
+    video_responsive_ad {
+      video           = google_ads_youtube_video_asset.brand.id
+      headlines       = ["Block Ads"]
+      call_to_actions = ["Install"]
+    }
+  }
+}
+"#,
+        );
+        assert_eq!(input.youtube_video_assets.len(), 1);
+        let asset = &input.youtube_video_assets[0];
+        assert_eq!(asset.youtube_video_id, "dQw4w9WgXcQ");
+        assert_eq!(asset.youtube_video_title.as_deref(), Some("Brand 12s"));
+
+        assert_eq!(input.ad_group_ads.len(), 1);
+        let video = input.ad_group_ads[0]
+            .ad
+            .video_responsive_ad
+            .as_ref()
+            .expect("video ad body imported");
+        // The `video` ref resolves to the asset's qualified address.
+        assert!(
+            video.video.ends_with("google_ads_youtube_video_asset.brand"),
+            "video ref was {}",
+            video.video
+        );
+        assert_eq!(video.headlines, vec!["Block Ads".to_string()]);
+        assert_eq!(video.call_to_actions, vec!["Install".to_string()]);
+        // A video ad carries no RSA.
+        assert!(input.ad_group_ads[0].ad.responsive_search_ad.is_none());
     }
 
     #[test]

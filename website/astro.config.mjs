@@ -138,6 +138,12 @@ export default defineConfig({
               ],
             },
             {
+              label: 'Video',
+              items: [
+                { label: 'google_ads_youtube_video_asset', slug: 'resources/google_ads_youtube_video_asset' },
+              ],
+            },
+            {
               label: 'Conversion tracking',
               items: [
                 { label: 'google_ads_conversion_action', slug: 'resources/google_ads_conversion_action' },

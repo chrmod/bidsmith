@@ -1,0 +1,67 @@
+---
+title: google_ads_youtube_video_asset
+description: A reference to a video already published on YouTube, used as the creative for a video ad.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_youtube_video_asset'];
+
+A **YouTube video asset** points bidsmith at a video that is **already
+published on your YouTube channel**, addressed by its video id. It's the
+creative you attach to a preroll / in-stream / bumper ad via a
+[`video_responsive_ad`](./google_ads_ad_group_ad/#video-ads) block.
+
+<Aside type="caution" title="bidsmith does not upload video">
+  bidsmith cannot upload video files. The video has to exist on YouTube
+  first — upload it in [YouTube
+  Studio](https://studio.youtube.com/) (or with the YouTube Data API),
+  then copy its **video id** (the `dQw4w9WgXcQ` part of a
+  `youtube.com/watch?v=…` URL) into `youtube_video_id`.
+</Aside>
+
+<Aside type="note" title="Video ads are not applied yet">
+  `plan` and `apply` manage the **campaign scaffold** — budget,
+  targeting, status, final URLs — but do **not** create or update the
+  video asset or the video-ad creative on the live account. Build and
+  attach the video ad in the Google Ads UI, then pull the finished setup
+  back into your `.bid` files with `bidsmith refresh`. The CLI prints a
+  reminder whenever your configuration includes video.
+</Aside>
+
+## Where the video id comes from
+
+Open the video on YouTube. The id is the string after `watch?v=` in the
+URL:
+
+```
+https://www.youtube.com/watch?v=dQw4w9WgXcQ
+                                 └─────┬────┘
+                                 youtube_video_id
+```
+
+The video should be **Public** or **Unlisted** so Google Ads can serve
+it.
+
+## Example
+
+```hcl
+resource "google_ads_youtube_video_asset" "brand_12s" {
+  youtube_video_id    = "dQw4w9WgXcQ"
+  youtube_video_title = "Ghostery — Block Ads & Trackers (12s)"
+}
+```
+
+`youtube_video_title` is optional and only for readability in your
+files; Google Ads uses the title from YouTube.
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+## See also
+
+- [`google_ads_ad_group_ad`](./google_ads_ad_group_ad/#video-ads) — the ad that plays this video.
+- [`google_ads_campaign`](./google_ads_campaign/) — a video campaign uses `advertising_channel_type = "VIDEO"`.
