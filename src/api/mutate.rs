@@ -143,6 +143,36 @@ pub fn build_mutate_with_diff(
     let mut operations: Vec<PlanOperation> = Vec::new();
     let mut mutate_ops: Vec<Value> = Vec::new();
 
+    // Removes go first, before any create. Replacing an immutable resource
+    // (an RSA copy edit) is a destroy of the old body plus a create of the new
+    // one; the API applies a single atomic mutate's ops in array order and
+    // checks per-parent caps against that running state, so creating ahead of
+    // destroying transiently exceeds the 3-enabled-RSAs-per-ad-group cap and
+    // sinks the whole batch. Destroying first keeps the running count within the
+    // cap. Removes reference live resource_names only (no temp-id dependency on
+    // a create), so leading with them is order-safe. Sorted child-first so a
+    // campaign and one of its ad groups can be destroyed in the same batch.
+    let mut deletes: Vec<(&'static str, String, String)> = Vec::new();
+    for d in &report.diffs {
+        if let Action::Delete { live_id } = &d.action {
+            let Some(segment) = remove_segment_for(d.kind) else {
+                continue;
+            };
+            deletes.push((
+                d.kind,
+                format!("customers/{customer_id}/{segment}/{live_id}"),
+                d.address.clone(),
+            ));
+        }
+    }
+    deletes.sort_by_key(|(kind, _, _)| removal_order_index(kind));
+    for (kind, rn, address) in deletes {
+        if let Some(env) = remove_envelope_for(kind) {
+            mutate_ops.push(json!({ env: { "remove": rn } }));
+            operations.push(PlanOperation { address, kind });
+        }
+    }
+
     for b in &input.campaign_budgets {
         let Some(rn) = plan_rn(&refs, &b.id, "campaign_budget", &mut errors) else {
             continue;
@@ -479,30 +509,6 @@ pub fn build_mutate_with_diff(
         if let Some(stale) = &plan.stale_assoc_rn {
             mutate_ops.push(json!({ assoc_env: { "remove": stale } }));
             operations.push(PlanOperation { address: plan.address.clone(), kind: "label" });
-        }
-    }
-
-    // Removes: orphaned criteria members (parent still declared, member dropped)
-    // plus whole labeled resources no longer declared. Sorted child-first so a
-    // campaign and one of its ad groups can be destroyed in the same batch.
-    let mut deletes: Vec<(&'static str, String, String)> = Vec::new();
-    for d in &report.diffs {
-        if let Action::Delete { live_id } = &d.action {
-            let Some(segment) = remove_segment_for(d.kind) else {
-                continue;
-            };
-            deletes.push((
-                d.kind,
-                format!("customers/{customer_id}/{segment}/{live_id}"),
-                d.address.clone(),
-            ));
-        }
-    }
-    deletes.sort_by_key(|(kind, _, _)| removal_order_index(kind));
-    for (kind, rn, address) in deletes {
-        if let Some(env) = remove_envelope_for(kind) {
-            mutate_ops.push(json!({ env: { "remove": rn } }));
-            operations.push(PlanOperation { address, kind });
         }
     }
 
@@ -1343,6 +1349,83 @@ mod tests {
             kind,
             action: Action::Create,
         }
+    }
+
+    #[test]
+    fn destroys_are_ordered_before_creates() {
+        // Issue #74: replacing an RSA in an ad group already at the 3-enabled cap
+        // is a destroy of the old body + a create of the new one. The API applies
+        // an atomic mutate's ops in array order and checks the per-ad-group
+        // enabled cap against the running state, so the remove must precede the
+        // create or the batch transiently hits 5 enabled and the whole thing is
+        // rejected.
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "ad_group_ads": [{
+                "id": "m.new_ad",
+                "ad_group": "m.ag",
+                "ad": {
+                    "final_urls": ["https://example.com"],
+                    "responsive_search_ad": {
+                        "headlines": [{"text": "Fresh copy"}],
+                        "descriptions": [{"text": "Brand new."}]
+                    }
+                }
+            }]
+        }))
+        .expect("valid ExportInput");
+
+        let report = DiffReport {
+            diffs: vec![
+                ResourceDiff {
+                    address: "m.ag".to_string(),
+                    kind: "ad_group",
+                    action: Action::NoOp { live_id: "300".to_string() },
+                },
+                create_diff("m.new_ad", "ad_group_ad"),
+                ResourceDiff {
+                    address: "old ad (managed, no longer declared)".to_string(),
+                    kind: "ad_group_ad",
+                    action: Action::Delete { live_id: "900".to_string() },
+                },
+            ],
+            label_plans: Vec::new(),
+            noop_count: 1,
+            create_count: 1,
+            update_count: 0,
+            delete_count: 1,
+            adopt_count: 0,
+        };
+
+        let plan = match build_mutate_with_diff(&input, &report, true) {
+            Ok(plan) => plan,
+            Err(errs) => panic!(
+                "plan should build: {}",
+                errs.iter()
+                    .map(|e| format!("{}: {}", e.address, e.message))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        };
+        let ops = plan.body["mutateOperations"].as_array().unwrap();
+
+        let remove_idx = ops
+            .iter()
+            .position(|o| o.get("adGroupAdOperation").and_then(|x| x.get("remove")).is_some())
+            .expect("a remove op");
+        let create_idx = ops
+            .iter()
+            .position(|o| o.get("adGroupAdOperation").and_then(|x| x.get("create")).is_some())
+            .expect("a create op");
+        assert!(
+            remove_idx < create_idx,
+            "destroy must precede create: remove at {remove_idx}, create at {create_idx}"
+        );
+
+        // operations[] stays index-aligned with mutateOperations[] so the plan can
+        // attribute a per-op error back to its address via op_index.
+        assert_eq!(plan.operations.len(), ops.len());
+        assert_eq!(plan.operations[create_idx].address, "m.new_ad");
     }
 
     #[test]
