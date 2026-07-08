@@ -318,9 +318,15 @@ resource type, any file layout, modules, schema validation.
   prepare stage as `plan` (parse → import → fetch live → diff), prints
   the diff with validateOnly outcomes, then either prompts for `yes`
   on a TTY or honours `--auto-approve`. Only the second POST sets
-  `validateOnly=false`. Mutates are sent in dependency order (budgets
-  → campaigns → ad_groups → ads → criteria) inside one atomic batch.
-  If validateOnly rejects anything, the real mutate is skipped.
+  `validateOnly=false`. One atomic batch, ordered removes-first (child
+  before parent) then creates/updates in dependency order (budgets →
+  campaigns → ad_groups → ads → criteria) then label writes. Removes
+  lead because the API checks per-parent caps against the running
+  state, so a destroy+create replacement (e.g. rewriting RSA copy in an
+  ad group already at the 3-enabled cap) must destroy the old body
+  before creating the new one or the batch transiently exceeds the cap
+  and is atomically rejected (issue #74). If validateOnly rejects
+  anything, the real mutate is skipped.
 - **Member removal is planned (`- destroy`); whole-resource removal
   still waits on labels**: a `negative_keyword` / `keyword` block
   removed from a resource that otherwise survives now plans as a
