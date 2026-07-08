@@ -437,8 +437,9 @@ pub fn build_mutate_with_diff(
     // one is reused by resource_name (a duplicate label name is an API error).
     // Emitted after the resource creates so the association can reference the
     // resource's own (temp or live) resource_name. A stale association from a
-    // prior address is removed.
-    let mut next_label: i32 = -1;
+    // prior address is removed. New labels continue the shared `next` temp-id
+    // counter: temp ids are unique per request across *all* resource types, so a
+    // label restarting at -1 would collide with the first created resource.
     for plan in &report.label_plans {
         let Some(resource_rn) = refs.get(&plan.address).cloned() else {
             errors.push(PlanBuildError {
@@ -450,8 +451,8 @@ pub fn build_mutate_with_diff(
         let label_rn = match &plan.existing_label_rn {
             Some(rn) => rn.clone(),
             None => {
-                let rn = format!("customers/{customer_id}/labels/{next_label}");
-                next_label -= 1;
+                let rn = format!("customers/{customer_id}/labels/{next}");
+                next -= 1;
                 mutate_ops.push(json!({
                     "labelOperation": {
                         "create": {
@@ -1617,6 +1618,87 @@ mod tests {
             .filter(|rn| rn.split('/').next_back() == Some("-2"))
             .count();
         assert_eq!(claims, 1, "only the campaign claims temp id -2");
+    }
+
+    #[test]
+    fn new_labels_do_not_reclaim_resource_temp_ids() {
+        // Issue #70: creating a budget + campaign together was rejected with
+        // "Creating more than one resource with the same temp ID is not allowed".
+        // The label counter restarted at -1, colliding with the budget's temp id
+        // -1. Temp ids are unique per request across *all* resource types, so the
+        // campaign's new bidsmith:address label must not reclaim -1.
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "6571974784",
+            "campaign_budgets": [{"id": "m.b", "name": "GH_Cookies", "amount_micros": 10000000}],
+            "campaigns": [{
+                "id": "m.c", "name": "GH_Cookies", "advertising_channel_type": "SEARCH",
+                "campaign_budget": "m.b", "manual_cpc": {"enhanced_cpc_enabled": false}
+            }]
+        }))
+        .expect("valid ExportInput");
+
+        let report = DiffReport {
+            diffs: vec![
+                create_diff("m.b", "campaign_budget"),
+                create_diff("m.c", "campaign"),
+            ],
+            label_plans: vec![LabelPlanEntry {
+                address: "m.c".to_string(),
+                kind: "campaign",
+                label_address: "m.c".to_string(),
+                existing_label_rn: None,
+                stale_assoc_rn: None,
+            }],
+            noop_count: 0,
+            create_count: 2,
+            update_count: 0,
+            delete_count: 0,
+            adopt_count: 0,
+        };
+
+        let plan = match build_mutate_with_diff(&input, &report, true) {
+            Ok(plan) => plan,
+            Err(errs) => panic!(
+                "plan should build: {}",
+                errs.iter()
+                    .map(|e| format!("{}: {}", e.address, e.message))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        };
+        let ops = plan.body["mutateOperations"].as_array().unwrap();
+
+        // Every resourceName a create pins is a temp-id claim. Collect the
+        // trailing negative id of each and assert the whole request has no
+        // duplicates — the exact invariant the API enforces.
+        let temp_ids: Vec<i64> = ops
+            .iter()
+            .filter_map(|op| op.as_object())
+            .flat_map(|m| m.values())
+            .filter_map(|o| o.get("create"))
+            .filter_map(|c| c.get("resourceName").and_then(Value::as_str))
+            .filter_map(|rn| rn.rsplit('/').next())
+            .filter_map(|id| id.parse::<i64>().ok())
+            .filter(|id| *id < 0)
+            .collect();
+
+        let unique: HashSet<i64> = temp_ids.iter().copied().collect();
+        assert_eq!(
+            temp_ids.len(),
+            unique.len(),
+            "temp ids must be unique across the whole batch, got {temp_ids:?}"
+        );
+
+        let label_rn = ops
+            .iter()
+            .find_map(|o| o.get("labelOperation").and_then(|x| x.get("create")))
+            .and_then(|c| c.get("resourceName"))
+            .and_then(Value::as_str)
+            .expect("a label create op");
+        assert_eq!(
+            label_rn, "customers/6571974784/labels/-3",
+            "the new label continues the shared counter past the two resource creates"
+        );
     }
 
     #[test]
