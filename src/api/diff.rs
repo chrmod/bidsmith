@@ -1340,6 +1340,7 @@ mod ad_match_tests {
                     path2: None,
                 }),
                 video_responsive_ad: None,
+                demand_gen_video_responsive_ad: None,
             },
             managed_address: None,
         }

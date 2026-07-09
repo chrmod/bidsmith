@@ -301,6 +301,40 @@ fn ad_block(final_urls_required: bool) -> NestedBlockSchema {
                         blocks: vec![],
                     },
                 },
+                // A Demand Gen video responsive ad — the ad type a DEMAND_GEN
+                // campaign carries. A distinct API message from video_responsive_ad
+                // (VIDEO campaigns); the video assets are UI-managed like the
+                // youtube video ad, so bidsmith round-trips the creative but does
+                // not create/update it on the live account.
+                NestedBlockSchema {
+                    name: "demand_gen_video_responsive_ad",
+                    schema: BlockSchema {
+                        attributes: vec![
+                            attr(
+                                "videos",
+                                FieldType::list_of(FieldType::Ref(&[
+                                    "google_ads_youtube_video_asset",
+                                ])),
+                                false,
+                            ),
+                            attr("headlines", FieldType::list_of(FieldType::String), false),
+                            attr(
+                                "long_headlines",
+                                FieldType::list_of(FieldType::String),
+                                false,
+                            ),
+                            attr("descriptions", FieldType::list_of(FieldType::String), false),
+                            attr(
+                                "call_to_actions",
+                                FieldType::list_of(FieldType::String),
+                                false,
+                            ),
+                            attr("breadcrumb1", FieldType::String, false),
+                            attr("breadcrumb2", FieldType::String, false),
+                        ],
+                        blocks: vec![],
+                    },
+                },
             ],
         },
     }
@@ -1686,21 +1720,31 @@ fn find_child_block<'a>(body: &'a Body, name: &str) -> Option<&'a Block> {
 }
 
 /// An `ad {}` body (inline or in an `ad_template`) may carry at most one creative:
-/// a `responsive_search_ad` or a `video_responsive_ad`, never both.
+/// a `responsive_search_ad`, a `video_responsive_ad`, or a
+/// `demand_gen_video_responsive_ad` — never more than one.
 fn validate_ad_creative_exclusivity(
     file: &ParsedFile,
     ad_body: &Body,
     address: &str,
     diags: &mut Vec<Diag>,
 ) {
-    let rsa = find_child_block(ad_body, "responsive_search_ad");
-    let video = find_child_block(ad_body, "video_responsive_ad");
-    if let (Some(_), Some(video)) = (rsa, video) {
+    let creatives = [
+        "responsive_search_ad",
+        "video_responsive_ad",
+        "demand_gen_video_responsive_ad",
+    ];
+    let present: Vec<&Block> = creatives
+        .iter()
+        .filter_map(|name| find_child_block(ad_body, name))
+        .collect();
+    if present.len() > 1 {
+        let offender = present[1];
         diags.push(Diag::new(
             file.src.clone(),
-            span_of(video.ident.span()),
+            span_of(offender.ident.span()),
             format!(
-                "{address} declares both 'responsive_search_ad' and 'video_responsive_ad'; an ad has one creative — use one or the other"
+                "{address} declares more than one creative ({}); an ad has one creative — use only one",
+                creatives.join(" / ")
             ),
         ));
     }

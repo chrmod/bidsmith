@@ -182,6 +182,8 @@ pub struct JsonAd {
     pub responsive_search_ad: Option<JsonResponsiveSearchAd>,
     #[serde(default)]
     pub video_responsive_ad: Option<JsonVideoResponsiveAd>,
+    #[serde(default)]
+    pub demand_gen_video_responsive_ad: Option<JsonDemandGenVideoResponsiveAd>,
 }
 
 /// A YouTube video ad body. `video` is the address of a
@@ -199,6 +201,28 @@ pub struct JsonVideoResponsiveAd {
     pub descriptions: Vec<String>,
     #[serde(default)]
     pub call_to_actions: Vec<String>,
+}
+
+/// A Demand Gen video responsive ad body (the ad type a DEMAND_GEN campaign
+/// carries). `videos` holds asset ids of `google_ads_youtube_video_asset`s,
+/// resolved to their addresses at render time. Like the youtube video ad, the
+/// creative is UI-managed — bidsmith round-trips it but does not mutate it.
+#[derive(Deserialize)]
+pub struct JsonDemandGenVideoResponsiveAd {
+    #[serde(default)]
+    pub videos: Vec<String>,
+    #[serde(default)]
+    pub headlines: Vec<String>,
+    #[serde(default)]
+    pub long_headlines: Vec<String>,
+    #[serde(default)]
+    pub descriptions: Vec<String>,
+    #[serde(default)]
+    pub call_to_actions: Vec<String>,
+    #[serde(default)]
+    pub breadcrumb1: Option<String>,
+    #[serde(default)]
+    pub breadcrumb2: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -671,7 +695,7 @@ pub fn video_limitation_notice(input: &ExportInput) -> Option<String> {
     let video_campaigns = input
         .campaigns
         .iter()
-        .filter(|c| c.advertising_channel_type == "VIDEO")
+        .filter(|c| c.advertising_channel_type == "VIDEO" || c.advertising_channel_type == "DEMAND_GEN")
         .count();
     let video_ad_groups = input
         .ad_groups
@@ -681,7 +705,9 @@ pub fn video_limitation_notice(input: &ExportInput) -> Option<String> {
     let video_ads = input
         .ad_group_ads
         .iter()
-        .filter(|a| a.ad.video_responsive_ad.is_some())
+        .filter(|a| {
+            a.ad.video_responsive_ad.is_some() || a.ad.demand_gen_video_responsive_ad.is_some()
+        })
         .count();
     let video_assets = input.youtube_video_assets.len();
 
@@ -1232,6 +1258,37 @@ fn write_ad_group_ad(
             if !items.is_empty() {
                 write_attr(out, 3, attr, &fmt_string_list(items));
             }
+        }
+        out.push_str("    }\n");
+    }
+    if let Some(dg) = &a.ad.demand_gen_video_responsive_ad {
+        out.push_str("\n    demand_gen_video_responsive_ad {\n");
+        if !dg.videos.is_empty() {
+            let refs: Vec<String> = dg
+                .videos
+                .iter()
+                .map(|id| match youtube_asset_addr.get(id) {
+                    Some(addr) => format!("{addr}.id"),
+                    None => format!("\"<unresolved video {id}>\""),
+                })
+                .collect();
+            write_attr(out, 3, "videos", &format!("[{}]", refs.join(", ")));
+        }
+        for (attr, items) in [
+            ("headlines", &dg.headlines),
+            ("long_headlines", &dg.long_headlines),
+            ("descriptions", &dg.descriptions),
+            ("call_to_actions", &dg.call_to_actions),
+        ] {
+            if !items.is_empty() {
+                write_attr(out, 3, attr, &fmt_string_list(items));
+            }
+        }
+        if let Some(b) = &dg.breadcrumb1 {
+            write_attr(out, 3, "breadcrumb1", &fmt_string(b));
+        }
+        if let Some(b) = &dg.breadcrumb2 {
+            write_attr(out, 3, "breadcrumb2", &fmt_string(b));
         }
         out.push_str("    }\n");
     }
@@ -2474,6 +2531,74 @@ mod tests {
         assert_eq!(
             canonicalize(&render_inner(&input, false)),
             canonicalize(&render_inner(&input2, false)),
+        );
+    }
+
+    // The regression for issue #80: a Demand Gen video responsive ad pulled from
+    // the live account must round-trip through the search-response adapter and the
+    // exporter — headlines, long headlines, descriptions, CTAs, breadcrumbs, and
+    // the video asset reference.
+    const DEMAND_GEN_FIXTURE: &str = r#"[
+        {
+            "results": [
+                { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Shorts", "amountMicros": "15000000" } },
+                { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "GH_Shorts_3", "status": "ENABLED", "advertisingChannelType": "DEMAND_GEN", "campaignBudget": "customers/9/campaignBudgets/1001" } },
+                { "adGroup": { "resourceName": "customers/9/adGroups/3001", "id": "3001", "name": "Shorts AG", "campaign": "customers/9/campaigns/2001", "status": "ENABLED" } },
+                { "asset": { "resourceName": "customers/9/assets/7001", "id": "7001", "youtubeVideoAsset": { "youtubeVideoId": "dQw4w9WgXcQ", "youtubeVideoTitle": "Shorts v2" } } },
+                { "adGroupAd": { "resourceName": "customers/9/adGroupAds/3001~4001", "adGroup": "customers/9/adGroups/3001", "status": "ENABLED", "ad": {
+                    "name": "Ad 1",
+                    "finalUrls": ["https://www.ghostery.com/ghostery-ad-blocker?utm_source=youtube"],
+                    "demandGenVideoResponsiveAd": {
+                        "headlines": [{"text": "Block trackers"}],
+                        "longHeadlines": [{"text": "Block trackers and ads everywhere"}],
+                        "descriptions": [{"text": "Private browsing made simple."}],
+                        "callToActions": [{"text": "Install"}],
+                        "videos": [{"asset": "customers/9/assets/7001"}],
+                        "breadcrumb1": "ghostery",
+                        "breadcrumb2": "download"
+                    }
+                } } }
+            ]
+        }
+    ]"#;
+
+    #[test]
+    fn adapter_captures_demand_gen_video_ad() {
+        let input = from_search_response(DEMAND_GEN_FIXTURE).expect("adapter");
+
+        let dg = input.ad_group_ads[0]
+            .ad
+            .demand_gen_video_responsive_ad
+            .as_ref()
+            .expect("demand gen ad body captured");
+        assert_eq!(dg.headlines, vec!["Block trackers".to_string()]);
+        assert_eq!(dg.long_headlines, vec!["Block trackers and ads everywhere".to_string()]);
+        assert_eq!(dg.descriptions, vec!["Private browsing made simple.".to_string()]);
+        assert_eq!(dg.call_to_actions, vec!["Install".to_string()]);
+        assert_eq!(dg.breadcrumb1.as_deref(), Some("ghostery"));
+        assert_eq!(dg.breadcrumb2.as_deref(), Some("download"));
+        assert_eq!(dg.videos, vec!["7001".to_string()]);
+
+        let rendered = canonicalize(&render(&input));
+        assert!(rendered.contains("demand_gen_video_responsive_ad {"), "{rendered}");
+        assert!(rendered.contains("breadcrumb1 = \"ghostery\""), "{rendered}");
+        assert!(rendered.contains("google_ads_youtube_video_asset."), "{rendered}");
+        assert!(
+            rendered.contains("videos") && !rendered.contains("<unresolved video"),
+            "video ref should resolve to a youtube asset:\n{rendered}"
+        );
+
+        // The rendered .bid validates.
+        let pf = crate::parser::parse_str(std::path::Path::new("dg.bid"), &rendered)
+            .expect("rendered demand gen parses");
+        let diags = crate::schema::validate_files(
+            std::slice::from_ref(&pf),
+            &crate::schema::InputBindings::default(),
+        );
+        assert!(
+            diags.iter().all(|d| !d.is_error()),
+            "validate errors: {:?}",
+            diags.iter().filter(|d| d.is_error()).map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 

@@ -80,7 +80,14 @@ pub const QUERIES: &[(&str, &str)] = &[
           ad_group_ad.ad.responsive_search_ad.headlines,
           ad_group_ad.ad.responsive_search_ad.descriptions,
           ad_group_ad.ad.responsive_search_ad.path1,
-          ad_group_ad.ad.responsive_search_ad.path2
+          ad_group_ad.ad.responsive_search_ad.path2,
+          ad_group_ad.ad.demand_gen_video_responsive_ad.headlines,
+          ad_group_ad.ad.demand_gen_video_responsive_ad.long_headlines,
+          ad_group_ad.ad.demand_gen_video_responsive_ad.descriptions,
+          ad_group_ad.ad.demand_gen_video_responsive_ad.call_to_actions,
+          ad_group_ad.ad.demand_gen_video_responsive_ad.videos,
+          ad_group_ad.ad.demand_gen_video_responsive_ad.breadcrumb1,
+          ad_group_ad.ad.demand_gen_video_responsive_ad.breadcrumb2
         FROM ad_group_ad
         WHERE ad_group_ad.status != 'REMOVED'",
     ),
@@ -179,6 +186,16 @@ pub const QUERIES: &[(&str, &str)] = &[
           asset.structured_snippet_asset.values
         FROM asset
         WHERE asset.type = STRUCTURED_SNIPPET",
+    ),
+    (
+        "youtube_video_asset",
+        "SELECT
+          asset.resource_name,
+          asset.id,
+          asset.youtube_video_asset.youtube_video_id,
+          asset.youtube_video_asset.youtube_video_title
+        FROM asset
+        WHERE asset.type = YOUTUBE_VIDEO",
     ),
     (
         "customer_asset",
