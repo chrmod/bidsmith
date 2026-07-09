@@ -1,0 +1,143 @@
+---
+title: bidsmith keyword-ideas
+description: Research keywords with Google Keyword Planner — search volume, competition, and bid estimates for seed terms or a landing page.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`keyword-ideas` is Google's **Keyword Planner** on the command line.
+Give it a few seed keywords, a landing-page URL, or both, and it
+returns related search terms with their **average monthly searches**,
+how **competitive** each one is, and a **top-of-page bid estimate** —
+the same numbers the Keyword Planner shows in the Google Ads web UI.
+
+It's a research tool: it only reads, never changes your account, and
+doesn't touch your `.bid` files. Use it to find keywords worth adding
+before you write them into a campaign.
+
+## Synopsis
+
+```sh
+bidsmith keyword-ideas [SEED...] [--url URL] [--location CODE]... \
+  [--language CODE] [--limit N] [--format table|json|tsv] [--verbose]
+```
+
+You must give it **at least one seed keyword or a `--url`** (you can
+give both).
+
+## Arguments
+
+| Argument | Required? | Description |
+|---|---|---|
+| `SEED...` | one of these | One or more seed keywords to expand, e.g. `"running shoes" "trail shoes"`. |
+| `--url URL` | one of these | A landing page or site to derive ideas from, e.g. your product page. |
+
+## Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--location CODE` | none | Country to get search volume for, e.g. `US`, `DE`, `PL`. Repeat it to combine several. A city or region works too as a raw `geoTargetConstants/NNNN`. Omitted means no geographic filter. |
+| `--language CODE` | `en` | Language of the searchers, e.g. `en`, `de`, `pl`. |
+| `--limit N` | `50` | How many ideas to print, most-searched first. `0` prints them all. |
+| `--format table\|json\|tsv` | `table` | Output format. `table` for reading, `tsv` for spreadsheets, `json` for scripts. |
+| `--verbose` | — | Print the outgoing API request and raw response (for debugging). |
+
+The `--location` and `--language` codes are exactly the ones you'd use
+in a campaign's [`locations` and `languages`](/bidsmith/recipes/target-countries-and-languages/),
+so what you research is what you target.
+
+## Environment variables
+
+Same sign-in as [`bidsmith plan`](/bidsmith/commands/plan/) — run
+[`bidsmith auth login`](/bidsmith/commands/auth/) once and you're set.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Ran successfully (zero ideas is still success). |
+| `1` | Sign-in failure or API error. |
+| `2` | Bad input — no seed and no `--url`, or an unknown location / language code. |
+
+## Examples
+
+### Expand a few seed keywords
+
+```sh
+bidsmith keyword-ideas "running shoes" "trail shoes" --location US --language en
+```
+
+```
+keyword               avg_monthly_searches  competition  competition_index  top_page_bid_low  top_page_bid_high
+--------------------  --------------------  -----------  -----------------  ----------------  -----------------
+running shoes                       246000  HIGH                        88              0.42               1.85
+trail running shoes                  49500  HIGH                        82              0.51               2.10
+best running shoes                   40500  HIGH                        90              0.55               2.40
+...
+
+50 of 512 idea(s) — top 50 by search volume (--limit 0 for all).
+Bids are top-of-page estimates in the account currency.
+```
+
+### Get ideas from a landing page
+
+No seed keywords needed — let Google read the page:
+
+```sh
+bidsmith keyword-ideas --url https://example.com/energy-storage --location PL --language pl
+```
+
+### Research a market, then save it to a spreadsheet
+
+```sh
+bidsmith keyword-ideas "home battery" "solar storage" \
+  --location PL --language pl --limit 0 --format tsv > keywords.tsv
+```
+
+`keywords.tsv` opens cleanly in Excel, Google Sheets, or Numbers, so
+you can sort and filter before deciding what to add.
+
+### Feed the ideas into another tool
+
+```sh
+bidsmith keyword-ideas "crm software" --location US --format json \
+  | jq -r '.[] | select(.avg_monthly_searches > 5000) | .keyword'
+```
+
+The JSON output is one clean object per idea, ready for `jq`.
+
+## Reading the numbers
+
+- **avg_monthly_searches** — roughly how many times people search that
+  term each month, for the locations and language you chose.
+- **competition** — `LOW`, `MEDIUM`, or `HIGH`: how many advertisers
+  bid on it. **competition_index** is the same thing on a 0–100 scale.
+- **top_page_bid_low / top_page_bid_high** — the range advertisers
+  typically pay to show at the top of the page, in your **account
+  currency**. A wide range means bids vary a lot.
+
+<Aside type="note">
+  Search volumes are ranges bucketed by Google, not exact counts, and
+  they depend heavily on the location and language you pass. Always set
+  `--location` and `--language` to match the campaign you're planning —
+  the same "running shoes" looks very different in the US vs. Poland.
+</Aside>
+
+## What `keyword-ideas` doesn't do
+
+- **It doesn't add keywords.** It's research only. Once you've picked
+  your terms, write them into a `.bid` file (see
+  [Add a whole keyword list at once](/bidsmith/recipes/add-many-keywords/))
+  and [`apply`](/bidsmith/commands/apply/) them.
+- **It doesn't forecast a plan.** Budget and click forecasts for a
+  saved keyword plan are a separate Keyword Planner feature, not yet
+  covered here.
+
+## See also
+
+- [Target specific countries and languages](/bidsmith/recipes/target-countries-and-languages/)
+  — the same location / language codes, used in a campaign.
+- [Add a whole keyword list at once](/bidsmith/recipes/add-many-keywords/)
+  — turn your chosen keywords into a `.bid` resource.
+- [`bidsmith query`](/bidsmith/commands/query/) — read-only reporting on
+  the keywords you already run.

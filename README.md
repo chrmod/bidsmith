@@ -42,6 +42,7 @@ Validate, plan, and apply all work today.
 | `pull`     | Snapshot the live account                                                    |
 | `refresh`  | Pull the live account into `.bid` files — bootstrap fresh ones (`-d`/`-o`), or `--in-place` to update existing files with live changes |
 | `query`    | Read stats and reports with a GAQL query (clicks, cost, conversions, search terms) |
+| `keyword-ideas` | Research keywords with Google Keyword Planner — search volume, competition, and bid estimates for seed terms or a landing page |
 | `export`   | Render a `.bid` file from a JSON description                                 |
 | `mv`       | Rename a resource everywhere without recreating it in Google Ads             |
 | `fmt`      | Tidy up `.bid` formatting (`--minimal` also drops attributes left at their default) |

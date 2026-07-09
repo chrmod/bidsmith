@@ -130,7 +130,8 @@ It calls these endpoints:
 <p>
 Reads use <code>googleAds:searchStream</code> with {{ gaql_query_count }} fixed GAQL queries — one per
 resource type {{ tool_name }} models ({% for q in gaql_queries %}<code>{{ q.label }}</code>{% if not loop.last %}, {% endif %}{% endfor %}) — plus the read-only <code>query</code> passthrough for
-ad-hoc reporting. Writes use <code>googleAds:mutate</code> as described in §3.
+ad-hoc reporting and the read-only <code>keyword-ideas</code> research call
+(<code>KeywordPlanIdeaService.GenerateKeywordIdeas</code>). Writes use <code>googleAds:mutate</code> as described in §3.
 </p>
 
 <p>

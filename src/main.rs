@@ -298,6 +298,50 @@ Grammar: https://developers.google.com/google-ads/api/docs/query/overview"#)]
         #[arg(long)]
         verbose: bool,
     },
+    /// Research keyword ideas from Keyword Planner: search volume,
+    /// competition, and bid estimates for seed terms or a landing page
+    #[command(name = "keyword-ideas", after_help = "\
+keyword-ideas is a read-only research call to Google's Keyword Planner
+(KeywordPlanIdeaService). Give it seed keywords, a landing-page --url, or
+both, and it returns related keywords with their average monthly searches,
+competition, and top-of-page bid estimates. It never touches the account
+and reads no .bid files.
+
+Locations and languages take the same human-readable codes as a campaign's
+`locations` / `languages` (US, PL, en, de, ...), or raw
+geoTargetConstants/NNNN / languageConstants/NNNN strings.
+
+Examples:
+  bidsmith keyword-ideas \"running shoes\" \"trail shoes\" --location US --language en
+  bidsmith keyword-ideas --url https://example.com/shop --location DE
+  bidsmith keyword-ideas \"energy storage\" --location PL --limit 100 --format tsv > ideas.tsv
+
+Search volume and bids reflect the chosen locations + language. Bid
+estimates are micros of the account currency (divide by 1,000,000).")]
+    KeywordIdeas {
+        /// Seed keywords to expand (zero or more; omit only when --url is set)
+        #[arg(value_name = "SEED")]
+        seeds: Vec<String>,
+        /// Landing-page or site URL to derive ideas from (with or without seeds)
+        #[arg(long, value_name = "URL")]
+        url: Option<String>,
+        /// Target location (repeatable): ISO country code like `US`, or a raw
+        /// geoTargetConstants/NNNN. Omit for no geo constraint.
+        #[arg(long = "location", value_name = "CODE", action = clap::ArgAction::Append)]
+        location: Vec<String>,
+        /// Language code (e.g. `en`), or a raw languageConstants/NNNN
+        #[arg(long, value_name = "CODE", default_value = "en")]
+        language: String,
+        /// Max ideas to print, most-searched first (0 = all)
+        #[arg(long, value_name = "N", default_value_t = 50)]
+        limit: usize,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = QueryFormat::Table)]
+        format: QueryFormat,
+        /// Dump the outgoing request and raw API response
+        #[arg(long)]
+        verbose: bool,
+    },
     /// Dump the resource schema as JSON (drives doc generation, IDE tooling)
     Schema {
         /// Output file path (defaults to stdout)
@@ -495,6 +539,22 @@ fn main() -> ExitCode {
                 QueryFormat::Tsv => commands::query::Format::Tsv,
             };
             commands::query::run(&query, fmt, verbose)
+        }
+        Cmd::KeywordIdeas { seeds, url, location, language, limit, format, verbose } => {
+            let fmt = match format {
+                QueryFormat::Table => commands::keyword_ideas::Format::Table,
+                QueryFormat::Json => commands::keyword_ideas::Format::Json,
+                QueryFormat::Tsv => commands::keyword_ideas::Format::Tsv,
+            };
+            commands::keyword_ideas::run(
+                &seeds,
+                url.as_deref(),
+                &location,
+                &language,
+                limit,
+                fmt,
+                verbose,
+            )
         }
     }
 }
