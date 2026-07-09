@@ -9,15 +9,21 @@ import schema from '~/data/schema.json';
 
 export const resource = schema.resources['google_ads_customer_asset'];
 
-A **customer asset** links an asset — currently a call asset — to the
-entire account. Once linked, the asset can appear with any ad in the
-account that's eligible to show it.
+A **customer asset** links an asset to the *entire account*. Once linked,
+the asset can appear with any ad in the account that's eligible to show
+it. It's the account-wide counterpart to
+[`google_ads_campaign_asset`](./google_ads_campaign_asset/) (one campaign)
+and [`google_ads_ad_group_asset`](./google_ads_ad_group_asset/) (one ad
+group).
 
 <Aside type="note">
-  Bidsmith currently supports call assets via `google_ads_call_asset`.
-  Other asset types (sitelinks, callouts, structured snippets, images,
-  videos, etc.) are planned — see the
-  [roadmap](https://github.com/chrmod/bidsmith/blob/main/ROADMAP.md).
+  The `asset` reference can point at any asset type bidsmith models —
+  [`google_ads_call_asset`](./google_ads_call_asset/),
+  [`google_ads_sitelink_asset`](./google_ads_sitelink_asset/),
+  [`google_ads_callout_asset`](./google_ads_callout_asset/), or
+  [`google_ads_structured_snippet_asset`](./google_ads_structured_snippet_asset/) —
+  and `field_type` must match the asset's kind. Call extensions are the
+  most common account-wide link.
 </Aside>
 
 ## Example
@@ -39,3 +45,5 @@ resource "google_ads_customer_asset" "main_phone_link" {
 ## See also
 
 - [`google_ads_call_asset`](./google_ads_call_asset/) — the typical `asset` reference.
+- [`google_ads_campaign_asset`](./google_ads_campaign_asset/) — link an asset to one campaign instead of the whole account.
+- [`google_ads_ad_group_asset`](./google_ads_ad_group_asset/) — link an asset to one ad group.

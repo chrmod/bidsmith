@@ -1,0 +1,56 @@
+---
+title: google_ads_campaign_asset
+description: Attaches an asset (sitelink, callout, structured snippet, …) to a single campaign.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_campaign_asset'];
+
+A **campaign asset** links an asset to one campaign, telling Google the
+asset is eligible to show with that campaign's ads. This is how a
+sitelink, callout, or structured snippet actually reaches the page — the
+asset holds the content, the campaign asset attaches it.
+
+The `field_type` says *what kind* of extension the asset is used as
+(`SITELINK`, `CALLOUT`, `STRUCTURED_SNIPPET`, …) and must match the
+asset's type.
+
+<Aside type="tip">
+  To attach the same asset to a single ad group instead of a whole
+  campaign, use [`google_ads_ad_group_asset`](./google_ads_ad_group_asset/).
+  To attach it to every campaign in the account, use
+  [`google_ads_customer_asset`](./google_ads_customer_asset/).
+</Aside>
+
+## Example
+
+Attach a sitelink to a Search campaign:
+
+```hcl
+resource "google_ads_sitelink_asset" "add_to_chrome" {
+  link_text   = "Add to Chrome"
+  description1 = "Free, open source"
+  description2 = "Install in 10 seconds"
+  final_urls  = ["https://www.ghostery.com/ghostery-ad-blocker"]
+}
+
+resource "google_ads_campaign_asset" "gh_cookies_sitelink" {
+  campaign   = google_ads_campaign.gh_cookies.id
+  asset      = google_ads_sitelink_asset.add_to_chrome.id
+  field_type = "SITELINK"
+  status     = "ENABLED"
+}
+```
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+## See also
+
+- [`google_ads_sitelink_asset`](./google_ads_sitelink_asset/), [`google_ads_callout_asset`](./google_ads_callout_asset/), [`google_ads_structured_snippet_asset`](./google_ads_structured_snippet_asset/) — the assets you attach.
+- [`google_ads_ad_group_asset`](./google_ads_ad_group_asset/) — attach at ad-group scope.
+- [`google_ads_customer_asset`](./google_ads_customer_asset/) — attach at account scope.

@@ -150,6 +150,37 @@ pub const QUERIES: &[(&str, &str)] = &[
         WHERE asset.type = CALL",
     ),
     (
+        "sitelink_asset",
+        "SELECT
+          asset.resource_name,
+          asset.id,
+          asset.final_urls,
+          asset.sitelink_asset.link_text,
+          asset.sitelink_asset.description1,
+          asset.sitelink_asset.description2
+        FROM asset
+        WHERE asset.type = SITELINK",
+    ),
+    (
+        "callout_asset",
+        "SELECT
+          asset.resource_name,
+          asset.id,
+          asset.callout_asset.callout_text
+        FROM asset
+        WHERE asset.type = CALLOUT",
+    ),
+    (
+        "structured_snippet_asset",
+        "SELECT
+          asset.resource_name,
+          asset.id,
+          asset.structured_snippet_asset.header,
+          asset.structured_snippet_asset.values
+        FROM asset
+        WHERE asset.type = STRUCTURED_SNIPPET",
+    ),
+    (
         "customer_asset",
         "SELECT
           customer_asset.resource_name,
@@ -159,6 +190,30 @@ pub const QUERIES: &[(&str, &str)] = &[
         FROM customer_asset
         WHERE customer_asset.field_type = CALL
           AND customer_asset.status != 'REMOVED'",
+    ),
+    (
+        "campaign_asset",
+        "SELECT
+          campaign_asset.resource_name,
+          campaign_asset.campaign,
+          campaign_asset.asset,
+          campaign_asset.field_type,
+          campaign_asset.status
+        FROM campaign_asset
+        WHERE campaign_asset.field_type IN (SITELINK, CALLOUT, STRUCTURED_SNIPPET)
+          AND campaign_asset.status != 'REMOVED'",
+    ),
+    (
+        "ad_group_asset",
+        "SELECT
+          ad_group_asset.resource_name,
+          ad_group_asset.ad_group,
+          ad_group_asset.asset,
+          ad_group_asset.field_type,
+          ad_group_asset.status
+        FROM ad_group_asset
+        WHERE ad_group_asset.field_type IN (SITELINK, CALLOUT, STRUCTURED_SNIPPET)
+          AND ad_group_asset.status != 'REMOVED'",
     ),
     (
         "shared_set",

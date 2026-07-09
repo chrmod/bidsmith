@@ -4,9 +4,11 @@ use serde_json::{Map, Value, json};
 
 use crate::api::diff::{Action, DiffReport};
 use crate::commands::export::{
-    ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupCriterion, JsonBudget,
-    JsonCallAsset, JsonCampaign, JsonCampaignCriterion, JsonCampaignSharedSet,
-    JsonConversionAction, JsonCustomerAsset, JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedSet,
+    ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
+    JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
+    JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCustomerAsset,
+    JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedSet, JsonSitelinkAsset,
+    JsonStructuredSnippetAsset,
 };
 
 pub struct PlanOperation {
@@ -51,7 +53,12 @@ pub fn build_mutate_with_diff(
             "campaign_criterion" => "campaignCriteria",
             "conversion_action" => "conversionActions",
             "call_asset" => "assets",
+            "sitelink_asset" => "assets",
+            "callout_asset" => "assets",
+            "structured_snippet_asset" => "assets",
             "customer_asset" => "customerAssets",
+            "campaign_asset" => "campaignAssets",
+            "ad_group_asset" => "adGroupAssets",
             "shared_set" => "sharedSets",
             "shared_criterion" => "sharedCriteria",
             "campaign_shared_set" => "campaignSharedSets",
@@ -129,6 +136,32 @@ pub fn build_mutate_with_diff(
                     };
                     format!(
                         "customers/{customer_id}/{segment}/{set_id}~{next}"
+                    )
+                }
+                "campaign_asset" => {
+                    let ca = input.campaign_assets.iter().find(|c| c.id == d.address);
+                    let parent_id = ca
+                        .map(|c| id_from_ref(&refs, &c.campaign))
+                        .unwrap_or_else(|| "0".to_string());
+                    let asset_id = ca
+                        .map(|c| id_from_ref(&refs, &c.asset))
+                        .unwrap_or_else(|| "0".to_string());
+                    let field_type = ca.map(|c| c.field_type.as_str()).unwrap_or("");
+                    format!(
+                        "customers/{customer_id}/{segment}/{parent_id}~{asset_id}~{field_type}"
+                    )
+                }
+                "ad_group_asset" => {
+                    let ga = input.ad_group_assets.iter().find(|c| c.id == d.address);
+                    let parent_id = ga
+                        .map(|c| id_from_ref(&refs, &c.ad_group))
+                        .unwrap_or_else(|| "0".to_string());
+                    let asset_id = ga
+                        .map(|c| id_from_ref(&refs, &c.asset))
+                        .unwrap_or_else(|| "0".to_string());
+                    let field_type = ga.map(|c| c.field_type.as_str()).unwrap_or("");
+                    format!(
+                        "customers/{customer_id}/{segment}/{parent_id}~{asset_id}~{field_type}"
                     )
                 }
                 _ => temp_rn(customer_id, segment, next),
@@ -351,6 +384,42 @@ pub fn build_mutate_with_diff(
             operations.push(PlanOperation { address: a.id.clone(), kind: "call_asset" });
         }
     }
+    for a in &input.sitelink_assets {
+        let Some(rn) = plan_rn(&refs, &a.id, "sitelink_asset", &mut errors) else {
+            continue;
+        };
+        if create_set.contains(&a.id) {
+            mutate_ops.push(json!({
+                "assetOperation": { "create": sitelink_asset_create(a, rn) }
+            }));
+            operations.push(PlanOperation { address: a.id.clone(), kind: "sitelink_asset" });
+        }
+    }
+    for a in &input.callout_assets {
+        let Some(rn) = plan_rn(&refs, &a.id, "callout_asset", &mut errors) else {
+            continue;
+        };
+        if create_set.contains(&a.id) {
+            mutate_ops.push(json!({
+                "assetOperation": { "create": callout_asset_create(a, rn) }
+            }));
+            operations.push(PlanOperation { address: a.id.clone(), kind: "callout_asset" });
+        }
+    }
+    for a in &input.structured_snippet_assets {
+        let Some(rn) = plan_rn(&refs, &a.id, "structured_snippet_asset", &mut errors) else {
+            continue;
+        };
+        if create_set.contains(&a.id) {
+            mutate_ops.push(json!({
+                "assetOperation": { "create": structured_snippet_asset_create(a, rn) }
+            }));
+            operations.push(PlanOperation {
+                address: a.id.clone(),
+                kind: "structured_snippet_asset",
+            });
+        }
+    }
     for a in &input.customer_assets {
         let Some(rn) = plan_rn(&refs, &a.id, "customer_asset", &mut errors) else {
             continue;
@@ -372,6 +441,64 @@ pub fn build_mutate_with_diff(
                 }
             }));
             operations.push(PlanOperation { address: a.id.clone(), kind: "customer_asset" });
+        }
+    }
+    for a in &input.campaign_assets {
+        let Some(rn) = plan_rn(&refs, &a.id, "campaign_asset", &mut errors) else {
+            continue;
+        };
+        if create_set.contains(&a.id) {
+            let campaign_rn = match resolve_ref_or_literal(&refs, &a.campaign, &a.id, "campaign", &mut errors) {
+                Some(s) => s,
+                None => continue,
+            };
+            let asset_rn = match resolve(&refs, &a.asset, &a.id, "asset", &mut errors) {
+                Some(s) => s,
+                None => continue,
+            };
+            mutate_ops.push(json!({
+                "campaignAssetOperation": {
+                    "create": campaign_asset_create(a, &campaign_rn, &asset_rn)
+                }
+            }));
+            operations.push(PlanOperation { address: a.id.clone(), kind: "campaign_asset" });
+        } else if let Some(fields) = update_set.get(&a.id) {
+            mutate_ops.push(json!({
+                "campaignAssetOperation": {
+                    "update": campaign_asset_update_body(a, rn, fields),
+                    "updateMask": fields.join(","),
+                }
+            }));
+            operations.push(PlanOperation { address: a.id.clone(), kind: "campaign_asset" });
+        }
+    }
+    for a in &input.ad_group_assets {
+        let Some(rn) = plan_rn(&refs, &a.id, "ad_group_asset", &mut errors) else {
+            continue;
+        };
+        if create_set.contains(&a.id) {
+            let ad_group_rn = match resolve_ref_or_literal(&refs, &a.ad_group, &a.id, "ad_group", &mut errors) {
+                Some(s) => s,
+                None => continue,
+            };
+            let asset_rn = match resolve(&refs, &a.asset, &a.id, "asset", &mut errors) {
+                Some(s) => s,
+                None => continue,
+            };
+            mutate_ops.push(json!({
+                "adGroupAssetOperation": {
+                    "create": ad_group_asset_create(a, &ad_group_rn, &asset_rn)
+                }
+            }));
+            operations.push(PlanOperation { address: a.id.clone(), kind: "ad_group_asset" });
+        } else if let Some(fields) = update_set.get(&a.id) {
+            mutate_ops.push(json!({
+                "adGroupAssetOperation": {
+                    "update": ad_group_asset_update_body(a, rn, fields),
+                    "updateMask": fields.join(","),
+                }
+            }));
+            operations.push(PlanOperation { address: a.id.clone(), kind: "ad_group_asset" });
         }
     }
 
@@ -997,6 +1124,107 @@ fn customer_asset_update_body(
     Value::Object(m)
 }
 
+fn string_array(items: &[String]) -> Value {
+    Value::Array(items.iter().cloned().map(Value::String).collect())
+}
+
+fn sitelink_asset_create(a: &JsonSitelinkAsset, resource_name: &str) -> Value {
+    let mut m = Map::new();
+    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
+    if !a.final_urls.is_empty() {
+        m.insert("finalUrls".into(), string_array(&a.final_urls));
+    }
+    let mut s = Map::new();
+    s.insert("linkText".into(), Value::String(a.link_text.clone()));
+    if let Some(d) = &a.description1 {
+        s.insert("description1".into(), Value::String(d.clone()));
+    }
+    if let Some(d) = &a.description2 {
+        s.insert("description2".into(), Value::String(d.clone()));
+    }
+    m.insert("sitelinkAsset".into(), Value::Object(s));
+    Value::Object(m)
+}
+
+fn callout_asset_create(a: &JsonCalloutAsset, resource_name: &str) -> Value {
+    let mut m = Map::new();
+    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
+    let mut c = Map::new();
+    c.insert("calloutText".into(), Value::String(a.text.clone()));
+    m.insert("calloutAsset".into(), Value::Object(c));
+    Value::Object(m)
+}
+
+fn structured_snippet_asset_create(a: &JsonStructuredSnippetAsset, resource_name: &str) -> Value {
+    let mut m = Map::new();
+    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
+    let mut s = Map::new();
+    s.insert("header".into(), Value::String(a.header.clone()));
+    s.insert("values".into(), string_array(&a.values));
+    m.insert("structuredSnippetAsset".into(), Value::Object(s));
+    Value::Object(m)
+}
+
+// No resourceName: the campaignAsset id is the composite
+// campaign_id~asset_id~field_type, so pinning it would leak a referenced new
+// asset's temp negative id into this op's own id. The campaign / asset fields
+// carry the references.
+fn campaign_asset_create(a: &JsonCampaignAsset, campaign_rn: &str, asset_rn: &str) -> Value {
+    let mut m = Map::new();
+    m.insert("campaign".into(), Value::String(campaign_rn.to_string()));
+    m.insert("asset".into(), Value::String(asset_rn.to_string()));
+    m.insert("fieldType".into(), Value::String(a.field_type.clone()));
+    if let Some(s) = &a.status {
+        m.insert("status".into(), Value::String(s.clone()));
+    }
+    Value::Object(m)
+}
+
+fn campaign_asset_update_body(
+    a: &JsonCampaignAsset,
+    resource_name: &str,
+    fields: &[String],
+) -> Value {
+    let mut m = Map::new();
+    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
+    for f in fields {
+        if f == "status" {
+            if let Some(s) = &a.status {
+                m.insert("status".into(), Value::String(s.clone()));
+            }
+        }
+    }
+    Value::Object(m)
+}
+
+fn ad_group_asset_create(a: &JsonAdGroupAsset, ad_group_rn: &str, asset_rn: &str) -> Value {
+    let mut m = Map::new();
+    m.insert("adGroup".into(), Value::String(ad_group_rn.to_string()));
+    m.insert("asset".into(), Value::String(asset_rn.to_string()));
+    m.insert("fieldType".into(), Value::String(a.field_type.clone()));
+    if let Some(s) = &a.status {
+        m.insert("status".into(), Value::String(s.clone()));
+    }
+    Value::Object(m)
+}
+
+fn ad_group_asset_update_body(
+    a: &JsonAdGroupAsset,
+    resource_name: &str,
+    fields: &[String],
+) -> Value {
+    let mut m = Map::new();
+    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
+    for f in fields {
+        if f == "status" {
+            if let Some(s) = &a.status {
+                m.insert("status".into(), Value::String(s.clone()));
+            }
+        }
+    }
+    Value::Object(m)
+}
+
 fn shared_set_create(s: &JsonSharedSet, resource_name: &str) -> Value {
     let mut m = Map::new();
     m.insert("resourceName".into(), Value::String(resource_name.to_string()));
@@ -1097,6 +1325,36 @@ fn resolve(
             None
         }
     }
+}
+
+/// Resolve a reference that may be either a typed address (looked up in `refs`)
+/// or a literal Google Ads resource-name string (`customers/…`), used passthrough.
+fn resolve_ref_or_literal(
+    refs: &HashMap<String, String>,
+    address: &str,
+    owner: &str,
+    field: &str,
+    errors: &mut Vec<PlanBuildError>,
+) -> Option<String> {
+    if address.starts_with("customers/") {
+        return Some(address.to_string());
+    }
+    resolve(refs, address, owner, field, errors)
+}
+
+/// The trailing id segment of a reference — the literal's own last segment when
+/// it's a `customers/…` resource name, otherwise the last segment of its
+/// planned resource name (a live id or a temp negative id). `0` if unresolved.
+fn id_from_ref(refs: &HashMap<String, String>, address: &str) -> String {
+    let rn = if address.starts_with("customers/") {
+        address
+    } else {
+        match refs.get(address) {
+            Some(rn) => rn.as_str(),
+            None => return "0".to_string(),
+        }
+    };
+    rn.rsplit('/').next().unwrap_or("0").to_string()
 }
 
 fn plan_rn<'a>(
@@ -1895,5 +2153,82 @@ mod tests {
                 "every attachment must reference the one new set's temp resource name"
             );
         }
+    }
+
+    #[test]
+    fn sitelink_asset_and_campaign_link_create_with_temp_id_wiring() {
+        // A fresh sitelink asset + the campaign_asset that links it: the asset
+        // create must precede the link create, and the link's `asset` field must
+        // reference the asset op's temp resource name so the API resolves it.
+        let declared: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "sitelink_assets": [{
+                "id": "m.add_to_chrome",
+                "link_text": "Add to Chrome",
+                "description1": "Free, open source",
+                "final_urls": ["https://ghostery.com/get"]
+            }],
+            "campaign_assets": [{
+                "id": "m.gh_sitelink",
+                "campaign": "customers/100/campaigns/555",
+                "asset": "m.add_to_chrome",
+                "field_type": "SITELINK",
+                "status": "ENABLED"
+            }]
+        }))
+        .expect("valid ExportInput");
+        let live: ExportInput =
+            serde_json::from_value(json!({ "customer_id": "100" })).expect("valid live");
+
+        let report = crate::api::diff::diff(&declared, &live);
+        let plan = match build_mutate_with_diff(&declared, &report, true) {
+            Ok(plan) => plan,
+            Err(errs) => panic!(
+                "plan should build: {}",
+                errs.iter()
+                    .map(|e| format!("{}: {}", e.address, e.message))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        };
+        let ops = plan.body["mutateOperations"].as_array().unwrap();
+
+        let asset_idx = ops
+            .iter()
+            .position(|o| o.get("assetOperation").is_some())
+            .expect("an asset create op");
+        let link_idx = ops
+            .iter()
+            .position(|o| o.get("campaignAssetOperation").is_some())
+            .expect("a campaign asset create op");
+        assert!(
+            asset_idx < link_idx,
+            "the referenced asset must be created before the link that uses it"
+        );
+
+        let asset = ops[asset_idx]["assetOperation"]["create"].clone();
+        let asset_rn = asset["resourceName"].as_str().unwrap();
+        assert!(asset_rn.starts_with("customers/100/assets/-"), "temp asset id: {asset_rn}");
+        assert_eq!(
+            asset["sitelinkAsset"]["linkText"].as_str().unwrap(),
+            "Add to Chrome"
+        );
+        assert_eq!(
+            asset["finalUrls"][0].as_str().unwrap(),
+            "https://ghostery.com/get"
+        );
+
+        let link = ops[link_idx]["campaignAssetOperation"]["create"].clone();
+        assert!(
+            link.get("resourceName").is_none(),
+            "campaign asset create must not pin a composite id that re-claims the new asset's temp id"
+        );
+        assert_eq!(link["campaign"].as_str().unwrap(), "customers/100/campaigns/555");
+        assert_eq!(
+            link["asset"].as_str().unwrap(),
+            asset_rn,
+            "the link must reference the new asset's temp resource name"
+        );
+        assert_eq!(link["fieldType"].as_str().unwrap(), "SITELINK");
     }
 }

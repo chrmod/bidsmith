@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 
 use crate::commands::export::{
-    address_label_payload, ExportInput, JsonAdGroup, JsonAdGroupAd, JsonAdGroupCriterion,
-    JsonBudget, JsonCallAsset, JsonCampaign, JsonCampaignCriterion, JsonCampaignSharedSet,
-    JsonConversionAction, JsonCustomerAsset, JsonSharedCriterion, JsonSharedSet,
+    address_label_payload, ExportInput, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset,
+    JsonAdGroupCriterion, JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign,
+    JsonCampaignAsset, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
+    JsonCustomerAsset, JsonSharedCriterion, JsonSharedSet, JsonSitelinkAsset,
+    JsonStructuredSnippetAsset,
 };
 
 #[derive(Debug, Clone)]
@@ -180,7 +182,10 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     let mut label_plans: Vec<LabelPlanEntry> = Vec::new();
     let mut campaign_match: HashMap<String, String> = HashMap::new();
     let mut ad_group_match: HashMap<String, String> = HashMap::new();
-    let mut call_asset_match: HashMap<String, String> = HashMap::new();
+    // declared asset address -> live asset id, across every asset type
+    // (call / sitelink / callout / structured snippet). Consumed by the
+    // customer_asset / campaign_asset / ad_group_asset link diffs.
+    let mut asset_match: HashMap<String, String> = HashMap::new();
     let customer_id = declared.customer_id.as_str();
 
     // ---- campaign_budgets (match by name) --------------------------------
@@ -422,7 +427,7 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
             .get(&(d.country_code.clone(), d.phone_number.clone()))
         {
             Some(l) => {
-                call_asset_match.insert(d.id.clone(), l.id.clone());
+                asset_match.insert(d.id.clone(), l.id.clone());
                 action_for_match(l.id.clone(), diff_call_asset(d, l))
             }
             None => Action::Create,
@@ -434,12 +439,69 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         });
     }
 
+    let live_sitelink_assets: HashMap<String, &JsonSitelinkAsset> = live
+        .sitelink_assets
+        .iter()
+        .map(|a| (sitelink_asset_key(a), a))
+        .collect();
+    for d in &declared.sitelink_assets {
+        let action = match live_sitelink_assets.get(&sitelink_asset_key(d)) {
+            Some(l) => {
+                asset_match.insert(d.id.clone(), l.id.clone());
+                action_for_match(l.id.clone(), Vec::new())
+            }
+            None => Action::Create,
+        };
+        diffs.push(ResourceDiff {
+            address: d.id.clone(),
+            kind: "sitelink_asset",
+            action,
+        });
+    }
+
+    let live_callout_assets: HashMap<&str, &JsonCalloutAsset> =
+        live.callout_assets.iter().map(|a| (a.text.as_str(), a)).collect();
+    for d in &declared.callout_assets {
+        let action = match live_callout_assets.get(d.text.as_str()) {
+            Some(l) => {
+                asset_match.insert(d.id.clone(), l.id.clone());
+                action_for_match(l.id.clone(), Vec::new())
+            }
+            None => Action::Create,
+        };
+        diffs.push(ResourceDiff {
+            address: d.id.clone(),
+            kind: "callout_asset",
+            action,
+        });
+    }
+
+    let live_structured_snippet_assets: HashMap<String, &JsonStructuredSnippetAsset> = live
+        .structured_snippet_assets
+        .iter()
+        .map(|a| (structured_snippet_asset_key(a), a))
+        .collect();
+    for d in &declared.structured_snippet_assets {
+        let action = match live_structured_snippet_assets.get(&structured_snippet_asset_key(d)) {
+            Some(l) => {
+                asset_match.insert(d.id.clone(), l.id.clone());
+                action_for_match(l.id.clone(), Vec::new())
+            }
+            None => Action::Create,
+        };
+        diffs.push(ResourceDiff {
+            address: d.id.clone(),
+            kind: "structured_snippet_asset",
+            action,
+        });
+    }
+
     let mut live_customer_assets: HashMap<(String, String), &JsonCustomerAsset> = HashMap::new();
     for a in &live.customer_assets {
         live_customer_assets.insert((a.asset.clone(), a.field_type.clone()), a);
     }
     for d in &declared.customer_assets {
-        let action = match call_asset_match.get(&d.asset) {
+        let action = match asset_match.get(&d.asset) {
             Some(asset_id) => match live_customer_assets
                 .get(&(asset_id.clone(), d.field_type.clone()))
             {
@@ -451,6 +513,54 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         diffs.push(ResourceDiff {
             address: d.id.clone(),
             kind: "customer_asset",
+            action,
+        });
+    }
+
+    let live_campaign_assets: HashMap<(String, String, String), &JsonCampaignAsset> = live
+        .campaign_assets
+        .iter()
+        .map(|a| ((a.campaign.clone(), a.asset.clone(), a.field_type.clone()), a))
+        .collect();
+    for d in &declared.campaign_assets {
+        let action = match (resolve_campaign_id(&campaign_match, &d.campaign), asset_match.get(&d.asset)) {
+            (Some(campaign_id), Some(asset_id)) => match live_campaign_assets.get(&(
+                campaign_id,
+                asset_id.clone(),
+                d.field_type.clone(),
+            )) {
+                Some(l) => action_for_match(l.id.clone(), diff_campaign_asset(d, l)),
+                None => Action::Create,
+            },
+            _ => Action::Create,
+        };
+        diffs.push(ResourceDiff {
+            address: d.id.clone(),
+            kind: "campaign_asset",
+            action,
+        });
+    }
+
+    let live_ad_group_assets: HashMap<(String, String, String), &JsonAdGroupAsset> = live
+        .ad_group_assets
+        .iter()
+        .map(|a| ((a.ad_group.clone(), a.asset.clone(), a.field_type.clone()), a))
+        .collect();
+    for d in &declared.ad_group_assets {
+        let action = match (resolve_ad_group_id(&ad_group_match, &d.ad_group), asset_match.get(&d.asset)) {
+            (Some(ad_group_id), Some(asset_id)) => match live_ad_group_assets.get(&(
+                ad_group_id,
+                asset_id.clone(),
+                d.field_type.clone(),
+            )) {
+                Some(l) => action_for_match(l.id.clone(), diff_ad_group_asset(d, l)),
+                None => Action::Create,
+            },
+            _ => Action::Create,
+        };
+        diffs.push(ResourceDiff {
+            address: d.id.clone(),
+            kind: "ad_group_asset",
             action,
         });
     }
@@ -1100,7 +1210,58 @@ fn diff_call_asset(_d: &JsonCallAsset, _l: &JsonCallAsset) -> Vec<String> {
     Vec::new()
 }
 
+// Assets are content-immutable in the Google Ads API: editing a sitelink's text
+// mints a new asset. So identity is the full content tuple, and there are no
+// in-place field updates — a content change plans as create (of a new asset).
+fn sitelink_asset_key(a: &JsonSitelinkAsset) -> String {
+    format!(
+        "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        a.link_text,
+        a.description1.as_deref().unwrap_or(""),
+        a.description2.as_deref().unwrap_or(""),
+        a.final_urls.join(",")
+    )
+}
+
+fn structured_snippet_asset_key(a: &JsonStructuredSnippetAsset) -> String {
+    format!("{}\u{1f}{}", a.header, a.values.join(","))
+}
+
+fn resolve_campaign_id(campaign_match: &HashMap<String, String>, campaign: &str) -> Option<String> {
+    campaign_match.get(campaign).cloned().or_else(|| {
+        campaign
+            .starts_with("customers/")
+            .then(|| campaign.rsplit('/').next().map(str::to_string))
+            .flatten()
+    })
+}
+
+fn resolve_ad_group_id(ad_group_match: &HashMap<String, String>, ad_group: &str) -> Option<String> {
+    ad_group_match.get(ad_group).cloned().or_else(|| {
+        ad_group
+            .starts_with("customers/")
+            .then(|| ad_group.rsplit('/').next().map(str::to_string))
+            .flatten()
+    })
+}
+
 fn diff_customer_asset(d: &JsonCustomerAsset, l: &JsonCustomerAsset) -> Vec<String> {
+    let mut c = Vec::new();
+    if d.status != l.status {
+        c.push("status".into());
+    }
+    c
+}
+
+fn diff_campaign_asset(d: &JsonCampaignAsset, l: &JsonCampaignAsset) -> Vec<String> {
+    let mut c = Vec::new();
+    if d.status != l.status {
+        c.push("status".into());
+    }
+    c
+}
+
+fn diff_ad_group_asset(d: &JsonAdGroupAsset, l: &JsonAdGroupAsset) -> Vec<String> {
     let mut c = Vec::new();
     if d.status != l.status {
         c.push("status".into());

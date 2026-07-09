@@ -1,0 +1,94 @@
+---
+title: Make a search ad render taller with extensions
+description: Add sitelinks, callouts, and structured snippets so your Search ad takes up more of the page and pushes the organic results down.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A Search ad only wins the space above the organic results if it renders
+*large*. The levers that grow it vertically are the **text extensions**:
+sitelinks (extra links), callouts (short highlights), and structured
+snippets (a labelled list). This recipe adds all three and attaches them
+to a campaign.
+
+Each extension is two pieces: an **asset** that holds the content, and a
+**link** that attaches the asset to a campaign (or ad group). You author
+both in your `.bid` files, so `plan` / `apply` and `refresh` manage them
+like everything else.
+
+## 1. Author the assets
+
+```hcl
+resource "google_ads_sitelink_asset" "add_to_chrome" {
+  link_text    = "Add to Chrome"
+  description1  = "Free, open source"
+  description2  = "Install in 10 seconds"
+  final_urls   = ["https://www.ghostery.com/ghostery-ad-blocker"]
+}
+
+resource "google_ads_callout_asset" "free_open_source" {
+  text = "Free & Open Source"
+}
+
+resource "google_ads_structured_snippet_asset" "features" {
+  header = "Features"
+  values = ["Cookie Banner Blocker", "Ad Blocker", "Tracker Blocker"]
+}
+```
+
+Add a few sitelinks (Google shows them in pairs) and a handful of
+callouts — the more eligible extensions, the more real estate the ad can
+claim.
+
+## 2. Attach them to the campaign
+
+A [`google_ads_campaign_asset`](/bidsmith/resources/google_ads_campaign_asset/)
+links one asset to one campaign. The `field_type` says how the asset is
+used and must match the asset's kind:
+
+```hcl
+resource "google_ads_campaign_asset" "gh_cookies_sitelink" {
+  campaign   = google_ads_campaign.gh_cookies.id
+  asset      = google_ads_sitelink_asset.add_to_chrome.id
+  field_type = "SITELINK"
+}
+
+resource "google_ads_campaign_asset" "gh_cookies_callout" {
+  campaign   = google_ads_campaign.gh_cookies.id
+  asset      = google_ads_callout_asset.free_open_source.id
+  field_type = "CALLOUT"
+}
+
+resource "google_ads_campaign_asset" "gh_cookies_snippet" {
+  campaign   = google_ads_campaign.gh_cookies.id
+  asset      = google_ads_structured_snippet_asset.features.id
+  field_type = "STRUCTURED_SNIPPET"
+}
+```
+
+Run `bidsmith plan` to preview the new assets and links, then
+`bidsmith apply`.
+
+<Aside type="tip" title="Account-wide or ad-group-specific?">
+  To show the same extension across **every** campaign, attach it with
+  [`google_ads_customer_asset`](/bidsmith/resources/google_ads_customer_asset/)
+  instead. To scope it to a single ad group, use
+  [`google_ads_ad_group_asset`](/bidsmith/resources/google_ads_ad_group_asset/).
+</Aside>
+
+## A note on editing an extension's text
+
+Extension assets are **content-immutable** in Google Ads — you can't edit
+a sitelink's text in place; the platform mints a new asset. So changing
+`link_text` (or a callout's `text`, or a snippet's `values`) plans as a
+*new* asset plus a new link, not an in-place update. That's expected, and
+it matches how the Google Ads UI behaves.
+
+## See also
+
+- [`google_ads_sitelink_asset`](/bidsmith/resources/google_ads_sitelink_asset/),
+  [`google_ads_callout_asset`](/bidsmith/resources/google_ads_callout_asset/),
+  [`google_ads_structured_snippet_asset`](/bidsmith/resources/google_ads_structured_snippet_asset/)
+  — the assets.
+- [`google_ads_campaign_asset`](/bidsmith/resources/google_ads_campaign_asset/)
+  — the campaign-scoped link.

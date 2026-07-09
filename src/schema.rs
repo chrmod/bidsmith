@@ -221,6 +221,15 @@ const ASSET_FIELD_TYPE: &[&str] = &[
     "DISCOVERY_CAROUSEL_CARD",
 ];
 
+// Every asset resource type an asset-link (`customer_asset` / `campaign_asset` /
+// `ad_group_asset`) may point its `asset` reference at.
+const ASSET_TYPES: &[&str] = &[
+    "google_ads_call_asset",
+    "google_ads_sitelink_asset",
+    "google_ads_callout_asset",
+    "google_ads_structured_snippet_asset",
+];
+
 fn rsa_asset_block(name: &'static str) -> NestedBlockSchema {
     NestedBlockSchema {
         name,
@@ -669,6 +678,43 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
             },
         );
 
+        // A sitelink Asset — a text extension that renders extra links below an
+        // RSA. `final_urls` lives on the parent Asset; link text + descriptions
+        // live in the `sitelink_asset` sub-object at the API level.
+        m.insert(
+            "google_ads_sitelink_asset",
+            BlockSchema {
+                attributes: vec![
+                    attr("link_text", FieldType::String, true),
+                    attr("description1", FieldType::String, false),
+                    attr("description2", FieldType::String, false),
+                    attr("final_urls", FieldType::list_of(FieldType::String), true),
+                ],
+                blocks: vec![],
+            },
+        );
+
+        // A callout Asset — a short, non-clickable phrase that expands an RSA.
+        m.insert(
+            "google_ads_callout_asset",
+            BlockSchema {
+                attributes: vec![attr("text", FieldType::String, true)],
+                blocks: vec![],
+            },
+        );
+
+        // A structured-snippet Asset — a header plus a list of values.
+        m.insert(
+            "google_ads_structured_snippet_asset",
+            BlockSchema {
+                attributes: vec![
+                    attr("header", FieldType::String, true),
+                    attr("values", FieldType::list_of(FieldType::String), true),
+                ],
+                blocks: vec![],
+            },
+        );
+
         // A YouTube video Asset — a reference to a video already published on a
         // YouTube channel, addressed by its 11-char video id. bidsmith records the
         // reference so a video ad can point at it; it never uploads the video file
@@ -742,16 +788,48 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
             "google_ads_customer_asset",
             BlockSchema {
                 attributes: vec![
-                    attr(
-                        "asset",
-                        FieldType::Ref(&["google_ads_call_asset"]),
-                        true,
-                    ),
+                    attr("asset", FieldType::Ref(ASSET_TYPES), true),
                     attr(
                         "field_type",
                         FieldType::Enum(ASSET_FIELD_TYPE),
                         true,
                     ),
+                    attr("status", FieldType::Enum(STATUS), false)
+                        .with_default(DefaultValue::Str(DEFAULT_STATUS)),
+                ],
+                blocks: vec![],
+            },
+        );
+
+        m.insert(
+            "google_ads_campaign_asset",
+            BlockSchema {
+                attributes: vec![
+                    attr(
+                        "campaign",
+                        FieldType::RefOrResourceName(&["google_ads_campaign"]),
+                        true,
+                    ),
+                    attr("asset", FieldType::Ref(ASSET_TYPES), true),
+                    attr("field_type", FieldType::Enum(ASSET_FIELD_TYPE), true),
+                    attr("status", FieldType::Enum(STATUS), false)
+                        .with_default(DefaultValue::Str(DEFAULT_STATUS)),
+                ],
+                blocks: vec![],
+            },
+        );
+
+        m.insert(
+            "google_ads_ad_group_asset",
+            BlockSchema {
+                attributes: vec![
+                    attr(
+                        "ad_group",
+                        FieldType::RefOrResourceName(&["google_ads_ad_group"]),
+                        true,
+                    ),
+                    attr("asset", FieldType::Ref(ASSET_TYPES), true),
+                    attr("field_type", FieldType::Enum(ASSET_FIELD_TYPE), true),
                     attr("status", FieldType::Enum(STATUS), false)
                         .with_default(DefaultValue::Str(DEFAULT_STATUS)),
                 ],

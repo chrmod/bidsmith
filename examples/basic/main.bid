@@ -119,6 +119,43 @@ resource "google_ads_customer_asset" "main_phone_link" {
   status = "ENABLED"
 }
 
+resource "google_ads_sitelink_asset" "shop_deals" {
+  link_text = "Shop Summer Deals"
+  description1 = "Up to 40% off"
+  description2 = "Limited-time savings"
+  final_urls = ["https://www.google.com/?q=summer+deals"]
+}
+
+resource "google_ads_callout_asset" "free_shipping" {
+  text = "Free Shipping"
+}
+
+resource "google_ads_structured_snippet_asset" "brands" {
+  header = "Brands"
+  values = ["Acme", "Globex", "Initech"]
+}
+
+resource "google_ads_campaign_asset" "summer_sitelink" {
+  campaign = google_ads_campaign.summer_search.id
+  asset = google_ads_sitelink_asset.shop_deals.id
+  field_type = "SITELINK"
+  status = "ENABLED"
+}
+
+resource "google_ads_campaign_asset" "summer_callout" {
+  campaign = google_ads_campaign.summer_search.id
+  asset = google_ads_callout_asset.free_shipping.id
+  field_type = "CALLOUT"
+  status = "ENABLED"
+}
+
+resource "google_ads_campaign_asset" "summer_snippet" {
+  campaign = google_ads_campaign.summer_search.id
+  asset = google_ads_structured_snippet_asset.brands.id
+  field_type = "STRUCTURED_SNIPPET"
+  status = "ENABLED"
+}
+
 resource "google_ads_campaign_criterion" "summer_proximity_warsaw" {
   campaign = google_ads_campaign.summer_search.id
   status = "ENABLED"

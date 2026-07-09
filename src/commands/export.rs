@@ -70,7 +70,17 @@ pub struct ExportInput {
     #[serde(default)]
     pub call_assets: Vec<JsonCallAsset>,
     #[serde(default)]
+    pub sitelink_assets: Vec<JsonSitelinkAsset>,
+    #[serde(default)]
+    pub callout_assets: Vec<JsonCalloutAsset>,
+    #[serde(default)]
+    pub structured_snippet_assets: Vec<JsonStructuredSnippetAsset>,
+    #[serde(default)]
     pub customer_assets: Vec<JsonCustomerAsset>,
+    #[serde(default)]
+    pub campaign_assets: Vec<JsonCampaignAsset>,
+    #[serde(default)]
+    pub ad_group_assets: Vec<JsonAdGroupAsset>,
     #[serde(default)]
     pub shared_sets: Vec<JsonSharedSet>,
     #[serde(default)]
@@ -308,8 +318,54 @@ pub struct JsonCallAsset {
 }
 
 #[derive(Deserialize)]
+pub struct JsonSitelinkAsset {
+    pub id: String,
+    pub link_text: String,
+    #[serde(default)]
+    pub description1: Option<String>,
+    #[serde(default)]
+    pub description2: Option<String>,
+    #[serde(default)]
+    pub final_urls: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct JsonCalloutAsset {
+    pub id: String,
+    pub text: String,
+}
+
+#[derive(Deserialize)]
+pub struct JsonStructuredSnippetAsset {
+    pub id: String,
+    pub header: String,
+    #[serde(default)]
+    pub values: Vec<String>,
+}
+
+#[derive(Deserialize)]
 pub struct JsonCustomerAsset {
     pub id: String,
+    pub asset: String,
+    pub field_type: String,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct JsonCampaignAsset {
+    pub id: String,
+    pub campaign: String,
+    pub asset: String,
+    pub field_type: String,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct JsonAdGroupAsset {
+    pub id: String,
+    pub ad_group: String,
     pub asset: String,
     pub field_type: String,
     #[serde(default)]
@@ -401,6 +457,12 @@ impl ExportInput {
             c.status.get_or_insert_with(status);
         }
         for a in &mut self.customer_assets {
+            a.status.get_or_insert_with(status);
+        }
+        for a in &mut self.campaign_assets {
+            a.status.get_or_insert_with(status);
+        }
+        for a in &mut self.ad_group_assets {
             a.status.get_or_insert_with(status);
         }
         for s in &mut self.shared_sets {
@@ -495,6 +557,8 @@ pub fn filter_removed(input: &mut ExportInput) {
         .conversion_actions
         .retain(|c| !is_removed(&c.status));
     input.customer_assets.retain(|a| !is_removed(&a.status));
+    input.campaign_assets.retain(|a| !is_removed(&a.status));
+    input.ad_group_assets.retain(|a| !is_removed(&a.status));
     input.shared_sets.retain(|s| !is_removed(&s.status));
     input
         .campaign_shared_sets
@@ -537,8 +601,28 @@ pub fn prune_orphans(input: &mut ExportInput) -> Vec<String> {
         }
         keep
     });
+    input.campaign_assets.retain(|a| {
+        let keep = a.campaign.starts_with("customers/") || campaign_ids.contains(&a.campaign);
+        if !keep {
+            dropped.push(format!(
+                "campaign_asset {} (campaign {} not in snapshot)",
+                a.id, a.campaign
+            ));
+        }
+        keep
+    });
 
     let ad_group_ids: HashSet<String> = input.ad_groups.iter().map(|g| g.id.clone()).collect();
+    input.ad_group_assets.retain(|a| {
+        let keep = a.ad_group.starts_with("customers/") || ad_group_ids.contains(&a.ad_group);
+        if !keep {
+            dropped.push(format!(
+                "ad_group_asset {} (ad_group {} not in snapshot)",
+                a.id, a.ad_group
+            ));
+        }
+        keep
+    });
     input.ad_group_ads.retain(|a| {
         let keep = ad_group_ids.contains(&a.ad_group);
         if !keep {
@@ -657,7 +741,7 @@ fn write_account_assets(
     input: &ExportInput,
     names: &mut NameAllocator,
     conversion_action_addr: &mut HashMap<String, String>,
-    call_asset_addr: &mut HashMap<String, String>,
+    asset_addr: &mut HashMap<String, String>,
     youtube_asset_addr: &mut HashMap<String, String>,
 ) {
     for v in &input.youtube_video_assets {
@@ -682,17 +766,72 @@ fn write_account_assets(
     for a in &input.call_assets {
         let base = format!("call_{}_{}", a.country_code, a.phone_number);
         let name = names.allocate("google_ads_call_asset", &slugify(&base));
-        call_asset_addr.insert(a.id.clone(), format!("google_ads_call_asset.{name}"));
+        asset_addr.insert(a.id.clone(), format!("google_ads_call_asset.{name}"));
         write_call_asset(out, &name, a, conversion_action_addr);
     }
+    for a in &input.sitelink_assets {
+        let base = format!("sitelink_{}", slugify(&a.link_text));
+        let name = names.allocate("google_ads_sitelink_asset", &base);
+        asset_addr.insert(a.id.clone(), format!("google_ads_sitelink_asset.{name}"));
+        write_sitelink_asset(out, &name, a);
+    }
+    for a in &input.callout_assets {
+        let base = format!("callout_{}", slugify(&a.text));
+        let name = names.allocate("google_ads_callout_asset", &base);
+        asset_addr.insert(a.id.clone(), format!("google_ads_callout_asset.{name}"));
+        write_callout_asset(out, &name, a);
+    }
+    for a in &input.structured_snippet_assets {
+        let base = format!("snippet_{}", slugify(&a.header));
+        let name = names.allocate("google_ads_structured_snippet_asset", &base);
+        asset_addr.insert(
+            a.id.clone(),
+            format!("google_ads_structured_snippet_asset.{name}"),
+        );
+        write_structured_snippet_asset(out, &name, a);
+    }
     for a in &input.customer_assets {
-        let base = call_asset_addr
+        let base = asset_addr
             .get(&a.asset)
-            .and_then(|addr| addr.strip_prefix("google_ads_call_asset."))
+            .and_then(|addr| addr.rsplit('.').next())
             .map(|s| format!("link_{s}"))
             .unwrap_or_else(|| slugify(&a.id));
         let name = names.allocate("google_ads_customer_asset", &slugify(&base));
-        write_customer_asset(out, &name, a, call_asset_addr);
+        write_customer_asset(out, &name, a, asset_addr);
+    }
+}
+
+fn write_campaign_assets(
+    out: &mut String,
+    input: &ExportInput,
+    names: &mut NameAllocator,
+    campaign_addr: &HashMap<String, String>,
+    ad_group_addr: &HashMap<String, String>,
+    asset_addr: &HashMap<String, String>,
+) {
+    for a in &input.campaign_assets {
+        let asset_local = asset_addr.get(&a.asset).and_then(|addr| addr.rsplit('.').next());
+        let camp_local = campaign_addr
+            .get(&a.campaign)
+            .and_then(|addr| addr.rsplit('.').next());
+        let base = match (camp_local, asset_local) {
+            (Some(c), Some(s)) => format!("{c}_{s}"),
+            _ => slugify(&a.id),
+        };
+        let name = names.allocate("google_ads_campaign_asset", &slugify(&base));
+        write_campaign_asset(out, &name, a, campaign_addr, asset_addr);
+    }
+    for a in &input.ad_group_assets {
+        let asset_local = asset_addr.get(&a.asset).and_then(|addr| addr.rsplit('.').next());
+        let ag_local = ad_group_addr
+            .get(&a.ad_group)
+            .and_then(|addr| addr.rsplit('.').next());
+        let base = match (ag_local, asset_local) {
+            (Some(g), Some(s)) => format!("{g}_{s}"),
+            _ => slugify(&a.id),
+        };
+        let name = names.allocate("google_ads_ad_group_asset", &slugify(&base));
+        write_ad_group_asset(out, &name, a, ad_group_addr, asset_addr);
     }
 }
 
@@ -793,7 +932,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
     let mut campaign_addr: HashMap<String, String> = HashMap::new();
     let mut ad_group_addr: HashMap<String, String> = HashMap::new();
     let mut conversion_action_addr: HashMap<String, String> = HashMap::new();
-    let mut call_asset_addr: HashMap<String, String> = HashMap::new();
+    let mut asset_addr: HashMap<String, String> = HashMap::new();
     let mut youtube_asset_addr: HashMap<String, String> = HashMap::new();
     let mut shared_set_addr: HashMap<String, String> = HashMap::new();
 
@@ -803,7 +942,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
         input,
         &mut names,
         &mut conversion_action_addr,
-        &mut call_asset_addr,
+        &mut asset_addr,
         &mut youtube_asset_addr,
     );
     write_shared_sets_and_criteria(&mut account, input, &mut names, &mut shared_set_addr);
@@ -814,7 +953,9 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
         || !input.ad_group_ads.is_empty()
         || !input.ad_group_criteria.is_empty()
         || !input.campaign_criteria.is_empty()
-        || !input.campaign_shared_sets.is_empty();
+        || !input.campaign_shared_sets.is_empty()
+        || !input.campaign_assets.is_empty()
+        || !input.ad_group_assets.is_empty();
 
     if has_campaign_resources {
         write_provider(&mut campaigns, input);
@@ -838,6 +979,14 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
             &mut names,
             &campaign_addr,
             &shared_set_addr,
+        );
+        write_campaign_assets(
+            &mut campaigns,
+            input,
+            &mut names,
+            &campaign_addr,
+            &ad_group_addr,
+            &asset_addr,
         );
     }
 
@@ -865,7 +1014,7 @@ fn render_inner(input: &ExportInput, fold: bool) -> String {
     let mut campaign_addr: HashMap<String, String> = HashMap::new();
     let mut ad_group_addr: HashMap<String, String> = HashMap::new();
     let mut conversion_action_addr: HashMap<String, String> = HashMap::new();
-    let mut call_asset_addr: HashMap<String, String> = HashMap::new();
+    let mut asset_addr: HashMap<String, String> = HashMap::new();
     let mut youtube_asset_addr: HashMap<String, String> = HashMap::new();
     let mut shared_set_addr: HashMap<String, String> = HashMap::new();
 
@@ -875,7 +1024,7 @@ fn render_inner(input: &ExportInput, fold: bool) -> String {
         input,
         &mut names,
         &mut conversion_action_addr,
-        &mut call_asset_addr,
+        &mut asset_addr,
         &mut youtube_asset_addr,
     );
     if let Some(p) = &plan {
@@ -896,6 +1045,14 @@ fn render_inner(input: &ExportInput, fold: bool) -> String {
     );
     write_shared_sets_and_criteria(&mut out, input, &mut names, &mut shared_set_addr);
     write_campaign_shared_sets(&mut out, input, &mut names, &campaign_addr, &shared_set_addr);
+    write_campaign_assets(
+        &mut out,
+        input,
+        &mut names,
+        &campaign_addr,
+        &ad_group_addr,
+        &asset_addr,
+    );
 
     while out.ends_with("\n\n\n") {
         out.pop();
@@ -1788,18 +1945,92 @@ fn write_call_asset(
     out.push_str("}\n\n");
 }
 
+fn write_sitelink_asset(out: &mut String, name: &str, a: &JsonSitelinkAsset) {
+    let _ = writeln!(out, "resource \"google_ads_sitelink_asset\" \"{name}\" {{");
+    write_attr(out, 1, "link_text", &fmt_string(&a.link_text));
+    if let Some(s) = &a.description1 {
+        write_attr(out, 1, "description1", &fmt_string(s));
+    }
+    if let Some(s) = &a.description2 {
+        write_attr(out, 1, "description2", &fmt_string(s));
+    }
+    write_attr(out, 1, "final_urls", &fmt_string_list(&a.final_urls));
+    out.push_str("}\n\n");
+}
+
+fn write_callout_asset(out: &mut String, name: &str, a: &JsonCalloutAsset) {
+    let _ = writeln!(out, "resource \"google_ads_callout_asset\" \"{name}\" {{");
+    write_attr(out, 1, "text", &fmt_string(&a.text));
+    out.push_str("}\n\n");
+}
+
+fn write_structured_snippet_asset(out: &mut String, name: &str, a: &JsonStructuredSnippetAsset) {
+    let _ = writeln!(
+        out,
+        "resource \"google_ads_structured_snippet_asset\" \"{name}\" {{"
+    );
+    write_attr(out, 1, "header", &fmt_string(&a.header));
+    write_attr(out, 1, "values", &fmt_string_list(&a.values));
+    out.push_str("}\n\n");
+}
+
+fn asset_reference(asset_addr: &HashMap<String, String>, asset: &str) -> String {
+    match asset_addr.get(asset) {
+        Some(addr) => format!("{addr}.id"),
+        None => format!("\"<unresolved asset {asset}>\""),
+    }
+}
+
 fn write_customer_asset(
     out: &mut String,
     name: &str,
     a: &JsonCustomerAsset,
-    call_asset_addr: &HashMap<String, String>,
+    asset_addr: &HashMap<String, String>,
 ) {
     let _ = writeln!(out, "resource \"google_ads_customer_asset\" \"{name}\" {{");
-    let asset_ref = match call_asset_addr.get(&a.asset) {
+    write_attr(out, 1, "asset", &asset_reference(asset_addr, &a.asset));
+    write_attr(out, 1, "field_type", &fmt_string(&a.field_type));
+    if let Some(s) = &a.status {
+        write_attr(out, 1, "status", &fmt_string(s));
+    }
+    out.push_str("}\n\n");
+}
+
+fn write_campaign_asset(
+    out: &mut String,
+    name: &str,
+    a: &JsonCampaignAsset,
+    campaign_addr: &HashMap<String, String>,
+    asset_addr: &HashMap<String, String>,
+) {
+    let _ = writeln!(out, "resource \"google_ads_campaign_asset\" \"{name}\" {{");
+    let campaign_ref = match campaign_addr.get(&a.campaign) {
         Some(addr) => format!("{addr}.id"),
-        None => format!("\"<unresolved asset {}>\"", a.asset),
+        None => fmt_string(&a.campaign),
     };
-    write_attr(out, 1, "asset", &asset_ref);
+    write_attr(out, 1, "campaign", &campaign_ref);
+    write_attr(out, 1, "asset", &asset_reference(asset_addr, &a.asset));
+    write_attr(out, 1, "field_type", &fmt_string(&a.field_type));
+    if let Some(s) = &a.status {
+        write_attr(out, 1, "status", &fmt_string(s));
+    }
+    out.push_str("}\n\n");
+}
+
+fn write_ad_group_asset(
+    out: &mut String,
+    name: &str,
+    a: &JsonAdGroupAsset,
+    ad_group_addr: &HashMap<String, String>,
+    asset_addr: &HashMap<String, String>,
+) {
+    let _ = writeln!(out, "resource \"google_ads_ad_group_asset\" \"{name}\" {{");
+    let ad_group_ref = match ad_group_addr.get(&a.ad_group) {
+        Some(addr) => format!("{addr}.id"),
+        None => fmt_string(&a.ad_group),
+    };
+    write_attr(out, 1, "ad_group", &ad_group_ref);
+    write_attr(out, 1, "asset", &asset_reference(asset_addr, &a.asset));
     write_attr(out, 1, "field_type", &fmt_string(&a.field_type));
     if let Some(s) = &a.status {
         write_attr(out, 1, "status", &fmt_string(s));

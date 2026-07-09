@@ -165,6 +165,64 @@
           "fieldType": "CALL",
           "status": "ENABLED"
         }
+      },
+      {
+        "asset": {
+          "resourceName": "customers/1234567890/assets/8101",
+          "id": "8101",
+          "finalUrls": ["https://www.example.com/deals"],
+          "sitelinkAsset": {
+            "linkText": "Shop Summer Deals",
+            "description1": "Up to 40% off",
+            "description2": "Limited-time savings"
+          }
+        }
+      },
+      {
+        "asset": {
+          "resourceName": "customers/1234567890/assets/8102",
+          "id": "8102",
+          "calloutAsset": {
+            "calloutText": "Free Shipping"
+          }
+        }
+      },
+      {
+        "asset": {
+          "resourceName": "customers/1234567890/assets/8103",
+          "id": "8103",
+          "structuredSnippetAsset": {
+            "header": "Brands",
+            "values": ["Acme", "Globex", "Initech"]
+          }
+        }
+      },
+      {
+        "campaignAsset": {
+          "resourceName": "customers/1234567890/campaignAssets/2001~8101~SITELINK",
+          "campaign": "customers/1234567890/campaigns/2001",
+          "asset": "customers/1234567890/assets/8101",
+          "fieldType": "SITELINK",
+          "status": "ENABLED"
+        }
+      },
+      {
+        "campaignAsset": {
+          "resourceName": "customers/1234567890/campaignAssets/2001~8102~CALLOUT",
+          "campaign": "customers/1234567890/campaigns/2001",
+          "asset": "customers/1234567890/assets/8102",
+          "fieldType": "CALLOUT",
+          "status": "ENABLED"
+        }
+      },
+      {
+        "campaignAsset": {
+          "resourceName": "customers/1234567890/campaignAssets/2001~8103~STRUCTURED_SNIPPET",
+          "campaign": "customers/1234567890/campaigns/2001",
+          "asset": "customers/1234567890/assets/8103",
+          "fieldType": "STRUCTURED_SNIPPET",
+          "status": "ENABLED"
+        }
       }
     ]
   }
