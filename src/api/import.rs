@@ -6,7 +6,8 @@ use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
     JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCustomerAsset,
-    JsonDevice, JsonKeyword, JsonLanguage, JsonLocation, JsonManualCpc, JsonNetworkSettings,
+    JsonDemandGenVideoResponsiveAd, JsonDevice, JsonKeyword, JsonLanguage, JsonLocation,
+    JsonManualCpc, JsonNetworkSettings,
     JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedCriterion, JsonSharedSet,
     JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonValueSettings, JsonVideoResponsiveAd,
     JsonYoutubeVideoAsset,
@@ -595,6 +596,7 @@ fn import_ad(ctx: &Ctx, block: &Block) -> JsonAd {
     let mut final_urls: Vec<String> = Vec::new();
     let mut rsa = None;
     let mut video = None;
+    let mut demand_gen = None;
 
     for s in block.body.iter() {
         match s {
@@ -606,6 +608,9 @@ fn import_ad(ctx: &Ctx, block: &Block) -> JsonAd {
             Structure::Block(b) => match b.ident.as_str() {
                 "responsive_search_ad" => rsa = Some(import_rsa(ctx, b)),
                 "video_responsive_ad" => video = Some(import_video_ad(ctx, b)),
+                "demand_gen_video_responsive_ad" => {
+                    demand_gen = Some(import_demand_gen_video_ad(ctx, b))
+                }
                 _ => {}
             },
         }
@@ -616,6 +621,44 @@ fn import_ad(ctx: &Ctx, block: &Block) -> JsonAd {
         final_urls,
         responsive_search_ad: rsa,
         video_responsive_ad: video,
+        demand_gen_video_responsive_ad: demand_gen,
+    }
+}
+
+fn import_demand_gen_video_ad(ctx: &Ctx, block: &Block) -> JsonDemandGenVideoResponsiveAd {
+    let mut videos: Vec<String> = Vec::new();
+    let mut headlines: Vec<String> = Vec::new();
+    let mut long_headlines: Vec<String> = Vec::new();
+    let mut descriptions: Vec<String> = Vec::new();
+    let mut call_to_actions: Vec<String> = Vec::new();
+    let mut breadcrumb1 = None;
+    let mut breadcrumb2 = None;
+    for s in block.body.iter() {
+        let Structure::Attribute(a) = s else { continue };
+        match a.key.as_str() {
+            "videos" => {
+                videos = extract_resource_ref_list(ctx, &a.value)
+                    .into_iter()
+                    .map(|r| ctx.resolve_ref(&r))
+                    .collect();
+            }
+            "headlines" => headlines = expect_string_list(ctx, &a.value),
+            "long_headlines" => long_headlines = expect_string_list(ctx, &a.value),
+            "descriptions" => descriptions = expect_string_list(ctx, &a.value),
+            "call_to_actions" => call_to_actions = expect_string_list(ctx, &a.value),
+            "breadcrumb1" => breadcrumb1 = expect_string_owned(ctx, a),
+            "breadcrumb2" => breadcrumb2 = expect_string_owned(ctx, a),
+            _ => {}
+        }
+    }
+    JsonDemandGenVideoResponsiveAd {
+        videos,
+        headlines,
+        long_headlines,
+        descriptions,
+        call_to_actions,
+        breadcrumb1,
+        breadcrumb2,
     }
 }
 
@@ -1525,6 +1568,15 @@ fn extract_resource_ref(ctx: &Ctx, value: &Expression) -> Option<String> {
     Some(format!("{}.{}", path[0], path[1]))
 }
 
+fn extract_resource_ref_list(ctx: &Ctx, value: &Expression) -> Vec<String> {
+    let Expression::Array(arr) = ctx.resolve_value(value) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|item| extract_resource_ref(ctx, item))
+        .collect()
+}
+
 fn extract_traversal_path(t: &Traversal) -> Option<Vec<String>> {
     let mut path = Vec::new();
     match &t.expr {
@@ -1776,6 +1828,55 @@ resource "google_ads_ad_group_ad" "preroll" {
         assert_eq!(video.call_to_actions, vec!["Install".to_string()]);
         // A video ad carries no RSA.
         assert!(input.ad_group_ads[0].ad.responsive_search_ad.is_none());
+    }
+
+    #[test]
+    fn imports_demand_gen_video_ad() {
+        let input = import_str(
+            "dg",
+            r#"
+resource "google_ads_youtube_video_asset" "shorts" {
+  youtube_video_id = "dQw4w9WgXcQ"
+}
+
+resource "google_ads_ad_group_ad" "shorts_ad" {
+  ad_group = google_ads_ad_group.dg.id
+
+  ad {
+    name       = "Ad 1"
+    final_urls = ["https://example.com"]
+
+    demand_gen_video_responsive_ad {
+      videos         = [google_ads_youtube_video_asset.shorts.id]
+      headlines      = ["Block Ads & Trackers"]
+      long_headlines = ["Block ads and trackers everywhere"]
+      descriptions   = ["Install the free extension."]
+      breadcrumb1    = "Adblocker"
+      breadcrumb2    = "Browser"
+    }
+  }
+}
+"#,
+        );
+
+        let dg = input.ad_group_ads[0]
+            .ad
+            .demand_gen_video_responsive_ad
+            .as_ref()
+            .expect("demand gen ad body imported");
+        assert_eq!(dg.videos.len(), 1);
+        assert!(
+            dg.videos[0].ends_with("google_ads_youtube_video_asset.shorts"),
+            "video ref was {}",
+            dg.videos[0]
+        );
+        assert_eq!(dg.headlines, vec!["Block Ads & Trackers".to_string()]);
+        assert_eq!(dg.long_headlines, vec!["Block ads and trackers everywhere".to_string()]);
+        assert_eq!(dg.breadcrumb1.as_deref(), Some("Adblocker"));
+        assert_eq!(dg.breadcrumb2.as_deref(), Some("Browser"));
+        // A demand gen ad carries no RSA or plain video ad.
+        assert!(input.ad_group_ads[0].ad.responsive_search_ad.is_none());
+        assert!(input.ad_group_ads[0].ad.video_responsive_ad.is_none());
     }
 
     #[test]

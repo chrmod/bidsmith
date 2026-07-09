@@ -6,9 +6,10 @@ use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
     JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCustomerAsset,
-    JsonDevice, JsonKeyword, JsonLanguage, JsonLocation, JsonManualCpc, JsonNetworkSettings,
-    JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedSet, JsonSitelinkAsset,
-    JsonStructuredSnippetAsset, JsonValueSettings,
+    JsonDemandGenVideoResponsiveAd, JsonDevice, JsonKeyword, JsonLanguage, JsonLocation,
+    JsonManualCpc, JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset,
+    JsonSharedSet, JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonValueSettings,
+    JsonYoutubeVideoAsset,
 };
 
 pub fn from_search_response(raw: &str) -> Result<ExportInput, String> {
@@ -70,6 +71,7 @@ struct AdapterState {
     sitelink_assets: BTreeMap<String, JsonSitelinkAsset>,
     callout_assets: BTreeMap<String, JsonCalloutAsset>,
     structured_snippet_assets: BTreeMap<String, JsonStructuredSnippetAsset>,
+    youtube_video_assets: BTreeMap<String, JsonYoutubeVideoAsset>,
     customer_assets: BTreeMap<String, JsonCustomerAsset>,
     campaign_assets: BTreeMap<String, JsonCampaignAsset>,
     ad_group_assets: BTreeMap<String, JsonAdGroupAsset>,
@@ -347,6 +349,7 @@ impl AdapterState {
                     final_urls: Vec::new(),
                     responsive_search_ad: None,
                     video_responsive_ad: None,
+                    demand_gen_video_responsive_ad: None,
                 },
                 managed_address: None,
             });
@@ -375,6 +378,17 @@ impl AdapterState {
                     descriptions: extract_rsa_assets(rsa.get("descriptions")),
                     path1: rsa.get("path1").and_then(Value::as_str).map(String::from),
                     path2: rsa.get("path2").and_then(Value::as_str).map(String::from),
+                });
+            }
+            if let Some(dg) = ad.get("demandGenVideoResponsiveAd") {
+                entry.ad.demand_gen_video_responsive_ad = Some(JsonDemandGenVideoResponsiveAd {
+                    videos: extract_video_asset_ids(dg.get("videos")),
+                    headlines: extract_ad_text_list(dg.get("headlines")),
+                    long_headlines: extract_ad_text_list(dg.get("longHeadlines")),
+                    descriptions: extract_ad_text_list(dg.get("descriptions")),
+                    call_to_actions: extract_ad_text_list(dg.get("callToActions")),
+                    breadcrumb1: dg.get("breadcrumb1").and_then(Value::as_str).map(String::from),
+                    breadcrumb2: dg.get("breadcrumb2").and_then(Value::as_str).map(String::from),
                 });
             }
         }
@@ -689,6 +703,22 @@ impl AdapterState {
                     .collect();
             }
         }
+        if let Some(yt) = v.get("youtubeVideoAsset") {
+            let entry = self
+                .youtube_video_assets
+                .entry(id.clone())
+                .or_insert_with(|| JsonYoutubeVideoAsset {
+                    id: id.clone(),
+                    youtube_video_id: String::new(),
+                    youtube_video_title: None,
+                });
+            if let Some(s) = yt.get("youtubeVideoId").and_then(Value::as_str) {
+                entry.youtube_video_id = s.to_string();
+            }
+            if let Some(s) = yt.get("youtubeVideoTitle").and_then(Value::as_str) {
+                entry.youtube_video_title = Some(s.to_string());
+            }
+        }
     }
 
     fn merge_customer_asset(&mut self, v: &Value) {
@@ -987,7 +1017,7 @@ impl AdapterState {
             shared_sets,
             shared_criteria: shared_criteria_out,
             campaign_shared_sets: self.campaign_shared_sets.into_values().collect(),
-            youtube_video_assets: Vec::new(),
+            youtube_video_assets: self.youtube_video_assets.into_values().collect(),
             labels: self.labels.into_iter().collect(),
         })
     }
@@ -1040,6 +1070,37 @@ fn parse_f64_value(v: &Value) -> Option<f64> {
         return s.parse::<f64>().ok();
     }
     None
+}
+
+/// Extract a list of ad-text asset strings (headlines / descriptions / CTAs on a
+/// demand-gen ad). Each item is an `AdTextAsset { text }` or a bare string.
+fn extract_ad_text_list(v: Option<&Value>) -> Vec<String> {
+    let Some(arr) = v.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|item| {
+            item.as_str().map(String::from).or_else(|| {
+                item.get("text").and_then(Value::as_str).map(String::from)
+            })
+        })
+        .collect()
+}
+
+/// Extract youtube-video asset ids from a demand-gen ad's `videos` array. Each
+/// item is an `AdVideoAsset { asset: "customers/x/assets/ID" }`.
+fn extract_video_asset_ids(v: Option<&Value>) -> Vec<String> {
+    let Some(arr) = v.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|item| {
+            item.get("asset")
+                .and_then(Value::as_str)
+                .and_then(last_segment)
+                .map(String::from)
+        })
+        .collect()
 }
 
 fn extract_rsa_assets(v: Option<&Value>) -> Vec<JsonRsaAsset> {

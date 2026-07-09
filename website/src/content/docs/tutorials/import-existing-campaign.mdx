@@ -86,6 +86,20 @@ A few things to check:
   descriptions. If something is missing, it might be a Google-side
   asset bidsmith doesn't yet model — check the
   [resource reference](/bidsmith/resources/) for what's supported.
+- **Demand Gen ads** — a `DEMAND_GEN` campaign's ad comes back as a
+  [`demand_gen_video_responsive_ad`](/bidsmith/resources/google_ads_ad_group_ad/#demand_gen_video_responsive_ad)
+  block with its headlines, long headlines, descriptions, breadcrumbs,
+  and video-asset references. The video is UI-managed, so `plan` /
+  `apply` manage only the campaign scaffold — and `call_to_actions`
+  come from the API as asset references, so they don't populate.
+
+<Aside type="note" title="Adopting a Demand Gen campaign built in the UI">
+  This is the exact scenario `refresh` is built for. bidsmith
+  matches the live campaign by **name** and, on the first `apply`,
+  stamps its `bidsmith:address` label to adopt it in place — it does
+  **not** create a duplicate. Keep the generated campaign / ad-group /
+  ad names untouched and `plan` reports `0 to create`.
+</Aside>
 
 ## Step 4 — Validate locally
 

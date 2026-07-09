@@ -511,17 +511,22 @@ resource type, any file layout, modules, schema validation.
   path only (schema / validate / `fmt` / `export` / `refresh` renderer +
   round-trip); the **live** path for video assets and video-ad creatives is
   intentionally out of `plan` / `apply` (video assets aren't diffed/mutated,
-  and `ad_value` ignores `video_responsive_ad`, so a video ad mutates as a
-  scaffold-only stub — matching how UI-built video ads are adopted today).
+  and `ad_value` ignores `video_responsive_ad` / `demand_gen_video_responsive_ad`,
+  so a video (or Demand Gen) ad mutates as a
+  scaffold-only stub — matching how UI-built video / Demand Gen ads are
+  adopted today). The same scaffold-only boundary is why a `DEMAND_GEN`
+  campaign is *adopted* rather than recreated: `apply` name-matches the
+  live campaign, stamps the `bidsmith:address` label, and manages the
+  scaffold while the UI-built creative is round-tripped for representation.
   Because a partially-supported feature must never *silently* drop work, the
   limit is surfaced **from the CLI**, per the "facts live in the binary"
   rule: `validate` warns on every `google_ads_youtube_video_asset` and every
   `video_responsive_ad` (the upload-out-of-band + adopt-via-UI workflow),
   and `plan` / `apply` print an aggregate video notice
   (`export::video_limitation_notice`) whenever the desired state contains a
-  `VIDEO` campaign, a `VIDEO_*` ad group, a video ad, or a video asset — so
-  an operator or an agent driving bidsmith learns the workaround without
-  reading source. Chosen over (a) an `apply`-time upload (breaks the
+  `VIDEO` or `DEMAND_GEN` campaign, a `VIDEO_*` ad group, a video / Demand
+  Gen ad, or a video asset — so an operator or an agent driving bidsmith
+  learns the workaround without reading source. Chosen over (a) an `apply`-time upload (breaks the
   no-networking-beyond-Google-Ads scope and can't be idempotent — YouTube
   has no `bidsmith:address` label to dedupe re-uploads, and there is no
   `.tfstate`), and (b) silently modelling video with no CLI signal (the
@@ -913,8 +918,17 @@ Validator covers (so far):
   The `ad {}` body also accepts a `video_responsive_ad` block (a
   `video` reference to a `google_ads_youtube_video_asset` plus optional
   `headlines` / `long_headlines` / `descriptions` / `call_to_actions`
-  string lists) as an alternative to `responsive_search_ad` — an `ad`
-  carries at most one creative, enforced at validate time
+  string lists) or a `demand_gen_video_responsive_ad` block (the ad type
+  a `DEMAND_GEN` campaign carries — a `videos` list of
+  `google_ads_youtube_video_asset` refs plus optional `headlines` /
+  `long_headlines` / `descriptions` / `call_to_actions` / `breadcrumb1`
+  / `breadcrumb2`) as an alternative to `responsive_search_ad` — an `ad`
+  carries at most one creative, enforced at validate time. `pull` selects
+  the demand-gen creative and the `YOUTUBE_VIDEO` asset table, so an
+  existing Demand Gen campaign round-trips through `export` (headlines,
+  long headlines, descriptions, breadcrumbs, and the video-asset refs;
+  `call_to_actions` come back from the API as asset references rather than
+  inline text, so they do not populate on a round-trip)
 - `provider "google_ads"` (`customer_id` optional — resolved from
   `bidsmith.toml` / env / global credentials when omitted, so `.bid`
   files can be account-agnostic; `login_customer_id` optional —
