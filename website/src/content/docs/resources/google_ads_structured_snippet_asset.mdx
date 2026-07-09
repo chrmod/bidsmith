@@ -1,0 +1,43 @@
+---
+title: google_ads_structured_snippet_asset
+description: A header plus a list of values, e.g. Features — Ad Blocker, Tracker Blocker, shown below a search ad.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_structured_snippet_asset'];
+
+A **structured snippet asset** is a predefined `header` (from Google's
+fixed list — "Brands", "Features", "Services", "Types", …) followed by a
+short list of `values`. Google can show it below a search ad to preview
+what you offer, e.g. **Features: Cookie Banner Blocker, Ad Blocker,
+Tracker Blocker**.
+
+<Aside type="note">
+  The `header` must be one of Google's supported snippet headers for your
+  language. A snippet is only the *content* — link it to a campaign with
+  [`google_ads_campaign_asset`](./google_ads_campaign_asset/) (or an ad
+  group with [`google_ads_ad_group_asset`](./google_ads_ad_group_asset/))
+  using `field_type = "STRUCTURED_SNIPPET"`.
+</Aside>
+
+## Example
+
+```hcl
+resource "google_ads_structured_snippet_asset" "features" {
+  header = "Features"
+  values = ["Cookie Banner Blocker", "Ad Blocker", "Tracker Blocker"]
+}
+```
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+## See also
+
+- [`google_ads_campaign_asset`](./google_ads_campaign_asset/) — attach the snippet to a campaign.
+- [`google_ads_sitelink_asset`](./google_ads_sitelink_asset/) — a clickable extension with its own landing page.
+- [`google_ads_callout_asset`](./google_ads_callout_asset/) — a single short highlight phrase.

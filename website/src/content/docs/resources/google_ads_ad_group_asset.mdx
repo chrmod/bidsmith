@@ -1,0 +1,44 @@
+---
+title: google_ads_ad_group_asset
+description: Attaches an asset (sitelink, callout, structured snippet, …) to a single ad group.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_ad_group_asset'];
+
+An **ad group asset** links an asset to one ad group, so the extension is
+only eligible with that ad group's ads. Use it when you want a sitelink,
+callout, or structured snippet to be more specific than the whole
+campaign — for example, a sitelink whose copy matches one tightly-themed
+ad group.
+
+Most extensions are attached at campaign scope with
+[`google_ads_campaign_asset`](./google_ads_campaign_asset/); reach for
+ad-group scope only when the extra targeting is worth the extra links.
+
+## Example
+
+```hcl
+resource "google_ads_callout_asset" "same_day_setup" {
+  text = "Same-Day Setup"
+}
+
+resource "google_ads_ad_group_asset" "pro_plan_callout" {
+  ad_group   = google_ads_ad_group.pro_plan.id
+  asset      = google_ads_callout_asset.same_day_setup.id
+  field_type = "CALLOUT"
+  status     = "ENABLED"
+}
+```
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+## See also
+
+- [`google_ads_campaign_asset`](./google_ads_campaign_asset/) — attach at campaign scope (the common case).
+- [`google_ads_sitelink_asset`](./google_ads_sitelink_asset/), [`google_ads_callout_asset`](./google_ads_callout_asset/), [`google_ads_structured_snippet_asset`](./google_ads_structured_snippet_asset/) — the assets you attach.

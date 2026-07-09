@@ -1,0 +1,43 @@
+---
+title: google_ads_sitelink_asset
+description: An extra link with its own text and description shown below a search ad.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_sitelink_asset'];
+
+A **sitelink asset** is an extra link — with its own clickable text, up
+to two description lines, and its own landing page — that Google can show
+underneath a search ad. Sitelinks are one of the main levers for making a
+Search ad render taller, pushing the organic results further down the page.
+
+<Aside type="note">
+  A sitelink is only the *content*. To make it eligible to show, link it
+  to a campaign with [`google_ads_campaign_asset`](./google_ads_campaign_asset/)
+  (or to an ad group with [`google_ads_ad_group_asset`](./google_ads_ad_group_asset/))
+  using `field_type = "SITELINK"`.
+</Aside>
+
+## Example
+
+```hcl
+resource "google_ads_sitelink_asset" "add_to_chrome" {
+  link_text    = "Add to Chrome"
+  description1  = "Free, open source"
+  description2  = "Install in 10 seconds"
+  final_urls   = ["https://www.ghostery.com/ghostery-ad-blocker"]
+}
+```
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+## See also
+
+- [`google_ads_campaign_asset`](./google_ads_campaign_asset/) — attach the sitelink to a campaign.
+- [`google_ads_ad_group_asset`](./google_ads_ad_group_asset/) — attach it to a single ad group instead.
+- [`google_ads_callout_asset`](./google_ads_callout_asset/) — a shorter, non-clickable extension.

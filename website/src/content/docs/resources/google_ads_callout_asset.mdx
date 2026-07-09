@@ -1,0 +1,40 @@
+---
+title: google_ads_callout_asset
+description: A short, non-clickable phrase that highlights a selling point below a search ad.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_callout_asset'];
+
+A **callout asset** is a short phrase — like "Free & Open Source" or
+"24/7 Support" — that Google can append below a search ad to highlight a
+selling point. Unlike a sitelink, a callout is not clickable and has no
+landing page; it's pure copy that helps the ad render larger.
+
+<Aside type="note">
+  A callout is only the *content*. Link it to a campaign with
+  [`google_ads_campaign_asset`](./google_ads_campaign_asset/) (or an ad
+  group with [`google_ads_ad_group_asset`](./google_ads_ad_group_asset/))
+  using `field_type = "CALLOUT"` to make it eligible to show.
+</Aside>
+
+## Example
+
+```hcl
+resource "google_ads_callout_asset" "free_open_source" {
+  text = "Free & Open Source"
+}
+```
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+## See also
+
+- [`google_ads_campaign_asset`](./google_ads_campaign_asset/) — attach the callout to a campaign.
+- [`google_ads_sitelink_asset`](./google_ads_sitelink_asset/) — a clickable extension with its own landing page.
+- [`google_ads_structured_snippet_asset`](./google_ads_structured_snippet_asset/) — a labelled list of values.

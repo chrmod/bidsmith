@@ -893,8 +893,20 @@ Validator covers (so far):
   `google_ads_conversion_action` — the field also accepts a literal
   Google Ads resource-name string so refreshes against accounts that
   reference removed or out-of-scope conversion actions still
-  round-trip), `google_ads_customer_asset` (links
-  a call asset to the account via `field_type = "CALL"`),
+  round-trip),
+  `google_ads_sitelink_asset` (a text-extension link: `link_text`,
+  optional `description1` / `description2`, and its own `final_urls`),
+  `google_ads_callout_asset` (a short `text` highlight), and
+  `google_ads_structured_snippet_asset` (a `header` plus a `values`
+  list) — the three search-ad text extensions that grow an RSA on the
+  page,
+  `google_ads_customer_asset` (links any modeled asset — call / sitelink
+  / callout / structured snippet — to the whole account with a matching
+  `field_type`), `google_ads_campaign_asset` (the same link scoped to a
+  single `campaign`) and `google_ads_ad_group_asset` (scoped to a single
+  `ad_group`); assets are content-immutable, so an asset's identity is
+  its full content and a text edit plans as a new asset, while the link
+  resources diff only on `status`,
   `google_ads_youtube_video_asset` (a reference to a video already
   published on YouTube — `youtube_video_id` required, optional
   `youtube_video_title`; the creative side of a `video_responsive_ad`).

@@ -3,11 +3,12 @@ use hcl_edit::expr::{Expression, Traversal, TraversalOperator};
 use hcl_edit::structure::{Attribute, Block, Structure};
 
 use crate::commands::export::{
-    ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupCriterion, JsonBudget,
-    JsonCallAsset, JsonCampaign, JsonCampaignCriterion, JsonCampaignSharedSet,
-    JsonConversionAction, JsonCustomerAsset, JsonDevice, JsonKeyword, JsonLanguage, JsonLocation,
-    JsonManualCpc, JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset,
-    JsonSharedCriterion, JsonSharedSet, JsonValueSettings, JsonVideoResponsiveAd,
+    ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
+    JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
+    JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCustomerAsset,
+    JsonDevice, JsonKeyword, JsonLanguage, JsonLocation, JsonManualCpc, JsonNetworkSettings,
+    JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedCriterion, JsonSharedSet,
+    JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonValueSettings, JsonVideoResponsiveAd,
     JsonYoutubeVideoAsset,
 };
 use crate::diagnostics::Diag;
@@ -65,7 +66,12 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
         campaign_criteria: Vec::new(),
         conversion_actions: Vec::new(),
         call_assets: Vec::new(),
+        sitelink_assets: Vec::new(),
+        callout_assets: Vec::new(),
+        structured_snippet_assets: Vec::new(),
         customer_assets: Vec::new(),
+        campaign_assets: Vec::new(),
+        ad_group_assets: Vec::new(),
         shared_sets: Vec::new(),
         shared_criteria: Vec::new(),
         campaign_shared_sets: Vec::new(),
@@ -135,9 +141,29 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
                             import_call_asset(&ctx, b, &address)
                                 .map(|x| input.call_assets.push(x)),
                         ),
+                        "google_ads_sitelink_asset" => emit(
+                            import_sitelink_asset(&ctx, b, &address)
+                                .map(|x| input.sitelink_assets.push(x)),
+                        ),
+                        "google_ads_callout_asset" => emit(
+                            import_callout_asset(&ctx, b, &address)
+                                .map(|x| input.callout_assets.push(x)),
+                        ),
+                        "google_ads_structured_snippet_asset" => emit(
+                            import_structured_snippet_asset(&ctx, b, &address)
+                                .map(|x| input.structured_snippet_assets.push(x)),
+                        ),
                         "google_ads_customer_asset" => emit(
                             import_customer_asset(&ctx, b, &address)
                                 .map(|x| input.customer_assets.push(x)),
+                        ),
+                        "google_ads_campaign_asset" => emit(
+                            import_campaign_asset(&ctx, b, &address)
+                                .map(|x| input.campaign_assets.push(x)),
+                        ),
+                        "google_ads_ad_group_asset" => emit(
+                            import_ad_group_asset(&ctx, b, &address)
+                                .map(|x| input.ad_group_assets.push(x)),
                         ),
                         "google_ads_youtube_video_asset" => emit(
                             import_youtube_video_asset(&ctx, b, &address)
@@ -1132,6 +1158,156 @@ fn import_customer_asset(
     })
 }
 
+fn import_sitelink_asset(
+    ctx: &Ctx,
+    block: &Block,
+    address: &str,
+) -> Result<JsonSitelinkAsset, Diag> {
+    let mut link_text = None;
+    let mut description1 = None;
+    let mut description2 = None;
+    let mut final_urls: Vec<String> = Vec::new();
+    for s in block.body.iter() {
+        if let Structure::Attribute(a) = s {
+            match a.key.as_str() {
+                "link_text" => link_text = expect_string_owned(ctx, a),
+                "description1" => description1 = expect_string_owned(ctx, a),
+                "description2" => description2 = expect_string_owned(ctx, a),
+                "final_urls" => final_urls = expect_string_list(ctx, &a.value),
+                _ => {}
+            }
+        }
+    }
+    let link_text = link_text.ok_or_else(|| missing(ctx.file, block, address, "link_text"))?;
+    Ok(JsonSitelinkAsset {
+        id: address.to_string(),
+        link_text,
+        description1,
+        description2,
+        final_urls,
+    })
+}
+
+fn import_callout_asset(
+    ctx: &Ctx,
+    block: &Block,
+    address: &str,
+) -> Result<JsonCalloutAsset, Diag> {
+    let mut text = None;
+    for s in block.body.iter() {
+        if let Structure::Attribute(a) = s {
+            if a.key.as_str() == "text" {
+                text = expect_string_owned(ctx, a);
+            }
+        }
+    }
+    let text = text.ok_or_else(|| missing(ctx.file, block, address, "text"))?;
+    Ok(JsonCalloutAsset {
+        id: address.to_string(),
+        text,
+    })
+}
+
+fn import_structured_snippet_asset(
+    ctx: &Ctx,
+    block: &Block,
+    address: &str,
+) -> Result<JsonStructuredSnippetAsset, Diag> {
+    let mut header = None;
+    let mut values: Vec<String> = Vec::new();
+    for s in block.body.iter() {
+        if let Structure::Attribute(a) = s {
+            match a.key.as_str() {
+                "header" => header = expect_string_owned(ctx, a),
+                "values" => values = expect_string_list(ctx, &a.value),
+                _ => {}
+            }
+        }
+    }
+    let header = header.ok_or_else(|| missing(ctx.file, block, address, "header"))?;
+    Ok(JsonStructuredSnippetAsset {
+        id: address.to_string(),
+        header,
+        values,
+    })
+}
+
+fn import_campaign_asset(
+    ctx: &Ctx,
+    block: &Block,
+    address: &str,
+) -> Result<JsonCampaignAsset, Diag> {
+    let mut campaign_ref = None;
+    let mut asset_ref = None;
+    let mut field_type = None;
+    let mut status = None;
+    for s in block.body.iter() {
+        if let Structure::Attribute(a) = s {
+            match a.key.as_str() {
+                "campaign" => {
+                    campaign_ref = extract_resource_ref(ctx, &a.value)
+                        .map(|r| ctx.resolve_ref(&r))
+                        .or_else(|| expect_string_owned(ctx, a));
+                }
+                "asset" => {
+                    asset_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r))
+                }
+                "field_type" => field_type = expect_string_owned(ctx, a),
+                "status" => status = expect_string_owned(ctx, a),
+                _ => {}
+            }
+        }
+    }
+    let campaign = campaign_ref.ok_or_else(|| missing(ctx.file, block, address, "campaign"))?;
+    let asset = asset_ref.ok_or_else(|| missing(ctx.file, block, address, "asset"))?;
+    let field_type = field_type.ok_or_else(|| missing(ctx.file, block, address, "field_type"))?;
+    Ok(JsonCampaignAsset {
+        id: address.to_string(),
+        campaign,
+        asset,
+        field_type,
+        status,
+    })
+}
+
+fn import_ad_group_asset(
+    ctx: &Ctx,
+    block: &Block,
+    address: &str,
+) -> Result<JsonAdGroupAsset, Diag> {
+    let mut ad_group_ref = None;
+    let mut asset_ref = None;
+    let mut field_type = None;
+    let mut status = None;
+    for s in block.body.iter() {
+        if let Structure::Attribute(a) = s {
+            match a.key.as_str() {
+                "ad_group" => {
+                    ad_group_ref = extract_resource_ref(ctx, &a.value)
+                        .map(|r| ctx.resolve_ref(&r))
+                        .or_else(|| expect_string_owned(ctx, a));
+                }
+                "asset" => {
+                    asset_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r))
+                }
+                "field_type" => field_type = expect_string_owned(ctx, a),
+                "status" => status = expect_string_owned(ctx, a),
+                _ => {}
+            }
+        }
+    }
+    let ad_group = ad_group_ref.ok_or_else(|| missing(ctx.file, block, address, "ad_group"))?;
+    let asset = asset_ref.ok_or_else(|| missing(ctx.file, block, address, "asset"))?;
+    let field_type = field_type.ok_or_else(|| missing(ctx.file, block, address, "field_type"))?;
+    Ok(JsonAdGroupAsset {
+        id: address.to_string(),
+        ad_group,
+        asset,
+        field_type,
+        status,
+    })
+}
+
 fn import_shared_set(
     ctx: &Ctx,
     block: &Block,
@@ -1388,7 +1564,12 @@ pub fn import_program(program: &Program) -> Result<ImportResult, Vec<Diag>> {
         campaign_criteria: Vec::new(),
         conversion_actions: Vec::new(),
         call_assets: Vec::new(),
+        sitelink_assets: Vec::new(),
+        callout_assets: Vec::new(),
+        structured_snippet_assets: Vec::new(),
         customer_assets: Vec::new(),
+        campaign_assets: Vec::new(),
+        ad_group_assets: Vec::new(),
         shared_sets: Vec::new(),
         shared_criteria: Vec::new(),
         campaign_shared_sets: Vec::new(),
@@ -1414,7 +1595,14 @@ pub fn import_program(program: &Program) -> Result<ImportResult, Vec<Diag>> {
                 combined.campaign_criteria.extend(r.input.campaign_criteria);
                 combined.conversion_actions.extend(r.input.conversion_actions);
                 combined.call_assets.extend(r.input.call_assets);
+                combined.sitelink_assets.extend(r.input.sitelink_assets);
+                combined.callout_assets.extend(r.input.callout_assets);
+                combined
+                    .structured_snippet_assets
+                    .extend(r.input.structured_snippet_assets);
                 combined.customer_assets.extend(r.input.customer_assets);
+                combined.campaign_assets.extend(r.input.campaign_assets);
+                combined.ad_group_assets.extend(r.input.ad_group_assets);
                 combined.shared_sets.extend(r.input.shared_sets);
                 combined.shared_criteria.extend(r.input.shared_criteria);
                 combined.campaign_shared_sets.extend(r.input.campaign_shared_sets);

@@ -53,6 +53,7 @@ export default defineConfig({
             { label: 'Target specific countries and languages', slug: 'recipes/target-countries-and-languages' },
             { label: 'Add a whole keyword list at once', slug: 'recipes/add-many-keywords' },
             { label: 'Reuse a headline set across many ads', slug: 'recipes/reuse-a-headline-set' },
+            { label: 'Make a search ad render taller with extensions', slug: 'recipes/add-search-ad-extensions' },
             { label: 'Reuse one ad across every ad group', slug: 'recipes/reuse-an-ad-across-ad-groups' },
             { label: 'Roll back a bad change', slug: 'recipes/roll-back-a-bad-change' },
             { label: 'Audit who changed what, when', slug: 'recipes/audit-who-changed-what' },
@@ -150,6 +151,16 @@ export default defineConfig({
                 { label: 'google_ads_conversion_action', slug: 'resources/google_ads_conversion_action' },
                 { label: 'google_ads_call_asset', slug: 'resources/google_ads_call_asset' },
                 { label: 'google_ads_customer_asset', slug: 'resources/google_ads_customer_asset' },
+              ],
+            },
+            {
+              label: 'Ad extensions',
+              items: [
+                { label: 'google_ads_sitelink_asset', slug: 'resources/google_ads_sitelink_asset' },
+                { label: 'google_ads_callout_asset', slug: 'resources/google_ads_callout_asset' },
+                { label: 'google_ads_structured_snippet_asset', slug: 'resources/google_ads_structured_snippet_asset' },
+                { label: 'google_ads_campaign_asset', slug: 'resources/google_ads_campaign_asset' },
+                { label: 'google_ads_ad_group_asset', slug: 'resources/google_ads_ad_group_asset' },
               ],
             },
             {

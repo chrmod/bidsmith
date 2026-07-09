@@ -3,11 +3,12 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use crate::commands::export::{
-    ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupCriterion, JsonBudget,
-    JsonCallAsset, JsonCampaign, JsonCampaignCriterion, JsonCampaignSharedSet,
-    JsonConversionAction, JsonCustomerAsset, JsonDevice, JsonKeyword, JsonLanguage, JsonLocation,
-    JsonManualCpc, JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset,
-    JsonSharedSet, JsonValueSettings,
+    ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
+    JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
+    JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCustomerAsset,
+    JsonDevice, JsonKeyword, JsonLanguage, JsonLocation, JsonManualCpc, JsonNetworkSettings,
+    JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedSet, JsonSitelinkAsset,
+    JsonStructuredSnippetAsset, JsonValueSettings,
 };
 
 pub fn from_search_response(raw: &str) -> Result<ExportInput, String> {
@@ -66,7 +67,12 @@ struct AdapterState {
     campaign_criteria: BTreeMap<String, JsonCampaignCriterion>,
     conversion_actions: BTreeMap<String, JsonConversionAction>,
     call_assets: BTreeMap<String, JsonCallAsset>,
+    sitelink_assets: BTreeMap<String, JsonSitelinkAsset>,
+    callout_assets: BTreeMap<String, JsonCalloutAsset>,
+    structured_snippet_assets: BTreeMap<String, JsonStructuredSnippetAsset>,
     customer_assets: BTreeMap<String, JsonCustomerAsset>,
+    campaign_assets: BTreeMap<String, JsonCampaignAsset>,
+    ad_group_assets: BTreeMap<String, JsonAdGroupAsset>,
     shared_sets: BTreeMap<String, SharedSetBuilder>,
     // value: (real criterion resource-name segment `<setId>~<critId>`, keyword)
     shared_criteria: BTreeMap<String, Vec<(String, JsonKeyword)>>,
@@ -108,6 +114,12 @@ impl AdapterState {
         }
         if let Some(v) = row.get("customerAsset") {
             self.merge_customer_asset(v);
+        }
+        if let Some(v) = row.get("campaignAsset") {
+            self.merge_campaign_asset(v);
+        }
+        if let Some(v) = row.get("adGroupAsset") {
+            self.merge_ad_group_asset(v);
         }
         if let Some(v) = row.get("sharedSet") {
             self.merge_shared_set(v);
@@ -593,28 +605,89 @@ impl AdapterState {
             self.note_customer(rn);
         }
         let Some(id) = extract_id(v) else { return };
-        let Some(call) = v.get("callAsset") else { return };
-        let entry = self
-            .call_assets
-            .entry(id.clone())
-            .or_insert_with(|| JsonCallAsset {
-                id,
-                country_code: String::new(),
-                phone_number: String::new(),
-                call_conversion_reporting_state: None,
-                call_conversion_action: None,
-            });
-        if let Some(s) = call.get("countryCode").and_then(Value::as_str) {
-            entry.country_code = s.to_string();
+        if let Some(call) = v.get("callAsset") {
+            let entry = self
+                .call_assets
+                .entry(id.clone())
+                .or_insert_with(|| JsonCallAsset {
+                    id: id.clone(),
+                    country_code: String::new(),
+                    phone_number: String::new(),
+                    call_conversion_reporting_state: None,
+                    call_conversion_action: None,
+                });
+            if let Some(s) = call.get("countryCode").and_then(Value::as_str) {
+                entry.country_code = s.to_string();
+            }
+            if let Some(s) = call.get("phoneNumber").and_then(Value::as_str) {
+                entry.phone_number = s.to_string();
+            }
+            if let Some(s) = call.get("callConversionReportingState").and_then(Value::as_str) {
+                entry.call_conversion_reporting_state = Some(s.to_string());
+            }
+            if let Some(rn) = call.get("callConversionAction").and_then(Value::as_str) {
+                entry.call_conversion_action = Some(rn.to_string());
+            }
         }
-        if let Some(s) = call.get("phoneNumber").and_then(Value::as_str) {
-            entry.phone_number = s.to_string();
+        if let Some(sl) = v.get("sitelinkAsset") {
+            let entry = self
+                .sitelink_assets
+                .entry(id.clone())
+                .or_insert_with(|| JsonSitelinkAsset {
+                    id: id.clone(),
+                    link_text: String::new(),
+                    description1: None,
+                    description2: None,
+                    final_urls: Vec::new(),
+                });
+            if let Some(s) = sl.get("linkText").and_then(Value::as_str) {
+                entry.link_text = s.to_string();
+            }
+            if let Some(s) = sl.get("description1").and_then(Value::as_str) {
+                entry.description1 = Some(s.to_string());
+            }
+            if let Some(s) = sl.get("description2").and_then(Value::as_str) {
+                entry.description2 = Some(s.to_string());
+            }
+            if let Some(urls) = v.get("finalUrls").and_then(Value::as_array) {
+                entry.final_urls = urls
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect();
+            }
         }
-        if let Some(s) = call.get("callConversionReportingState").and_then(Value::as_str) {
-            entry.call_conversion_reporting_state = Some(s.to_string());
+        if let Some(co) = v.get("calloutAsset") {
+            let entry = self
+                .callout_assets
+                .entry(id.clone())
+                .or_insert_with(|| JsonCalloutAsset {
+                    id: id.clone(),
+                    text: String::new(),
+                });
+            if let Some(s) = co.get("calloutText").and_then(Value::as_str) {
+                entry.text = s.to_string();
+            }
         }
-        if let Some(rn) = call.get("callConversionAction").and_then(Value::as_str) {
-            entry.call_conversion_action = Some(rn.to_string());
+        if let Some(ss) = v.get("structuredSnippetAsset") {
+            let entry = self
+                .structured_snippet_assets
+                .entry(id.clone())
+                .or_insert_with(|| JsonStructuredSnippetAsset {
+                    id: id.clone(),
+                    header: String::new(),
+                    values: Vec::new(),
+                });
+            if let Some(s) = ss.get("header").and_then(Value::as_str) {
+                entry.header = s.to_string();
+            }
+            if let Some(vals) = ss.get("values").and_then(Value::as_array) {
+                entry.values = vals
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect();
+            }
         }
     }
 
@@ -640,6 +713,86 @@ impl AdapterState {
                 field_type: String::new(),
                 status: None,
             });
+        if let Some(rn) = v.get("asset").and_then(Value::as_str) {
+            if let Some(id) = last_segment(rn) {
+                entry.asset = id.to_string();
+            }
+        }
+        if let Some(s) = v.get("fieldType").and_then(Value::as_str) {
+            entry.field_type = s.to_string();
+        }
+        if let Some(s) = v.get("status").and_then(Value::as_str) {
+            entry.status = Some(s.to_string());
+        }
+    }
+
+    fn merge_campaign_asset(&mut self, v: &Value) {
+        if let Some(rn) = v.get("resourceName").and_then(Value::as_str) {
+            self.note_customer(rn);
+        }
+        let Some(key) = v
+            .get("resourceName")
+            .and_then(Value::as_str)
+            .and_then(last_segment)
+            .map(str::to_string)
+        else {
+            return;
+        };
+        let entry = self
+            .campaign_assets
+            .entry(key.clone())
+            .or_insert_with(|| JsonCampaignAsset {
+                id: key,
+                campaign: String::new(),
+                asset: String::new(),
+                field_type: String::new(),
+                status: None,
+            });
+        if let Some(rn) = v.get("campaign").and_then(Value::as_str) {
+            if let Some(id) = last_segment(rn) {
+                entry.campaign = id.to_string();
+            }
+        }
+        if let Some(rn) = v.get("asset").and_then(Value::as_str) {
+            if let Some(id) = last_segment(rn) {
+                entry.asset = id.to_string();
+            }
+        }
+        if let Some(s) = v.get("fieldType").and_then(Value::as_str) {
+            entry.field_type = s.to_string();
+        }
+        if let Some(s) = v.get("status").and_then(Value::as_str) {
+            entry.status = Some(s.to_string());
+        }
+    }
+
+    fn merge_ad_group_asset(&mut self, v: &Value) {
+        if let Some(rn) = v.get("resourceName").and_then(Value::as_str) {
+            self.note_customer(rn);
+        }
+        let Some(key) = v
+            .get("resourceName")
+            .and_then(Value::as_str)
+            .and_then(last_segment)
+            .map(str::to_string)
+        else {
+            return;
+        };
+        let entry = self
+            .ad_group_assets
+            .entry(key.clone())
+            .or_insert_with(|| JsonAdGroupAsset {
+                id: key,
+                ad_group: String::new(),
+                asset: String::new(),
+                field_type: String::new(),
+                status: None,
+            });
+        if let Some(rn) = v.get("adGroup").and_then(Value::as_str) {
+            if let Some(id) = last_segment(rn) {
+                entry.ad_group = id.to_string();
+            }
+        }
         if let Some(rn) = v.get("asset").and_then(Value::as_str) {
             if let Some(id) = last_segment(rn) {
                 entry.asset = id.to_string();
@@ -825,7 +978,12 @@ impl AdapterState {
             campaign_criteria: self.campaign_criteria.into_values().collect(),
             conversion_actions: self.conversion_actions.into_values().collect(),
             call_assets: self.call_assets.into_values().collect(),
+            sitelink_assets: self.sitelink_assets.into_values().collect(),
+            callout_assets: self.callout_assets.into_values().collect(),
+            structured_snippet_assets: self.structured_snippet_assets.into_values().collect(),
             customer_assets: self.customer_assets.into_values().collect(),
+            campaign_assets: self.campaign_assets.into_values().collect(),
+            ad_group_assets: self.ad_group_assets.into_values().collect(),
             shared_sets,
             shared_criteria: shared_criteria_out,
             campaign_shared_sets: self.campaign_shared_sets.into_values().collect(),
