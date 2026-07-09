@@ -106,6 +106,7 @@ export default defineConfig({
                 { label: 'bidsmith refresh', slug: 'commands/refresh' },
                 { label: 'bidsmith pull', slug: 'commands/pull' },
                 { label: 'bidsmith query', slug: 'commands/query' },
+                { label: 'bidsmith keyword-ideas', slug: 'commands/keyword-ideas' },
               ],
             },
           ],

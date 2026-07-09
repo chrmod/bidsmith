@@ -6,6 +6,7 @@ pub mod e2e_cleanup;
 pub mod export;
 pub mod fmt;
 pub mod init;
+pub mod keyword_ideas;
 pub mod mv;
 pub mod plan;
 pub mod pull;

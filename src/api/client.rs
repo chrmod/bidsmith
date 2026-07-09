@@ -97,6 +97,23 @@ impl Client {
         self.post_json(access_token, "googleAds:searchStream", &body, true)
     }
 
+    /// `KeywordPlanIdeaService.GenerateKeywordIdeas` — Keyword Planner research
+    /// (search volume, competition, top-of-page bid estimates for seed keywords
+    /// or a landing page). A colon custom method that hangs directly off the
+    /// customer, so the URL has no `googleAds:` segment. Read-only, so it retries.
+    pub fn generate_keyword_ideas(
+        &self,
+        access_token: &str,
+        body: &Value,
+    ) -> Result<MutateResponse, ApiError> {
+        let version = api_version();
+        let url = format!(
+            "https://googleads.googleapis.com/{version}/customers/{}:generateKeywordIdeas",
+            self.customer_id,
+        );
+        self.send_with_retry(access_token, &url, body, true)
+    }
+
     fn post_json(
         &self,
         access_token: &str,
@@ -109,12 +126,22 @@ impl Client {
             "https://googleads.googleapis.com/{version}/customers/{}/{endpoint}",
             self.customer_id,
         );
+        self.send_with_retry(access_token, &url, body, retry)
+    }
+
+    fn send_with_retry(
+        &self,
+        access_token: &str,
+        url: &str,
+        body: &Value,
+        retry: bool,
+    ) -> Result<MutateResponse, ApiError> {
         let max = if retry { MAX_RETRIES } else { 0 };
         let mut attempt = 0;
         loop {
             let mut req = self
                 .http
-                .post(&url)
+                .post(url)
                 .bearer_auth(access_token)
                 .header("developer-token", &self.developer_token);
             if let Some(login) = &self.login_customer_id {

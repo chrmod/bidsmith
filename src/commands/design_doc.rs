@@ -224,6 +224,12 @@ fn build_context(cfg: &DesignDocConfig) -> Context {
             validate_only: "n/a (read)",
         },
         Endpoint {
+            endpoint: format!("/{api_v}/customers/{{id}}:generateKeywordIdeas"),
+            method: "POST",
+            used_by: "keyword-ideas (KeywordPlanIdeaService — read-only keyword research)",
+            validate_only: "n/a (read)",
+        },
+        Endpoint {
             endpoint: format!("/{api_v}/customers/{{id}}/googleAds:mutate"),
             method: "POST",
             used_by: "plan (validateOnly=true), apply (validateOnly=false only after prompt)",
