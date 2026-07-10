@@ -251,14 +251,14 @@ fn expand_module(
     };
 
     let resolved = top_bindings.resolve_value(&raw.caller_module, for_each_expr);
-    let Expression::Object(obj) = resolved else {
+    let Expression::Object(obj) = resolved.as_ref() else {
         return Err(vec![Diag::new(
             raw.src.clone(),
             for_each_span.clone(),
             format!(
                 "module '{}' for_each must be an object (a map of instance keys to input objects), got {}",
                 raw.instance,
-                describe_expr_brief(resolved)
+                describe_expr_brief(resolved.as_ref())
             ),
         )]);
     };
@@ -301,14 +301,14 @@ fn expand_module(
         }
 
         let entry = top_bindings.resolve_value(&raw.caller_module, val.expr());
-        let Expression::Object(entry_obj) = entry else {
+        let Expression::Object(entry_obj) = entry.as_ref() else {
             diags.push(Diag::new(
                 raw.src.clone(),
                 span_of(val.expr().span()),
                 format!(
                     "module '{}' for_each[\"{key_str}\"] must be an object mapping input names to literals, got {}",
                     raw.instance,
-                    describe_expr_brief(entry)
+                    describe_expr_brief(entry.as_ref())
                 ),
             ));
             continue;
@@ -469,7 +469,7 @@ fn build_inputs(
     let mut out = InputBindings::default();
     for (key, expr, span) in &spec.inputs {
         let resolved = top_bindings.resolve_value(&spec.caller_module, expr);
-        let value = match resolved {
+        let value = match resolved.as_ref() {
             Expression::String(s) => s.as_str().to_string(),
             Expression::Number(n) => n.to_string(),
             Expression::Bool(b) => {

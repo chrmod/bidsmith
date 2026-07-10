@@ -159,16 +159,27 @@ scope. If you need different values for different modules, name them
 differently (`warsaw_wave`, `krakow_wave`) — explicit
 `module.var.name` addressing isn't supported yet.
 
+## String interpolation
+
+A variable doesn't have to be the whole attribute value — splice it
+into a string with `${…}`:
+
+```hcl
+resource "google_ads_campaign" "warsaw" {
+  name = "${var.wave} Warsaw — Search"
+}
+```
+
+See [Build tracking URLs from a shared prefix](/bidsmith/recipes/build-urls-from-a-shared-prefix/)
+for the pattern this unlocks.
+
 ## What this doesn't do (yet)
 
-- **String interpolation.** Today `"${var.wave} Warsaw"` is rejected.
-  A reference has to be the *whole* attribute value. The cleanest
-  workaround is to put the full string into the variable:
-  `default = "[W1] Warsaw — Search"`.
-- **Object / list / map types.** Only scalar types are supported.
+- **Object / list / map types.** Only scalar types are supported —
+  list data belongs in [`locals`](/bidsmith/concepts/locals/).
 
-If your use case needs either of those, open an issue describing the
-shape so we can size the work.
+If your use case needs that, open an issue describing the shape so we
+can size the work.
 
 <Aside type="tip">
   Variables are great for inputs that change per *run*, not per

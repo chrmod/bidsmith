@@ -1,0 +1,78 @@
+---
+title: Build tracking URLs from a shared prefix
+description: Keep the UTM base in one local and append a per-ad slug with string interpolation — no more copy-pasted URLs drifting apart.
+---
+
+Your tracking convention says every ad's final URL ends in its own
+slug — `utm_campaign=GH_Cookies_0708-rsa_a`, `…-rsa_b`, `…-sitelink_help` —
+so no two ads share a URL, but everything *before* the slug is
+identical. Pasting the full URL into every ad is how campaigns end up
+shipping with a URL copied from last month's campaign, quietly
+mis-attributing traffic.
+
+Put the shared part in a [local](/bidsmith/concepts/locals/) and build
+each URL from it with `${…}` interpolation:
+
+```hcl
+locals {
+  utm_base = "https://www.ghostery.com/ghostery-ad-blocker?utm_source=search&utm_campaign=GH_Cookies_0708"
+}
+
+resource "google_ads_ad_group_ad" "rsa_a" {
+  ad_group = google_ads_ad_group.popups.id
+  ad {
+    final_urls = ["${local.utm_base}-rsa_a"]
+    responsive_search_ad {
+      headlines    = local.popup_headlines
+      descriptions = local.popup_descriptions
+    }
+  }
+}
+
+resource "google_ads_ad_group_ad" "rsa_b" {
+  ad_group = google_ads_ad_group.popups.id
+  ad {
+    final_urls = ["${local.utm_base}-rsa_b"]
+    responsive_search_ad {
+      headlines    = local.consent_headlines
+      descriptions = local.consent_descriptions
+    }
+  }
+}
+```
+
+Change the campaign tag or the landing page once, in the local, and
+every ad picks it up. `bidsmith plan` shows the fan-out as one
+in-place update per ad before anything changes live.
+
+## Where interpolation works
+
+Anywhere a string is accepted — resource names, headlines, paths,
+URLs — including inside `locals` themselves, so you can build one
+local from another:
+
+```hcl
+locals {
+  campaign_tag = "GH_Cookies_0708"
+  landing      = "https://www.ghostery.com/ghostery-ad-blocker"
+  utm_base     = "${local.landing}?utm_source=search&utm_campaign=${local.campaign_tag}"
+}
+
+resource "google_ads_campaign" "cookies" {
+  name                     = "Search — ${local.campaign_tag}"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.cookies.id
+}
+```
+
+Numbers and booleans interpolate too (`"radius-${local.km}km"`).
+Validation runs on the *rendered* string, so a headline that only
+exceeds the 30-character cap once the brand name is spliced in still
+gets flagged before it reaches Google Ads.
+
+## See also
+
+- [Reuse a headline set across many ads](/bidsmith/recipes/reuse-a-headline-set/)
+  — the same idea for whole lists.
+- [Locals](/bidsmith/concepts/locals/) — how references resolve across
+  files.

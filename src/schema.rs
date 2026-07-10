@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
 
@@ -7,6 +8,7 @@ use hcl_edit::structure::{Block, Body, Structure};
 use serde::Serialize;
 
 use crate::diagnostics::Diag;
+use crate::eval::{EvalCtx, EvalError};
 use crate::parser::ParsedFile;
 
 #[derive(Clone)]
@@ -1259,23 +1261,20 @@ impl Bindings {
         (Self { locals, variables }, diags)
     }
 
-    pub fn resolve_value<'a>(&'a self, from_module: &str, expr: &'a Expression) -> &'a Expression {
-        let mut visited: HashSet<(BindingKind, String)> = HashSet::new();
-        let mut current_module = from_module.to_string();
-        let mut current_expr: &Expression = expr;
-        while let Some((kind, name)) = binding_ref(current_expr) {
-            let Ok((qualified, next_module, next_value)) =
-                resolve_step(&self.locals, &self.variables, &current_module, kind, &name)
-            else {
-                return current_expr;
-            };
-            if !visited.insert((kind, qualified)) {
-                return current_expr;
-            }
-            current_module = next_module.to_string();
-            current_expr = next_value;
-        }
-        current_expr
+    /// Best-effort evaluation: follows `local.`/`var.` chains and renders
+    /// string templates; on any failure the original expression is returned
+    /// unchanged (the validator reports evaluation errors with spans).
+    pub fn resolve_value<'a>(
+        &'a self,
+        from_module: &str,
+        expr: &'a Expression,
+    ) -> Cow<'a, Expression> {
+        let ctx = EvalCtx {
+            locals: &self.locals,
+            variables: &self.variables,
+        };
+        ctx.eval(from_module, expr)
+            .unwrap_or(Cow::Borrowed(expr))
     }
 }
 
@@ -2113,11 +2112,11 @@ fn resolve_for_lint<'a>(
     expr: &'a Expression,
     locals: &'a LocalsRegistry,
     variables: &'a VariablesRegistry,
-) -> &'a Expression {
+) -> Cow<'a, Expression> {
     let mut sink = Vec::new();
     match resolve_binding_chain(file, expr, locals, variables, &mut sink) {
         BindingResolution::Resolved(value) => value,
-        _ => expr,
+        BindingResolution::Failed => Cow::Borrowed(expr),
     }
 }
 
@@ -2138,18 +2137,16 @@ fn validate_compact_keywords(
             "match_type" => has_match_type = true,
             "match_types" => {
                 has_match_types = true;
-                if let Expression::Array(arr) =
-                    resolve_for_lint(file, &a.value, locals, variables)
-                {
+                let resolved = resolve_for_lint(file, &a.value, locals, variables);
+                if let Expression::Array(arr) = resolved.as_ref() {
                     if arr.is_empty() {
                         empty_lists.push(("match_types", span_of(a.value.span())));
                     }
                 }
             }
             "texts" => {
-                if let Expression::Array(arr) =
-                    resolve_for_lint(file, &a.value, locals, variables)
-                {
+                let resolved = resolve_for_lint(file, &a.value, locals, variables);
+                if let Expression::Array(arr) = resolved.as_ref() {
                     if arr.is_empty() {
                         empty_lists.push(("texts", span_of(a.value.span())));
                     }
@@ -2201,11 +2198,11 @@ fn validate_value(
     diags: &mut Vec<Diag>,
 ) {
     let span = span_of(expr.span());
-    let expr = match resolve_binding_chain(file, expr, locals, variables, diags) {
-        BindingResolution::NotABinding => expr,
+    let evaluated = match resolve_binding_chain(file, expr, locals, variables, diags) {
         BindingResolution::Resolved(value) => value,
         BindingResolution::Failed => return,
     };
+    let expr = evaluated.as_ref();
     match ty {
         FieldType::String => {
             if !matches!(expr, Expression::String(_)) {
@@ -2294,12 +2291,12 @@ fn validate_value(
         FieldType::RsaAssetList => match expr {
             Expression::Array(arr) => {
                 for item in arr.iter() {
+                    let use_span = span_of(item.span());
                     let item = match resolve_binding_chain(file, item, locals, variables, diags) {
-                        BindingResolution::NotABinding => item,
                         BindingResolution::Resolved(value) => value,
                         BindingResolution::Failed => continue,
                     };
-                    validate_rsa_asset_item(file, item, diags);
+                    validate_rsa_asset_item(file, item.as_ref(), use_span, locals, variables, diags);
                 }
             }
             other => diags.push(Diag::new(
@@ -2372,15 +2369,14 @@ fn validate_code_list(
     for item in arr.iter() {
         let item_span = span_of(item.span());
         let item = match resolve_binding_chain(file, item, locals, variables, diags) {
-            BindingResolution::NotABinding => item,
             BindingResolution::Resolved(value) => value,
             BindingResolution::Failed => continue,
         };
-        let Expression::String(s) = item else {
+        let Expression::String(s) = item.as_ref() else {
             diags.push(Diag::new(
                 file.src.clone(),
                 item_span,
-                format!("expected {noun} string, got {}", describe_expr(item)),
+                format!("expected {noun} string, got {}", describe_expr(item.as_ref())),
             ));
             continue;
         };
@@ -2482,70 +2478,12 @@ fn validate_ref(
 }
 
 enum BindingResolution<'a> {
-    NotABinding,
-    Resolved(&'a Expression),
+    Resolved(Cow<'a, Expression>),
     Failed,
 }
 
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-enum BindingKind {
-    Local,
-    Var,
-}
-
-impl BindingKind {
-    fn prefix(self) -> &'static str {
-        match self {
-            BindingKind::Local => "local",
-            BindingKind::Var => "var",
-        }
-    }
-
-    fn noun(self) -> &'static str {
-        match self {
-            BindingKind::Local => "local",
-            BindingKind::Var => "variable",
-        }
-    }
-}
-
-enum StepError {
-    Missing,
-    Ambiguous(Vec<String>),
-    Dangling,
-}
-
-fn resolve_step<'a>(
-    locals: &'a LocalsRegistry,
-    variables: &'a VariablesRegistry,
-    module: &str,
-    kind: BindingKind,
-    name: &str,
-) -> Result<(String, &'a str, &'a Expression), StepError> {
-    let resolution = match kind {
-        BindingKind::Local => locals.resolve(module, name),
-        BindingKind::Var => variables.resolve(module, name),
-    };
-    match resolution {
-        Resolution::Found(q) => {
-            let decl = match kind {
-                BindingKind::Local => locals.get(&q).map(|d| (d.module.as_str(), &d.value)),
-                BindingKind::Var => variables.get(&q).map(|d| (d.module.as_str(), &d.value)),
-            };
-            match decl {
-                Some((decl_module, value)) => Ok((q, decl_module, value)),
-                None => Err(StepError::Dangling),
-            }
-        }
-        Resolution::Missing => Err(StepError::Missing),
-        Resolution::Ambiguous(modules) => {
-            let mut sorted: Vec<String> = modules.to_vec();
-            sorted.sort();
-            Err(StepError::Ambiguous(sorted))
-        }
-    }
-}
-
+/// Evaluate an expression (binding chains + string templates); evaluation
+/// errors become diags anchored at the use-site span.
 fn resolve_binding_chain<'a>(
     file: &ParsedFile,
     expr: &'a Expression,
@@ -2553,86 +2491,18 @@ fn resolve_binding_chain<'a>(
     variables: &'a VariablesRegistry,
     diags: &mut Vec<Diag>,
 ) -> BindingResolution<'a> {
-    let Some((first_kind, first_name)) = binding_ref(expr) else {
-        return BindingResolution::NotABinding;
-    };
-    let use_span = span_of(expr.span());
-    let mut visited: HashSet<(BindingKind, String)> = HashSet::new();
-    let mut current_module = file.module.as_str();
-    let mut current_kind = first_kind;
-    let mut current_name = first_name;
-    loop {
-        let (qualified, decl_module, value) =
-            match resolve_step(locals, variables, current_module, current_kind, &current_name) {
-                Ok(t) => t,
-                Err(StepError::Dangling) => return BindingResolution::Failed,
-                Err(StepError::Missing) => {
-                    diags.push(Diag::new(
-                        file.src.clone(),
-                        use_span.clone(),
-                        format!(
-                            "reference to undeclared {} '{}.{current_name}'",
-                            current_kind.noun(),
-                            current_kind.prefix()
-                        ),
-                    ));
-                    return BindingResolution::Failed;
-                }
-                Err(StepError::Ambiguous(modules)) => {
-                    diags.push(Diag::new(
-                        file.src.clone(),
-                        use_span.clone(),
-                        format!(
-                            "ambiguous reference to '{}.{current_name}'; declared in modules [{}] — rename one of the {}s so each is unique within its module",
-                            current_kind.prefix(),
-                            modules.join(", "),
-                            current_kind.noun()
-                        ),
-                    ));
-                    return BindingResolution::Failed;
-                }
-            };
-        if !visited.insert((current_kind, qualified)) {
-            diags.push(Diag::new(
-                file.src.clone(),
-                use_span.clone(),
-                format!(
-                    "cyclic reference involving '{}.{current_name}'",
-                    current_kind.prefix()
-                ),
-            ));
-            return BindingResolution::Failed;
-        }
-        match binding_ref(value) {
-            Some((next_kind, next_name)) => {
-                current_module = decl_module;
-                current_kind = next_kind;
-                current_name = next_name;
-            }
-            None => {
-                return BindingResolution::Resolved(value);
-            }
+    let ctx = EvalCtx { locals, variables };
+    match ctx.eval(&file.module, expr) {
+        Ok(value) => BindingResolution::Resolved(value),
+        Err(EvalError::Silent) => BindingResolution::Failed,
+        Err(EvalError::Message(message)) => {
+            diags.push(Diag::new(file.src.clone(), span_of(expr.span()), message));
+            BindingResolution::Failed
         }
     }
 }
 
-fn binding_ref(expr: &Expression) -> Option<(BindingKind, String)> {
-    let Expression::Traversal(t) = expr else {
-        return None;
-    };
-    let path = extract_traversal_path(t)?;
-    if path.len() < 2 {
-        return None;
-    }
-    let kind = match path[0].as_str() {
-        "local" => BindingKind::Local,
-        "var" => BindingKind::Var,
-        _ => return None,
-    };
-    Some((kind, path[1].clone()))
-}
-
-fn extract_traversal_path(t: &Traversal) -> Option<Vec<String>> {
+pub(crate) fn extract_traversal_path(t: &Traversal) -> Option<Vec<String>> {
     let mut path = Vec::new();
     match &t.expr {
         Expression::Variable(v) => path.push(v.as_str().to_string()),
@@ -2671,8 +2541,15 @@ fn describe_field_type(ty: &FieldType) -> String {
     }
 }
 
-fn validate_rsa_asset_item(file: &ParsedFile, expr: &Expression, diags: &mut Vec<Diag>) {
-    let span = span_of(expr.span());
+fn validate_rsa_asset_item(
+    file: &ParsedFile,
+    expr: &Expression,
+    use_span: std::ops::Range<usize>,
+    locals: &LocalsRegistry,
+    variables: &VariablesRegistry,
+    diags: &mut Vec<Diag>,
+) {
+    let span = expr.span().unwrap_or(use_span.clone());
     match expr {
         Expression::String(_) => {}
         Expression::Object(obj) => {
@@ -2686,27 +2563,33 @@ fn validate_rsa_asset_item(file: &ParsedFile, expr: &Expression, diags: &mut Vec
                     ));
                     continue;
                 };
+                let value_span = value.expr().span().unwrap_or(use_span.clone());
+                let resolved =
+                    match resolve_binding_chain(file, value.expr(), locals, variables, diags) {
+                        BindingResolution::Resolved(v) => v,
+                        BindingResolution::Failed => continue,
+                    };
                 match ident.as_str() {
                     "text" => {
                         has_text = true;
-                        if !matches!(value.expr(), Expression::String(_)) {
+                        if !matches!(resolved.as_ref(), Expression::String(_)) {
                             diags.push(Diag::new(
                                 file.src.clone(),
-                                span_of(value.expr().span()),
+                                value_span,
                                 format!(
                                     "RSA asset 'text' must be a string, got {}",
-                                    describe_expr(value.expr())
+                                    describe_expr(resolved.as_ref())
                                 ),
                             ));
                         }
                     }
-                    "pin" => match value.expr() {
+                    "pin" => match resolved.as_ref() {
                         Expression::String(s) => {
                             let v = s.as_str();
                             if !RSA_PIN.contains(&v) {
                                 diags.push(Diag::new(
                                     file.src.clone(),
-                                    span_of(value.expr().span()),
+                                    value_span,
                                     format!(
                                         "invalid pin \"{v}\"; expected one of [{}]",
                                         RSA_PIN.join(", ")
@@ -2716,7 +2599,7 @@ fn validate_rsa_asset_item(file: &ParsedFile, expr: &Expression, diags: &mut Vec
                         }
                         other => diags.push(Diag::new(
                             file.src.clone(),
-                            span_of(value.expr().span()),
+                            value_span,
                             format!(
                                 "RSA asset 'pin' must be a string, got {}",
                                 describe_expr(other)
@@ -2753,7 +2636,7 @@ fn validate_rsa_asset_item(file: &ParsedFile, expr: &Expression, diags: &mut Vec
     }
 }
 
-fn describe_expr(expr: &Expression) -> String {
+pub(crate) fn describe_expr(expr: &Expression) -> String {
     match expr {
         Expression::String(s) => format!("string \"{}\"", s.as_str()),
         Expression::Number(n) => format!("number {}", **n),
@@ -2766,6 +2649,10 @@ fn describe_expr(expr: &Expression) -> String {
         Expression::Array(_) => "array".to_string(),
         Expression::Object(_) => "object".to_string(),
         Expression::Null(_) => "null".to_string(),
+        Expression::StringTemplate(_) => "string template".to_string(),
+        Expression::FuncCall(call) => {
+            format!("function call '{}(…)'", call.name.name.as_str())
+        }
         _ => "expression".to_string(),
     }
 }
@@ -2958,7 +2845,7 @@ locals { x = 42 }
         let bindings = bindings_from(&pf);
         let expr: Expression = "local.x".parse().expect("parse traversal");
         let resolved = bindings.resolve_value("module", &expr);
-        match resolved {
+        match resolved.as_ref() {
             Expression::Number(n) => assert_eq!(n.as_f64(), Some(42.0)),
             other => panic!("expected Number, got {other:?}"),
         }
@@ -2978,7 +2865,7 @@ locals {
         );
         let bindings = bindings_from(&pf);
         let expr: Expression = "local.top".parse().expect("parse");
-        match bindings.resolve_value("chain", &expr) {
+        match bindings.resolve_value("chain", &expr).as_ref() {
             Expression::Number(n) => assert_eq!(n.as_f64(), Some(5.0)),
             other => panic!("expected Number, got {other:?}"),
         }
@@ -2999,7 +2886,7 @@ locals {
             Bindings::build(std::slice::from_ref(&pf), &InputBindings::default());
         let expr: Expression = "local.a".parse().expect("parse");
         let resolved = bindings.resolve_value("cycle", &expr);
-        assert!(matches!(resolved, Expression::Traversal(_)));
+        assert!(matches!(resolved.as_ref(), Expression::Traversal(_)));
     }
 
     #[test]
@@ -3015,7 +2902,7 @@ variable "city_radius_km" {
         );
         let bindings = bindings_from(&pf);
         let expr: Expression = "var.city_radius_km".parse().expect("parse");
-        match bindings.resolve_value("var_default", &expr) {
+        match bindings.resolve_value("var_default", &expr).as_ref() {
             Expression::Number(n) => assert_eq!(n.as_f64(), Some(15.0)),
             other => panic!("expected Number, got {other:?}"),
         }
@@ -3037,7 +2924,7 @@ variable "wave" {
         let (bindings, diags) = Bindings::build(std::slice::from_ref(&pf), &inputs);
         assert!(diags.is_empty());
         let expr: Expression = "var.wave".parse().expect("parse");
-        match bindings.resolve_value("var_input", &expr) {
+        match bindings.resolve_value("var_input", &expr).as_ref() {
             Expression::String(s) => assert_eq!(s.as_str(), "W2"),
             other => panic!("expected String, got {other:?}"),
         }
@@ -3099,7 +2986,7 @@ locals {
         );
         let bindings = bindings_from(&pf);
         let expr: Expression = "local.daily".parse().expect("parse");
-        match bindings.resolve_value("loc_via_var", &expr) {
+        match bindings.resolve_value("loc_via_var", &expr).as_ref() {
             Expression::Number(n) => assert_eq!(n.as_f64(), Some(10000000.0)),
             other => panic!("expected Number, got {other:?}"),
         }
@@ -3824,6 +3711,209 @@ resource "google_ads_ad_group_ad" "rsa" {
         );
         assert!(
             diags.iter().any(|d| d.message.contains("without a 'template'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn template_renders_through_locals() {
+        let pf = parse_str(
+            "tmpl_render",
+            r#"
+locals {
+  base = "https://example.com/page"
+  utm  = "GH_Test_0101"
+  url  = "${local.base}?utm_campaign=${local.utm}-rsa_a"
+}
+"#,
+        );
+        let bindings = bindings_from(&pf);
+        let expr: Expression = "local.url".parse().expect("parse");
+        match bindings.resolve_value("tmpl_render", &expr).as_ref() {
+            Expression::String(s) => assert_eq!(
+                s.as_str(),
+                "https://example.com/page?utm_campaign=GH_Test_0101-rsa_a"
+            ),
+            other => panic!("expected rendered String, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn template_stringifies_numbers_and_bools() {
+        let pf = parse_str(
+            "tmpl_scalar",
+            r#"
+locals {
+  radius  = 25
+  enabled = true
+  label   = "r${local.radius}-${local.enabled}"
+}
+"#,
+        );
+        let bindings = bindings_from(&pf);
+        let expr: Expression = "local.label".parse().expect("parse");
+        match bindings.resolve_value("tmpl_scalar", &expr).as_ref() {
+            Expression::String(s) => assert_eq!(s.as_str(), "r25-true"),
+            other => panic!("expected rendered String, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn template_in_string_attribute_validates() {
+        let diags = validate_str(
+            "tmpl_attr",
+            r#"
+locals {
+  utm = "GH_Test_0101"
+}
+
+resource "google_ads_campaign_budget" "t" {
+  name          = "t ${local.utm}"
+  amount_micros = 1000000
+}
+"#,
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn template_local_in_list_attribute_validates() {
+        let content = format!(
+            r#"{LIST_LOCAL_PREAMBLE}
+locals {{
+  base  = "https://example.com/page"
+  url_a = "${{local.base}}?utm_campaign=x-rsa_a"
+}}
+
+resource "google_ads_ad_group_ad" "rsa" {{
+  ad_group = google_ads_ad_group.g.id
+  ad {{
+    final_urls = [local.url_a, "${{local.base}}-direct"]
+    responsive_search_ad {{
+      headlines    = ["One Headline", "Two Headline", "Three Headline"]
+      descriptions = ["A description here", "Another description here"]
+    }}
+  }}
+}}
+"#
+        );
+        let diags = validate_str("tmpl_list", &content);
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn template_with_undeclared_local_errors() {
+        let diags = validate_str(
+            "tmpl_undeclared",
+            r#"
+resource "google_ads_campaign_budget" "t" {
+  name          = "t ${local.nope}"
+  amount_micros = 1000000
+}
+"#,
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("reference to undeclared local 'local.nope'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn template_interpolating_a_list_errors() {
+        let diags = validate_str(
+            "tmpl_list_err",
+            r#"
+locals {
+  tail = ["a", "b"]
+}
+
+resource "google_ads_campaign_budget" "t" {
+  name          = "t ${local.tail}"
+  amount_micros = 1000000
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d
+                .message
+                .contains("string interpolation must resolve to a string, number, or bool")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn template_cycle_errors() {
+        let diags = validate_str(
+            "tmpl_cycle",
+            r#"
+locals {
+  a = "x${local.b}"
+  b = "y${local.a}"
+}
+
+resource "google_ads_campaign_budget" "t" {
+  name          = local.a
+  amount_micros = 1000000
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("cyclic reference")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn template_same_local_twice_is_not_a_cycle() {
+        let diags = validate_str(
+            "tmpl_twice",
+            r#"
+locals {
+  utm = "GH"
+}
+
+resource "google_ads_campaign_budget" "t" {
+  name          = "${local.utm}-${local.utm}"
+  amount_micros = 1000000
+}
+"#,
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn template_rendered_enum_is_validated() {
+        let diags = validate_str(
+            "tmpl_enum",
+            r#"
+locals {
+  st = "ENAB"
+}
+
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  status                   = "${local.st}LED_X"
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("invalid value \"ENABLED_X\"")),
             "{:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
