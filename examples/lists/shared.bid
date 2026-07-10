@@ -9,6 +9,7 @@ locals {
     "Block ads, trackers, and popups. Manifest V3 ready, fast, and free.",
     "The privacy browser extension millions of people already trust.",
   ]
+  brand_tail_headlines = ["Add to Chrome, Free", "Open Source & Private", "100M+ Downloads Worldwide"]
   competitor_keywords = ["ublock", "ublock origin", "adblock alternative", "best ad blocker"]
   landing_urls = [
     "https://ghostery.info/get?utm_source=google&utm_medium=cpc&utm_term={keyword}",

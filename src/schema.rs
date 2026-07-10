@@ -3891,6 +3891,168 @@ resource "google_ads_campaign_budget" "t" {
     }
 
     #[test]
+    fn concat_merges_list_locals() {
+        let pf = parse_str(
+            "concat_merge",
+            r#"
+locals {
+  specific = ["Stop Cookie Pop-Ups for Good"]
+  common_tail = ["Add to Chrome, Free", "Open Source & Private"]
+  merged = concat(local.specific, local.common_tail)
+}
+"#,
+        );
+        let bindings = bindings_from(&pf);
+        let expr: Expression = "local.merged".parse().expect("parse");
+        match bindings.resolve_value("concat_merge", &expr).as_ref() {
+            Expression::Array(arr) => {
+                let texts: Vec<&str> = arr
+                    .iter()
+                    .map(|e| match e {
+                        Expression::String(s) => s.as_str(),
+                        other => panic!("expected string item, got {other:?}"),
+                    })
+                    .collect();
+                assert_eq!(
+                    texts,
+                    vec![
+                        "Stop Cookie Pop-Ups for Good",
+                        "Add to Chrome, Free",
+                        "Open Source & Private"
+                    ]
+                );
+            }
+            other => panic!("expected merged Array, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn concat_nests_and_takes_inline_lists() {
+        let pf = parse_str(
+            "concat_nest",
+            r#"
+locals {
+  a = ["one"]
+  b = concat(local.a, ["two"])
+  c = concat(local.b, ["three"])
+}
+"#,
+        );
+        let bindings = bindings_from(&pf);
+        let expr: Expression = "local.c".parse().expect("parse");
+        match bindings.resolve_value("concat_nest", &expr).as_ref() {
+            Expression::Array(arr) => assert_eq!(arr.iter().count(), 3),
+            other => panic!("expected Array, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn concat_in_rsa_list_attribute_validates() {
+        let content = format!(
+            r#"{LIST_LOCAL_PREAMBLE}
+locals {{
+  hl_specific = ["Stop Cookie Pop-Ups for Good", {{ text = "Block Cookie Banners", pin = "HEADLINE_1" }}]
+  hl_brand_tail = ["Add to Chrome, Free", "Open Source & Private"]
+}}
+
+resource "google_ads_ad_group_ad" "rsa" {{
+  ad_group = google_ads_ad_group.g.id
+  ad {{
+    final_urls = ["https://example.com"]
+    responsive_search_ad {{
+      headlines    = concat(local.hl_specific, local.hl_brand_tail)
+      descriptions = ["A description here", "Another description here"]
+    }}
+  }}
+}}
+"#
+        );
+        let diags = validate_str("concat_rsa", &content);
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn concat_of_non_list_errors() {
+        let diags = validate_str(
+            "concat_scalar",
+            r#"
+locals {
+  tail = ["a"]
+  oops = "not a list"
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  locations                = concat(local.tail, local.oops)
+}
+
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d
+                .message
+                .contains("concat() arguments must be lists, got string \"not a list\"")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn unknown_function_errors() {
+        let diags = validate_str(
+            "unknown_fn",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = max(1000000, 2000000)
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d
+                .message
+                .contains("unknown function 'max'; supported functions: concat")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn concat_validates_element_types() {
+        let content = format!(
+            r#"{LIST_LOCAL_PREAMBLE}
+locals {{
+  urls = ["https://example.com"]
+}}
+
+resource "google_ads_ad_group_ad" "rsa" {{
+  ad_group = google_ads_ad_group.g.id
+  ad {{
+    final_urls = concat(local.urls, [42])
+    responsive_search_ad {{
+      headlines    = ["One Headline", "Two Headline", "Three Headline"]
+      descriptions = ["A description here", "Another description here"]
+    }}
+  }}
+}}
+"#
+        );
+        let diags = validate_str("concat_elem", &content);
+        assert!(
+            diags.iter().any(|d| d.message.contains("expected string, got number 42")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn template_rendered_enum_is_validated() {
         let diags = validate_str(
             "tmpl_enum",

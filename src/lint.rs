@@ -513,6 +513,49 @@ locals {{
     }
 
     #[test]
+    fn concat_result_counts_toward_rsa_minimums() {
+        let content = format!(
+            r#"
+locals {{
+  specific = ["Stop Cookie Pop-Ups"]
+  tail     = ["Add to Chrome, Free", "Open Source & Private"]
+}}
+{}"#,
+            rsa(
+                "concat(local.specific, local.tail)",
+                r#"["First description", "Second description"]"#
+            )
+        );
+        let msgs = lint_str("concat_min_ok", &content);
+        assert!(
+            !msgs.iter().any(|m| m.contains("Google Ads requires at least")),
+            "unexpected min-count warning: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn over_length_item_in_concat_tail_warns() {
+        let content = format!(
+            r#"
+locals {{
+  specific = ["Stop Cookie Pop-Ups", "Short Two"]
+  tail     = ["This shared brand tail headline is much too long to pass"]
+}}
+{}"#,
+            rsa(
+                "concat(local.specific, local.tail)",
+                r#"["First description", "Second description"]"#
+            )
+        );
+        let msgs = lint_str("concat_too_long", &content);
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("characters; Google Ads rejects headlines over 30")),
+            "expected length warning in concat tail: {msgs:?}"
+        );
+    }
+
+    #[test]
     fn over_length_rendered_template_headline_warns() {
         let content = format!(
             r#"

@@ -100,6 +100,23 @@ resource type, any file layout, modules, schema validation.
   mutually-recursive templates error. `variable` defaults stay
   literal-only. A `format()` function was considered and skipped:
   interpolation subsumes it.
+- **`concat()` for lists** (issue #85): `concat(list, list, …)` merges
+  lists in argument order, evaluated in `locals` and directly in list
+  attributes, so a partially-shared list — per-ad headlines followed by
+  a shared brand tail — dedupes without copy-pasting the tail into
+  every RSA. Rides the same evaluator as interpolation (`src/eval.rs`);
+  arguments may be inline lists, `local.`/`var.` chains, or nested
+  `concat()` calls, and element types stay mixed (bare strings and
+  `{ text, pin }` objects in one result). List-level validation and the
+  RSA lints (min 3 headlines / max lengths, duplicate detection) run on
+  the post-concat result, per the issue's requirement. A non-list
+  argument and HCL's `...` argument expansion are validate-time errors,
+  as is any function other than `concat` ("unknown function 'x';
+  supported functions: concat") — the function table grows one entry at
+  a time as real needs land, not speculatively. The spread-form
+  alternative (`[local.a..., "extra"]`) was skipped: `concat` matches
+  Terraform muscle memory, which is what agents and Terraform-literate
+  users reach for first.
 - **`ad_template` block** (issue #40): list locals fold an RSA's
   `headlines` / `descriptions`, but the duplication that remains is the
   *whole ad body* run in every ad group of a campaign (measured: 142 RSAs,
@@ -689,8 +706,10 @@ Verified locally:
   two RSAs reuse the same `local.brand_headlines` / `local.brand_descriptions`,
   the campaigns take inline `languages` / `locations` from a shared list,
   and a compact `keywords { texts = local.competitor_keywords }` block
-  fans the shared list out into one criterion per keyword. No false RSA
-  min-headline warnings; `fmt --check examples/lists` is a no-op.
+  fans the shared list out into one criterion per keyword. The generic
+  RSA merges three ad-specific headlines with the shared
+  `local.brand_tail_headlines` via `concat(...)` (issue #85). No false
+  RSA min-headline warnings; `fmt --check examples/lists` is a no-op.
 - `cargo run -- validate examples/ad-templates` → `OK: 2 file(s) valid.`
   — exercises **reusable ad bodies** (issue #40). `templates.bid`
   declares `ad_template "ublock_rsa"` / `"generic_rsa"` once; `ublock.bid`
