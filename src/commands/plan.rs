@@ -257,6 +257,9 @@ fn build_prepared(
     imported.input.apply_schema_defaults();
     live.apply_schema_defaults();
     let report = diff::diff(&imported.input, &live);
+    for w in &report.warnings {
+        eprintln!("{label}: warning: {w}");
+    }
     let modules: std::collections::HashSet<&str> =
         report.diffs.iter().map(|d| module_of(&d.address)).collect();
     let strip_module = modules.len() <= 1;

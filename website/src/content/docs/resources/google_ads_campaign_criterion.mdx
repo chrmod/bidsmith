@@ -219,6 +219,15 @@ bids 25% more, `0.5` bids 50% less, and `0.0` is a −100% adjustment that
 opts the device out completely. Editing the modifier later is an
 in-place update — Google Ads keeps the campaign's history.
 
+You only need to declare the device types you're adjusting. As soon as a
+campaign has any device adjustment, Google Ads quietly adds entries for
+every other device type (desktop, mobile, tablet, and so on) at no
+adjustment — that's normal, and bidsmith leaves them alone. If one of
+those undeclared types picks up an adjustment outside your files (say,
+someone changes it in the Google Ads website), `plan` prints a warning:
+add a matching `device` block to take it over, or leave out
+`bid_modifier` to clear the adjustment.
+
 <AttributeTable block={device} headingLevel={4} />
 
 ## See also

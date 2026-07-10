@@ -872,7 +872,12 @@ Validator covers (so far):
   adjustments — `0.0` = −100% = opt the device out, the desktop-only /
   mobile-excluded case from issue #71; the device type is the match key
   and `bid_modifier` is a scalar field diff, so retuning a modifier is an
-  in-place update, not a recreate), plus a bulk
+  in-place update, not a recreate; live device criteria are never
+  destroyed — the API forbids removing them, and Google auto-materializes
+  every device type once any device targeting exists (issue #82), so an
+  undeclared default-state device criterion is implicitly desired and one
+  carrying an adjustment surfaces as a plan warning instead of a doomed
+  remove op that would sink the whole atomic batch), plus a bulk
   syntactic-sugar form where repeating `negative_keyword { text,
   match_type }` sub-blocks in one resource expand into N individual
   negative criteria at import time (same `negative`-from-block-shape
