@@ -1,0 +1,82 @@
+---
+title: Share campaign settings across every campaign
+description: Declare the channel type, targeting, and bidding boilerplate once in a defaults block — each campaign file shrinks to what makes it unique.
+---
+
+Open any two search campaign files in your account and compare: the
+same `advertising_channel_type`, the same languages and countries, the
+same `manual_cpc` and `network_settings` blocks, ~20 lines repeated
+per campaign. Only the name, budget, and everything *under* the
+campaign differ.
+
+A `defaults` block declares that shell once, for a whole resource
+type:
+
+```hcl
+defaults "google_ads_campaign" {
+  advertising_channel_type = "SEARCH"
+  languages = ["en"]
+  locations = ["US"]
+  contains_eu_political_advertising = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"
+
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+
+  network_settings {
+    target_google_search = true
+    target_search_network = false
+    target_content_network = false
+    target_partner_search_network = false
+  }
+}
+```
+
+Put it in a shared file (`shared.bid` works well) and every campaign
+in the folder tree inherits it. Each campaign file now says only what
+makes that campaign itself:
+
+```hcl
+resource "google_ads_campaign" "cookies" {
+  name            = "GH_Cookies — Search"
+  status          = "ENABLED"
+  campaign_budget = google_ads_campaign_budget.cookies.id
+}
+```
+
+## Overriding per campaign
+
+Set the attribute on the campaign and it wins — the default only fills
+gaps:
+
+```hcl
+resource "google_ads_campaign" "fingerprint" {
+  name            = "GH_Fingerprint — Search"
+  status          = "ENABLED"
+  campaign_budget = google_ads_campaign_budget.fingerprint.id
+  locations       = ["US", "CA", "GB"]
+}
+```
+
+A nested block like `manual_cpc` overrides as a whole: declare it on
+the campaign and the default block is ignored entirely, so there's
+never a half-merged surprise.
+
+## Adopting it on a live account
+
+The merge happens when bidsmith reads your files, before anything is
+compared with Google Ads — so rewriting existing campaigns onto a
+`defaults` block changes nothing live. `bidsmith plan` right after the
+refactor shows no changes; that's the point.
+
+## What it can't hold
+
+- One `defaults` block per resource type. Two files both declaring
+  campaign defaults is an error — bidsmith tells you which files
+  collide.
+- Ad bodies. Every ad declares its own `ad` block or points at an
+  [ad_template](/bidsmith/recipes/reuse-an-ad-across-ad-groups/).
+- Resources that come in packs — like the mobile/tablet exclusion pair
+  every campaign carries — are separate resources, not campaign
+  attributes. Fan those out with
+  [for_each](/bidsmith/recipes/repeat-a-resource-with-for-each/).

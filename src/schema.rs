@@ -1199,6 +1199,145 @@ impl AdTemplateRegistry {
     }
 }
 
+pub struct DefaultsDecl {
+    pub file: String,
+    pub block: Block,
+}
+
+/// Type-scoped attribute/block defaults from top-level `defaults "<type>" {}`
+/// blocks. One block per resource type per scope; a resource's own attribute
+/// or nested block always wins (blocks override wholesale, no deep merge).
+#[derive(Default)]
+pub struct DefaultsRegistry {
+    by_type: HashMap<String, DefaultsDecl>,
+}
+
+impl DefaultsRegistry {
+    pub fn provided_attrs(&self, ty: &str) -> HashSet<String> {
+        let Some(decl) = self.by_type.get(ty) else {
+            return HashSet::new();
+        };
+        decl.block
+            .body
+            .iter()
+            .filter_map(|s| match s {
+                Structure::Attribute(a) => Some(a.key.as_str().to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The resource block with missing attributes / nested blocks filled in
+    /// from its type's defaults; `None` when nothing applies.
+    pub fn merge(&self, ty: &str, block: &Block) -> Option<Block> {
+        let decl = self.by_type.get(ty)?;
+        let have_attrs: HashSet<&str> = block
+            .body
+            .iter()
+            .filter_map(|s| match s {
+                Structure::Attribute(a) => Some(a.key.as_str()),
+                _ => None,
+            })
+            .collect();
+        let have_blocks: HashSet<&str> = block
+            .body
+            .iter()
+            .filter_map(|s| match s {
+                Structure::Block(b) => Some(b.ident.as_str()),
+                _ => None,
+            })
+            .collect();
+        let additions: Vec<&Structure> = decl
+            .block
+            .body
+            .iter()
+            .filter(|s| match s {
+                Structure::Attribute(a) => !have_attrs.contains(a.key.as_str()),
+                Structure::Block(b) => !have_blocks.contains(b.ident.as_str()),
+            })
+            .collect();
+        if additions.is_empty() {
+            return None;
+        }
+        let mut merged = block.clone();
+        for s in additions {
+            merged.body.push(s.clone());
+        }
+        Some(merged)
+    }
+
+    pub fn build(files: &[ParsedFile]) -> (Self, Vec<Diag>) {
+        let mut registry = DefaultsRegistry::default();
+        let mut diags = Vec::new();
+        for f in files {
+            for s in f.body.iter() {
+                let Structure::Block(b) = s else { continue };
+                if b.ident.as_str() != "defaults" {
+                    continue;
+                }
+                if b.labels.len() != 1 {
+                    diags.push(Diag::new(
+                        f.src.clone(),
+                        span_of(b.ident.span()),
+                        format!(
+                            "'defaults' block requires exactly one label (the resource type), got {}",
+                            b.labels.len()
+                        ),
+                    ));
+                    continue;
+                }
+                let ty = b.labels[0].as_str().to_string();
+                if !resource_schemas().contains_key(ty.as_str()) {
+                    diags.push(Diag::new(
+                        f.src.clone(),
+                        span_of(b.labels[0].span()),
+                        format!("unknown resource type '{ty}' in defaults block"),
+                    ));
+                    continue;
+                }
+                if ty == "google_ads_ad_group_ad" {
+                    let offending = b.body.iter().find_map(|s| match s {
+                        Structure::Attribute(a) if a.key.as_str() == "template" => {
+                            Some(span_of(a.key.span()))
+                        }
+                        Structure::Block(ib) if ib.ident.as_str() == "ad" => {
+                            Some(span_of(ib.ident.span()))
+                        }
+                        _ => None,
+                    });
+                    if let Some(span) = offending {
+                        diags.push(Diag::new(
+                            f.src.clone(),
+                            span,
+                            "defaults cannot provide an ad body: declare 'ad' or 'template' on each google_ads_ad_group_ad (use ad_template for reusable bodies)".to_string(),
+                        ));
+                        continue;
+                    }
+                }
+                if let Some(prev) = registry.by_type.get(&ty) {
+                    diags.push(Diag::new(
+                        f.src.clone(),
+                        span_of(b.labels[0].span()),
+                        format!(
+                            "duplicate defaults for '{ty}' (also declared at {}); one defaults block per resource type",
+                            prev.file
+                        ),
+                    ));
+                    continue;
+                }
+                registry.by_type.insert(
+                    ty,
+                    DefaultsDecl {
+                        file: f.path.display().to_string(),
+                        block: b.clone(),
+                    },
+                );
+            }
+        }
+        (registry, diags)
+    }
+}
+
 /// The `<name>` in an `ad_template.<name>` traversal, else `None`.
 pub fn ad_template_ref_name(expr: &Expression) -> Option<String> {
     let Expression::Traversal(t) = expr else {
@@ -1546,13 +1685,15 @@ pub fn validate_files(files: &[ParsedFile], inputs: &InputBindings) -> Vec<Diag>
     diags.extend(variables_diags);
     let (templates, template_diags) = AdTemplateRegistry::build(files);
     diags.extend(template_diags);
+    let (defaults, defaults_diags) = DefaultsRegistry::build(files);
+    diags.extend(defaults_diags);
 
     for f in files {
-        validate_top_level(f, &registry, &locals, &variables, &mut diags);
+        validate_top_level(f, &registry, &locals, &variables, &defaults, &mut diags);
     }
 
     validate_ad_templates(files, &templates, &registry, &locals, &variables, &mut diags);
-    validate_targeting_conflicts(files, &registry, &mut diags);
+    validate_targeting_conflicts(files, &registry, &defaults, &mut diags);
 
     diags.sort_by(|a, b| {
         (a.src.name(), a.span.offset()).cmp(&(b.src.name(), b.span.offset()))
@@ -1585,6 +1726,7 @@ fn validate_ad_templates(
                         registry,
                         locals,
                         variables,
+                        RequiredCheck::Enforce,
                         diags,
                     );
                     validate_ad_creative_exclusivity(f, &b.body, &address, diags);
@@ -1765,8 +1907,14 @@ struct InlineAxes {
 fn validate_targeting_conflicts(
     files: &[ParsedFile],
     registry: &ResourceRegistry,
+    defaults: &DefaultsRegistry,
     diags: &mut Vec<Diag>,
 ) {
+    let campaign_defaults = defaults.provided_attrs("google_ads_campaign");
+    let default_axes = InlineAxes {
+        languages: campaign_defaults.contains("languages"),
+        locations: campaign_defaults.contains("locations"),
+    };
     let mut inline: HashMap<String, InlineAxes> = HashMap::new();
     for f in files {
         for s in f.body.iter() {
@@ -1778,7 +1926,7 @@ fn validate_targeting_conflicts(
                 continue;
             }
             let name = b.labels[1].as_str();
-            let mut axes = InlineAxes::default();
+            let mut axes = default_axes;
             for inner in b.body.iter() {
                 if let Structure::Attribute(a) = inner {
                     match a.key.as_str() {
@@ -1889,6 +2037,7 @@ fn validate_top_level(
     registry: &ResourceRegistry,
     locals: &LocalsRegistry,
     variables: &VariablesRegistry,
+    defaults: &DefaultsRegistry,
     diags: &mut Vec<Diag>,
 ) {
     for s in file.body.iter() {
@@ -1898,14 +2047,17 @@ fn validate_top_level(
                     file.src.clone(),
                     span_of(a.key.span()),
                     format!(
-                        "top-level attributes are not allowed; place '{}' inside a 'provider', 'resource', 'locals', 'variable', 'module', or 'ad_template' block",
+                        "top-level attributes are not allowed; place '{}' inside a 'provider', 'resource', 'defaults', 'locals', 'variable', 'module', or 'ad_template' block",
                         a.key.as_str()
                     ),
                 ));
             }
             Structure::Block(b) => match b.ident.as_str() {
                 "provider" => validate_provider(file, b, registry, locals, variables, diags),
-                "resource" => validate_resource(file, b, registry, locals, variables, diags),
+                "resource" => {
+                    validate_resource(file, b, registry, locals, variables, defaults, diags)
+                }
+                "defaults" => validate_defaults(file, b, registry, locals, variables, diags),
                 "locals" => {
                     let _ = b;
                 }
@@ -1923,13 +2075,47 @@ fn validate_top_level(
                         file.src.clone(),
                         span_of(b.ident.span()),
                         format!(
-                            "unknown top-level block '{other}'; expected 'provider', 'resource', 'locals', 'variable', 'module', or 'ad_template'"
+                            "unknown top-level block '{other}'; expected 'provider', 'resource', 'defaults', 'locals', 'variable', 'module', or 'ad_template'"
                         ),
                     ));
                 }
             },
         }
     }
+}
+
+/// Validate a `defaults "<type>"` body against the type's schema. Required
+/// attributes are not enforced at the top level (a defaults block legitimately
+/// provides a subset); nested blocks it declares are checked in full.
+/// Label-shape / unknown-type / duplicate errors are reported by
+/// `DefaultsRegistry::build`.
+fn validate_defaults(
+    file: &ParsedFile,
+    block: &Block,
+    registry: &ResourceRegistry,
+    locals: &LocalsRegistry,
+    variables: &VariablesRegistry,
+    diags: &mut Vec<Diag>,
+) {
+    if block.labels.len() != 1 {
+        return;
+    }
+    let ty = block.labels[0].as_str();
+    let Some(schema) = resource_schemas().get(ty) else {
+        return;
+    };
+    validate_body(
+        file,
+        block,
+        &block.body,
+        schema,
+        &format!("defaults.{ty}"),
+        registry,
+        locals,
+        variables,
+        RequiredCheck::Skip,
+        diags,
+    );
 }
 
 fn validate_provider(
@@ -1972,6 +2158,7 @@ fn validate_provider(
         registry,
         locals,
         variables,
+        RequiredCheck::Enforce,
         diags,
     );
 }
@@ -1982,6 +2169,7 @@ fn validate_resource(
     registry: &ResourceRegistry,
     locals: &LocalsRegistry,
     variables: &VariablesRegistry,
+    defaults: &DefaultsRegistry,
     diags: &mut Vec<Diag>,
 ) {
     if block.labels.len() != 2 {
@@ -2008,6 +2196,7 @@ fn validate_resource(
             return;
         }
     };
+    let provided = defaults.provided_attrs(ty);
     validate_body(
         file,
         block,
@@ -2017,10 +2206,20 @@ fn validate_resource(
         registry,
         locals,
         variables,
+        RequiredCheck::SatisfiedBy(&provided),
         diags,
     );
 }
 
+enum RequiredCheck<'a> {
+    Enforce,
+    /// Enforce, except attributes a `defaults` block for this type provides.
+    SatisfiedBy(&'a HashSet<String>),
+    /// Do not enforce at this level (a defaults body provides a subset).
+    Skip,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn validate_body(
     file: &ParsedFile,
     containing: &Block,
@@ -2030,6 +2229,7 @@ fn validate_body(
     registry: &ResourceRegistry,
     locals: &LocalsRegistry,
     variables: &VariablesRegistry,
+    required: RequiredCheck<'_>,
     diags: &mut Vec<Diag>,
 ) {
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -2082,6 +2282,7 @@ fn validate_body(
                     registry,
                     locals,
                     variables,
+                    RequiredCheck::Enforce,
                     diags,
                 );
                 if matches!(bname, "keywords" | "negative_keywords") {
@@ -2099,13 +2300,19 @@ fn validate_body(
     }
 
     for a in &schema.attributes {
-        if a.required && !seen.contains(a.name) {
-            diags.push(Diag::new(
-                file.src.clone(),
-                span_of(containing.ident.span()),
-                format!("missing required attribute '{}' in {}", a.name, address),
-            ));
+        if !a.required || seen.contains(a.name) {
+            continue;
         }
+        match &required {
+            RequiredCheck::Skip => continue,
+            RequiredCheck::SatisfiedBy(provided) if provided.contains(a.name) => continue,
+            _ => {}
+        }
+        diags.push(Diag::new(
+            file.src.clone(),
+            span_of(containing.ident.span()),
+            format!("missing required attribute '{}' in {}", a.name, address),
+        ));
     }
 }
 
@@ -4133,6 +4340,181 @@ resource "google_ads_campaign_budget" "b[\"a\"]" {
         );
         assert!(
             diags.iter().any(|d| d.message.contains("duplicate resource")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    const CAMPAIGN_DEFAULTS: &str = r#"
+defaults "google_ads_campaign" {
+  advertising_channel_type = "SEARCH"
+  languages = ["en"]
+  locations = ["US"]
+  contains_eu_political_advertising = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"
+
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+
+  network_settings {
+    target_google_search = true
+    target_search_network = false
+    target_content_network = false
+    target_partner_search_network = false
+  }
+}
+
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+"#;
+
+    #[test]
+    fn defaults_satisfy_required_attributes() {
+        let diags = validate_str(
+            "defaults_required",
+            &format!(
+                r#"{CAMPAIGN_DEFAULTS}
+resource "google_ads_campaign" "shell" {{
+  name            = "GH_Cookies 08.07.2026"
+  campaign_budget = google_ads_campaign_budget.b.id
+}}
+"#
+            ),
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn defaults_body_is_schema_validated_at_declaration() {
+        let diags = validate_str(
+            "defaults_body",
+            r#"
+defaults "google_ads_campaign" {
+  advertising_channel_type = "TELEPATHY"
+  frequency = 7
+}
+"#,
+        );
+        let msgs: Vec<&String> = diags.iter().map(|d| &d.message).collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("invalid value \"TELEPATHY\"")),
+            "{msgs:?}"
+        );
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("unknown attribute 'frequency' in defaults.google_ads_campaign")),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn defaults_unknown_type_errors() {
+        let diags = validate_str(
+            "defaults_unknown_type",
+            r#"
+defaults "google_ads_flying_carpet" {
+  status = "ENABLED"
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d
+                .message
+                .contains("unknown resource type 'google_ads_flying_carpet' in defaults block")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn duplicate_defaults_for_a_type_error() {
+        let diags = validate_str(
+            "defaults_dup",
+            r#"
+defaults "google_ads_campaign" {
+  advertising_channel_type = "SEARCH"
+}
+
+defaults "google_ads_campaign" {
+  advertising_channel_type = "DISPLAY"
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("duplicate defaults for 'google_ads_campaign'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn defaults_cannot_provide_an_ad_body() {
+        let diags = validate_str(
+            "defaults_ad_body",
+            r#"
+defaults "google_ads_ad_group_ad" {
+  template = ad_template.shared
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("defaults cannot provide an ad body")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn defaults_locations_conflict_with_explicit_positive_criterion() {
+        let diags = validate_str(
+            "defaults_conflict",
+            &format!(
+                r#"{CAMPAIGN_DEFAULTS}
+resource "google_ads_campaign" "shell" {{
+  name            = "Shell"
+  campaign_budget = google_ads_campaign_budget.b.id
+}}
+
+resource "google_ads_campaign_criterion" "extra_geo" {{
+  campaign = google_ads_campaign.shell.id
+  location {{
+    geo_target_constant = "geoTargetConstants/2826"
+  }}
+}}
+"#
+            ),
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("already declares inline 'locations'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn resource_missing_attr_without_defaults_still_errors() {
+        let diags = validate_str(
+            "defaults_other_type",
+            &format!(
+                r#"{CAMPAIGN_DEFAULTS}
+resource "google_ads_ad_group" "g" {{
+  campaign = google_ads_campaign.shell.id
+}}
+
+resource "google_ads_campaign" "shell" {{
+  name            = "Shell"
+  campaign_budget = google_ads_campaign_budget.b.id
+}}
+"#
+            ),
+        );
+        assert!(
+            diags.iter().any(|d| d
+                .message
+                .contains("missing required attribute 'name' in google_ads_ad_group.g")),
             "{:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );

@@ -38,9 +38,12 @@ declared HCL against live labeled state. Local cache is rebuildable.
   sources**: `locals`, `variable`, a v1 `module "x" { source =
   "./file.bid" }`, and `module` `for_each` (instantiate one source N
   times from a variant map) shipped. The remaining layer (`output "x"
-  { value = … }`, multi-file directory sources, `source =
-  "github.com/org/repo//path?ref=v1"`) waits on real users hitting
-  the boundaries.
+  { value = … }`, reference-typed module inputs, multi-file directory
+  sources, `source = "github.com/org/repo//path?ref=v1"`) waits on
+  real users hitting the boundaries — issue #87's shared-shell case,
+  which module outputs would also have served, was settled with the
+  lighter `defaults` block + resource `for_each` instead (see
+  DECISIONS.md "`defaults` block").
 - Multi-account: how do `provider` blocks compose? **Partially
   resolved:** a per-project `bidsmith.toml` (`customer_id` /
   `login_customer_id` / optional `developer_token`) now supplies the
@@ -278,6 +281,14 @@ Smaller follow-ups that can ride along:
   **Deferred:** map indexing (`local.headlines["ublock"]`) and other
   element-level expressions wait on the expression engine; `variable`
   blocks stay scalar-only (list data belongs in `locals`).
+- ✅ `defaults` block (issue #87) — a type-scoped
+  `defaults "google_ads_campaign" { … }` supplies attribute /
+  nested-block defaults to every resource of that type, overridable per
+  resource (blocks override wholesale). Merged at import time, so
+  adopting it over a live account plans as a no-op. Settled as the
+  issue's option B, paired with resource `for_each` (#86) for the
+  device-criteria trio; module outputs (option A) and reference-typed
+  module inputs (option C) stay deferred under "Module composition v2".
 - ✅ `for_each` on resource blocks (issue #86) — one `resource` block
   plus a list (`["MOBILE", "TABLET"]`) or map of references fans out
   into one instance per entry, with `each.key` / `each.value`

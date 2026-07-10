@@ -55,6 +55,7 @@ export default defineConfig({
             { label: 'Reuse a headline set across many ads', slug: 'recipes/reuse-a-headline-set' },
             { label: 'Build tracking URLs from a shared prefix', slug: 'recipes/build-urls-from-a-shared-prefix' },
             { label: 'Repeat a resource for each item in a list', slug: 'recipes/repeat-a-resource-with-for-each' },
+            { label: 'Share campaign settings across every campaign', slug: 'recipes/share-campaign-settings-with-defaults' },
             { label: 'Make a search ad render taller with extensions', slug: 'recipes/add-search-ad-extensions' },
             { label: 'Reuse one ad across every ad group', slug: 'recipes/reuse-an-ad-across-ad-groups' },
             { label: 'Roll back a bad change', slug: 'recipes/roll-back-a-bad-change' },

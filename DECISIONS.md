@@ -284,6 +284,35 @@ resource type, any file layout, modules, schema validation.
   parents with `module` `for_each` instead. `refresh --in-place`
   reports (rather than silently drops) drift on generated instances,
   since there is no source block to patch.
+- **`defaults` block** (issue #87): shared campaign boilerplate is
+  factored with a top-level, type-scoped
+  `defaults "google_ads_campaign" { … }` block — attribute and
+  nested-block defaults merged into every resource of that type that
+  doesn't set them itself. A resource's own attribute always wins; a
+  nested block (`manual_cpc`, `network_settings`) overrides
+  **wholesale**, never deep-merged, so override behavior stays
+  predictable. One defaults block per resource type per scope
+  (duplicate → error citing both files); module scopes don't inherit
+  the caller's defaults (modules stay isolation boundaries). The
+  defaults body is schema-validated at its declaration (correct spans,
+  no required-attr enforcement — it legitimately provides a subset),
+  required attributes on resources count defaults as present, and the
+  merge happens at import time, so `plan` / `apply` see the merged
+  resource and adopting defaults over an existing account is a plan
+  no-op — pure sugar over existing addresses, the property that made
+  option B attractive in the issue. The inline-targeting
+  one-source-of-truth guard sees defaults too (a defaults `locations`
+  plus an explicit positive geo criterion is still a conflict).
+  `defaults` cannot provide an ad body (`ad` / `template` on
+  `google_ads_ad_group_ad`) — that's `ad_template`'s job and would
+  break the per-resource ad/template XOR. **This settles issue #87 as
+  option B + issue #86**: the campaign shell dedupes via `defaults`,
+  and the per-campaign device-criteria trio (separate resources, which
+  a defaults block can't express) via resource `for_each`. Option A
+  (module outputs / cross-module references) and option C
+  (reference-typed module inputs) stay deferred under "Module
+  composition v2" — B + #86 eliminate the measured duplication with a
+  fraction of the machinery, and defaults adoption churns nothing live.
 - **Files are modules**: each `.bid` file's basename (slugified file
   stem) is its implicit module name. Resource addresses are
   `<module>.<type>.<name>`. Two files in one directory can each declare
@@ -694,6 +723,10 @@ bidsmith/
     ├── resource-for-each/main.bid  # `for_each` on resource blocks: device
     │                           # exclusions from a list, sitelink attachments
     │                           # from a map of references
+    ├── defaults/               # `defaults "google_ads_campaign" {}` shell in
+    │   ├── shared.bid          # shared.bid; two slim campaign files inherit
+    │   ├── cookie-banners.bid  # it (one overrides `locations`) and fan out
+    │   └── fingerprint.bid     # device exclusions via for_each
     ├── modules/                # `module "x" { source = "./…", ...inputs }`
     │   ├── main.bid            # root: two `module` instances of city-campaign
     │   └── modules/city-campaign.bid  # the parameterized source
@@ -781,6 +814,17 @@ Verified locally:
   The `city-campaign.bid` source (whose `variable`s have no defaults)
   is excluded from the top-level scope, so the recursive directory
   walk doesn't try to validate it as a standalone file.
+- `cargo run -- validate examples/defaults` → `OK: 3 file(s) valid.` —
+  exercises the **`defaults` block** (issue #87). `shared.bid` declares
+  the ~20-line search-campaign shell (`advertising_channel_type`,
+  `languages` / `locations`, EU-political declaration, `manual_cpc`,
+  `network_settings`) once; the two campaign files shrink to
+  name + status + budget. `fingerprint.bid` overrides `locations` per
+  resource, and both files fan out the mobile/tablet exclusions from
+  `local.excluded_devices` via resource `for_each` (#86) — together the
+  full issue-#87 shape. Omitting a required attribute the defaults
+  provide (e.g. `advertising_channel_type`) validates clean;
+  `fmt --check examples/defaults` is a no-op.
 - `cargo run -- validate examples/resource-for-each` →
   `OK: 1 file(s) valid.` — exercises **`for_each` on resource blocks**
   (issue #86). One `google_ads_campaign_criterion` block fans out into

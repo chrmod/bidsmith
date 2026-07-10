@@ -16,7 +16,8 @@ use crate::diagnostics::Diag;
 use crate::parser::ParsedFile;
 use crate::program::Program;
 use crate::schema::{
-    ad_template_ref_name, AdTemplateRegistry, Bindings, InputBindings, ResourceRegistry, Resolution,
+    ad_template_ref_name, AdTemplateRegistry, Bindings, DefaultsRegistry, InputBindings,
+    ResourceRegistry, Resolution,
 };
 
 pub struct ImportResult {
@@ -59,6 +60,8 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
     let (bindings, binding_diags) = Bindings::build(files, inputs);
     diags.extend(binding_diags);
     let (templates, _template_diags) = AdTemplateRegistry::build(files);
+    // Defaults-block shape errors are validate's job; import merges best-effort.
+    let (defaults, _defaults_diags) = DefaultsRegistry::build(files);
     let mut input = ExportInput {
         customer_id: String::new(),
         login_customer_id: None,
@@ -102,6 +105,14 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
                     let ty = b.labels[0].as_str();
                     let name = b.labels[1].as_str();
                     let address = ResourceRegistry::qualified(&f.module, ty, name);
+                    let merged_block;
+                    let b = match defaults.merge(ty, b) {
+                        Some(m) => {
+                            merged_block = m;
+                            &merged_block
+                        }
+                        None => b,
+                    };
                     let mut emit = |result: Result<(), Diag>| {
                         if let Err(d) = result {
                             diags.push(d);
@@ -2516,6 +2527,98 @@ resource "google_ads_ad_group_criterion" "kw" {
                 ("ublock".to_string(), "PHRASE".to_string(), false),
                 ("ublock origin".to_string(), "PHRASE".to_string(), false),
             ]
+        );
+    }
+
+    #[test]
+    fn defaults_fill_missing_campaign_attributes() {
+        let input = import_str(
+            "defaults_merge",
+            r#"
+defaults "google_ads_campaign" {
+  advertising_channel_type = "SEARCH"
+  languages = ["en"]
+
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+
+  network_settings {
+    target_google_search = true
+    target_search_network = false
+  }
+}
+
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "shell" {
+  name            = "GH_Cookies 08.07.2026"
+  campaign_budget = google_ads_campaign_budget.b.id
+}
+"#,
+        );
+        assert_eq!(input.campaigns.len(), 1);
+        let c = &input.campaigns[0];
+        assert_eq!(c.advertising_channel_type, "SEARCH");
+        assert_eq!(
+            c.manual_cpc.as_ref().and_then(|m| m.enhanced_cpc_enabled),
+            Some(false)
+        );
+        assert_eq!(
+            c.network_settings
+                .as_ref()
+                .and_then(|n| n.target_google_search),
+            Some(true)
+        );
+        // `languages = ["en"]` expands to one positive language criterion.
+        assert_eq!(input.campaign_criteria.len(), 1);
+        assert_eq!(
+            input.campaign_criteria[0]
+                .language
+                .as_ref()
+                .map(|l| l.language_constant.as_str()),
+            Some("languageConstants/1000")
+        );
+    }
+
+    #[test]
+    fn resource_attributes_win_over_defaults() {
+        let input = import_str(
+            "defaults_override",
+            r#"
+defaults "google_ads_campaign" {
+  advertising_channel_type = "SEARCH"
+
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+}
+
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "display" {
+  name                     = "Display"
+  advertising_channel_type = "DISPLAY"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  manual_cpc {
+    enhanced_cpc_enabled = true
+  }
+}
+"#,
+        );
+        assert_eq!(input.campaigns.len(), 1);
+        let c = &input.campaigns[0];
+        assert_eq!(c.advertising_channel_type, "DISPLAY");
+        assert_eq!(
+            c.manual_cpc.as_ref().and_then(|m| m.enhanced_cpc_enabled),
+            Some(true)
         );
     }
 

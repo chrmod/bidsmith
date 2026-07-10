@@ -1,0 +1,21 @@
+resource "google_ads_campaign_budget" "fingerprint" {
+  name = "Fingerprint — Daily"
+  amount_micros = 8000000
+}
+
+resource "google_ads_campaign" "fingerprint" {
+  name = "GH_Fingerprint — Search"
+  status = "ENABLED"
+  campaign_budget = google_ads_campaign_budget.fingerprint.id
+  locations = ["US", "CA", "GB"]
+}
+
+resource "google_ads_campaign_criterion" "fingerprint_device_exclusions" {
+  for_each = local.excluded_devices
+  campaign = google_ads_campaign.fingerprint.id
+  bid_modifier = 0
+
+  device {
+    type = each.value
+  }
+}
