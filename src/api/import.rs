@@ -52,7 +52,10 @@ impl<'a> Ctx<'a> {
 }
 
 pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<ImportResult, Vec<Diag>> {
-    let (registry, mut diags) = ResourceRegistry::build(files);
+    let (expanded, mut diags) = crate::expand::expand_resource_for_each(files, inputs);
+    let files = &expanded[..];
+    let (registry, registry_diags) = ResourceRegistry::build(files);
+    diags.extend(registry_diags);
     let (bindings, binding_diags) = Bindings::build(files, inputs);
     diags.extend(binding_diags);
     let (templates, _template_diags) = AdTemplateRegistry::build(files);
@@ -2512,6 +2515,102 @@ resource "google_ads_ad_group_criterion" "kw" {
                 ("adblock alternative".to_string(), "PHRASE".to_string(), false),
                 ("ublock".to_string(), "PHRASE".to_string(), false),
                 ("ublock origin".to_string(), "PHRASE".to_string(), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn for_each_fans_out_device_criteria() {
+        let input = import_str(
+            "fe_devices",
+            r#"
+resource "google_ads_campaign_criterion" "gh_cookies_device_exclusions" {
+  for_each = ["MOBILE", "TABLET"]
+  campaign = google_ads_campaign.gh_cookies.id
+  bid_modifier = 0
+
+  device {
+    type = each.value
+  }
+}
+"#,
+        );
+        assert_eq!(input.campaign_criteria.len(), 2);
+        let mut got: Vec<(String, String, Option<f64>)> = input
+            .campaign_criteria
+            .iter()
+            .map(|c| {
+                (
+                    c.id.clone(),
+                    c.device.as_ref().expect("device").ty.clone(),
+                    c.bid_modifier,
+                )
+            })
+            .collect();
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            got,
+            vec![
+                (
+                    "bidsmith_import_test_fe_devices.google_ads_campaign_criterion.gh_cookies_device_exclusions[\"MOBILE\"]"
+                        .to_string(),
+                    "MOBILE".to_string(),
+                    Some(0.0)
+                ),
+                (
+                    "bidsmith_import_test_fe_devices.google_ads_campaign_criterion.gh_cookies_device_exclusions[\"TABLET\"]"
+                        .to_string(),
+                    "TABLET".to_string(),
+                    Some(0.0)
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn for_each_map_fans_out_campaign_assets() {
+        let input = import_str(
+            "fe_assets",
+            r#"
+resource "google_ads_sitelink_asset" "sl_neverconsent" {
+  link_text  = "Never-Consent"
+  final_urls = ["https://example.com/never-consent"]
+}
+
+resource "google_ads_sitelink_asset" "sl_adblock" {
+  link_text  = "Ad Blocker"
+  final_urls = ["https://example.com/ad-blocker"]
+}
+
+resource "google_ads_campaign_asset" "gh_cookies_sitelinks" {
+  for_each = {
+    neverconsent = google_ads_sitelink_asset.sl_neverconsent.id
+    adblock = google_ads_sitelink_asset.sl_adblock.id
+  }
+  campaign = google_ads_campaign.gh_cookies.id
+  asset = each.value
+  field_type = "SITELINK"
+}
+"#,
+        );
+        assert_eq!(input.campaign_assets.len(), 2);
+        let mut got: Vec<(String, String)> = input
+            .campaign_assets
+            .iter()
+            .map(|a| (a.asset.clone(), a.field_type.clone()))
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                (
+                    "bidsmith_import_test_fe_assets.google_ads_sitelink_asset.sl_adblock".to_string(),
+                    "SITELINK".to_string()
+                ),
+                (
+                    "bidsmith_import_test_fe_assets.google_ads_sitelink_asset.sl_neverconsent".to_string(),
+                    "SITELINK".to_string()
+                ),
             ]
         );
     }

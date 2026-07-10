@@ -1,0 +1,53 @@
+locals {
+  excluded_devices = ["MOBILE", "TABLET"]
+}
+
+provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+resource "google_ads_campaign_budget" "cookies" {
+  name = "Cookies — Daily"
+  amount_micros = 10000000
+}
+
+resource "google_ads_campaign" "cookies" {
+  name = "GH_Cookies — Search"
+  status = "ENABLED"
+  advertising_channel_type = "SEARCH"
+  campaign_budget = google_ads_campaign_budget.cookies.id
+
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+}
+
+resource "google_ads_campaign_criterion" "cookies_device_exclusions" {
+  for_each = local.excluded_devices
+  campaign = google_ads_campaign.cookies.id
+  bid_modifier = 0
+
+  device {
+    type = each.value
+  }
+}
+
+resource "google_ads_sitelink_asset" "sl_neverconsent" {
+  link_text = "Never-Consent"
+  final_urls = ["https://www.example.com/never-consent"]
+}
+
+resource "google_ads_sitelink_asset" "sl_adblock" {
+  link_text = "Ad Blocker"
+  final_urls = ["https://www.example.com/ad-blocker"]
+}
+
+resource "google_ads_campaign_asset" "cookies_sitelinks" {
+  for_each = {
+    neverconsent = google_ads_sitelink_asset.sl_neverconsent.id
+    adblock = google_ads_sitelink_asset.sl_adblock.id
+  }
+  campaign = google_ads_campaign.cookies.id
+  asset = each.value
+  field_type = "SITELINK"
+}

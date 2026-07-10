@@ -23,10 +23,11 @@ const SUSPICIOUS_LANGUAGE_CONSTANTS: &[(&str, &str, &str)] = &[
 ];
 
 pub fn lint_files(files: &[ParsedFile], inputs: &InputBindings) -> Vec<Diag> {
-    // Resolve list-valued `local`/`var` refs so `headlines = local.set` is counted, not seen as zero; build diags belong to `validate`.
-    let (bindings, _) = Bindings::build(files, inputs);
+    // Expansion + binding diags belong to `validate`; lint only reports its own warnings.
+    let (expanded, _expand_diags) = crate::expand::expand_resource_for_each(files, inputs);
+    let (bindings, _) = Bindings::build(&expanded, inputs);
     let mut diags = Vec::new();
-    for f in files {
+    for f in &expanded {
         lint_file(f, &bindings, &mut diags);
     }
     diags

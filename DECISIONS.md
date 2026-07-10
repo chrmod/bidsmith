@@ -241,15 +241,49 @@ resource type, any file layout, modules, schema validation.
   conflict. Each instance is a normal module scope keyed by
   `<label>.<key>`, so addresses are `<label>.<key>.<type>.<name>`
   (collision-free as long as label + key are unique). There is no
-  `each.key` / `each.value` interpolation: bidsmith has no expression
-  engine, so the map's values *are* the inputs — which keeps the scalar
-  `variable` machinery unchanged and needs no object variable type. An
+  `each.key` / `each.value` interpolation on *module* blocks — the map's
+  values *are* the inputs, which keeps the scalar `variable` machinery
+  unchanged and needs no object variable type. (`each.*` exists on
+  *resource* `for_each`, issue #86, where there are no named inputs to
+  carry the entry.) An
   empty `for_each` map is an error (almost always a mistake, and once
   removal-detection lands an empty table would silently destroy the
   instances). Like all addresses, instance addresses are source-only;
   the planner matches live resources by content, so converting N
   hand-written clone files into one `for_each` template is live-neutral
   (no campaign recreation) even though the addresses change.
+- **`for_each` on resource blocks** (issue #86): a `resource` block can
+  declare `for_each = ["MOBILE", "TABLET"]` (a list of strings, possibly
+  via `local.`) or `for_each = { key = <expr>, … }` (a map whose values
+  may be resource references) to fan out into one instance per entry.
+  `each.key` / `each.value` substitute anywhere inside the block —
+  attributes, nested blocks, list items, `${…}` interpolations,
+  `concat()` arguments. Instance addresses key the label:
+  `google_ads_campaign_criterion.t_devices["MOBILE"]`. This is the
+  child-resource counterpart to `module` `for_each` (which clones whole
+  files): it collapses the mandated per-campaign device-exclusion pair
+  and N-sitelink `campaign_asset` attachments into one block each.
+  Implemented as a **load-time expansion pass** (`src/expand.rs`) shared
+  by `validate` / `plan` / `apply` / `refresh` and the lints: each
+  instance becomes an ordinary block with `each.*` replaced by the
+  entry's literal/reference, so the schema validator, importer, diff
+  engine, and mutate builder are untouched — exactly the
+  substitution-not-new-machinery pattern `ad_template` set. `fmt` / `mv`
+  operate on raw source and never see expanded blocks. List entries must
+  be strings (key == value, Terraform set semantics); map values are
+  spliced verbatim so `asset = each.value` resolves through normal
+  reference validation. Empty tables and duplicate keys are errors
+  (same policy as module `for_each`); `each.<anything else>` is an
+  error pointing at the offending expression. Adopting `for_each` for
+  existing hand-written resources is live-neutral for content-matched
+  types (criteria, assets, keywords); labelable types re-adopt via
+  content fallback and show visible `~ adopt (label)` rows as their
+  `bidsmith:address` label moves to the keyed form. Referencing a
+  keyed instance from another resource
+  (`google_ads_campaign.t["a"].id`) is not supported yet — fan out
+  parents with `module` `for_each` instead. `refresh --in-place`
+  reports (rather than silently drops) drift on generated instances,
+  since there is no source block to patch.
 - **Files are modules**: each `.bid` file's basename (slugified file
   stem) is its implicit module name. Resource addresses are
   `<module>.<type>.<name>`. Two files in one directory can each declare
@@ -657,6 +691,9 @@ bidsmith/
     ├── interpolation/main.bid  # string templates: "${local.x}-suffix" in names,
     │                           # URLs, headlines, and inside locals
     ├── variable/main.bid       # `variable "x" { type, default }` plus var.<name>
+    ├── resource-for-each/main.bid  # `for_each` on resource blocks: device
+    │                           # exclusions from a list, sitelink attachments
+    │                           # from a map of references
     ├── modules/                # `module "x" { source = "./…", ...inputs }`
     │   ├── main.bid            # root: two `module` instances of city-campaign
     │   └── modules/city-campaign.bid  # the parameterized source
@@ -744,6 +781,16 @@ Verified locally:
   The `city-campaign.bid` source (whose `variable`s have no defaults)
   is excluded from the top-level scope, so the recursive directory
   walk doesn't try to validate it as a standalone file.
+- `cargo run -- validate examples/resource-for-each` →
+  `OK: 1 file(s) valid.` — exercises **`for_each` on resource blocks**
+  (issue #86). One `google_ads_campaign_criterion` block fans out into
+  the mobile + tablet `bid_modifier = 0` exclusions from
+  `local.excluded_devices` (`each.value` inside the `device` block), and
+  one `google_ads_campaign_asset` block attaches two sitelink assets
+  from a `for_each` map whose values are resource references
+  (`asset = each.value`). Instance addresses are keyed
+  (`…cookies_device_exclusions["MOBILE"]`);
+  `fmt --check examples/resource-for-each` is a no-op.
 - `cargo run -- validate examples/modules-for-each` →
   `OK: 4 file(s) valid.` — exercises `for_each` on a `module` block.
   `examples/modules-for-each/main.bid` instantiates
