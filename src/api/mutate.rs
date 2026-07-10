@@ -1653,6 +1653,7 @@ mod tests {
             update_count: 0,
             delete_count: 1,
             adopt_count: 0,
+            warnings: Vec::new(),
         };
 
         let plan = match build_mutate_with_diff(&input, &report, true) {
@@ -1717,6 +1718,7 @@ mod tests {
             update_count: 0,
             delete_count: 0,
             adopt_count: 1,
+            warnings: Vec::new(),
         };
 
         let plan = match build_mutate_with_diff(&input, &report, true) {
@@ -1779,6 +1781,7 @@ mod tests {
             update_count: 0,
             delete_count: 2,
             adopt_count: 0,
+            warnings: Vec::new(),
         };
 
         let plan = match build_mutate_with_diff(&input, &report, true) {
@@ -1848,6 +1851,7 @@ mod tests {
             update_count: 0,
             delete_count: 0,
             adopt_count: 0,
+            warnings: Vec::new(),
         };
 
         let plan = match build_mutate_with_diff(&input, &report, true) {
@@ -1923,6 +1927,7 @@ mod tests {
             update_count: 0,
             delete_count: 0,
             adopt_count: 0,
+            warnings: Vec::new(),
         };
 
         let plan = match build_mutate_with_diff(&input, &report, true) {
@@ -2012,6 +2017,7 @@ mod tests {
             update_count: 0,
             delete_count: 0,
             adopt_count: 0,
+            warnings: Vec::new(),
         };
 
         let plan = match build_mutate_with_diff(&input, &report, true) {
@@ -2105,6 +2111,7 @@ mod tests {
             update_count: 0,
             delete_count: 0,
             adopt_count: 0,
+            warnings: Vec::new(),
         };
 
         let plan = match build_mutate_with_diff(&input, &report, true) {

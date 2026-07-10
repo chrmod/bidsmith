@@ -75,6 +75,10 @@ pub struct DiffReport {
     /// written (first-run adoption of an unlabeled resource). Counted so plan /
     /// apply treat label-only work as a pending change rather than a no-op.
     pub adopt_count: usize,
+    /// Live drift bidsmith cannot reconcile (e.g. an undeclared device
+    /// modifier — the API forbids removing device criteria). Printed by
+    /// plan / apply; never turned into mutate ops.
+    pub warnings: Vec<String>,
 }
 
 /// Label-first match with content fallback over parallel declared / live
@@ -652,7 +656,7 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         });
     }
 
-    let deletes = orphan_criteria_deletes(
+    let (deletes, warnings) = orphan_criteria_deletes(
         declared,
         live,
         &diffs,
@@ -693,6 +697,7 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         update_count,
         delete_count,
         adopt_count,
+        warnings,
     }
 }
 
@@ -711,8 +716,9 @@ fn orphan_criteria_deletes(
     ad_group_match: &HashMap<String, String>,
     campaign_match: &HashMap<String, String>,
     shared_set_match: &HashMap<String, String>,
-) -> Vec<ResourceDiff> {
+) -> (Vec<ResourceDiff>, Vec<String>) {
     let mut out: Vec<ResourceDiff> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
 
     let matched_live_ids = |kind: &str| -> std::collections::HashSet<&str> {
         diffs
@@ -778,6 +784,28 @@ fn orphan_criteria_deletes(
             let Some(descriptor) = campaign_criterion_descriptor(l) else {
                 continue;
             };
+            // Device criteria can never be removed via the API, and Google
+            // auto-materializes every device type once one exists — a remove
+            // op is guaranteed to reject and sinks the whole atomic batch.
+            if category == "device" {
+                if device_criterion_has_adjustment(l) {
+                    let anchor = parent_addr
+                        .get(&l.campaign)
+                        .cloned()
+                        .unwrap_or_else(|| format!("campaigns/{}", l.campaign));
+                    let detail = match l.bid_modifier {
+                        Some(m) => format!("bid_modifier {m}"),
+                        None => "negative".to_string(),
+                    };
+                    warnings.push(format!(
+                        "{anchor}: live {descriptor} ({detail}) is not declared, and Google Ads \
+                         forbids removing device criteria — leaving it untouched. Declare a \
+                         matching device block to manage it (omit bid_modifier to reset the \
+                         adjustment)."
+                    ));
+                }
+                continue;
+            }
             out.push(delete_diff(
                 "campaign_criterion",
                 parent_addr.get(&l.campaign),
@@ -827,7 +855,14 @@ fn orphan_criteria_deletes(
         }
     }
 
-    out
+    (out, warnings)
+}
+
+/// True when a live device criterion deviates from its default state — the
+/// state Google's auto-materialized criteria are born in (no modifier, not
+/// negative). Default-state criteria are implicitly desired, not drift.
+fn device_criterion_has_adjustment(cr: &JsonCampaignCriterion) -> bool {
+    cr.negative.unwrap_or(false) || cr.bid_modifier.is_some_and(|m| (m - 1.0).abs() > 1e-6)
 }
 
 /// A whole labeled resource that is no longer declared — destroyed because its
@@ -1586,6 +1621,49 @@ mod criterion_match_tests {
             matches!(crit_action(&report, "d"), Action::Create),
             "a different device type should create, got {:?}",
             crit_action(&report, "d")
+        );
+    }
+
+    #[test]
+    fn auto_materialized_device_criteria_are_not_destroyed() {
+        // Issue #82: a desktop-only campaign declares MOBILE/TABLET at 0 and no
+        // DESKTOP; Google auto-materializes DESKTOP (id 30000) in default state.
+        // It must read as implicitly desired — no doomed destroy, no warning.
+        let report = device_criteria(
+            r#"{"id":"m","campaign":"c","bid_modifier":0.0,"device":{"type":"MOBILE"}},
+               {"id":"t","campaign":"c","bid_modifier":0.0,"device":{"type":"TABLET"}}"#,
+            r#"{"id":"30000","campaign":"100","device":{"type":"DESKTOP"}},
+               {"id":"30001","campaign":"100","bid_modifier":0.0,"device":{"type":"MOBILE"}},
+               {"id":"30002","campaign":"100","bid_modifier":0.0,"device":{"type":"TABLET"}},
+               {"id":"30004","campaign":"100","bid_modifier":1.0,"device":{"type":"CONNECTED_TV"}}"#,
+        );
+        assert_eq!(
+            report.delete_count, 0,
+            "device criteria must never be destroyed: {:?}",
+            report
+                .diffs
+                .iter()
+                .map(|d| (&d.address, &d.action))
+                .collect::<Vec<_>>()
+        );
+        assert!(report.warnings.is_empty(), "default-state device criteria are not drift: {:?}", report.warnings);
+        assert!(matches!(crit_action(&report, "m"), Action::NoOp { .. }));
+        assert!(matches!(crit_action(&report, "t"), Action::NoOp { .. }));
+    }
+
+    #[test]
+    fn undeclared_device_adjustment_warns_instead_of_destroying() {
+        let report = device_criteria(
+            r#"{"id":"m","campaign":"c","bid_modifier":0.0,"device":{"type":"MOBILE"}}"#,
+            r#"{"id":"30001","campaign":"100","bid_modifier":0.0,"device":{"type":"MOBILE"}},
+               {"id":"30002","campaign":"100","bid_modifier":0.7,"device":{"type":"TABLET"}}"#,
+        );
+        assert_eq!(report.delete_count, 0, "even a drifted device criterion must not be destroyed");
+        assert_eq!(report.warnings.len(), 1, "drift should surface as a warning: {:?}", report.warnings);
+        assert!(
+            report.warnings[0].contains("device TABLET") && report.warnings[0].contains("0.7"),
+            "warning should name the criterion and modifier: {}",
+            report.warnings[0]
         );
     }
 }
