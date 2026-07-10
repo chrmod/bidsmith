@@ -52,6 +52,7 @@ export default defineConfig({
             { label: 'Move a keyword between match types', slug: 'recipes/change-keyword-match-type' },
             { label: 'Target specific countries and languages', slug: 'recipes/target-countries-and-languages' },
             { label: 'Add a whole keyword list at once', slug: 'recipes/add-many-keywords' },
+            { label: 'Remove a whole keyword list safely', slug: 'recipes/remove-keywords-safely' },
             { label: 'Reuse a headline set across many ads', slug: 'recipes/reuse-a-headline-set' },
             { label: 'Build tracking URLs from a shared prefix', slug: 'recipes/build-urls-from-a-shared-prefix' },
             { label: 'Repeat a resource for each item in a list', slug: 'recipes/repeat-a-resource-with-for-each' },

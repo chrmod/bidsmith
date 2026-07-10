@@ -14,6 +14,14 @@ pub const ADDRESS_LABEL_PREFIX: &str = "bidsmith:address=";
 /// with `Too long.` — sinking the whole atomic adoption batch.
 pub const MAX_LABEL_NAME_LEN: usize = 80;
 
+/// Prefix of the label bidsmith associates with a campaign / ad group to
+/// record that it manages a criterion *category* there (e.g.
+/// `bidsmith:owns=keyword_negative`). Criteria members carry no identity of
+/// their own (the API forbids labels on negative criteria), so this claim is
+/// what lets `plan` keep destroying orphaned members after the last declared
+/// member of a category is removed.
+pub const OWNS_LABEL_PREFIX: &str = "bidsmith:owns=";
+
 /// The label-name payload (the part after `ADDRESS_LABEL_PREFIX`) for an
 /// address. Short addresses are kept verbatim — backward compatible with labels
 /// already in the account. An address that would push the label past the 80-char
@@ -95,6 +103,17 @@ pub struct ExportInput {
     /// for declared state.
     #[serde(default)]
     pub labels: HashMap<String, String>,
+    /// Live `bidsmith:owns=<category>` labels keyed by category -> label
+    /// resource_name, for the same reuse-by-name purpose. Live-only.
+    #[serde(default)]
+    pub claim_labels: HashMap<String, String>,
+    /// Live campaign id -> criterion categories a `bidsmith:owns=` label claims
+    /// on it. Live-only; empty for declared state.
+    #[serde(default)]
+    pub campaign_claims: HashMap<String, Vec<String>>,
+    /// Live ad group id -> criterion categories claimed on it. Live-only.
+    #[serde(default)]
+    pub ad_group_claims: HashMap<String, Vec<String>>,
 }
 
 #[derive(Deserialize)]

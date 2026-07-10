@@ -84,8 +84,13 @@ struct AdapterState {
     ad_group_addresses: BTreeMap<String, String>,
     ad_group_ad_addresses: BTreeMap<String, String>,
     ad_group_criterion_addresses: BTreeMap<String, String>,
+    // live entity id -> claimed criterion categories, from bidsmith:owns labels.
+    campaign_claims: BTreeMap<String, Vec<String>>,
+    ad_group_claims: BTreeMap<String, Vec<String>>,
     // bidsmith:address -> label resource_name, read from the label resource.
     labels: BTreeMap<String, String>,
+    // bidsmith:owns category -> label resource_name.
+    claim_labels: BTreeMap<String, String>,
 }
 
 impl AdapterState {
@@ -138,9 +143,11 @@ impl AdapterState {
         }
         if let Some(v) = row.get("campaignLabel") {
             self.merge_label(v, "campaign", label, |s| &mut s.campaign_addresses);
+            self.merge_claim(v, "campaign", label, |s| &mut s.campaign_claims);
         }
         if let Some(v) = row.get("adGroupLabel") {
             self.merge_label(v, "adGroup", label, |s| &mut s.ad_group_addresses);
+            self.merge_claim(v, "adGroup", label, |s| &mut s.ad_group_claims);
         }
         if let Some(v) = row.get("adGroupAdLabel") {
             self.merge_label(v, "adGroupAd", label, |s| &mut s.ad_group_ad_addresses);
@@ -152,17 +159,19 @@ impl AdapterState {
         }
     }
 
-    /// Record a `bidsmith:address=<addr>` label resource (address -> its
-    /// resource_name) so the mutate builder can reuse an existing label rather
-    /// than re-create one. Rows from the association queries select only
-    /// `label.name` (no resource_name), so they no-op here; the standalone
-    /// `label` query carries both.
+    /// Record a `bidsmith:address=<addr>` or `bidsmith:owns=<category>` label
+    /// resource (payload -> its resource_name) so the mutate builder can reuse
+    /// an existing label rather than re-create one. Rows from the association
+    /// queries select only `label.name` (no resource_name), so they no-op here;
+    /// the standalone `label` query carries both.
     fn merge_label_resource(&mut self, label: &Value) {
-        let Some(address) = label_address(Some(label)) else {
+        let Some(rn) = label.get("resourceName").and_then(Value::as_str) else {
             return;
         };
-        if let Some(rn) = label.get("resourceName").and_then(Value::as_str) {
+        if let Some(address) = label_address(Some(label)) {
             self.labels.insert(address, rn.to_string());
+        } else if let Some(category) = claim_category(Some(label)) {
+            self.claim_labels.insert(category, rn.to_string());
         }
     }
 
@@ -188,6 +197,33 @@ impl AdapterState {
             return;
         };
         select(self).insert(id.to_string(), address);
+    }
+
+    /// Record a `bidsmith:owns=<category>` label association: the live parent
+    /// (campaign / ad group) claims that criterion category as
+    /// bidsmith-managed, so orphaned members prune even after the last declared
+    /// member is gone.
+    fn merge_claim(
+        &mut self,
+        assoc: &Value,
+        entity_field: &str,
+        label: Option<&Value>,
+        select: impl FnOnce(&mut Self) -> &mut BTreeMap<String, Vec<String>>,
+    ) {
+        let Some(category) = claim_category(label) else {
+            return;
+        };
+        let Some(id) = assoc
+            .get(entity_field)
+            .and_then(Value::as_str)
+            .and_then(last_segment)
+        else {
+            return;
+        };
+        let claims = select(self).entry(id.to_string()).or_default();
+        if !claims.contains(&category) {
+            claims.push(category);
+        }
     }
 
     fn note_customer(&mut self, resource_name: &str) {
@@ -1019,6 +1055,9 @@ impl AdapterState {
             campaign_shared_sets: self.campaign_shared_sets.into_values().collect(),
             youtube_video_assets: self.youtube_video_assets.into_values().collect(),
             labels: self.labels.into_iter().collect(),
+            claim_labels: self.claim_labels.into_iter().collect(),
+            campaign_claims: self.campaign_claims.into_iter().collect(),
+            ad_group_claims: self.ad_group_claims.into_iter().collect(),
         })
     }
 }
@@ -1045,6 +1084,12 @@ fn last_segment(s: &str) -> Option<&str> {
 fn label_address(label: Option<&Value>) -> Option<String> {
     let name = label?.get("name").and_then(Value::as_str)?;
     name.strip_prefix(crate::commands::export::ADDRESS_LABEL_PREFIX)
+        .map(str::to_string)
+}
+
+fn claim_category(label: Option<&Value>) -> Option<String> {
+    let name = label?.get("name").and_then(Value::as_str)?;
+    name.strip_prefix(crate::commands::export::OWNS_LABEL_PREFIX)
         .map(str::to_string)
 }
 
@@ -1196,6 +1241,60 @@ mod label_tests {
             crit.managed_address.as_deref(),
             Some("main.google_ads_ad_group_criterion.shoes")
         );
+    }
+
+    #[test]
+    fn owns_labels_populate_claims_and_claim_labels() {
+        let input = adapt(serde_json::json!([
+            {
+                "adGroup": {
+                    "resourceName": "customers/123/adGroups/300",
+                    "id": "300",
+                    "name": "G",
+                    "campaign": "customers/123/campaigns/100"
+                }
+            },
+            {
+                "adGroupLabel": {
+                    "resourceName": "customers/123/adGroupLabels/300~777",
+                    "adGroup": "customers/123/adGroups/300",
+                    "label": "customers/123/labels/777"
+                },
+                "label": {
+                    "resourceName": "customers/123/labels/777",
+                    "name": "bidsmith:owns=keyword_negative"
+                }
+            },
+            {
+                "campaignLabel": {
+                    "resourceName": "customers/123/campaignLabels/100~778",
+                    "campaign": "customers/123/campaigns/100",
+                    "label": "customers/123/labels/778"
+                },
+                "label": {
+                    "resourceName": "customers/123/labels/778",
+                    "name": "bidsmith:owns=location"
+                }
+            }
+        ]));
+
+        assert_eq!(
+            input.ad_group_claims.get("300"),
+            Some(&vec!["keyword_negative".to_string()])
+        );
+        assert_eq!(
+            input.campaign_claims.get("100"),
+            Some(&vec!["location".to_string()])
+        );
+        assert_eq!(
+            input.claim_labels.get("keyword_negative").map(String::as_str),
+            Some("customers/123/labels/777")
+        );
+        assert_eq!(
+            input.claim_labels.get("location").map(String::as_str),
+            Some("customers/123/labels/778")
+        );
+        assert!(input.labels.is_empty(), "owns labels must not pollute address labels");
     }
 
     #[test]

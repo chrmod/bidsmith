@@ -268,19 +268,19 @@ pub const QUERIES: &[(&str, &str)] = &[
         "label",
         "SELECT label.resource_name, label.name
         FROM label
-        WHERE label.name LIKE 'bidsmith:address=%'",
+        WHERE label.name LIKE 'bidsmith:%'",
     ),
     (
         "campaign_label",
         "SELECT campaign_label.campaign, label.name
         FROM campaign_label
-        WHERE label.name LIKE 'bidsmith:address=%'",
+        WHERE label.name LIKE 'bidsmith:%'",
     ),
     (
         "ad_group_label",
         "SELECT ad_group_label.ad_group, label.name
         FROM ad_group_label
-        WHERE label.name LIKE 'bidsmith:address=%'",
+        WHERE label.name LIKE 'bidsmith:%'",
     ),
     (
         "ad_group_ad_label",

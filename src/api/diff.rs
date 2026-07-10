@@ -64,16 +64,39 @@ pub struct LabelPlanEntry {
     pub stale_assoc_rn: Option<String>,
 }
 
+/// A `bidsmith:owns=<category>` label association to add to (or remove from) a
+/// campaign / ad group. The claim records that bidsmith manages that criterion
+/// category on the parent, so orphaned members still plan as destroys after the
+/// last declared member of the category is removed — criteria themselves can't
+/// carry identity labels (the API forbids labels on negative criteria).
+#[derive(Debug, Clone)]
+pub struct ClaimPlanEntry {
+    /// Declared address of the parent the claim attaches to.
+    pub address: String,
+    /// `campaign` | `ad_group`.
+    pub kind: &'static str,
+    /// Criterion category token (`keyword_negative`, `location`, ...).
+    pub category: &'static str,
+    /// An existing live `bidsmith:owns` label resource_name to reuse; None ->
+    /// create one. Only meaningful for claim additions.
+    pub existing_label_rn: Option<String>,
+    /// A live claim association to remove — set when the category is no longer
+    /// declared on this parent (claim release). None for claim additions.
+    pub stale_assoc_rn: Option<String>,
+}
+
 pub struct DiffReport {
     pub diffs: Vec<ResourceDiff>,
     pub label_plans: Vec<LabelPlanEntry>,
+    pub claim_plans: Vec<ClaimPlanEntry>,
     pub noop_count: usize,
     pub create_count: usize,
     pub update_count: usize,
     pub delete_count: usize,
-    /// Resources that match live with no field change but still need a label
-    /// written (first-run adoption of an unlabeled resource). Counted so plan /
-    /// apply treat label-only work as a pending change rather than a no-op.
+    /// Resources that match live with no field change but still need label
+    /// work — a `bidsmith:address` write (first-run adoption) or a
+    /// `bidsmith:owns` claim add / release. Counted so plan / apply treat
+    /// label-only work as a pending change rather than a no-op.
     pub adopt_count: usize,
     /// Live drift bidsmith cannot reconcile (e.g. an undeclared device
     /// modifier — the API forbids removing device criteria). Printed by
@@ -656,6 +679,8 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         });
     }
 
+    let claim_plans = claim_plan_entries(declared, live, &campaign_match, &ad_group_match);
+
     let (deletes, warnings) = orphan_criteria_deletes(
         declared,
         live,
@@ -684,14 +709,18 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         .filter(|d| matches!(d.action, Action::NoOp { .. }))
         .map(|d| d.address.as_str())
         .collect();
-    let adopt_count = label_plans
+    let adopt_addrs: std::collections::HashSet<&str> = label_plans
         .iter()
-        .filter(|p| noop_addrs.contains(p.address.as_str()))
-        .count();
+        .map(|p| p.address.as_str())
+        .chain(claim_plans.iter().map(|p| p.address.as_str()))
+        .filter(|a| noop_addrs.contains(a))
+        .collect();
+    let adopt_count = adopt_addrs.len();
 
     DiffReport {
         diffs,
         label_plans,
+        claim_plans,
         noop_count,
         create_count,
         update_count,
@@ -699,6 +728,121 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         adopt_count,
         warnings,
     }
+}
+
+/// The criterion categories a `bidsmith:owns` claim can cover. Device is
+/// excluded (the API forbids removing device criteria, so a claim would never
+/// drive a destroy).
+fn canonical_category(cat: &str) -> Option<&'static str> {
+    Some(match cat {
+        "keyword_positive" => "keyword_positive",
+        "keyword_negative" => "keyword_negative",
+        "location" => "location",
+        "language" => "language",
+        "proximity" => "proximity",
+        _ => return None,
+    })
+}
+
+fn polarity_category(negative: bool) -> &'static str {
+    if negative {
+        "keyword_negative"
+    } else {
+        "keyword_positive"
+    }
+}
+
+/// Reconcile desired category claims (derived from declared criteria) against
+/// the live `bidsmith:owns` associations: a desired claim missing live plans an
+/// association add; a live claim on a still-declared parent whose category has
+/// no declared members plans an association remove. Parents that are no longer
+/// declared need nothing — their associations die with the resource.
+fn claim_plan_entries(
+    declared: &ExportInput,
+    live: &ExportInput,
+    campaign_match: &HashMap<String, String>,
+    ad_group_match: &HashMap<String, String>,
+) -> Vec<ClaimPlanEntry> {
+    let customer_id = declared.customer_id.as_str();
+    let mut out: Vec<ClaimPlanEntry> = Vec::new();
+
+    let mut desired_ag: std::collections::BTreeSet<(&str, &'static str)> =
+        std::collections::BTreeSet::new();
+    let declared_ags: std::collections::HashSet<&str> =
+        declared.ad_groups.iter().map(|g| g.id.as_str()).collect();
+    for d in &declared.ad_group_criteria {
+        if declared_ags.contains(d.ad_group.as_str()) {
+            desired_ag.insert((&d.ad_group, polarity_category(d.negative.unwrap_or(false))));
+        }
+    }
+
+    let mut desired_c: std::collections::BTreeSet<(&str, &'static str)> =
+        std::collections::BTreeSet::new();
+    let declared_cs: std::collections::HashSet<&str> =
+        declared.campaigns.iter().map(|c| c.id.as_str()).collect();
+    for d in &declared.campaign_criteria {
+        if declared_cs.contains(d.campaign.as_str()) {
+            if let Some(cat) = canonical_category(campaign_criterion_category(d)) {
+                desired_c.insert((&d.campaign, cat));
+            }
+        }
+    }
+
+    let mut reconcile = |desired: &std::collections::BTreeSet<(&str, &'static str)>,
+                         matches: &HashMap<String, String>,
+                         claims: &HashMap<String, Vec<String>>,
+                         kind: &'static str| {
+        let assoc_segment = label_segment(kind);
+        for (addr, cat) in desired {
+            let live_has = matches
+                .get(*addr)
+                .and_then(|id| claims.get(id))
+                .is_some_and(|cats| cats.iter().any(|c| c == cat));
+            if !live_has {
+                out.push(ClaimPlanEntry {
+                    address: (*addr).to_string(),
+                    kind,
+                    category: cat,
+                    existing_label_rn: live.claim_labels.get(*cat).cloned(),
+                    stale_assoc_rn: None,
+                });
+            }
+        }
+        let mut stale: Vec<(&String, &String, &'static str)> = Vec::new();
+        for (addr, live_id) in matches {
+            let Some(cats) = claims.get(live_id) else {
+                continue;
+            };
+            for cat in cats {
+                let Some(tok) = canonical_category(cat) else {
+                    continue;
+                };
+                if !desired.contains(&(addr.as_str(), tok)) {
+                    stale.push((addr, live_id, tok));
+                }
+            }
+        }
+        stale.sort();
+        for (addr, live_id, tok) in stale {
+            let Some(label_rn) = live.claim_labels.get(tok) else {
+                continue;
+            };
+            let label_id = label_rn.rsplit('/').next().unwrap_or(label_rn);
+            out.push(ClaimPlanEntry {
+                address: addr.clone(),
+                kind,
+                category: tok,
+                existing_label_rn: None,
+                stale_assoc_rn: Some(format!(
+                    "customers/{customer_id}/{assoc_segment}/{live_id}~{label_id}"
+                )),
+            });
+        }
+    };
+
+    reconcile(&desired_ag, ad_group_match, &live.ad_group_claims, "ad_group");
+    reconcile(&desired_c, campaign_match, &live.campaign_claims, "campaign");
+    out
 }
 
 /// A live criterion stops being declared in two ways: its whole parent
@@ -741,6 +885,16 @@ fn orphan_criteria_deletes(
                 managed.insert((live_ag.clone(), d.negative.unwrap_or(false)));
             }
         }
+        for (live_id, cats) in &live.ad_group_claims {
+            if !parent_addr.contains_key(live_id) {
+                continue;
+            }
+            for cat in cats {
+                if let Some(negative) = [true, false].into_iter().find(|&n| cat == polarity_category(n)) {
+                    managed.insert((live_id.clone(), negative));
+                }
+            }
+        }
         for l in &live.ad_group_criteria {
             if matched.contains(l.id.as_str()) {
                 continue;
@@ -771,6 +925,16 @@ fn orphan_criteria_deletes(
         for d in &declared.campaign_criteria {
             if let Some(live_c) = campaign_match.get(&d.campaign) {
                 managed.insert((live_c.clone(), campaign_criterion_category(d)));
+            }
+        }
+        for (live_id, cats) in &live.campaign_claims {
+            if !parent_addr.contains_key(live_id) {
+                continue;
+            }
+            for cat in cats {
+                if let Some(tok) = canonical_category(cat) {
+                    managed.insert((live_id.clone(), tok));
+                }
             }
         }
         for l in &live.campaign_criteria {
@@ -829,6 +993,8 @@ fn orphan_criteria_deletes(
                     .flatten()
             })
         };
+        // Still gated on ≥1 declared member: sets match by bare name, so an
+        // empty declared set adopting a UI-curated one must not empty it.
         let mut managed: std::collections::HashSet<String> = std::collections::HashSet::new();
         for d in &declared.shared_criteria {
             if let Some(set_id) = resolve_set(&d.shared_set) {
@@ -1885,5 +2051,232 @@ mod label_match_tests {
         assert!(matches!(&campaign_diff(&report).action, Action::NoOp { .. }));
         assert_eq!(report.adopt_count, 0, "must not re-adopt an already-labeled resource");
         assert!(report.label_plans.is_empty(), "label already correct");
+    }
+}
+
+#[cfg(test)]
+mod claim_tests {
+    use super::*;
+
+    fn input(json: &str) -> ExportInput {
+        serde_json::from_str(json).expect("valid test input")
+    }
+
+    // A campaign + ad group declaring only positive keywords — the state after
+    // removing the last negative-keyword resource (issue #88).
+    const DECLARED_POSITIVES_ONLY: &str = r#"{
+        "customer_id": "1",
+        "campaigns": [{"id":"m.c","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"m.b"}],
+        "ad_groups": [{"id":"m.g","name":"G","campaign":"m.c"}],
+        "ad_group_criteria": [
+            {"id":"m.k","ad_group":"m.g","negative":false,"keyword":{"text":"shoes","match_type":"EXACT"}}
+        ]
+    }"#;
+
+    fn live_with_orphaned_negatives(claims_and_labels: &str) -> ExportInput {
+        input(&format!(
+            r#"{{
+            "customer_id": "1",
+            "campaigns": [{{"id":"100","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"200"}}],
+            "ad_groups": [{{"id":"300","name":"G","campaign":"100"}}],
+            "ad_group_criteria": [
+                {{"id":"400","ad_group":"300","negative":false,"keyword":{{"text":"shoes","match_type":"EXACT"}}}},
+                {{"id":"401","ad_group":"300","negative":true,"keyword":{{"text":"vpn","match_type":"EXACT"}}}},
+                {{"id":"402","ad_group":"300","negative":true,"keyword":{{"text":"proxy","match_type":"PHRASE"}}}}
+            ]{claims_and_labels}
+        }}"#
+        ))
+    }
+
+    #[test]
+    fn live_claim_keeps_destroying_after_last_declared_member_is_removed() {
+        // Issue #88: the negatives resource is gone from desired state, but the
+        // ad group's live `bidsmith:owns=keyword_negative` claim proves bidsmith
+        // managed that category — the orphans must plan as destroys and the
+        // claim must be released in the same batch.
+        let live = live_with_orphaned_negatives(
+            r#",
+            "ad_group_claims": {"300": ["keyword_negative", "keyword_positive"]},
+            "claim_labels": {
+                "keyword_negative": "customers/1/labels/777",
+                "keyword_positive": "customers/1/labels/778"
+            }"#,
+        );
+        let report = diff(&input(DECLARED_POSITIVES_ONLY), &live);
+
+        let destroyed: Vec<&ResourceDiff> = report
+            .diffs
+            .iter()
+            .filter(|d| matches!(d.action, Action::Delete { .. }))
+            .collect();
+        assert_eq!(
+            destroyed.len(),
+            2,
+            "both orphaned negatives should be destroyed: {:?}",
+            report.diffs.iter().map(|d| (&d.address, &d.action)).collect::<Vec<_>>()
+        );
+        assert!(destroyed
+            .iter()
+            .all(|d| d.kind == "ad_group_criterion" && d.address.contains("m.g (removed negative_keyword")));
+
+        let releases: Vec<&ClaimPlanEntry> = report
+            .claim_plans
+            .iter()
+            .filter(|p| p.stale_assoc_rn.is_some())
+            .collect();
+        assert_eq!(releases.len(), 1, "claims: {:?}", report.claim_plans);
+        assert_eq!(releases[0].category, "keyword_negative");
+        assert_eq!(
+            releases[0].stale_assoc_rn.as_deref(),
+            Some("customers/1/adGroupLabels/300~777")
+        );
+        assert!(
+            !report
+                .claim_plans
+                .iter()
+                .any(|p| p.category == "keyword_positive"),
+            "the still-declared positive claim already exists live: {:?}",
+            report.claim_plans
+        );
+    }
+
+    #[test]
+    fn unclaimed_live_negatives_are_never_destroyed() {
+        // Adoption safety: no declared negatives, no live claim — the negatives
+        // could be UI-managed, so they stay. The declared positive category
+        // plans a fresh claim instead.
+        let live = live_with_orphaned_negatives("");
+        let report = diff(&input(DECLARED_POSITIVES_ONLY), &live);
+
+        assert_eq!(
+            report.delete_count, 0,
+            "unclaimed live negatives must be left alone: {:?}",
+            report.diffs.iter().map(|d| (&d.address, &d.action)).collect::<Vec<_>>()
+        );
+        let adds: Vec<&ClaimPlanEntry> = report
+            .claim_plans
+            .iter()
+            .filter(|p| p.stale_assoc_rn.is_none())
+            .collect();
+        assert_eq!(adds.len(), 1, "claims: {:?}", report.claim_plans);
+        assert_eq!(adds[0].kind, "ad_group");
+        assert_eq!(adds[0].address, "m.g");
+        assert_eq!(adds[0].category, "keyword_positive");
+        assert!(adds[0].existing_label_rn.is_none(), "no live owns label yet");
+    }
+
+    #[test]
+    fn claim_add_reuses_an_existing_owns_label() {
+        let live = live_with_orphaned_negatives(
+            r#",
+            "claim_labels": {"keyword_positive": "customers/1/labels/778"}"#,
+        );
+        let report = diff(&input(DECLARED_POSITIVES_ONLY), &live);
+
+        let add = report
+            .claim_plans
+            .iter()
+            .find(|p| p.stale_assoc_rn.is_none())
+            .expect("a claim add");
+        assert_eq!(
+            add.existing_label_rn.as_deref(),
+            Some("customers/1/labels/778")
+        );
+    }
+
+    #[test]
+    fn stale_claim_without_live_members_plans_only_a_release() {
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"m.c","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"m.b"}],
+            "ad_groups": [{"id":"m.g","name":"G","campaign":"m.c"}]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"100","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"200"}],
+            "ad_groups": [{"id":"300","name":"G","campaign":"100"}],
+            "ad_group_claims": {"300": ["keyword_negative"]},
+            "claim_labels": {"keyword_negative": "customers/1/labels/777"}
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        assert_eq!(report.delete_count, 0);
+        assert_eq!(report.claim_plans.len(), 1, "claims: {:?}", report.claim_plans);
+        assert_eq!(
+            report.claim_plans[0].stale_assoc_rn.as_deref(),
+            Some("customers/1/adGroupLabels/300~777")
+        );
+        assert!(report.adopt_count > 0, "a claim release is pending work");
+    }
+
+    #[test]
+    fn campaign_level_claim_gates_destroys_and_releases() {
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"m.c","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"m.b"}]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"100","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"200"}],
+            "campaign_criteria": [
+                {"id":"500","campaign":"100","location":{"geo_target_constant":"geoTargetConstants/2616"}}
+            ],
+            "campaign_claims": {"100": ["location"]},
+            "claim_labels": {"location": "customers/1/labels/779"}
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        assert_eq!(
+            report.delete_count, 1,
+            "the claimed orphaned location should be destroyed: {:?}",
+            report.diffs.iter().map(|d| (&d.address, &d.action)).collect::<Vec<_>>()
+        );
+        let del = report
+            .diffs
+            .iter()
+            .find(|d| matches!(d.action, Action::Delete { .. }))
+            .expect("a destroy");
+        assert!(del.address.contains("m.c (removed location"));
+        assert_eq!(report.claim_plans.len(), 1);
+        assert_eq!(
+            report.claim_plans[0].stale_assoc_rn.as_deref(),
+            Some("customers/1/campaignLabels/100~779")
+        );
+    }
+
+    #[test]
+    fn empty_declared_shared_set_leaves_live_members_alone() {
+        // Sets match by bare name, so a declared set with no negative_keywords
+        // blocks may be adopting a UI-curated list — never empty it.
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "shared_sets": [{"id":"m.s","name":"S","type":"NEGATIVE_KEYWORDS"}]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "1",
+            "shared_sets": [{"id":"600","name":"S","type":"NEGATIVE_KEYWORDS"}],
+            "shared_criteria": [
+                {"id":"600~1","shared_set":"600","keyword":{"text":"vpn","match_type":"EXACT"}}
+            ]
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        assert_eq!(
+            report.delete_count, 0,
+            "live members of an adopted set must not be pruned: {:?}",
+            report.diffs.iter().map(|d| (&d.address, &d.action)).collect::<Vec<_>>()
+        );
     }
 }

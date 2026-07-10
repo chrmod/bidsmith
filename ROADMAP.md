@@ -69,7 +69,9 @@ declared HCL against live labeled state. Local cache is rebuildable.
   through the normal `yes` prompt — no `--allow-destroy` flag. Whole
   resources are identified by the `bidsmith:address` label (Phase 3 v2);
   unlabeled UI-created resources are never destroyed (see DECISIONS.md
-  "Identity labels").
+  "Identity labels"). Removing the *last* declared member of a criterion
+  category is covered by the per-category `bidsmith:owns=` claim label
+  on the parent (issue #88; see DECISIONS.md "Member removal").
 
 ## Phases
 
@@ -114,11 +116,15 @@ declared HCL against live labeled state. Local cache is rebuildable.
 - ✅ Write `bidsmith:address=...` labels on created / adopted resources
   (Label + CampaignLabel / AdGroupLabel / AdGroupAdLabel associations).
   Labelable types only: campaign, ad_group, ad_group_ad — keywords stay
-  unlabeled (member removal already covers their lifecycle). See
+  unlabeled (the API forbids labels on negative criteria; their
+  lifecycle rides on member removal + the parent's category claim). See
   **Identity labels (Phase 3 v2)** in DECISIONS.md.
-- ✅ Member-level removal detection (no labels needed): an orphaned
-  criterion whose declared parent still exists → `- destroy`, scoped to
-  the `(parent, category)` the file already owns.
+- ✅ Member-level removal detection: an orphaned criterion whose
+  declared parent still exists → `- destroy`, scoped to the
+  `(parent, category)` bidsmith owns — claimed by ≥1 declared member or
+  by the parent's persisted `bidsmith:owns=<category>` label, so the
+  destroys survive removing the category's last declared member
+  (issue #88).
 - ✅ 1:1 ad matching by body (issue #44): `plan` matches each declared
   `google_ads_ad_group_ad` to a live ad keyed on the ad body (final
   URLs + RSA content), not on the ad group alone. Accounts routinely
