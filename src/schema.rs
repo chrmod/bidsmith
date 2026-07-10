@@ -1536,7 +1536,10 @@ fn parse_input_value(raw: &str, ty: VarType) -> Result<Expression, String> {
 }
 
 pub fn validate_files(files: &[ParsedFile], inputs: &InputBindings) -> Vec<Diag> {
+    let (expanded, expand_diags) = crate::expand::expand_resource_for_each(files, inputs);
+    let files = &expanded[..];
     let (registry, mut diags) = ResourceRegistry::build(files);
+    diags.extend(expand_diags);
     let (locals, locals_diags) = LocalsRegistry::build(files);
     diags.extend(locals_diags);
     let (variables, variables_diags) = VariablesRegistry::build(files, inputs);
@@ -4047,6 +4050,89 @@ resource "google_ads_ad_group_ad" "rsa" {{
         let diags = validate_str("concat_elem", &content);
         assert!(
             diags.iter().any(|d| d.message.contains("expected string, got number 42")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn for_each_device_criteria_validate_clean() {
+        let diags = validate_str(
+            "fe_validate",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "t" {{
+  name                     = "T"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}}
+
+resource "google_ads_campaign_criterion" "t_devices" {{
+  for_each     = ["MOBILE", "TABLET"]
+  campaign     = google_ads_campaign.t.id
+  bid_modifier = 0
+
+  device {{
+    type = each.value
+  }}
+}}
+"#
+            ),
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn for_each_invalid_each_value_is_type_checked_per_instance() {
+        let diags = validate_str(
+            "fe_enum",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "t" {{
+  name                     = "T"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}}
+
+resource "google_ads_campaign_criterion" "t_devices" {{
+  for_each     = ["MOBILE", "FRIDGE"]
+  campaign     = google_ads_campaign.t.id
+  bid_modifier = 0
+
+  device {{
+    type = each.value
+  }}
+}}
+"#
+            ),
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("invalid value \"FRIDGE\"")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn duplicate_for_each_instances_across_declarations_error() {
+        let diags = validate_str(
+            "fe_dup_decl",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  for_each      = ["a"]
+  name          = "B ${each.key}"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign_budget" "b[\"a\"]" {
+  name          = "Collides"
+  amount_micros = 1000000
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("duplicate resource")),
             "{:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );

@@ -2,6 +2,7 @@ mod api;
 mod commands;
 mod diagnostics;
 mod eval;
+mod expand;
 mod lint;
 mod parser;
 mod program;

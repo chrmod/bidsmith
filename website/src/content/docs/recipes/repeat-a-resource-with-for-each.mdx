@@ -1,0 +1,78 @@
+---
+title: Repeat a resource for each item in a list
+description: Write the device exclusion or sitelink attachment once and fan it out with for_each — one block instead of a copy per item.
+---
+
+Some resources come in near-identical packs: the mobile + tablet
+exclusion pair your account mandates on every campaign, or eleven
+sitelink attachments that differ only in which asset they point at.
+Writing each one out by hand is pure boilerplate — and the copies
+drift.
+
+`for_each` on a resource block fans one block out into one resource
+per entry.
+
+## From a list
+
+Each entry becomes `each.value` (and its own address key). The classic
+device-exclusion pair:
+
+```hcl
+resource "google_ads_campaign_criterion" "cookies_device_exclusions" {
+  for_each     = ["MOBILE", "TABLET"]
+  campaign     = google_ads_campaign.cookies.id
+  bid_modifier = 0
+
+  device {
+    type = each.value
+  }
+}
+```
+
+That is two live criteria — addressed as
+`cookies_device_exclusions["MOBILE"]` and
+`cookies_device_exclusions["TABLET"]` — from one block. The list can
+also live in a shared [local](/bidsmith/concepts/locals/)
+(`for_each = local.excluded_devices`) so every campaign file reuses
+the same one.
+
+## From a map
+
+When each copy needs its own value, use a map: the key names the
+instance, `each.value` carries its value — including references to
+other resources:
+
+```hcl
+resource "google_ads_campaign_asset" "cookies_sitelinks" {
+  for_each = {
+    neverconsent = google_ads_sitelink_asset.sl_neverconsent.id
+    adblock      = google_ads_sitelink_asset.sl_adblock.id
+    help         = google_ads_sitelink_asset.sl_help.id
+  }
+  campaign   = google_ads_campaign.cookies.id
+  asset      = each.value
+  field_type = "SITELINK"
+}
+```
+
+`each.key` works too, anywhere in the block — including inside
+`${…}` [interpolation](/bidsmith/recipes/build-urls-from-a-shared-prefix/),
+so a name like `"Sitelink — ${each.key}"` names each instance after
+its map key.
+
+## Adopting it on a live account
+
+Rewriting existing hand-written resources into a `for_each` block is
+safe: criteria, assets, and keywords are matched by their content, so
+`bidsmith plan` shows no changes. Campaigns, ad groups, and ads keep
+their live state too — their identity label just moves to the new
+keyed address, which `plan` shows as an `~ adopt (label)` row before
+anything is written.
+
+## Where it stops
+
+`for_each` fans out the resources *under* a campaign. To stamp out
+whole campaign families — same structure, different city or product —
+use a [module with for_each](/bidsmith/recipes/collapse-cloned-campaigns/)
+instead. Referencing a single fanned-out instance from another
+resource (`google_ads_campaign.t["a"].id`) isn't supported.
