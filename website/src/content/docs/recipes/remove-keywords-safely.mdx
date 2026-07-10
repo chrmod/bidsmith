@@ -1,0 +1,87 @@
+---
+title: Remove a whole keyword list safely
+description: Delete a negative-keyword (or keyword) resource and let plan clean up every live keyword it managed — plus what the ~ claim rows in your plan mean.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+You moved your negative keywords into a
+[shared set](/bidsmith/resources/google_ads_shared_set/), or a keyword
+list simply outlived its usefulness. Either way you're about to delete
+an entire `google_ads_ad_group_criterion` resource from your `.bid`
+file — and every keyword it manages should disappear from the live
+account with it.
+
+## The change
+
+Delete the whole block:
+
+```diff
+-resource "google_ads_ad_group_criterion" "winter_negatives" {
+-  ad_group = google_ads_ad_group.winter_default.id
+-
+-  negative_keywords {
+-    match_type = "PHRASE"
+-    texts      = ["free", "cheap", "diy"]
+-  }
+-}
+```
+
+## Plan
+
+```sh
+bidsmith plan .
+```
+
+Expected: one `- destroy` row per keyword the resource managed, plus a
+`~ claim` row on the ad group:
+
+```
+google_ads_ad_group.winter_default (removed negative_keyword "free" PHRASE)   - destroy  ok
+google_ads_ad_group.winter_default (removed negative_keyword "cheap" PHRASE)  - destroy  ok
+google_ads_ad_group.winter_default (removed negative_keyword "diy" PHRASE)    - destroy  ok
+google_ads_ad_group.winter_default                                            ~ claim (-negative keywords)
+```
+
+If the destroys are there, commit, PR, merge, apply as usual.
+
+## What the `~ claim` rows mean
+
+bidsmith never deletes keywords it didn't create — someone on your
+team may manage a keyword list straight in the Google Ads UI, and
+bidsmith must not touch it. To tell "mine" from "not mine" without a
+database, bidsmith puts a small marker label on each ad group and
+campaign, one per kind of keyword list it manages there (the label is
+visible in the Google Ads UI as `bidsmith:owns=…`).
+
+- `~ claim (+negative keywords)` — bidsmith is about to start managing
+  this ad group's negative keywords and marks that now. You'll see
+  these once on the first apply after declaring a list (or after
+  upgrading bidsmith).
+- `~ claim (-negative keywords)` — the last declared list of that kind
+  is gone; bidsmith removes its marker in the same apply that removes
+  the keywords.
+
+The markers are what keep the cleanup working even when you delete the
+*only* negative-keyword resource an ad group had — without them,
+bidsmith would have no way of knowing those live negatives were ever
+its job.
+
+<Aside type="caution">
+  The marker is written by `apply`. If you delete a keyword resource
+  that was last applied by an **older bidsmith** (before the markers
+  existed), the plan has nothing to prove the live keywords were
+  managed, and it will quietly leave them in place. Run one
+  `bidsmith apply` from your current files *before* the removal PR —
+  it writes the markers (`~ claim (+…)` rows) — and re-plan the
+  removal; the destroys appear.
+</Aside>
+
+## See also
+
+- [Add a whole keyword list at once](./add-many-keywords/) — the
+  reverse trip.
+- [Drift](/bidsmith/concepts/drift/) — what happens when the account
+  and the files disagree.
+- [Plan and apply](/bidsmith/concepts/plan-and-apply/) — why nothing
+  changes until you say `yes`.

@@ -435,21 +435,18 @@ pub fn execute(
     }
 
     let adopted = adopted_addresses(report);
+    let claims = claim_details(report);
     let mut accepted = 0usize;
     let mut rejected = 0usize;
     let mut md_rows: Vec<(String, String, String)> = Vec::new();
     for d in &report.diffs {
         let is_adopt = adopted.contains(d.address.as_str());
-        let (verb, detail): (&str, String) = match &d.action {
-            diff::Action::NoOp { .. } if is_adopt => ("~ adopt", " (label)".to_string()),
-            diff::Action::NoOp { .. } => ("no-op", String::new()),
-            diff::Action::Create => ("+ create", String::new()),
-            diff::Action::Update { changed_fields, .. } => {
-                ("~ update", format!(" ({})", changed_fields.join(", ")))
-            }
-            diff::Action::Delete { .. } => ("- destroy", String::new()),
-        };
-        let is_mutating = is_adopt || !matches!(d.action, diff::Action::NoOp { .. });
+        let claim = claims
+            .get(d.address.as_str())
+            .filter(|_| matches!(d.action, diff::Action::NoOp { .. }));
+        let (verb, detail) = verb_detail(&d.action, is_adopt, claim);
+        let is_mutating =
+            is_adopt || claim.is_some() || !matches!(d.action, diff::Action::NoOp { .. });
         let has_err = errors_by_address.contains_key(&d.address);
         if is_mutating {
             if has_err || !success {
@@ -458,7 +455,8 @@ pub fn execute(
                 accepted += 1;
             }
         }
-        let printable = (is_adopt && matches!(display, DisplayMode::PerResource))
+        let printable = ((is_adopt || claim.is_some())
+            && matches!(display, DisplayMode::PerResource))
             || row_is_visible(&d.action, &display, show_unchanged, has_err);
         if !printable {
             continue;
@@ -632,6 +630,50 @@ fn adopted_addresses(report: &diff::DiffReport) -> std::collections::HashSet<&st
         .collect()
 }
 
+/// Per-address summary of pending `bidsmith:owns` claim work, e.g.
+/// `+negative keywords, -locations` — rendered as a `~ claim` row on parents
+/// that otherwise match live unchanged.
+fn claim_details(report: &diff::DiffReport) -> HashMap<&str, String> {
+    let mut parts: HashMap<&str, Vec<String>> = HashMap::new();
+    for p in &report.claim_plans {
+        let sign = if p.stale_assoc_rn.is_some() { '-' } else { '+' };
+        parts
+            .entry(p.address.as_str())
+            .or_default()
+            .push(format!("{sign}{}", claim_category_display(p.category)));
+    }
+    parts.into_iter().map(|(a, v)| (a, v.join(", "))).collect()
+}
+
+fn verb_detail(
+    action: &diff::Action,
+    is_adopt: bool,
+    claim: Option<&String>,
+) -> (&'static str, String) {
+    match (action, claim) {
+        (diff::Action::NoOp { .. }, Some(c)) if is_adopt => ("~ adopt", format!(" (label; {c})")),
+        (diff::Action::NoOp { .. }, _) if is_adopt => ("~ adopt", " (label)".to_string()),
+        (diff::Action::NoOp { .. }, Some(c)) => ("~ claim", format!(" ({c})")),
+        (diff::Action::NoOp { .. }, None) => ("no-op", String::new()),
+        (diff::Action::Create, _) => ("+ create", String::new()),
+        (diff::Action::Update { changed_fields, .. }, _) => {
+            ("~ update", format!(" ({})", changed_fields.join(", ")))
+        }
+        (diff::Action::Delete { .. }, _) => ("- destroy", String::new()),
+    }
+}
+
+fn claim_category_display(category: &str) -> &'static str {
+    match category {
+        "keyword_positive" => "keywords",
+        "keyword_negative" => "negative keywords",
+        "location" => "locations",
+        "language" => "languages",
+        "proximity" => "proximity",
+        _ => "criteria",
+    }
+}
+
 /// The `", N to adopt"` (or `", N adopted"`) clause, empty when nothing adopts.
 fn adopt_clause(report: &diff::DiffReport, past: bool) -> String {
     if report.adopt_count == 0 {
@@ -669,21 +711,20 @@ fn display_offline_diff(
     let width = prepared.width;
     let strip = prepared.strip_module;
     let adopted = adopted_addresses(report);
+    let claims = claim_details(report);
     let mut md_rows: Vec<(String, String)> = Vec::new();
     for d in &report.diffs {
         let is_adopt = adopted.contains(d.address.as_str());
-        if !is_adopt && !row_is_visible(&d.action, &DisplayMode::PerResource, show_unchanged, false) {
+        let claim = claims
+            .get(d.address.as_str())
+            .filter(|_| matches!(d.action, diff::Action::NoOp { .. }));
+        if !is_adopt
+            && claim.is_none()
+            && !row_is_visible(&d.action, &DisplayMode::PerResource, show_unchanged, false)
+        {
             continue;
         }
-        let (verb, detail): (&str, String) = match &d.action {
-            diff::Action::NoOp { .. } if is_adopt => ("~ adopt", " (label)".to_string()),
-            diff::Action::NoOp { .. } => ("no-op", String::new()),
-            diff::Action::Create => ("+ create", String::new()),
-            diff::Action::Update { changed_fields, .. } => {
-                ("~ update", format!(" ({})", changed_fields.join(", ")))
-            }
-            diff::Action::Delete { .. } => ("- destroy", String::new()),
-        };
+        let (verb, detail) = verb_detail(&d.action, is_adopt, claim);
         let addr = display_address(&d.address, strip);
         match format {
             Format::Text => {

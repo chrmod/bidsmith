@@ -436,18 +436,33 @@ resource type, any file layout, modules, schema validation.
   no longer silently half-apply. The pruning is parent-scoped — it only
   removes orphaned members of an `ad_group_criterion` /
   `campaign_criterion` / `shared_set` whose parent is still declared,
-  and only inside a `(parent, category)` the file already owns (has ≥1
-  declared member of). Category partitions keyword polarity
-  (positive/negative) and campaign-criterion shape
-  (keyword/location/language/proximity), so declaring negatives never
-  deletes positives a user manages in the UI, and declaring one axis
-  never prunes another. Destroys are gated by the normal `apply` prompt
+  and only inside a `(parent, category)` bidsmith owns. Category
+  partitions keyword polarity (positive/negative) and
+  campaign-criterion shape (keyword/location/language/proximity), so
+  declaring negatives never deletes positives a user manages in the UI,
+  and declaring one axis never prunes another. Ownership of a category
+  is claimed two ways: the file declares ≥1 member of it, or the live
+  parent carries a `bidsmith:owns=<category>` label written by a
+  previous apply (issue #88: without the persisted claim, removing the
+  *last* declared member-resource of a category closed the gate and
+  silently orphaned the live members). `apply` writes the claim
+  association when a category gains its first declared member and
+  releases it — in the same batch as the member destroys — when the
+  category's last declared member goes away; `plan` shows the work as
+  `~ claim (+negative keywords)` / `~ claim (-negative keywords)` rows.
+  `shared_set` membership keeps the ≥1-declared-member gate and the
+  last-member gap: the API has no shared-set label association to hang
+  a claim on, and matching alone can't prove ownership (sets match by
+  bare name, so an empty declared set adopting a UI-curated list must
+  not empty it). In practice removing a set's last member block means
+  removing the set. Destroys are gated by the normal `apply` prompt
   (and `--auto-approve`), not a separate `--allow-destroy` flag.
   Dropping an *entire* resource from desired state now also destroys it
   live for the labelable types (campaign / ad_group / ad_group_ad) via
   the `bidsmith:address` identity labels — see **Identity labels (Phase
   3 v2)** below. An unlabeled live resource (UI-created, never managed
-  by bidsmith) is still never destroyed.
+  by bidsmith) is still never destroyed, and live criteria in a category
+  bidsmith never claimed are still never destroyed.
 - **Rename = `bidsmith mv`, source-only**: renaming a resource's
   address (the `<name>` in `resource "<type>" "<name>"`) is a pure
   source rewrite — `mv` renames the block label and every reference
@@ -550,9 +565,16 @@ resource type, any file layout, modules, schema validation.
     and copy is creation-only — label-first would mask a copy edit), but
     gain a label so a replaced ad's predecessor is cleaned up rather than
     left to linger. **Keywords are not labeled**: their text + match_type
-    is identity and the existing parent-scoped member removal already
-    covers their lifecycle, so per-keyword labels would be high volume
-    (thousands of label ops) for no lifecycle gain.
+    is identity, per-keyword labels would be high volume (thousands of
+    label ops), and the API outright forbids them on negative criteria
+    (`CANNOT_ADD_LABEL_TO_NEGATIVE_CRITERION`), which is exactly where
+    lifecycle tracking matters most. Their removal lifecycle is owned by
+    the parent-scoped member pruning plus the per-category
+    `bidsmith:owns=<category>` claim label on the **parent** (one
+    association per campaign / ad group per claimed category — e.g.
+    `bidsmith:owns=keyword_negative` — written on the first declared
+    member, released with the last), which keeps last-member removals
+    planning as destroys — see **Member removal** above.
   - **Removal**: a labeled live campaign / ad_group / ad that no longer
     appears in the `.bid` is destroyed (children cascade; removes are
     ordered child-first). A live resource with **no** bidsmith label is

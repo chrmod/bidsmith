@@ -639,6 +639,60 @@ pub fn build_mutate_with_diff(
         }
     }
 
+    // Claim writes: `bidsmith:owns=<category>` associations recording which
+    // criterion categories bidsmith manages on each campaign / ad group.
+    // Several parents can claim the same category in one batch, so a
+    // freshly-created claim label is minted once and its temp resource_name
+    // shared. Releases (stale_assoc_rn) reference live resource_names only.
+    let mut claim_label_rns: HashMap<&str, String> = HashMap::new();
+    for plan in &report.claim_plans {
+        if let Some(stale) = &plan.stale_assoc_rn {
+            let (assoc_env, _) = label_assoc_op(plan.kind);
+            mutate_ops.push(json!({ assoc_env: { "remove": stale } }));
+            operations.push(PlanOperation { address: plan.address.clone(), kind: "label" });
+            continue;
+        }
+        let Some(parent_rn) = refs.get(&plan.address).cloned() else {
+            errors.push(PlanBuildError {
+                address: plan.address.clone(),
+                message: "internal error: no resource name for claim target".to_string(),
+            });
+            continue;
+        };
+        let label_rn = match plan
+            .existing_label_rn
+            .clone()
+            .or_else(|| claim_label_rns.get(plan.category).cloned())
+        {
+            Some(rn) => rn,
+            None => {
+                let rn = format!("customers/{customer_id}/labels/{next}");
+                next -= 1;
+                mutate_ops.push(json!({
+                    "labelOperation": {
+                        "create": {
+                            "resourceName": rn,
+                            "name": format!(
+                                "{}{}",
+                                crate::commands::export::OWNS_LABEL_PREFIX,
+                                plan.category
+                            ),
+                        }
+                    }
+                }));
+                operations.push(PlanOperation { address: plan.address.clone(), kind: "label" });
+                claim_label_rns.insert(plan.category, rn.clone());
+                rn
+            }
+        };
+        let (assoc_env, entity_field) = label_assoc_op(plan.kind);
+        let mut assoc = Map::new();
+        assoc.insert(entity_field.into(), Value::String(parent_rn));
+        assoc.insert("label".into(), Value::String(label_rn));
+        mutate_ops.push(json!({ assoc_env: { "create": Value::Object(assoc) } }));
+        operations.push(PlanOperation { address: plan.address.clone(), kind: "label" });
+    }
+
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -1599,7 +1653,7 @@ fn campaign_criterion_create(cr: &JsonCampaignCriterion, camp_rn: &str) -> Value
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::diff::{Action, DiffReport, LabelPlanEntry, ResourceDiff};
+    use crate::api::diff::{Action, ClaimPlanEntry, DiffReport, LabelPlanEntry, ResourceDiff};
 
     fn create_diff(address: &str, kind: &'static str) -> ResourceDiff {
         ResourceDiff {
@@ -1648,6 +1702,7 @@ mod tests {
                 },
             ],
             label_plans: Vec::new(),
+            claim_plans: Vec::new(),
             noop_count: 1,
             create_count: 1,
             update_count: 0,
@@ -1713,6 +1768,7 @@ mod tests {
                 existing_label_rn: None,
                 stale_assoc_rn: Some("customers/100/campaignLabels/555~111".to_string()),
             }],
+            claim_plans: Vec::new(),
             noop_count: 1,
             create_count: 0,
             update_count: 0,
@@ -1776,6 +1832,7 @@ mod tests {
                 },
             ],
             label_plans: Vec::new(),
+            claim_plans: Vec::new(),
             noop_count: 0,
             create_count: 0,
             update_count: 0,
@@ -1846,6 +1903,7 @@ mod tests {
                 ),
             ],
             label_plans: Vec::new(),
+            claim_plans: Vec::new(),
             noop_count: 0,
             create_count: 2,
             update_count: 0,
@@ -1922,6 +1980,7 @@ mod tests {
                 create_diff("m.neg", "campaign_criterion"),
             ],
             label_plans: Vec::new(),
+            claim_plans: Vec::new(),
             noop_count: 0,
             create_count: 5,
             update_count: 0,
@@ -2012,6 +2071,7 @@ mod tests {
                 existing_label_rn: None,
                 stale_assoc_rn: None,
             }],
+            claim_plans: Vec::new(),
             noop_count: 0,
             create_count: 2,
             update_count: 0,
@@ -2106,6 +2166,7 @@ mod tests {
                 ),
             ],
             label_plans: Vec::new(),
+            claim_plans: Vec::new(),
             noop_count: 0,
             create_count: 3,
             update_count: 0,
@@ -2237,5 +2298,114 @@ mod tests {
             "the link must reference the new asset's temp resource name"
         );
         assert_eq!(link["fieldType"].as_str().unwrap(), "SITELINK");
+    }
+    #[test]
+    fn claim_plans_share_one_owns_label_and_release_stale_associations() {
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "campaigns": [{
+                "id": "m.c",
+                "name": "C",
+                "advertising_channel_type": "SEARCH",
+                "campaign_budget": "customers/100/campaignBudgets/999"
+            }],
+            "ad_groups": [{"id": "m.g", "name": "G", "campaign": "m.c"}]
+        }))
+        .expect("valid ExportInput");
+
+        let report = DiffReport {
+            diffs: vec![
+                ResourceDiff {
+                    address: "m.c".to_string(),
+                    kind: "campaign",
+                    action: Action::NoOp { live_id: "555".to_string() },
+                },
+                ResourceDiff {
+                    address: "m.g".to_string(),
+                    kind: "ad_group",
+                    action: Action::NoOp { live_id: "300".to_string() },
+                },
+            ],
+            label_plans: Vec::new(),
+            claim_plans: vec![
+                ClaimPlanEntry {
+                    address: "m.c".to_string(),
+                    kind: "campaign",
+                    category: "keyword_negative",
+                    existing_label_rn: None,
+                    stale_assoc_rn: None,
+                },
+                ClaimPlanEntry {
+                    address: "m.g".to_string(),
+                    kind: "ad_group",
+                    category: "keyword_negative",
+                    existing_label_rn: None,
+                    stale_assoc_rn: None,
+                },
+                ClaimPlanEntry {
+                    address: "m.g".to_string(),
+                    kind: "ad_group",
+                    category: "location",
+                    existing_label_rn: None,
+                    stale_assoc_rn: Some("customers/100/adGroupLabels/300~779".to_string()),
+                },
+            ],
+            noop_count: 2,
+            create_count: 0,
+            update_count: 0,
+            delete_count: 0,
+            adopt_count: 2,
+            warnings: Vec::new(),
+        };
+
+        let plan = match build_mutate_with_diff(&input, &report, true) {
+            Ok(plan) => plan,
+            Err(errs) => panic!(
+                "plan should build: {}",
+                errs.iter()
+                    .map(|e| format!("{}: {}", e.address, e.message))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        };
+        let ops = plan.body["mutateOperations"].as_array().unwrap();
+
+        let label_creates: Vec<&Value> = ops
+            .iter()
+            .filter_map(|o| o.get("labelOperation").and_then(|x| x.get("create")))
+            .collect();
+        assert_eq!(
+            label_creates.len(),
+            1,
+            "two claims of the same category must mint one label: {ops:?}"
+        );
+        assert_eq!(
+            label_creates[0]["name"].as_str().unwrap(),
+            "bidsmith:owns=keyword_negative"
+        );
+        let label_rn = label_creates[0]["resourceName"].as_str().unwrap();
+
+        let campaign_assoc = ops
+            .iter()
+            .find_map(|o| o.get("campaignLabelOperation").and_then(|x| x.get("create")))
+            .expect("a campaign claim association");
+        assert_eq!(
+            campaign_assoc["campaign"].as_str().unwrap(),
+            "customers/100/campaigns/555"
+        );
+        assert_eq!(campaign_assoc["label"].as_str().unwrap(), label_rn);
+
+        let ag_assoc = ops
+            .iter()
+            .find_map(|o| o.get("adGroupLabelOperation").and_then(|x| x.get("create")))
+            .expect("an ad group claim association");
+        assert_eq!(ag_assoc["adGroup"].as_str().unwrap(), "customers/100/adGroups/300");
+        assert_eq!(ag_assoc["label"].as_str().unwrap(), label_rn);
+
+        let release = ops
+            .iter()
+            .find_map(|o| o.get("adGroupLabelOperation").and_then(|x| x.get("remove")))
+            .expect("a claim release");
+        assert_eq!(release.as_str().unwrap(), "customers/100/adGroupLabels/300~779");
     }
 }
