@@ -46,7 +46,7 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn resolve_value<'b>(&'b self, expr: &'b Expression) -> &'b Expression {
+    fn resolve_value<'b>(&'b self, expr: &'b Expression) -> std::borrow::Cow<'b, Expression> {
         self.bindings.resolve_value(&self.file.module, expr)
     }
 }
@@ -755,11 +755,12 @@ fn import_rsa(ctx: &Ctx, block: &Block) -> JsonResponsiveSearchAd {
 }
 
 fn import_rsa_asset_list(ctx: &Ctx, value: &Expression) -> Vec<JsonRsaAsset> {
-    let Expression::Array(arr) = ctx.resolve_value(value) else {
+    let resolved = ctx.resolve_value(value);
+    let Expression::Array(arr) = resolved.as_ref() else {
         return Vec::new();
     };
     arr.iter()
-        .filter_map(|item| match ctx.resolve_value(item) {
+        .filter_map(|item| match ctx.resolve_value(item).as_ref() {
             Expression::String(s) => Some(JsonRsaAsset {
                 text: s.as_str().to_string(),
                 pin: None,
@@ -769,7 +770,7 @@ fn import_rsa_asset_list(ctx: &Ctx, value: &Expression) -> Vec<JsonRsaAsset> {
                 let mut pin = None;
                 for (key, val) in obj.iter() {
                     let Some(ident) = key.as_ident() else { continue };
-                    match (ident.as_str(), ctx.resolve_value(val.expr())) {
+                    match (ident.as_str(), ctx.resolve_value(val.expr()).as_ref()) {
                         ("text", Expression::String(s)) => {
                             text = Some(s.as_str().to_string());
                         }
@@ -1495,7 +1496,7 @@ fn import_device(ctx: &Ctx, block: &Block) -> Option<JsonDevice> {
 }
 
 fn expect_string(ctx: &Ctx, attr: &Attribute, diags: &mut Vec<Diag>) -> Option<String> {
-    if let Expression::String(s) = ctx.resolve_value(&attr.value) {
+    if let Expression::String(s) = ctx.resolve_value(&attr.value).as_ref() {
         Some(s.as_str().to_string())
     } else {
         diags.push(Diag::new(
@@ -1508,7 +1509,7 @@ fn expect_string(ctx: &Ctx, attr: &Attribute, diags: &mut Vec<Diag>) -> Option<S
 }
 
 fn expect_string_owned(ctx: &Ctx, attr: &Attribute) -> Option<String> {
-    if let Expression::String(s) = ctx.resolve_value(&attr.value) {
+    if let Expression::String(s) = ctx.resolve_value(&attr.value).as_ref() {
         Some(s.as_str().to_string())
     } else {
         None
@@ -1516,7 +1517,7 @@ fn expect_string_owned(ctx: &Ctx, attr: &Attribute) -> Option<String> {
 }
 
 fn expect_i64(ctx: &Ctx, attr: &Attribute) -> Option<i64> {
-    if let Expression::Number(n) = ctx.resolve_value(&attr.value) {
+    if let Expression::Number(n) = ctx.resolve_value(&attr.value).as_ref() {
         n.as_i64().or_else(|| {
             let f = n.as_f64()?;
             (f.is_finite() && f.fract() == 0.0 && f.abs() < 2f64.powi(53)).then_some(f as i64)
@@ -1527,7 +1528,7 @@ fn expect_i64(ctx: &Ctx, attr: &Attribute) -> Option<i64> {
 }
 
 fn expect_f64(ctx: &Ctx, attr: &Attribute) -> Option<f64> {
-    if let Expression::Number(n) = ctx.resolve_value(&attr.value) {
+    if let Expression::Number(n) = ctx.resolve_value(&attr.value).as_ref() {
         n.as_f64()
     } else {
         None
@@ -1535,7 +1536,7 @@ fn expect_f64(ctx: &Ctx, attr: &Attribute) -> Option<f64> {
 }
 
 fn expect_bool(ctx: &Ctx, attr: &Attribute) -> Option<bool> {
-    if let Expression::Bool(b) = ctx.resolve_value(&attr.value) {
+    if let Expression::Bool(b) = ctx.resolve_value(&attr.value).as_ref() {
         Some(*b.as_ref())
     } else {
         None
@@ -1543,12 +1544,13 @@ fn expect_bool(ctx: &Ctx, attr: &Attribute) -> Option<bool> {
 }
 
 fn expect_string_list(ctx: &Ctx, value: &Expression) -> Vec<String> {
-    let Expression::Array(arr) = ctx.resolve_value(value) else {
+    let resolved = ctx.resolve_value(value);
+    let Expression::Array(arr) = resolved.as_ref() else {
         return Vec::new();
     };
     arr.iter()
         .filter_map(|item| {
-            if let Expression::String(s) = ctx.resolve_value(item) {
+            if let Expression::String(s) = ctx.resolve_value(item).as_ref() {
                 Some(s.as_str().to_string())
             } else {
                 None
@@ -1558,7 +1560,8 @@ fn expect_string_list(ctx: &Ctx, value: &Expression) -> Vec<String> {
 }
 
 fn extract_resource_ref(ctx: &Ctx, value: &Expression) -> Option<String> {
-    let Expression::Traversal(t) = ctx.resolve_value(value) else {
+    let resolved = ctx.resolve_value(value);
+    let Expression::Traversal(t) = resolved.as_ref() else {
         return None;
     };
     let path = extract_traversal_path(t)?;
@@ -1569,7 +1572,8 @@ fn extract_resource_ref(ctx: &Ctx, value: &Expression) -> Option<String> {
 }
 
 fn extract_resource_ref_list(ctx: &Ctx, value: &Expression) -> Vec<String> {
-    let Expression::Array(arr) = ctx.resolve_value(value) else {
+    let resolved = ctx.resolve_value(value);
+    let Expression::Array(arr) = resolved.as_ref() else {
         return Vec::new();
     };
     arr.iter()
@@ -2510,6 +2514,66 @@ resource "google_ads_ad_group_criterion" "kw" {
                 ("ublock origin".to_string(), "PHRASE".to_string(), false),
             ]
         );
+    }
+
+    #[test]
+    fn templates_render_in_scalar_attributes_and_locals() {
+        let input = import_str(
+            "tmpl_scalars",
+            r#"
+locals {
+  utm  = "GH_Test_0101"
+  name = "t ${local.utm}"
+}
+
+resource "google_ads_campaign_budget" "t" {
+  name          = local.name
+  amount_micros = 1000000
+}
+"#,
+        );
+        assert_eq!(input.campaign_budgets.len(), 1);
+        assert_eq!(input.campaign_budgets[0].name, "t GH_Test_0101");
+    }
+
+    #[test]
+    fn templates_render_in_final_urls_and_rsa_lists() {
+        let input = import_str(
+            "tmpl_urls",
+            r#"
+locals {
+  base  = "https://www.ghostery.com/ghostery-ad-blocker?utm_source=search&utm_campaign=GH_Cookies_0708"
+  brand = "Ghostery"
+}
+
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group = google_ads_ad_group.g.id
+  ad {
+    final_urls = ["${local.base}-rsa_a"]
+    responsive_search_ad {
+      headlines    = ["Stop Cookie Pop-Ups", "${local.brand} Ad Blocker", { text = "Try ${local.brand} Free", pin = "HEADLINE_1" }]
+      descriptions = ["A description here", "Another description here"]
+    }
+  }
+}
+"#,
+        );
+        assert_eq!(input.ad_group_ads.len(), 1);
+        let ad = &input.ad_group_ads[0].ad;
+        assert_eq!(
+            ad.final_urls,
+            vec![
+                "https://www.ghostery.com/ghostery-ad-blocker?utm_source=search&utm_campaign=GH_Cookies_0708-rsa_a"
+                    .to_string()
+            ]
+        );
+        let rsa = ad.responsive_search_ad.as_ref().expect("rsa");
+        let texts: Vec<&str> = rsa.headlines.iter().map(|h| h.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec!["Stop Cookie Pop-Ups", "Ghostery Ad Blocker", "Try Ghostery Free"]
+        );
+        assert_eq!(rsa.headlines[2].pin.as_deref(), Some("HEADLINE_1"));
     }
 }
 

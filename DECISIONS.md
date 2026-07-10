@@ -79,6 +79,27 @@ resource type, any file layout, modules, schema validation.
   blocks stay scalar-only (`string` / `number` / `bool`) — a CLI-supplied
   list input has no obvious `--var` syntax, and the measured duplication
   is list **data**, which belongs in `locals`.
+- **String interpolation** (issue #84): HCL template expressions
+  (`"${local.utm_base}-rsa_a"`) evaluate to strings anywhere a string is
+  accepted — resource names, headlines, paths, URLs — including inside
+  `locals`, so one local can be built from another
+  (`utm_base = "${local.landing}?utm_campaign=${local.tag}"`). This is
+  the first slice of the deferred expression engine, implemented as an
+  evaluator (`src/eval.rs`) that subsumes the existing `local.`/`var.`
+  chain resolution: an interpolated expression may be any chain that
+  resolves to a string, number, or bool (numbers and bools stringify,
+  Terraform-style); resource references, lists, and objects inside
+  `${…}` are validate-time errors, as are template directives
+  (`%{ if … }`). Evaluation happens before schema validation and before
+  lints, so enum checks and the RSA length caps run on the *rendered*
+  string (the issue's UTM-slug case: a headline that only exceeds 30
+  chars once the brand splices in is flagged). Evaluation is load-time
+  only — `plan` / `apply` see rendered literals and `export` / `refresh`
+  keep emitting literals, exactly like list locals (#39). Cycle
+  detection is DFS-based so `"${local.x} ${local.x}"` is legal while
+  mutually-recursive templates error. `variable` defaults stay
+  literal-only. A `format()` function was considered and skipped:
+  interpolation subsumes it.
 - **`ad_template` block** (issue #40): list locals fold an RSA's
   `headlines` / `descriptions`, but the duplication that remains is the
   *whole ad body* run in every ad group of a campaign (measured: 142 RSAs,
@@ -616,6 +637,8 @@ bidsmith/
     │   ├── nadarzyn.bid        # criterion names — addresses disambiguate via
     │   └── warszawa.bid        # the file-stem module prefix
     ├── locals/main.bid         # `locals { … }` plus `local.<name>` use sites
+    ├── interpolation/main.bid  # string templates: "${local.x}-suffix" in names,
+    │                           # URLs, headlines, and inside locals
     ├── variable/main.bid       # `variable "x" { type, default }` plus var.<name>
     ├── modules/                # `module "x" { source = "./…", ...inputs }`
     │   ├── main.bid            # root: two `module` instances of city-campaign
@@ -651,6 +674,13 @@ Verified locally:
   exercises the `locals { ... }` block plus `local.<name>` references
   for budget micros, default cpc, language constant, and proximity
   radius; `fmt --check examples/locals` is a no-op.
+- `cargo run -- validate examples/interpolation` → `OK: 1 file(s) valid.`
+  — exercises **string interpolation** (issue #84). A shared
+  `local.utm_base` is itself built from two other locals via `${…}`,
+  campaign/budget names embed `${local.utm_campaign}`, every ad's
+  `final_urls` appends a per-ad slug to the shared base, and headlines
+  splice in `${local.brand}`. `fmt --check examples/interpolation` is a
+  no-op (templates round-trip through the formatter untouched).
 - `cargo run -- validate examples/lists` → `OK: 3 file(s) valid.` —
   exercises **list-valued locals** (issue #39). `shared.bid` declares
   the headline set, description set, competitor-keyword theme, landing

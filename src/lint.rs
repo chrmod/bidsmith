@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use hcl_edit::Span;
 use hcl_edit::expr::Expression;
 use hcl_edit::structure::{Attribute, Block, Body, Structure};
@@ -68,7 +70,7 @@ fn lint_resource(file: &ParsedFile, block: &Block, bindings: &Bindings, diags: &
             }
         }
         // path1/path2 set at the resource level override a template's RSA paths; lint them too.
-        lint_rsa_paths(file, &block.body, &address, diags);
+        lint_rsa_paths(file, &block.body, &address, bindings, diags);
     }
 
     if ty == "google_ads_youtube_video_asset" {
@@ -83,18 +85,25 @@ fn lint_resource(file: &ParsedFile, block: &Block, bindings: &Bindings, diags: &
 
     if ty == "google_ads_campaign_criterion" {
         if let Some(lang_block) = find_block(&block.body, "language") {
-            lint_language(file, lang_block, &address, diags);
+            lint_language(file, lang_block, &address, bindings, diags);
         }
     }
 }
 
-fn lint_language(file: &ParsedFile, block: &Block, address: &str, diags: &mut Vec<Diag>) {
+fn lint_language(
+    file: &ParsedFile,
+    block: &Block,
+    address: &str,
+    bindings: &Bindings,
+    diags: &mut Vec<Diag>,
+) {
     let Some(constant_attr) = find_attr(&block.body, "language_constant") else {
         return;
     };
-    let Some(value) = constant_attr.value.as_str() else {
+    let Some(value) = eval_str(bindings, &file.module, &constant_attr.value) else {
         return;
     };
+    let value = value.as_str();
     for (constant, name, hint) in SUSPICIOUS_LANGUAGE_CONSTANTS {
         if value == *constant {
             diags.push(Diag::warning(
@@ -129,17 +138,24 @@ fn lint_rsa(file: &ParsedFile, rsa: &Block, address: &str, bindings: &Bindings, 
         bindings,
         diags,
     );
-    lint_rsa_paths(file, &rsa.body, address, diags);
+    lint_rsa_paths(file, &rsa.body, address, bindings, diags);
 }
 
-fn lint_rsa_paths(file: &ParsedFile, body: &Body, address: &str, diags: &mut Vec<Diag>) {
+fn lint_rsa_paths(
+    file: &ParsedFile,
+    body: &Body,
+    address: &str,
+    bindings: &Bindings,
+    diags: &mut Vec<Diag>,
+) {
     for name in ["path1", "path2"] {
         let Some(attr) = find_attr(body, name) else {
             continue;
         };
-        let Some(value) = attr.value.as_str() else {
+        let Some(value) = eval_str(bindings, &file.module, &attr.value) else {
             continue;
         };
+        let value = value.as_str();
         if value.chars().count() > MAX_PATH_LEN {
             diags.push(Diag::warning(
                 file.src.clone(),
@@ -213,7 +229,7 @@ fn lint_rsa_block(
             idx += 1;
             continue;
         };
-        let Some(text) = text_attr.value.as_str() else {
+        let Some(text) = eval_str(bindings, &file.module, &text_attr.value) else {
             idx += 1;
             continue;
         };
@@ -222,7 +238,7 @@ fn lint_rsa_block(
             address,
             label,
             idx,
-            text,
+            &text,
             max_len,
             span_of(text_attr.key.span()),
             span_of(text_attr.value.span()),
@@ -290,22 +306,23 @@ fn collect_rsa_list_items(
 ) -> Vec<(Option<std::ops::Range<usize>>, Option<String>)> {
     let resolved = bindings.resolve_value(module, expr);
     // A referenced list's item spans point into the (maybe other-file) declaration, so fall back to the use-site span.
-    let from_ref = !std::ptr::eq(resolved, expr);
+    let from_ref = !matches!(&resolved, Cow::Borrowed(v) if std::ptr::eq(*v, expr));
     let fallback = expr.span();
-    let Expression::Array(arr) = resolved else {
+    let Expression::Array(arr) = resolved.as_ref() else {
         return Vec::new();
     };
     arr.iter()
         .map(|item| {
             let span = if from_ref { fallback.clone() } else { item.span() };
-            let text = match bindings.resolve_value(module, item) {
+            let text = match bindings.resolve_value(module, item).as_ref() {
                 Expression::String(s) => Some(s.as_str().to_string()),
                 Expression::Object(obj) => {
                     let mut text = None;
                     for (key, value) in obj.iter() {
                         let Some(ident) = key.as_ident() else { continue };
                         if ident.as_str() == "text" {
-                            if let Expression::String(s) = bindings.resolve_value(module, value.expr())
+                            if let Expression::String(s) =
+                                bindings.resolve_value(module, value.expr()).as_ref()
                             {
                                 text = Some(s.as_str().to_string());
                             }
@@ -318,6 +335,13 @@ fn collect_rsa_list_items(
             (span, text)
         })
         .collect()
+}
+
+fn eval_str(bindings: &Bindings, module: &str, expr: &Expression) -> Option<String> {
+    match bindings.resolve_value(module, expr).as_ref() {
+        Expression::String(s) => Some(s.as_str().to_string()),
+        _ => None,
+    }
 }
 
 fn looks_like_phone(s: &str) -> bool {
@@ -485,6 +509,50 @@ locals {{
         assert!(
             msgs.iter().any(|m| m.contains("characters; Google Ads rejects headlines over 30")),
             "expected length warning: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn over_length_rendered_template_headline_warns() {
+        let content = format!(
+            r#"
+locals {{
+  brand = "The Extremely Long Brand Name Company"
+}}
+{}"#,
+            rsa(
+                r#"["Try ${local.brand} Today", "Short Two", "Short Three"]"#,
+                r#"["First description", "Second description"]"#
+            )
+        );
+        let msgs = lint_str("tmpl_headline_long", &content);
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("characters; Google Ads rejects headlines over 30")),
+            "expected length warning on rendered template: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn rendered_template_path_is_linted() {
+        let msgs = lint_str(
+            "tmpl_path",
+            r#"
+locals {
+  slug = "Get_Started"
+}
+
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group = google_ads_ad_group.g.id
+  template = ad_template.shared
+  path1    = "x-${local.slug}"
+}
+"#,
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("path1 in google_ads_ad_group_ad.rsa")
+                && m.contains("outside [a-z0-9-]")),
+            "expected charset warning on rendered path: {msgs:?}"
         );
     }
 }

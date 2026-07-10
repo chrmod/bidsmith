@@ -53,6 +53,7 @@ export default defineConfig({
             { label: 'Target specific countries and languages', slug: 'recipes/target-countries-and-languages' },
             { label: 'Add a whole keyword list at once', slug: 'recipes/add-many-keywords' },
             { label: 'Reuse a headline set across many ads', slug: 'recipes/reuse-a-headline-set' },
+            { label: 'Build tracking URLs from a shared prefix', slug: 'recipes/build-urls-from-a-shared-prefix' },
             { label: 'Make a search ad render taller with extensions', slug: 'recipes/add-search-ad-extensions' },
             { label: 'Reuse one ad across every ad group', slug: 'recipes/reuse-an-ad-across-ad-groups' },
             { label: 'Roll back a bad change', slug: 'recipes/roll-back-a-bad-change' },
