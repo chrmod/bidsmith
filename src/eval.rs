@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 
-use hcl_edit::expr::Expression;
+use hcl_edit::expr::{Array, Expression, FuncCall};
 use hcl_edit::template::Element;
 
 use crate::schema::{
@@ -121,9 +121,43 @@ impl<'a> EvalCtx<'a> {
                 }
                 Ok(Cow::Owned(Expression::from(rendered)))
             }
+            Expression::FuncCall(call) => self.eval_func_call(module, call, stack),
             Expression::Parenthesis(p) => self.eval_inner(module, p.inner(), stack),
             _ => Ok(Cow::Borrowed(expr)),
         }
+    }
+
+    fn eval_func_call(
+        &self,
+        module: &str,
+        call: &'a FuncCall,
+        stack: &mut HashSet<(BindingKind, String)>,
+    ) -> Result<Cow<'a, Expression>, EvalError> {
+        let name = call.name.name.as_str();
+        if !call.name.namespace.is_empty() || name != "concat" {
+            return Err(EvalError::Message(format!(
+                "unknown function '{name}'; supported functions: concat"
+            )));
+        }
+        if call.args.expand_final() {
+            return Err(EvalError::Message(
+                "argument expansion ('...') is not supported in concat()".to_string(),
+            ));
+        }
+        let mut merged = Array::new();
+        for arg in call.args.iter() {
+            let value = self.eval_inner(module, arg, stack)?;
+            let Expression::Array(items) = value.as_ref() else {
+                return Err(EvalError::Message(format!(
+                    "concat() arguments must be lists, got {}",
+                    describe_expr(value.as_ref())
+                )));
+            };
+            for item in items.iter() {
+                merged.push(item.clone());
+            }
+        }
+        Ok(Cow::Owned(Expression::from(merged)))
     }
 
     fn step(

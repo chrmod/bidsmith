@@ -35,11 +35,14 @@ resource "google_ads_ad_group_ad" "generic_rsa" {
     final_urls = local.landing_urls
 
     responsive_search_ad {
-      headlines = [
-        "Private Browsing, Built In",
-        "Stop Ads Following You",
-        "Ghostery Privacy Suite",
-      ]
+      headlines = concat(
+        [
+          "Private Browsing, Built In",
+          "Stop Ads Following You",
+          "Ghostery Privacy Suite",
+        ],
+        local.brand_tail_headlines,
+      )
       descriptions = local.brand_descriptions
     }
   }

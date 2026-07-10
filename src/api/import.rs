@@ -2517,6 +2517,60 @@ resource "google_ads_ad_group_criterion" "kw" {
     }
 
     #[test]
+    fn concat_merges_headline_lists_in_order() {
+        let input = import_str(
+            "concat_headlines",
+            r#"
+locals {
+  hl_specific = ["Stop Cookie Pop-Ups for Good", { text = "Block Cookie Banners", pin = "HEADLINE_1" }]
+  hl_brand_tail = ["Add to Chrome, Free", "Open Source & Private"]
+  desc_brand_tail = ["Free, open source, and private."]
+}
+
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group = google_ads_ad_group.g.id
+  ad {
+    final_urls = concat(["https://example.com/a"], ["https://example.com/b"])
+    responsive_search_ad {
+      headlines    = concat(local.hl_specific, local.hl_brand_tail)
+      descriptions = concat(["Browse without interruptions."], local.desc_brand_tail)
+    }
+  }
+}
+"#,
+        );
+        assert_eq!(input.ad_group_ads.len(), 1);
+        let ad = &input.ad_group_ads[0].ad;
+        assert_eq!(
+            ad.final_urls,
+            vec![
+                "https://example.com/a".to_string(),
+                "https://example.com/b".to_string()
+            ]
+        );
+        let rsa = ad.responsive_search_ad.as_ref().expect("rsa");
+        let texts: Vec<&str> = rsa.headlines.iter().map(|h| h.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "Stop Cookie Pop-Ups for Good",
+                "Block Cookie Banners",
+                "Add to Chrome, Free",
+                "Open Source & Private"
+            ]
+        );
+        assert_eq!(rsa.headlines[1].pin.as_deref(), Some("HEADLINE_1"));
+        let descs: Vec<&str> = rsa.descriptions.iter().map(|d| d.text.as_str()).collect();
+        assert_eq!(
+            descs,
+            vec![
+                "Browse without interruptions.",
+                "Free, open source, and private."
+            ]
+        );
+    }
+
+    #[test]
     fn templates_render_in_scalar_attributes_and_locals() {
         let input = import_str(
             "tmpl_scalars",

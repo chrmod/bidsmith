@@ -89,6 +89,40 @@ resource "google_ads_ad_group_criterion" "competitors" {
 It also works for `final_urls`, and for a campaign's `languages` /
 `locations` lists — so every campaign can share one geo/language list.
 
+## Merge a shared tail into per-ad headlines
+
+Most real accounts don't share the *whole* list — each ad opens with
+its own hook, then closes with the same brand tail ("Add to Chrome,
+Free", "Open Source & Private", …). `concat()` merges lists in order,
+so keep the tail in one local and prepend the ad-specific lines
+inline:
+
+```hcl
+locals {
+  brand_tail = [
+    "Add to Chrome, Free",
+    "Open Source & Private",
+    "100M+ Downloads Worldwide",
+  ]
+}
+
+resource "google_ads_ad_group_ad" "cookie_popups" {
+  ad_group = google_ads_ad_group.popups.id
+  ad {
+    final_urls = ["https://ghostery.com/get"]
+    responsive_search_ad {
+      headlines    = concat(["Stop Cookie Pop-Ups for Good"], local.brand_tail)
+      descriptions = local.brand_descriptions
+    }
+  }
+}
+```
+
+A brand-copy edit now touches one local instead of every RSA in every
+file. Pinned `{ text, pin }` objects and bare strings mix freely in
+the merged result, and the usual checks (at least 3 headlines, the
+30-character cap) run on the combined list.
+
 ## Share it across files
 
 If the same set is copied across several campaign files, lift it into
