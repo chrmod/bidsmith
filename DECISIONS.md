@@ -462,7 +462,16 @@ resource type, any file layout, modules, schema validation.
   the `bidsmith:address` identity labels — see **Identity labels (Phase
   3 v2)** below. An unlabeled live resource (UI-created, never managed
   by bidsmith) is still never destroyed, and live criteria in a category
-  bidsmith never claimed are still never destroyed.
+  bidsmith never claimed are still never destroyed. A live resource
+  already in `REMOVED` status is never re-flagged for destroy: the API
+  forbids mutating a removed resource (`Removed ads may not be
+  modified`), and removed resources keep their `bidsmith:address` label,
+  so a removal that succeeded would otherwise re-plan its own destroy on
+  every subsequent plan and — one atomic batch — sink every unrelated op
+  (issue #91, same failure family as #82/#88). The same guard skips an
+  `ad_group_ad` orphaned under an ad group that is gone from live state:
+  removing an ad group leaves its ads addressable but un-mutatable, so
+  the doomed per-ad destroy is dropped and the parent removal stands.
 - **Rename = `bidsmith mv`, source-only**: renaming a resource's
   address (the `<name>` in `resource "<type>" "<name>"`) is a pure
   source rewrite — `mv` renames the block label and every reference

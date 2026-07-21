@@ -272,7 +272,7 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
             });
         }
         for (li, l) in live_campaigns.iter().enumerate() {
-            if !claimed[li] {
+            if !claimed[li] && !is_removed(l.status.as_deref()) {
                 if let Some(addr) = &l.managed_address {
                     diffs.push(removal_diff("campaign", addr, &l.id));
                 }
@@ -325,7 +325,7 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
             });
         }
         for (li, l) in live_ad_groups.iter().enumerate() {
-            if !claimed[li] {
+            if !claimed[li] && !is_removed(l.status.as_deref()) {
                 if let Some(addr) = &l.managed_address {
                     diffs.push(removal_diff("ad_group", addr, &l.id));
                 }
@@ -358,11 +358,22 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
             action: action.clone(),
         });
     }
+    let live_ad_group_ids: std::collections::HashSet<&str> =
+        live.ad_groups.iter().map(|g| g.id.as_str()).collect();
     for (i, l) in live.ad_group_ads.iter().enumerate() {
-        if !ad_claimed[i] {
-            if let Some(addr) = &l.managed_address {
-                diffs.push(removal_diff("ad_group_ad", addr, &l.id));
-            }
+        if ad_claimed[i] {
+            continue;
+        }
+        // Removing an ad group leaves its ads addressable but un-mutatable: the
+        // ad keeps its `bidsmith:address` label yet the API rejects any op on it
+        // ("Removed ads may not be modified"), sinking the whole atomic batch. An
+        // ad already `REMOVED`, or orphaned under an ad group that is gone from
+        // live state (i.e. removed), must not re-plan as a destroy.
+        if is_removed(l.status.as_deref()) || !live_ad_group_ids.contains(l.ad_group.as_str()) {
+            continue;
+        }
+        if let Some(addr) = &l.managed_address {
+            diffs.push(removal_diff("ad_group_ad", addr, &l.id));
         }
     }
 
@@ -1029,6 +1040,15 @@ fn orphan_criteria_deletes(
 /// negative). Default-state criteria are implicitly desired, not drift.
 fn device_criterion_has_adjustment(cr: &JsonCampaignCriterion) -> bool {
     cr.negative.unwrap_or(false) || cr.bid_modifier.is_some_and(|m| (m - 1.0).abs() > 1e-6)
+}
+
+/// A `REMOVED` live resource can no longer be mutated: the Google Ads API
+/// rejects every op against it, and one such op sinks the whole atomic batch.
+/// Removed resources keep their `bidsmith:address` label, so without this guard
+/// a removal that succeeded would re-plan as a doomed destroy on every
+/// subsequent plan.
+fn is_removed(status: Option<&str>) -> bool {
+    status == Some("REMOVED")
 }
 
 /// A whole labeled resource that is no longer declared — destroyed because its
@@ -2051,6 +2071,82 @@ mod label_match_tests {
         assert!(matches!(&campaign_diff(&report).action, Action::NoOp { .. }));
         assert_eq!(report.adopt_count, 0, "must not re-adopt an already-labeled resource");
         assert!(report.label_plans.is_empty(), "label already correct");
+    }
+}
+
+#[cfg(test)]
+mod removed_resource_tests {
+    use super::*;
+
+    fn input(json: &str) -> ExportInput {
+        serde_json::from_str(json).expect("valid test input")
+    }
+
+    fn ad_destroys(report: &DiffReport) -> Vec<&str> {
+        report
+            .diffs
+            .iter()
+            .filter(|d| d.kind == "ad_group_ad" && matches!(d.action, Action::Delete { .. }))
+            .filter_map(|d| d.action.live_id())
+            .collect()
+    }
+
+    #[test]
+    fn ads_orphaned_under_a_removed_ad_group_are_not_re_destroyed() {
+        // Second plan after a whole ad group was removed: the group is gone from
+        // live state but its ads survive ENABLED, still carrying their labels.
+        // The orphan must be skipped (its destroy would reject with "Removed ads
+        // may not be modified" and sink the batch); a normal undeclared ad under
+        // a still-live group is still destroyed.
+        let declared = input(r#"{"customer_id":"100"}"#);
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "ad_groups": [
+                {"id":"live_ag","name":"Live","campaign":"c1"}
+            ],
+            "ad_group_ads": [
+                {"id":"live_ag~ad1","ad_group":"live_ag","status":"ENABLED","ad":{"final_urls":["https://e.com"]},"managed_address":"m.google_ads_ad_group_ad.under_live"},
+                {"id":"gone_ag~ad2","ad_group":"gone_ag","status":"ENABLED","ad":{"final_urls":["https://e.com"]},"managed_address":"m.google_ads_ad_group_ad.orphan"}
+            ],
+            "labels": {
+                "m.google_ads_ad_group_ad.under_live":"customers/100/labels/2",
+                "m.google_ads_ad_group_ad.orphan":"customers/100/labels/3"
+            }
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        assert_eq!(
+            ad_destroys(&report),
+            vec!["live_ag~ad1"],
+            "orphan under a removed ad group must be skipped; ad under a live group still destroyed"
+        );
+    }
+
+    #[test]
+    fn a_removed_status_ad_is_not_re_destroyed() {
+        // Defense in depth: a REMOVED ad leaking into live state (its label
+        // survives removal) must not re-plan as a destroy, even under a live group.
+        let declared = input(r#"{"customer_id":"100"}"#);
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "ad_groups": [
+                {"id":"live_ag","name":"Live","campaign":"c1"}
+            ],
+            "ad_group_ads": [
+                {"id":"live_ag~ad1","ad_group":"live_ag","status":"REMOVED","ad":{"final_urls":["https://e.com"]},"managed_address":"m.google_ads_ad_group_ad.dead"}
+            ],
+            "labels": {"m.google_ads_ad_group_ad.dead":"customers/100/labels/2"}
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        assert!(
+            ad_destroys(&report).is_empty(),
+            "a REMOVED ad must not be re-flagged for destroy"
+        );
     }
 }
 
