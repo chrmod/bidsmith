@@ -27,6 +27,20 @@ resource "google_ads_campaign" "preroll" {
     target_content_network = false
     target_partner_search_network = false
   }
+
+  frequency_caps {
+    event_type = "IMPRESSION"
+    time_unit = "DAY"
+    time_length = 1
+    cap = 3
+  }
+
+  frequency_caps {
+    event_type = "VIDEO_VIEW"
+    time_unit = "DAY"
+    time_length = 1
+    cap = 1
+  }
 }
 
 resource "google_ads_ad_group" "instream" {

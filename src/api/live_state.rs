@@ -51,7 +51,8 @@ pub const QUERIES: &[(&str, &str)] = &[
           campaign.network_settings.target_google_search,
           campaign.network_settings.target_search_network,
           campaign.network_settings.target_content_network,
-          campaign.network_settings.target_partner_search_network
+          campaign.network_settings.target_partner_search_network,
+          campaign.frequency_caps
         FROM campaign
         WHERE campaign.status != 'REMOVED'",
     ),

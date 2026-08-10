@@ -644,6 +644,10 @@ fn collect_edits(
                         vec!["network_settings", "target_partner_search_network"],
                         c.network_settings.as_ref().and_then(|n| n.target_partner_search_network).map(Expression::from)
                     ),
+                    "frequency_caps" => skip.push(
+                        "frequency_caps (repeated block — edit the blocks by hand or run a bootstrap refresh)"
+                            .to_string(),
+                    ),
                     other => skip.push(other.to_string()),
                 }
             }

@@ -680,6 +680,25 @@ resource type, any file layout, modules, schema validation.
   assets at mutate time (every other asset in bidsmith is an explicit
   declared resource) — a `google_ads_call_to_action_asset` resource is the
   follow-up.
+- **Frequency caps are a repeated block managed as a whole set** (issue
+  #98): `Campaign.frequency_caps` is a repeated `FrequencyCapEntry`, so
+  the campaign takes a repeatable `frequency_caps { event_type,
+  time_unit, time_length, cap, level? }` block — the first repeatable
+  block on `google_ads_campaign`, and the reason the defaults merge's
+  by-block-name rule matters (a resource declaring one cap inherits none
+  of the defaults' caps, never a mix). `level` defaults to `CAMPAIGN`,
+  the only value a video cap uses; `AD_GROUP` / `AD_GROUP_AD` stay
+  available for display campaigns. The list diffs **as a set**, not
+  positionally: reordering blocks is a no-op, and the whole field is one
+  `frequency_caps` entry in the update mask, replaced wholesale (an empty
+  list clears every cap). Consequence, and the point of the issue: caps
+  set in the Google Ads UI on a campaign bidsmith manages surface as
+  drift instead of staying invisible. `refresh --in-place` reports rather
+  than patches them — reconcile only writes scalars into blocks that
+  already exist, and materializing a repeated block is guesswork; a
+  bootstrap `refresh` renders them. Frequency capping is unsupported on
+  Demand Gen, so `validate` warns rather than letting the setting apply
+  and do nothing.
 - **Keyword Planner is a read-only research verb, not a resource**: Google
   Keyword Planner (`KeywordPlanIdeaService.GenerateKeywordIdeas`) is surfaced
   as `bidsmith keyword-ideas` — an imperative, live-only command in the same
@@ -983,7 +1002,8 @@ Verified locally:
   only 1:1-block scalar kinds (budget, campaign incl. `manual_cpc.*`
   / `network_settings.*`, ad_group, ad_group_ad, conversion_action,
   customer_asset, shared_set, campaign_shared_set). Structural drift
-  (ad copy, keyword/criterion membership) is reported, not edited —
+  (ad copy, keyword/criterion membership, `frequency_caps`) is
+  reported, not edited —
   the diff engine only ever yields scalar `Update`s, so a changed RSA
   is a create+destroy elsewhere, handled by `apply`, not this pass.
   `--check` previews without writing. A `mv`-style baseline-error
@@ -1028,7 +1048,9 @@ Validator covers (so far):
   `locations = [...]` list attributes that each expand to one positive
   campaign criterion at import time, resolving human-readable codes
   (`"en"`, `"US"`) — or raw `languageConstants/NNNN` /
-  `geoTargetConstants/NNNN` strings — to the API constants, with a
+  `geoTargetConstants/NNNN` strings — to the API constants, plus a
+  repeatable `frequency_caps { event_type, time_unit, time_length,
+  cap, level? }` block managed as a whole set, with a
   validate-time guard against declaring the same axis both inline and as
   an explicit positive criterion resource), `google_ads_ad_group`,
   `google_ads_ad_group_ad`

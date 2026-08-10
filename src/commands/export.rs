@@ -141,6 +141,11 @@ pub struct JsonCampaign {
     pub manual_cpc: Option<JsonManualCpc>,
     #[serde(default)]
     pub network_settings: Option<JsonNetworkSettings>,
+    /// Repeated, and managed as a whole list: an empty list means "this
+    /// campaign has no frequency caps", so caps set in the UI on a declared
+    /// campaign read as drift rather than staying invisible.
+    #[serde(default)]
+    pub frequency_caps: Vec<JsonFrequencyCap>,
     /// `bidsmith:address=<addr>` label read off a live resource. None for
     /// declared resources (their address is `id`) and for unmanaged live ones.
     #[serde(default)]
@@ -163,6 +168,36 @@ pub struct JsonNetworkSettings {
     pub target_content_network: Option<bool>,
     #[serde(default)]
     pub target_partner_search_network: Option<bool>,
+}
+
+#[derive(Deserialize, Clone, PartialEq, Eq)]
+pub struct JsonFrequencyCap {
+    pub event_type: String,
+    pub time_unit: String,
+    pub time_length: i64,
+    pub cap: i64,
+    #[serde(default)]
+    pub level: Option<String>,
+}
+
+impl JsonFrequencyCap {
+    pub fn level_or_default(&self) -> &str {
+        self.level
+            .as_deref()
+            .unwrap_or(crate::schema::DEFAULT_FREQUENCY_CAP_LEVEL)
+    }
+
+    /// Order-insensitive identity: two campaigns declaring the same caps in a
+    /// different order are the same campaign.
+    pub fn sort_key(&self) -> (&str, &str, &str, i64, i64) {
+        (
+            self.level_or_default(),
+            self.event_type.as_str(),
+            self.time_unit.as_str(),
+            self.time_length,
+            self.cap,
+        )
+    }
 }
 
 #[derive(Deserialize)]
@@ -1163,6 +1198,17 @@ fn write_campaign(
             if let Some(v) = v {
                 write_attr(out, 2, k, &v.to_string());
             }
+        }
+        out.push_str("  }\n");
+    }
+    for f in &c.frequency_caps {
+        out.push_str("\n  frequency_caps {\n");
+        write_attr(out, 2, "event_type", &fmt_string(&f.event_type));
+        write_attr(out, 2, "time_unit", &fmt_string(&f.time_unit));
+        write_attr(out, 2, "time_length", &f.time_length.to_string());
+        write_attr(out, 2, "cap", &f.cap.to_string());
+        if f.level_or_default() != crate::schema::DEFAULT_FREQUENCY_CAP_LEVEL {
+            write_attr(out, 2, "level", &fmt_string(f.level_or_default()));
         }
         out.push_str("  }\n");
     }
@@ -2454,6 +2500,26 @@ mod tests {
             v1, v2,
             "fold did not round-trip\n=== folded ===\n{folded}\n=== verbose(original) ===\n{v1}\n=== verbose(roundtrip) ===\n{v2}"
         );
+    }
+
+    #[test]
+    fn frequency_caps_render_as_repeated_blocks() {
+        let raw = r#"[{"results":[
+            { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget", "amountMicros": "5000000" } },
+            { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Preroll", "status": "PAUSED", "advertisingChannelType": "VIDEO", "campaignBudget": "customers/9/campaignBudgets/1001", "frequencyCaps": [
+                { "key": { "level": "CAMPAIGN", "eventType": "IMPRESSION", "timeUnit": "DAY", "timeLength": 1 }, "cap": 3 },
+                { "key": { "level": "AD_GROUP", "eventType": "VIDEO_VIEW", "timeUnit": "WEEK", "timeLength": 1 }, "cap": 2 }
+            ] } }
+        ]}]"#;
+        let input = from_search_response(raw).expect("adapter");
+        assert_eq!(input.campaigns[0].frequency_caps.len(), 2);
+        let out = render(&input);
+        assert_eq!(out.matches("frequency_caps {").count(), 2, "{out}");
+        assert!(out.contains("event_type = \"IMPRESSION\""), "{out}");
+        assert!(out.contains("cap = 3"), "{out}");
+        // The default level stays implicit; a non-default one is written out.
+        assert_eq!(out.matches("level = ").count(), 1, "{out}");
+        assert!(out.contains("level = \"AD_GROUP\""), "{out}");
     }
 
     #[test]

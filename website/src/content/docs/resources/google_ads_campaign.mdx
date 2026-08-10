@@ -10,6 +10,7 @@ import schema from '~/data/schema.json';
 export const resource = schema.resources['google_ads_campaign'];
 export const manualCpc = resource.blocks.find((b) => b.name === 'manual_cpc');
 export const networkSettings = resource.blocks.find((b) => b.name === 'network_settings');
+export const frequencyCaps = resource.blocks.find((b) => b.name === 'frequency_caps');
 
 A **campaign** is the top-level container in Google Ads. It holds one
 or more ad groups, points at a single budget, picks a channel (search,
@@ -110,6 +111,49 @@ The `network_settings` block controls which Google networks ads can
 appear on.
 
 <AttributeTable block={networkSettings} headingLevel={4} />
+
+### frequency_caps
+
+The `frequency_caps` block limits how often one person sees the
+campaign. Write one block per cap — this is the only campaign block you
+can repeat.
+
+```hcl
+resource "google_ads_campaign" "instream" {
+  name                     = "Preroll — India"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.preroll.id
+
+  frequency_caps {
+    event_type  = "IMPRESSION"
+    time_unit   = "DAY"
+    time_length = 1
+    cap         = 3
+  }
+
+  frequency_caps {
+    event_type  = "VIDEO_VIEW"
+    time_unit   = "DAY"
+    time_length = 1
+    cap         = 1
+  }
+}
+```
+
+That reads as *"show this campaign to the same person at most 3 times a
+day, and count at most 1 of those as a watched view."*
+
+Two things worth knowing:
+
+- The caps are managed **as a set**. Whatever the blocks say is what
+  the campaign ends up with, so a cap somebody added in the Google Ads
+  UI shows up in `plan` as drift, and deleting every block removes
+  every cap. Order doesn't matter.
+- Frequency capping applies to **video and display** campaigns.
+  Google Ads does not support it on Demand Gen, and `validate` warns
+  if you set it there.
+
+<AttributeTable block={frequencyCaps} headingLevel={4} />
 
 ## See also
 

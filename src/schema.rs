@@ -50,6 +50,7 @@ pub const DEFAULT_DELIVERY_METHOD: &str = "STANDARD";
 pub const DEFAULT_EU_POLITICAL: &str = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING";
 pub const DEFAULT_EXPLICITLY_SHARED: bool = false;
 pub const DEFAULT_NEGATIVE: bool = false;
+pub const DEFAULT_FREQUENCY_CAP_LEVEL: &str = "CAMPAIGN";
 
 pub struct AttributeSchema {
     pub name: &'static str,
@@ -188,6 +189,9 @@ const CALL_CONVERSION_REPORTING_STATE: &[&str] = &[
     "USE_ACCOUNT_LEVEL_CALL_CONVERSION_ACTION",
     "USE_RESOURCE_LEVEL_CALL_CONVERSION_ACTION",
 ];
+const FREQUENCY_CAP_EVENT_TYPE: &[&str] = &["IMPRESSION", "VIDEO_VIEW"];
+const FREQUENCY_CAP_TIME_UNIT: &[&str] = &["DAY", "WEEK", "MONTH"];
+const FREQUENCY_CAP_LEVEL: &[&str] = &["CAMPAIGN", "AD_GROUP", "AD_GROUP_AD"];
 const SHARED_SET_TYPE: &[&str] = &["NEGATIVE_KEYWORDS", "ACCOUNT_LEVEL_NEGATIVE_KEYWORDS"];
 const SHARED_SET_STATUS: &[&str] = &["ENABLED", "REMOVED"];
 const CAMPAIGN_SHARED_SET_STATUS: &[&str] = &["ENABLED", "REMOVED"];
@@ -487,6 +491,30 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                                     FieldType::Bool,
                                     false,
                                 ),
+                            ],
+                            blocks: vec![],
+                        },
+                    },
+                    // Repeatable: one block per cap, mapping to a single
+                    // `FrequencyCapEntry` in `Campaign.frequency_caps`.
+                    NestedBlockSchema {
+                        name: "frequency_caps",
+                        schema: BlockSchema {
+                            attributes: vec![
+                                attr(
+                                    "event_type",
+                                    FieldType::Enum(FREQUENCY_CAP_EVENT_TYPE),
+                                    true,
+                                ),
+                                attr(
+                                    "time_unit",
+                                    FieldType::Enum(FREQUENCY_CAP_TIME_UNIT),
+                                    true,
+                                ),
+                                attr("time_length", FieldType::Integer, true),
+                                attr("cap", FieldType::Integer, true),
+                                attr("level", FieldType::Enum(FREQUENCY_CAP_LEVEL), false)
+                                    .with_default(DefaultValue::Str(DEFAULT_FREQUENCY_CAP_LEVEL)),
                             ],
                             blocks: vec![],
                         },
@@ -3246,6 +3274,75 @@ resource "google_ads_ad_group_criterion" "kw" {
             diags.iter().any(|d| d.message.contains("use one or the other")),
             "{:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn repeated_frequency_caps_validate() {
+        let diags = validate_str(
+            "freq_caps_ok",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "v" {
+  name                     = "V"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  frequency_caps {
+    event_type  = "IMPRESSION"
+    time_unit   = "DAY"
+    time_length = 1
+    cap         = 3
+  }
+
+  frequency_caps {
+    event_type  = "VIDEO_VIEW"
+    time_unit   = "DAY"
+    time_length = 1
+    cap         = 1
+  }
+}
+"#,
+        );
+        assert!(
+            diags.is_empty(),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn frequency_caps_reject_a_bad_event_type_and_a_missing_cap() {
+        let diags = validate_str(
+            "freq_caps_bad",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "v" {
+  name                     = "V"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  frequency_caps {
+    event_type  = "CLICK"
+    time_unit   = "DAY"
+    time_length = 1
+  }
+}
+"#,
+        );
+        let msgs: Vec<&String> = diags.iter().map(|d| &d.message).collect();
+        assert!(msgs.iter().any(|m| m.contains("CLICK")), "{msgs:?}");
+        assert!(
+            msgs.iter().any(|m| m.contains("missing required attribute 'cap'")),
+            "{msgs:?}"
         );
     }
 
