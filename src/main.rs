@@ -259,6 +259,11 @@ fields on resources bidsmith manages and leaving everything else intact.")]
         /// With --in-place: show what would change without writing.
         #[arg(long, requires = "in_place")]
         check: bool,
+        /// With --in-place: set a variable value (repeatable). Example:
+        /// `--var city_radius_km=20`. Overrides any `default` in the matching
+        /// `variable` block.
+        #[arg(long = "var", value_name = "NAME=VALUE", action = clap::ArgAction::Append, requires = "in_place")]
+        var: Vec<String>,
         /// Write everything to a single .bid file
         #[arg(short = 'o', long, value_name = "PATH", conflicts_with = "dir")]
         output: Option<String>,
@@ -492,9 +497,9 @@ fn main() -> ExitCode {
         Cmd::Pull { output, verbose } => {
             commands::pull::run(output.as_deref(), verbose)
         }
-        Cmd::Refresh { path, in_place, check, output, dir, include_removed, verbose } => {
+        Cmd::Refresh { path, in_place, check, var, output, dir, include_removed, verbose } => {
             if in_place {
-                commands::refresh::run_reconcile(path.as_deref(), check, verbose)
+                commands::refresh::run_reconcile(path.as_deref(), check, verbose, &var)
             } else {
                 commands::refresh::run(
                     output.as_deref(),

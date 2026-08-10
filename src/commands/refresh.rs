@@ -6,16 +6,17 @@ use hcl_edit::expr::Expression;
 use hcl_edit::structure::Body;
 
 use crate::api::diff::{Action, DiffReport};
-use crate::api::import::import_files;
+use crate::api::import::import_program;
 use crate::api::live_state::CacheMode;
 use crate::api::{auth, client, diff, live_state};
 use crate::commands::export::{
     canonicalize, filter_removed, prune_orphans, render_split, report_orphans, ExportInput,
 };
+use crate::commands::vars;
 use crate::diagnostics::Diag;
-use crate::parser::{parse_file, parse_str, ParsedFile};
-use crate::program::collect_bid_files;
-use crate::schema::{validate_files, InputBindings, ResourceRegistry};
+use crate::parser::{parse_str, ParsedFile};
+use crate::program::{collect_bid_files, Program, Scope};
+use crate::schema::{validate_files, ResourceRegistry};
 
 pub fn run(
     output: Option<&str>,
@@ -164,7 +165,19 @@ fn write_split(dir: &str, account: &str, campaigns: &str, verbose: bool) -> Exit
 // the diff engine only ever produces scalar `Update`s, so a changed RSA reads
 // as a create+destroy elsewhere, not as a field this pass can patch.
 
-pub fn run_reconcile(path: Option<&str>, check: bool, verbose: bool) -> ExitCode {
+pub fn run_reconcile(
+    path: Option<&str>,
+    check: bool,
+    verbose: bool,
+    cli_vars: &[String],
+) -> ExitCode {
+    let inputs = match vars::collect(cli_vars) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("refresh: {e}");
+            return ExitCode::from(2);
+        }
+    };
     let path = path.unwrap_or(".");
     let target = Path::new(path);
     if !target.exists() {
@@ -185,31 +198,29 @@ pub fn run_reconcile(path: Option<&str>, check: bool, verbose: bool) -> ExitCode
         return ExitCode::from(1);
     }
 
-    // Parse once: the same ParsedFiles back both the declared model (read) and
-    // the in-place edit (write).
-    let mut files: Vec<ParsedFile> = Vec::new();
-    for p in &paths {
-        match parse_file(p) {
-            Ok(pf) => files.push(pf),
-            Err(d) => {
-                eprintln!("{:?}", miette::Report::new(d));
-                return ExitCode::from(1);
-            }
-        }
+    // Load the same way validate/plan do: template files reached through a
+    // `module` block are instance scopes, not standalone roots, so their
+    // `var.*` references resolve against the caller's inputs.
+    let loaded = Program::load(&paths, inputs);
+    let program = loaded.program;
+    let mut diags: Vec<Diag> = loaded.diagnostics;
+    for scope in &program.scopes {
+        diags.extend(validate_files(&scope.files, &scope.inputs));
     }
-
-    let inputs = InputBindings::default();
-    let validation = validate_files(&files, &inputs);
-    if validation.iter().any(Diag::is_error) {
-        for d in validation.into_iter().filter(|d| d.is_error()) {
+    if diags.iter().any(Diag::is_error) {
+        for d in diags.into_iter().filter(|d| d.is_error()) {
             eprintln!("{:?}", miette::Report::new(d));
         }
         eprintln!("refresh: refusing to reconcile an invalid .bid (fix `validate` errors first).");
         return ExitCode::from(1);
     }
-    let baseline = error_signatures(&validation);
 
-    let mut declared = match import_files(&files, &inputs) {
+    // One editable copy per file on disk, plus the module instances whose
+    // resources that copy backs — a template shared by N `module` instances
+    // appears once here and carries N owners.
+    let (mut files, owners) = editable_files(&program);
+
+    let mut declared = match import_program(&program) {
         Ok(r) => r.input,
         Err(diags) => {
             for d in diags {
@@ -270,7 +281,7 @@ pub fn run_reconcile(path: Option<&str>, check: bool, verbose: bool) -> ExitCode
     live.apply_schema_defaults();
     let report = diff::diff(&declared, &live);
 
-    let outcome = reconcile_sources(&mut files, &live, &report);
+    let outcome = reconcile_sources(&mut files, &owners, &live, &report);
 
     // Re-serialize the changed files now, then re-validate the mutated tree
     // before touching disk — a malformed edit must never be written.
@@ -279,7 +290,7 @@ pub fn run_reconcile(path: Option<&str>, check: bool, verbose: bool) -> ExitCode
         .iter()
         .map(|&i| (files[i].path.clone(), files[i].body.to_string()))
         .collect();
-    if let Err(code) = revalidate_reconcile(&files, &baseline) {
+    if let Err(code) = revalidate_reconcile(&program.scopes, &rendered) {
         return code;
     }
 
@@ -303,7 +314,7 @@ struct Edit {
 }
 
 struct ReconcileOutcome {
-    /// (address, dotted field paths) actually written.
+    /// (source-block label, dotted field paths) actually written.
     applied: Vec<(String, Vec<String>)>,
     /// Human-readable lines for fields that drifted but couldn't be patched.
     skipped: Vec<String>,
@@ -312,10 +323,38 @@ struct ReconcileOutcome {
     delete_count: usize,
 }
 
+/// One editable `ParsedFile` per file on disk, paired with the module instances
+/// whose resources it backs. Root files own exactly themselves; a template
+/// reached through `module` blocks owns one entry per instance, so an edit there
+/// is only safe when every instance drifted the same way.
+fn editable_files(program: &Program) -> (Vec<ParsedFile>, Vec<Vec<String>>) {
+    let mut files: Vec<ParsedFile> = Vec::new();
+    let mut owners: Vec<Vec<String>> = Vec::new();
+    let mut index: HashMap<PathBuf, usize> = HashMap::new();
+    for scope in &program.scopes {
+        for f in &scope.files {
+            match index.get(&canonical(&f.path)) {
+                Some(&i) => owners[i].push(f.module.clone()),
+                None => {
+                    index.insert(canonical(&f.path), files.len());
+                    owners.push(vec![f.module.clone()]);
+                    files.push(f.clone());
+                }
+            }
+        }
+    }
+    (files, owners)
+}
+
+fn canonical(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
 /// Apply the diff's scalar `Update`s to the parsed source in place. Pure (no IO
 /// / network) so it can be unit-tested with a synthetic live state.
 fn reconcile_sources(
     files: &mut [ParsedFile],
+    owners: &[Vec<String>],
     live: &ExportInput,
     report: &DiffReport,
 ) -> ReconcileOutcome {
@@ -338,31 +377,54 @@ fn reconcile_sources(
     let mut changed_files: Vec<usize> = Vec::new();
     let mut visited: HashSet<String> = HashSet::new();
     for (i, f) in files.iter_mut().enumerate() {
-        let module = f.module.clone();
+        let modules = &owners[i];
+        let path = f.path.clone();
         let mut file_changed = false;
         for mut s in f.body.iter_mut() {
             let Some(b) = s.as_block_mut() else { continue };
             if b.ident.as_str() != "resource" || b.labels.len() != 2 {
                 continue;
             }
-            let addr =
-                ResourceRegistry::qualified(&module, b.labels[0].as_str(), b.labels[1].as_str());
-            let Some(edits) = planned.get(&addr) else { continue };
-            visited.insert(addr.clone());
+            let ty = b.labels[0].as_str().to_string();
+            let name = b.labels[1].as_str().to_string();
+            let addrs: Vec<String> = modules
+                .iter()
+                .map(|m| ResourceRegistry::qualified(m, &ty, &name))
+                .collect();
+            let mut touched = false;
+            for addr in &addrs {
+                if planned.contains_key(addr) {
+                    visited.insert(addr.clone());
+                    touched = true;
+                }
+            }
+            if !touched {
+                continue;
+            }
+            let label = block_label(&addrs, &path, &ty, &name);
+            let (edits, conflicts) = agreed_edits(&planned, &addrs);
+            for (field, why) in conflicts {
+                skipped.push(format!("{label}: {field} ({why})"));
+            }
             let mut done: Vec<String> = Vec::new();
             for e in edits {
-                if set_existing_scalar(&mut b.body, &e.path, e.value.clone()) {
-                    done.push(e.path.join("."));
-                    file_changed = true;
-                } else {
-                    skipped.push(format!(
-                        "{addr}: {} (not set in your file — add it by hand or run a bootstrap refresh)",
+                match set_existing_scalar(&mut b.body, &e.path, e.value.clone()) {
+                    SetOutcome::Applied => {
+                        done.push(e.path.join("."));
+                        file_changed = true;
+                    }
+                    SetOutcome::Missing => skipped.push(format!(
+                        "{label}: {} (not set in your file — add it by hand or run a bootstrap refresh)",
                         e.path.join(".")
-                    ));
+                    )),
+                    SetOutcome::NonLiteral => skipped.push(format!(
+                        "{label}: {} (computed from a variable or reference — change it at the source)",
+                        e.path.join(".")
+                    )),
                 }
             }
             if !done.is_empty() {
-                applied.push((addr.clone(), done));
+                applied.push((label, done));
             }
         }
         if file_changed {
@@ -395,26 +457,101 @@ fn reconcile_sources(
     }
 }
 
-/// Set a scalar at `path` within `body`, descending one block per non-terminal
-/// segment. Only patches attributes (and nested blocks) that already exist —
-/// returns false when the target attribute or its containing block is absent,
-/// so the caller can report it rather than guess at formatting for an insert.
-fn set_existing_scalar(body: &mut Body, path: &[&str], value: Expression) -> bool {
-    match path {
-        [key] => {
-            if let Some(mut attr) = body.get_attribute_mut(key) {
-                *attr.value_mut() = value;
-                true
-            } else {
-                false
+fn block_label(addrs: &[String], path: &Path, ty: &str, name: &str) -> String {
+    match addrs {
+        [only] => only.clone(),
+        many => format!(
+            "{ty}.{name} in {} ({} module instances)",
+            path.display(),
+            many.len()
+        ),
+    }
+}
+
+/// The edits every one of `addrs` agrees on. A template shared by several module
+/// instances has one source block behind N live resources, so a field is only
+/// writable when all N drifted to the same value; the rest come back as reasons
+/// to report instead.
+fn agreed_edits<'a>(
+    planned: &'a HashMap<String, Vec<Edit>>,
+    addrs: &[String],
+) -> (Vec<&'a Edit>, Vec<(String, String)>) {
+    let mut paths: Vec<Vec<&'static str>> = Vec::new();
+    for addr in addrs {
+        for e in planned.get(addr).map(Vec::as_slice).unwrap_or(&[]) {
+            if !paths.contains(&e.path) {
+                paths.push(e.path.clone());
             }
         }
+    }
+
+    let mut edits: Vec<&Edit> = Vec::new();
+    let mut conflicts: Vec<(String, String)> = Vec::new();
+    for p in paths {
+        let found: Vec<&Edit> = addrs
+            .iter()
+            .filter_map(|a| planned.get(a)?.iter().find(|e| e.path == p))
+            .collect();
+        if found.len() != addrs.len() {
+            conflicts.push((
+                p.join("."),
+                format!(
+                    "only {} of {} module instances drifted — edit the template or its inputs by hand",
+                    found.len(),
+                    addrs.len()
+                ),
+            ));
+            continue;
+        }
+        let first = found[0].value.to_string();
+        if found.iter().any(|e| e.value.to_string() != first) {
+            conflicts.push((
+                p.join("."),
+                "module instances drifted to different values — edit the template or its inputs by hand"
+                    .to_string(),
+            ));
+            continue;
+        }
+        edits.push(found[0]);
+    }
+    (edits, conflicts)
+}
+
+enum SetOutcome {
+    Applied,
+    Missing,
+    NonLiteral,
+}
+
+/// Set a scalar at `path` within `body`, descending one block per non-terminal
+/// segment. Only overwrites literals that already exist — an absent attribute or
+/// one computed from `var.`/`local.`/a reference is reported back, so the caller
+/// can surface it rather than guess at formatting or erase the indirection.
+fn set_existing_scalar(body: &mut Body, path: &[&str], value: Expression) -> SetOutcome {
+    match path {
+        [key] => match body.get_attribute_mut(key) {
+            Some(mut attr) => {
+                if !is_literal(&attr.value) {
+                    return SetOutcome::NonLiteral;
+                }
+                *attr.value_mut() = value;
+                SetOutcome::Applied
+            }
+            None => SetOutcome::Missing,
+        },
         [head, rest @ ..] => match body.get_blocks_mut(head).next() {
             Some(block) => set_existing_scalar(&mut block.body, rest, value),
-            None => false,
+            None => SetOutcome::Missing,
         },
-        [] => false,
+        [] => SetOutcome::Missing,
     }
+}
+
+fn is_literal(e: &Expression) -> bool {
+    matches!(
+        e,
+        Expression::String(_) | Expression::Number(_) | Expression::Bool(_)
+    )
 }
 
 fn s(v: &str) -> Expression {
@@ -674,60 +811,53 @@ fn plural(n: usize) -> &'static str {
     }
 }
 
-/// Re-parse the mutated bodies and re-validate, refusing to proceed if the edit
-/// introduced an error not present before (mirrors `mv`'s baseline guard).
-fn revalidate_reconcile(
-    files: &[ParsedFile],
-    baseline: &HashMap<(String, String), usize>,
-) -> Result<(), ExitCode> {
-    let mut reparsed: Vec<ParsedFile> = Vec::with_capacity(files.len());
-    for f in files {
-        let content = f.body.to_string();
-        match parse_str(&f.path, &content) {
-            Ok(pf) => reparsed.push(pf),
-            Err(d) => {
-                eprintln!("{:?}", miette::Report::new(d));
-                eprintln!("refresh: the reconcile would produce an unparseable file; nothing was written.");
-                return Err(ExitCode::from(1));
-            }
-        }
-    }
-    let errors = validate_files(&reparsed, &InputBindings::default());
-    let after = error_signatures(&errors);
-    let regressed = after
+/// Re-validate every scope against the mutated sources, refusing to write if the
+/// edit introduced an error. The pre-check already refused on any error, so
+/// anything reported here is a regression the reconcile caused.
+fn revalidate_reconcile(scopes: &[Scope], rendered: &[(PathBuf, String)]) -> Result<(), ExitCode> {
+    let edited: HashMap<PathBuf, &String> = rendered
         .iter()
-        .any(|(sig, &n)| n > baseline.get(sig).copied().unwrap_or(0));
-    if regressed {
-        let mut seen: HashMap<(String, String), usize> = HashMap::new();
-        for d in errors.into_iter().filter(|d| d.is_error()) {
-            let sig = (d.src.name().to_string(), d.message.clone());
-            let allowed = baseline.get(&sig).copied().unwrap_or(0);
-            let count = seen.entry(sig).or_insert(0);
-            *count += 1;
-            if *count > allowed {
-                eprintln!("{:?}", miette::Report::new(d));
+        .map(|(p, content)| (canonical(p), content))
+        .collect();
+
+    for scope in scopes {
+        let mut reparsed: Vec<ParsedFile> = Vec::with_capacity(scope.files.len());
+        for f in &scope.files {
+            let content = match edited.get(&canonical(&f.path)) {
+                Some(c) => (*c).clone(),
+                None => f.body.to_string(),
+            };
+            match parse_str(&f.path, &content) {
+                Ok(mut pf) => {
+                    pf.module = f.module.clone();
+                    reparsed.push(pf);
+                }
+                Err(d) => {
+                    eprintln!("{:?}", miette::Report::new(d));
+                    eprintln!("refresh: the reconcile would produce an unparseable file; nothing was written.");
+                    return Err(ExitCode::from(1));
+                }
             }
         }
-        eprintln!("refresh: the reconcile would break the project; nothing was written.");
-        return Err(ExitCode::from(1));
+        let errors = validate_files(&reparsed, &scope.inputs);
+        if errors.iter().any(Diag::is_error) {
+            for d in errors.into_iter().filter(|d| d.is_error()) {
+                eprintln!("{:?}", miette::Report::new(d));
+            }
+            eprintln!("refresh: the reconcile would break the project; nothing was written.");
+            return Err(ExitCode::from(1));
+        }
     }
     Ok(())
-}
-
-fn error_signatures(diags: &[Diag]) -> HashMap<(String, String), usize> {
-    let mut counts: HashMap<(String, String), usize> = HashMap::new();
-    for d in diags.iter().filter(|d| d.is_error()) {
-        *counts
-            .entry((d.src.name().to_string(), d.message.clone()))
-            .or_insert(0) += 1;
-    }
-    counts
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    use crate::api::import::import_files;
+    use crate::schema::InputBindings;
 
     fn declared_from(src: &str) -> (Vec<ParsedFile>, ExportInput) {
         let pf = parse_str(&PathBuf::from("main.bid"), src).expect("parse");
@@ -738,11 +868,12 @@ mod tests {
 
     fn run(src: &str, live_json: &str) -> (String, ReconcileOutcome) {
         let (mut files, mut declared) = declared_from(src);
+        let owners: Vec<Vec<String>> = files.iter().map(|f| vec![f.module.clone()]).collect();
         let mut live: ExportInput = serde_json::from_str(live_json).expect("live json");
         declared.apply_schema_defaults();
         live.apply_schema_defaults();
         let report = diff::diff(&declared, &live);
-        let outcome = reconcile_sources(&mut files, &live, &report);
+        let outcome = reconcile_sources(&mut files, &owners, &live, &report);
         (files[0].body.to_string(), outcome)
     }
 
@@ -857,6 +988,185 @@ resource "google_ads_campaign" "summer_search" {
         assert!(
             outcome.skipped.iter().any(|s| s.contains("status") && s.contains("not set")),
             "expected a skip note for status, got {:?}",
+            outcome.skipped
+        );
+    }
+
+    // ---- module / template trees ------------------------------------------
+
+    const TEMPLATE: &str = r#"variable "campaign_name" {
+  type = string
+}
+
+resource "google_ads_campaign_budget" "budget" {
+  name          = var.campaign_name
+  amount_micros = 10000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = var.campaign_name
+  status                   = "ENABLED"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.budget.id
+}
+"#;
+
+    /// Load a whole tree the way `refresh --in-place` does, assert it validates,
+    /// then reconcile it against a synthetic live state.
+    fn run_tree(
+        dir_name: &str,
+        tree: &[(&str, &str)],
+        live_json: &str,
+    ) -> (HashMap<String, String>, ReconcileOutcome) {
+        let root = std::env::temp_dir().join(dir_name);
+        let _ = std::fs::remove_dir_all(&root);
+        for (rel, content) in tree {
+            let p = root.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, content).unwrap();
+        }
+
+        let paths = collect_bid_files(&root).expect("collect");
+        let loaded = Program::load(&paths, InputBindings::default());
+        let program = loaded.program;
+        let mut diags = loaded.diagnostics;
+        for scope in &program.scopes {
+            diags.extend(validate_files(&scope.files, &scope.inputs));
+        }
+        let errors: Vec<String> = diags
+            .iter()
+            .filter(|d| d.is_error())
+            .map(|d| d.message.clone())
+            .collect();
+        assert!(errors.is_empty(), "tree must load cleanly, got {errors:?}");
+
+        let (mut files, owners) = editable_files(&program);
+        let mut declared = import_program(&program).expect("import").input;
+        let mut live: ExportInput = serde_json::from_str(live_json).expect("live json");
+        declared.apply_schema_defaults();
+        live.apply_schema_defaults();
+        let report = diff::diff(&declared, &live);
+        let outcome = reconcile_sources(&mut files, &owners, &live, &report);
+
+        let rendered = files
+            .iter()
+            .map(|f| {
+                (
+                    f.path.file_name().unwrap().to_string_lossy().to_string(),
+                    f.body.to_string(),
+                )
+            })
+            .collect();
+        let _ = std::fs::remove_dir_all(&root);
+        (rendered, outcome)
+    }
+
+    const FOR_EACH_MAIN: &str = r#"provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+module "m" {
+  source = "./t.bid"
+  for_each = {
+    a = { campaign_name = "Alpha" }
+    b = { campaign_name = "Beta" }
+  }
+}
+"#;
+
+    fn for_each_live(status_a: &str, status_b: &str) -> String {
+        format!(
+            r#"{{
+              "customer_id": "1234567890",
+              "campaign_budgets": [
+                {{"id":"111","name":"Alpha","amount_micros":10000000,"delivery_method":"STANDARD"}},
+                {{"id":"222","name":"Beta","amount_micros":10000000,"delivery_method":"STANDARD"}}
+              ],
+              "campaigns": [
+                {{"id":"555","name":"Alpha","status":"{status_a}",
+                 "advertising_channel_type":"SEARCH","campaign_budget":"111",
+                 "managed_address":"m.a.google_ads_campaign.c"}},
+                {{"id":"666","name":"Beta","status":"{status_b}",
+                 "advertising_channel_type":"SEARCH","campaign_budget":"222",
+                 "managed_address":"m.b.google_ads_campaign.c"}}
+              ]
+            }}"#
+        )
+    }
+
+    #[test]
+    fn template_reached_through_a_module_is_reconciled_not_rejected() {
+        let (out, outcome) = run_tree(
+            "bidsmith-refresh-module-agree",
+            &[("main.bid", FOR_EACH_MAIN), ("t.bid", TEMPLATE)],
+            &for_each_live("PAUSED", "PAUSED"),
+        );
+        assert!(
+            out["t.bid"].contains(r#"status                   = "PAUSED""#),
+            "{}",
+            out["t.bid"]
+        );
+        assert_eq!(out["main.bid"], FOR_EACH_MAIN, "caller must be untouched");
+        assert_eq!(outcome.applied.len(), 1, "{:?}", outcome.applied);
+        let (label, fields) = &outcome.applied[0];
+        assert!(label.contains("2 module instances"), "{label}");
+        assert_eq!(fields, &vec!["status".to_string()]);
+    }
+
+    #[test]
+    fn divergent_drift_across_module_instances_is_skipped() {
+        let (out, outcome) = run_tree(
+            "bidsmith-refresh-module-diverge",
+            &[("main.bid", FOR_EACH_MAIN), ("t.bid", TEMPLATE)],
+            &for_each_live("PAUSED", "ENABLED"),
+        );
+        assert_eq!(out["t.bid"], TEMPLATE, "shared template must not be rewritten");
+        assert!(outcome.applied.is_empty(), "{:?}", outcome.applied);
+        assert!(
+            outcome
+                .skipped
+                .iter()
+                .any(|s| s.contains("status") && s.contains("module instances")),
+            "expected a divergence note, got {:?}",
+            outcome.skipped
+        );
+    }
+
+    #[test]
+    fn var_driven_attribute_is_reported_not_overwritten() {
+        let main = r#"provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+module "m" {
+  source        = "./t.bid"
+  campaign_name = "Alpha"
+}
+"#;
+        let live = r#"{
+          "customer_id": "1234567890",
+          "campaign_budgets": [
+            {"id":"111","name":"Alpha","amount_micros":10000000,"delivery_method":"STANDARD"}
+          ],
+          "campaigns": [
+            {"id":"555","name":"Alpha Live","status":"ENABLED",
+             "advertising_channel_type":"SEARCH","campaign_budget":"111",
+             "managed_address":"m.google_ads_campaign.c"}
+          ]
+        }"#;
+        let (out, outcome) = run_tree(
+            "bidsmith-refresh-module-var",
+            &[("main.bid", main), ("t.bid", TEMPLATE)],
+            live,
+        );
+        assert_eq!(out["t.bid"], TEMPLATE, "var indirection must survive");
+        assert!(outcome.applied.is_empty(), "{:?}", outcome.applied);
+        assert!(
+            outcome
+                .skipped
+                .iter()
+                .any(|s| s.contains("name") && s.contains("variable or reference")),
+            "expected a var note, got {:?}",
             outcome.skipped
         );
     }

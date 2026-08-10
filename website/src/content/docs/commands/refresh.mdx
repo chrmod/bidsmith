@@ -21,7 +21,7 @@ re-sync after somebody edits the UI directly. It has two modes:
 
 ```sh
 bidsmith refresh [--output FILE | --dir DIR] [--include-removed] [--verbose]
-bidsmith refresh --in-place [PATH] [--check] [--verbose]
+bidsmith refresh --in-place [PATH] [--check] [--var NAME=VALUE] [--verbose]
 ```
 
 ## Flags
@@ -32,6 +32,7 @@ bidsmith refresh --in-place [PATH] [--check] [--verbose]
 | `-d`, `--dir DIR` | **Bootstrap:** split the output into `<DIR>/account.bid` and `<DIR>/campaigns.bid`. Mutually exclusive with `--output`. |
 | `--in-place` | **Reconcile:** update the existing `.bid` files at `PATH` (default `.`) in place instead of writing fresh output. Mutually exclusive with `-o` / `-d`. |
 | `--check` | With `--in-place`: print what would change and write nothing. |
+| `--var NAME=VALUE` | With `--in-place`: set a [variable](/bidsmith/concepts/variables/) value. Repeatable. Same as [`plan`](/bidsmith/commands/plan/). |
 | `--include-removed` | Include resources whose `status` is `REMOVED`. Default: drop them. (Bootstrap only.) |
 | `--verbose` | Print the outgoing API request envelope and raw response. |
 
@@ -134,6 +135,10 @@ What reconcile **doesn't** touch, by design:
   file at all (you were relying on the default), reconcile reports it
   rather than guessing where to insert it. Add it by hand, or
   bootstrap a fresh copy to see the full picture.
+- **Computed values.** An attribute set from a `var.`, a `local.`, or
+  a reference to another resource is reported, not overwritten —
+  otherwise the live value would replace the indirection you wrote on
+  purpose. Change it at the source instead.
 - **Structural changes** — rewritten ad copy, added or removed
   keywords, changed targeting. Those aren't a single value to patch;
   `bidsmith plan` shows them and `apply` is how you reconcile them.
@@ -141,6 +146,31 @@ What reconcile **doesn't** touch, by design:
 Reconcile re-checks the whole project after editing and refuses to
 write anything if an edit would make a file invalid — so a surprising
 live value can never leave your `.bid` files broken.
+
+### Projects that use modules
+
+Reconcile reads your tree exactly the way
+[`validate`](/bidsmith/commands/validate/) and
+[`plan`](/bidsmith/commands/plan/) do, so a template under
+`templates/` that you instantiate with
+[`module`](/bidsmith/concepts/modules/) blocks works normally — its
+variables come from the `module` block that calls it, not from the
+command line. (Root-level variables still take `--var`, same as
+`plan`.)
+
+One template can stand behind many campaigns, though, and there's only
+one place to write. So reconcile edits a template only when **every**
+instance drifted to the **same** new value:
+
+```
+  ~ google_ads_campaign.remarketing in templates/remarketing.bid (4 module instances) (status)
+
+Updated 1 resource, 1 field from live.
+```
+
+If only some instances drifted, or they drifted to different values,
+reconcile reports it and leaves the template alone — a one-off change
+belongs in that instance's inputs, not in the shared template.
 
 <Aside type="note">
   Reconcile only ever edits resources bidsmith manages (the ones it

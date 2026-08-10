@@ -6,6 +6,7 @@ use miette::NamedSource;
 
 use crate::diagnostics::Diag;
 
+#[derive(Clone)]
 pub struct ParsedFile {
     pub path: PathBuf,
     pub src: Arc<NamedSource<String>>,
