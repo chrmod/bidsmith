@@ -51,6 +51,7 @@ pub const DEFAULT_EU_POLITICAL: &str = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISIN
 pub const DEFAULT_EXPLICITLY_SHARED: bool = false;
 pub const DEFAULT_NEGATIVE: bool = false;
 pub const DEFAULT_FREQUENCY_CAP_LEVEL: &str = "CAMPAIGN";
+pub const DEFAULT_CUSTOM_AUDIENCE_TYPE: &str = "AUTO";
 
 pub struct AttributeSchema {
     pub name: &'static str,
@@ -116,6 +117,16 @@ const RSA_PIN: &[&str] = &[
 ];
 const PROXIMITY_RADIUS_UNITS: &[&str] = &["MILES", "KILOMETERS"];
 const DEVICE_TYPE: &[&str] = &["MOBILE", "DESKTOP", "TABLET", "CONNECTED_TV", "OTHER"];
+const AGE_RANGE_TYPE: &[&str] = &[
+    "AGE_RANGE_18_24",
+    "AGE_RANGE_25_34",
+    "AGE_RANGE_35_44",
+    "AGE_RANGE_45_54",
+    "AGE_RANGE_55_64",
+    "AGE_RANGE_65_UP",
+    "AGE_RANGE_UNDETERMINED",
+];
+const GENDER_TYPE: &[&str] = &["MALE", "FEMALE", "UNDETERMINED"];
 const CONVERSION_ACTION_TYPE: &[&str] = &[
     "UNKNOWN",
     "AD_CALL",
@@ -192,6 +203,8 @@ const CALL_CONVERSION_REPORTING_STATE: &[&str] = &[
 const FREQUENCY_CAP_EVENT_TYPE: &[&str] = &["IMPRESSION", "VIDEO_VIEW"];
 const FREQUENCY_CAP_TIME_UNIT: &[&str] = &["DAY", "WEEK", "MONTH"];
 const FREQUENCY_CAP_LEVEL: &[&str] = &["CAMPAIGN", "AD_GROUP", "AD_GROUP_AD"];
+const CUSTOM_AUDIENCE_TYPE: &[&str] = &["AUTO", "INTEREST", "PURCHASE_INTENT", "SEARCH"];
+const CUSTOM_AUDIENCE_STATUS: &[&str] = &["ENABLED", "REMOVED"];
 const SHARED_SET_TYPE: &[&str] = &["NEGATIVE_KEYWORDS", "ACCOUNT_LEVEL_NEGATIVE_KEYWORDS"];
 const SHARED_SET_STATUS: &[&str] = &["ENABLED", "REMOVED"];
 const CAMPAIGN_SHARED_SET_STATUS: &[&str] = &["ENABLED", "REMOVED"];
@@ -615,6 +628,70 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                             blocks: vec![],
                         },
                     },
+                    NestedBlockSchema {
+                        name: "youtube_channel",
+                        schema: BlockSchema {
+                            attributes: vec![attr("channel_id", FieldType::String, true)],
+                            blocks: vec![],
+                        },
+                    },
+                    NestedBlockSchema {
+                        name: "youtube_video",
+                        schema: BlockSchema {
+                            attributes: vec![attr("video_id", FieldType::String, true)],
+                            blocks: vec![],
+                        },
+                    },
+                    NestedBlockSchema {
+                        name: "topic",
+                        schema: BlockSchema {
+                            attributes: vec![attr("topic_constant", FieldType::String, true)],
+                            blocks: vec![],
+                        },
+                    },
+                    NestedBlockSchema {
+                        name: "user_interest",
+                        schema: BlockSchema {
+                            attributes: vec![attr(
+                                "user_interest_category",
+                                FieldType::String,
+                                true,
+                            )],
+                            blocks: vec![],
+                        },
+                    },
+                    NestedBlockSchema {
+                        name: "age_range",
+                        schema: BlockSchema {
+                            attributes: vec![attr("type", FieldType::Enum(AGE_RANGE_TYPE), true)],
+                            blocks: vec![],
+                        },
+                    },
+                    NestedBlockSchema {
+                        name: "gender",
+                        schema: BlockSchema {
+                            attributes: vec![attr("type", FieldType::Enum(GENDER_TYPE), true)],
+                            blocks: vec![],
+                        },
+                    },
+                    // Three distinct API criterion messages, one block: they all
+                    // answer "which audience?", and only one may be set.
+                    // Enforced by validate_audience_block, not expressible here.
+                    NestedBlockSchema {
+                        name: "audience",
+                        schema: BlockSchema {
+                            attributes: vec![
+                                attr(
+                                    "custom_audience",
+                                    FieldType::RefOrResourceName(&["google_ads_custom_audience"]),
+                                    false,
+                                ),
+                                attr("user_list", FieldType::String, false),
+                                attr("combined_audience", FieldType::String, false),
+                            ],
+                            blocks: vec![],
+                        },
+                    },
                 ],
             },
         );
@@ -808,6 +885,34 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                     negative_keyword_block(),
                     compact_keywords_block("negative_keywords"),
                 ],
+            },
+        );
+
+        m.insert(
+            "google_ads_custom_audience",
+            BlockSchema {
+                attributes: vec![
+                    attr("name", FieldType::String, true),
+                    attr("description", FieldType::String, false),
+                    attr("type", FieldType::Enum(CUSTOM_AUDIENCE_TYPE), false)
+                        .with_default(DefaultValue::Str(DEFAULT_CUSTOM_AUDIENCE_TYPE)),
+                    attr("status", FieldType::Enum(CUSTOM_AUDIENCE_STATUS), false)
+                        .with_default(DefaultValue::Str(DEFAULT_STATUS)),
+                ],
+                // Repeatable. Exactly one payload attribute per member;
+                // enforced by validate_custom_audience_member.
+                blocks: vec![NestedBlockSchema {
+                    name: "member",
+                    schema: BlockSchema {
+                        attributes: vec![
+                            attr("keyword", FieldType::String, false),
+                            attr("url", FieldType::String, false),
+                            attr("place_category", FieldType::String, false),
+                            attr("app", FieldType::String, false),
+                        ],
+                        blocks: vec![],
+                    },
+                }],
             },
         );
 
@@ -2323,6 +2428,15 @@ fn validate_body(
                         diags,
                     );
                 }
+                if matches!(bname, "audience" | "member") {
+                    validate_exactly_one_of(
+                        file,
+                        b,
+                        &format!("{address}.{bname}"),
+                        &sub_schema.schema,
+                        diags,
+                    );
+                }
             }
         }
     }
@@ -2356,6 +2470,51 @@ fn resolve_for_lint<'a>(
         BindingResolution::Resolved(value) => value,
         BindingResolution::Failed => Cow::Borrowed(expr),
     }
+}
+
+/// For a block whose attributes are mutually exclusive alternatives — the
+/// schema can express "all optional" but not "pick exactly one".
+fn validate_exactly_one_of(
+    file: &ParsedFile,
+    block: &Block,
+    address: &str,
+    schema: &BlockSchema,
+    diags: &mut Vec<Diag>,
+) {
+    let set: Vec<&str> = block
+        .body
+        .iter()
+        .filter_map(|s| match s {
+            Structure::Attribute(a) => Some(a.key.as_str()),
+            _ => None,
+        })
+        .filter(|k| schema.attributes.iter().any(|x| x.name == *k))
+        .collect();
+    if set.len() == 1 {
+        return;
+    }
+    let choices: Vec<&str> = schema.attributes.iter().map(|a| a.name).collect();
+    let message = if set.is_empty() {
+        format!("{address} must set one of {}", quoted_list(&choices))
+    } else {
+        format!(
+            "{address} sets {}; these are alternatives — set exactly one",
+            quoted_list(&set)
+        )
+    };
+    diags.push(Diag::new(
+        file.src.clone(),
+        span_of(block.ident.span()),
+        message,
+    ));
+}
+
+fn quoted_list(items: &[&str]) -> String {
+    items
+        .iter()
+        .map(|s| format!("'{s}'"))
+        .collect::<Vec<_>>()
+        .join(" / ")
 }
 
 fn validate_compact_keywords(
@@ -3343,6 +3502,98 @@ resource "google_ads_campaign" "v" {
         assert!(
             msgs.iter().any(|m| m.contains("missing required attribute 'cap'")),
             "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn audience_and_member_blocks_require_exactly_one_target() {
+        let diags = validate_str(
+            "one_of",
+            r#"
+resource "google_ads_custom_audience" "a" {
+  name = "A"
+
+  member {
+    keyword = "x"
+    url     = "https://example.com"
+  }
+
+  member {}
+}
+
+resource "google_ads_campaign_criterion" "c" {
+  campaign = google_ads_campaign_criterion.c.id
+
+  audience {}
+}
+"#,
+        );
+        let msgs: Vec<&String> = diags.iter().map(|d| &d.message).collect();
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("sets 'keyword' / 'url'") && m.contains("set exactly one")),
+            "{msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("must set one of 'keyword'")),
+            "{msgs:?}"
+        );
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("must set one of 'custom_audience'")),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn video_targeting_criterion_blocks_validate() {
+        let diags = validate_str(
+            "video_targeting",
+            r#"
+resource "google_ads_custom_audience" "seg" {
+  name = "Ad blocker searchers"
+  type = "SEARCH"
+
+  member { keyword = "ad blocker" }
+}
+
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "v" {
+  name                     = "V"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+
+resource "google_ads_campaign_criterion" "intent" {
+  campaign = google_ads_campaign.v.id
+
+  audience {
+    custom_audience = google_ads_custom_audience.seg.id
+  }
+}
+
+resource "google_ads_campaign_criterion" "channel" {
+  campaign = google_ads_campaign.v.id
+
+  youtube_channel { channel_id = "UCabc" }
+}
+
+resource "google_ads_campaign_criterion" "no_kids" {
+  campaign = google_ads_campaign.v.id
+  negative = true
+
+  age_range { type = "AGE_RANGE_18_24" }
+}
+"#,
+        );
+        assert!(
+            diags.is_empty(),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 

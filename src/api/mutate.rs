@@ -6,7 +6,8 @@ use crate::api::diff::{Action, DiffReport};
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
     JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
-    JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCustomerAsset,
+    JsonAudience, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
+    JsonCustomAudience, JsonCustomerAsset,
     JsonDemandGenVideoResponsiveAd, JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedSet,
     JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonVideoResponsiveAd, JsonYoutubeVideoAsset,
 };
@@ -63,6 +64,7 @@ pub fn build_mutate_with_diff(
             "shared_set" => "sharedSets",
             "shared_criterion" => "sharedCriteria",
             "campaign_shared_set" => "campaignSharedSets",
+            "custom_audience" => "customAudiences",
             _ => continue,
         };
         if let Some(live_id) = d.action.live_id() {
@@ -337,6 +339,27 @@ pub fn build_mutate_with_diff(
             operations.push(PlanOperation { address: cr.id.clone(), kind: "ad_group_criterion" });
         }
     }
+    // Ahead of the criteria that target them, for the same temp-resource-name
+    // reason as the video assets above.
+    for a in &input.custom_audiences {
+        let Some(rn) = plan_rn(&refs, &a.id, "custom_audience", &mut errors) else {
+            continue;
+        };
+        if create_set.contains(&a.id) {
+            mutate_ops.push(json!({
+                "customAudienceOperation": { "create": custom_audience_create(a, rn) }
+            }));
+            operations.push(PlanOperation { address: a.id.clone(), kind: "custom_audience" });
+        } else if let Some(fields) = update_set.get(&a.id) {
+            mutate_ops.push(json!({
+                "customAudienceOperation": {
+                    "update": custom_audience_update_body(a, rn, fields),
+                    "updateMask": fields.join(","),
+                }
+            }));
+            operations.push(PlanOperation { address: a.id.clone(), kind: "custom_audience" });
+        }
+    }
     for cr in &input.campaign_criteria {
         let Some(rn) = plan_rn(&refs, &cr.id, "campaign_criterion", &mut errors) else {
             continue;
@@ -346,9 +369,19 @@ pub fn build_mutate_with_diff(
                 Some(s) => s,
                 None => continue,
             };
+            let audience_rn = match cr.audience.as_ref().and_then(JsonAudience::source) {
+                Some(("custom_audience", v)) => {
+                    match resolve_ref_or_literal(&refs, v, &cr.id, "custom_audience", &mut errors) {
+                        Some(rn) => Some(rn),
+                        None => continue,
+                    }
+                }
+                Some((_, v)) => Some(v.to_string()),
+                None => None,
+            };
             mutate_ops.push(json!({
                 "campaignCriterionOperation": {
-                    "create": campaign_criterion_create(cr, &camp_rn)
+                    "create": campaign_criterion_create(cr, &camp_rn, audience_rn)
                 }
             }));
             operations.push(PlanOperation { address: cr.id.clone(), kind: "campaign_criterion" });
@@ -1746,7 +1779,11 @@ fn ad_group_criterion_create(
     Value::Object(m)
 }
 
-fn campaign_criterion_create(cr: &JsonCampaignCriterion, camp_rn: &str) -> Value {
+fn campaign_criterion_create(
+    cr: &JsonCampaignCriterion,
+    camp_rn: &str,
+    audience_rn: Option<String>,
+) -> Value {
     // No resourceName: a pinned composite id re-claims the new campaign's temp id, which the API rejects as a duplicate.
     let mut m = Map::new();
     m.insert("campaign".into(), Value::String(camp_rn.to_string()));
@@ -1812,7 +1849,104 @@ fn campaign_criterion_create(cr: &JsonCampaignCriterion, camp_rn: &str) -> Value
         sub.insert("type".into(), Value::String(dev.ty.clone()));
         m.insert("device".into(), Value::Object(sub));
     }
+    if let Some(c) = &cr.youtube_channel {
+        m.insert("youtubeChannel".into(), json!({ "channelId": c.channel_id }));
+    }
+    if let Some(v) = &cr.youtube_video {
+        m.insert("youtubeVideo".into(), json!({ "videoId": v.video_id }));
+    }
+    if let Some(t) = &cr.topic {
+        m.insert("topic".into(), json!({ "topicConstant": t.topic_constant }));
+    }
+    if let Some(u) = &cr.user_interest {
+        m.insert(
+            "userInterest".into(),
+            json!({ "userInterestCategory": u.user_interest_category }),
+        );
+    }
+    if let Some(a) = &cr.age_range {
+        m.insert("ageRange".into(), json!({ "type": a.ty }));
+    }
+    if let Some(g) = &cr.gender {
+        m.insert("gender".into(), json!({ "type": g.ty }));
+    }
+    if let Some(audience) = &cr.audience {
+        if let Some(rn) = &audience_rn {
+            if audience.custom_audience.is_some() {
+                m.insert("customAudience".into(), json!({ "customAudience": rn }));
+            } else if audience.user_list.is_some() {
+                m.insert("userList".into(), json!({ "userList": rn }));
+            } else {
+                m.insert(
+                    "combinedAudience".into(),
+                    json!({ "combinedAudience": rn }),
+                );
+            }
+        }
+    }
     Value::Object(m)
+}
+
+fn custom_audience_create(a: &JsonCustomAudience, resource_name: &str) -> Value {
+    let mut m = Map::new();
+    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
+    m.insert("name".into(), Value::String(a.name.clone()));
+    if let Some(d) = &a.description {
+        m.insert("description".into(), Value::String(d.clone()));
+    }
+    if let Some(t) = &a.ty {
+        m.insert("type".into(), Value::String(t.clone()));
+    }
+    if let Some(s) = &a.status {
+        m.insert("status".into(), Value::String(s.clone()));
+    }
+    m.insert("members".into(), custom_audience_members_value(a));
+    Value::Object(m)
+}
+
+fn custom_audience_update_body(
+    a: &JsonCustomAudience,
+    resource_name: &str,
+    fields: &[String],
+) -> Value {
+    let mut m = Map::new();
+    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
+    for f in fields {
+        match f.as_str() {
+            "description" => {
+                if let Some(d) = &a.description {
+                    m.insert("description".into(), Value::String(d.clone()));
+                }
+            }
+            "status" => {
+                if let Some(s) = &a.status {
+                    m.insert("status".into(), Value::String(s.clone()));
+                }
+            }
+            // A repeated field is replaced wholesale; an empty list clears it.
+            "members" => {
+                m.insert("members".into(), custom_audience_members_value(a));
+            }
+            _ => {}
+        }
+    }
+    Value::Object(m)
+}
+
+fn custom_audience_members_value(a: &JsonCustomAudience) -> Value {
+    Value::Array(
+        a.members
+            .iter()
+            .filter_map(|m| {
+                let (field, member_type, value) = m.payload()?;
+                let key = match field {
+                    "place_category" => "placeCategory",
+                    other => other,
+                };
+                Some(json!({ "memberType": member_type, key: value }))
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -1924,6 +2058,132 @@ mod tests {
         let op = plan.body["mutateOperations"][0]["campaignOperation"].clone();
         assert_eq!(op["updateMask"], json!("frequency_caps"));
         assert_eq!(op["update"]["frequencyCaps"], json!([]));
+    }
+
+    #[test]
+    fn a_new_segment_is_created_before_the_criterion_that_targets_it() {
+        // Same temp-resource-name rule as the video assets: the API resolves a
+        // temp name only against an operation earlier in the list.
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "custom_audiences": [{
+                "id": "m.seg", "name": "Ad blocker searchers", "type": "SEARCH",
+                "description": "Search-intent segment",
+                "members": [{"keyword": "ad blocker"}, {"url": "https://example.com/privacy"}]
+            }],
+            "campaign_criteria": [{
+                "id": "m.cr", "campaign": "m.c",
+                "audience": {"custom_audience": "m.seg"}
+            }]
+        }))
+        .expect("valid ExportInput");
+
+        let report = DiffReport {
+            diffs: vec![
+                ResourceDiff {
+                    address: "m.c".to_string(),
+                    kind: "campaign",
+                    action: Action::NoOp { live_id: "42".to_string() },
+                },
+                create_diff("m.seg", "custom_audience"),
+                create_diff("m.cr", "campaign_criterion"),
+            ],
+            label_plans: Vec::new(),
+            claim_plans: Vec::new(),
+            noop_count: 1,
+            create_count: 2,
+            update_count: 0,
+            delete_count: 0,
+            adopt_count: 0,
+            warnings: Vec::new(),
+        };
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let ops = plan.body["mutateOperations"].as_array().unwrap();
+
+        let seg_idx = ops
+            .iter()
+            .position(|op| op.get("customAudienceOperation").is_some())
+            .expect("custom audience op");
+        let cr_idx = ops
+            .iter()
+            .position(|op| op.get("campaignCriterionOperation").is_some())
+            .expect("criterion op");
+        assert!(seg_idx < cr_idx, "segment must precede its criterion: {ops:#?}");
+
+        let seg = &ops[seg_idx]["customAudienceOperation"]["create"];
+        assert_eq!(seg["type"], json!("SEARCH"));
+        assert_eq!(
+            seg["members"],
+            json!([
+                {"memberType": "KEYWORD", "keyword": "ad blocker"},
+                {"memberType": "URL", "url": "https://example.com/privacy"}
+            ]),
+            "segment body: {seg}"
+        );
+
+        // The criterion points at the segment's temp resource name.
+        let cr = &ops[cr_idx]["campaignCriterionOperation"]["create"];
+        assert_eq!(cr["customAudience"]["customAudience"], seg["resourceName"]);
+    }
+
+    #[test]
+    fn placement_and_demographic_criteria_nest_under_their_api_message() {
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "campaign_criteria": [
+                {"id": "m.ch", "campaign": "m.c", "youtube_channel": {"channel_id": "UCabc"}},
+                {"id": "m.vid", "campaign": "m.c", "youtube_video": {"video_id": "dQw4w9WgXcQ"}},
+                {"id": "m.top", "campaign": "m.c", "topic": {"topic_constant": "topicConstants/278"}},
+                {"id": "m.int", "campaign": "m.c",
+                 "user_interest": {"user_interest_category": "userInterestConstants/80546"}},
+                {"id": "m.age", "campaign": "m.c", "negative": true,
+                 "age_range": {"type": "AGE_RANGE_18_24"}},
+                {"id": "m.list", "campaign": "m.c",
+                 "audience": {"user_list": "customers/100/userLists/987"}}
+            ]
+        }))
+        .expect("valid ExportInput");
+
+        let mut diffs = vec![ResourceDiff {
+            address: "m.c".to_string(),
+            kind: "campaign",
+            action: Action::NoOp { live_id: "42".to_string() },
+        }];
+        for id in ["m.ch", "m.vid", "m.top", "m.int", "m.age", "m.list"] {
+            diffs.push(create_diff(id, "campaign_criterion"));
+        }
+        let report = DiffReport {
+            diffs,
+            label_plans: Vec::new(),
+            claim_plans: Vec::new(),
+            noop_count: 1,
+            create_count: 6,
+            update_count: 0,
+            delete_count: 0,
+            adopt_count: 0,
+            warnings: Vec::new(),
+        };
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let creates: Vec<&Value> = plan.body["mutateOperations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|op| op.get("campaignCriterionOperation")?.get("create"))
+            .collect();
+        assert_eq!(creates.len(), 6);
+        assert_eq!(creates[0]["youtubeChannel"], json!({"channelId": "UCabc"}));
+        assert_eq!(creates[1]["youtubeVideo"], json!({"videoId": "dQw4w9WgXcQ"}));
+        assert_eq!(creates[2]["topic"], json!({"topicConstant": "topicConstants/278"}));
+        assert_eq!(
+            creates[3]["userInterest"],
+            json!({"userInterestCategory": "userInterestConstants/80546"})
+        );
+        assert_eq!(creates[4]["ageRange"], json!({"type": "AGE_RANGE_18_24"}));
+        assert_eq!(creates[4]["negative"], json!(true));
+        assert_eq!(
+            creates[5]["userList"],
+            json!({"userList": "customers/100/userLists/987"})
+        );
     }
 
     #[test]

@@ -1,0 +1,122 @@
+---
+title: Narrow a video campaign to a specific audience
+description: Build a search-intent segment, target the channels and topics that fit, and exclude the slices you don't want — all in the .bid file.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A YouTube campaign with no targeting shows your ad to everyone, and
+"everyone" is expensive. This recipe narrows one to people who have
+already shown they want what you sell.
+
+## 1. Describe who you want
+
+A **custom audience** is a segment you define by listing signals —
+here, what people searched for:
+
+```hcl
+resource "google_ads_custom_audience" "privacy_searchers" {
+  name        = "Privacy tool searchers"
+  description = "People searching for ad and tracker blocking"
+  type        = "SEARCH"
+
+  member { keyword = "ad blocker" }
+  member { keyword = "block trackers" }
+  member { keyword = "stop being tracked online" }
+}
+```
+
+`type = "SEARCH"` means "people who searched Google for these" — the
+most direct signal there is. See
+[`google_ads_custom_audience`](/bidsmith/resources/google_ads_custom_audience/)
+for the other kinds.
+
+## 2. Point the campaign at it
+
+```hcl
+resource "google_ads_campaign_criterion" "privacy_intent" {
+  campaign = google_ads_campaign.instream.id
+
+  audience {
+    custom_audience = google_ads_custom_audience.privacy_searchers.id
+  }
+}
+```
+
+That's the whole link. `bidsmith apply` creates the segment and the
+targeting together, in the right order.
+
+## 3. Add the other angles
+
+Each axis is one more criterion resource on the same campaign. Mix as
+many as fit your test:
+
+```hcl
+# Run on a specific tech channel.
+resource "google_ads_campaign_criterion" "tech_channel" {
+  campaign = google_ads_campaign.instream.id
+
+  youtube_channel {
+    channel_id = "UCXuqSBlHAE6Xw-yeJA0Tunw"
+  }
+}
+
+# Run on videos about computers and electronics.
+resource "google_ads_campaign_criterion" "computers_topic" {
+  campaign = google_ads_campaign.instream.id
+
+  topic {
+    topic_constant = "topicConstants/278"
+  }
+}
+
+# Reach people Google already classes as privacy-interested.
+resource "google_ads_campaign_criterion" "privacy_interest" {
+  campaign = google_ads_campaign.instream.id
+
+  user_interest {
+    user_interest_category = "userInterestConstants/80546"
+  }
+}
+```
+
+## 4. Exclude what you don't want
+
+Add `negative = true` and the same block becomes an exclusion:
+
+```hcl
+resource "google_ads_campaign_criterion" "exclude_under_25" {
+  campaign = google_ads_campaign.instream.id
+  negative = true
+
+  age_range {
+    type = "AGE_RANGE_18_24"
+  }
+}
+```
+
+<Aside type="caution" title="Careful with demographics">
+  Google can't determine age or gender for a large share of YouTube
+  viewers. Excluding `AGE_RANGE_UNDETERMINED` or `UNDETERMINED` gender
+  doesn't remove a small edge case — it removes most of your potential
+  reach.
+</Aside>
+
+## What bidsmith owns
+
+Once a campaign declares *any* criterion of a kind, bidsmith owns that
+kind on that campaign: a channel somebody added in the Google Ads
+website shows up in `plan` as something to remove, and deleting a block
+from your file removes the targeting. Kinds you never declare are left
+completely alone — declaring channels doesn't give bidsmith an opinion
+about your topics.
+
+That's the point: the file is the audience, and a change to the audience
+is a pull request.
+
+## See also
+
+- [`google_ads_campaign_criterion`](/bidsmith/resources/google_ads_campaign_criterion/) — every targeting block.
+- [`google_ads_custom_audience`](/bidsmith/resources/google_ads_custom_audience/) — building the segment.
+- [Cap how often people see your video ad](./cap-how-often-people-see-your-video/) — the other half of video control.
+- [Drift](/bidsmith/concepts/drift/) — why a website change shows up in `plan`.

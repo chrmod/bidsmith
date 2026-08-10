@@ -739,6 +739,24 @@ fn collect_edits(
                 }
             }
         }
+        "custom_audience" => {
+            let Some(a) = live.custom_audiences.iter().find(|x| x.id == live_id) else {
+                return (e, fields.to_vec());
+            };
+            for f in fields {
+                match f.as_str() {
+                    "status" => opt!(f, vec!["status"], a.status.as_deref().map(s)),
+                    "description" => {
+                        opt!(f, vec!["description"], a.description.as_deref().map(s))
+                    }
+                    "members" => skip.push(
+                        "members (repeated block — edit the blocks by hand or run a bootstrap refresh)"
+                            .to_string(),
+                    ),
+                    other => skip.push(other.to_string()),
+                }
+            }
+        }
         "campaign_shared_set" => {
             let Some(css) = live.campaign_shared_sets.iter().find(|x| x.id == live_id) else {
                 return (e, fields.to_vec());

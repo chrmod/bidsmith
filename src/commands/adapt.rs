@@ -6,11 +6,13 @@ use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
     JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCustomerAsset,
-    JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonKeyword, JsonLanguage,
-    JsonLocation, JsonManualCpc, JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd,
-    JsonRsaAsset,
-    JsonSharedSet, JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonValueSettings,
-    JsonVideoResponsiveAd, JsonYoutubeVideoAsset,
+    JsonAgeRange, JsonAudience, JsonCustomAudience, JsonCustomAudienceMember,
+    JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonGender, JsonKeyword,
+    JsonLanguage, JsonLocation, JsonManualCpc, JsonNetworkSettings, JsonProximity,
+    JsonResponsiveSearchAd, JsonRsaAsset,
+    JsonSharedSet, JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonTopic, JsonUserInterest,
+    JsonValueSettings, JsonVideoResponsiveAd, JsonYoutubeChannel, JsonYoutubeVideo,
+    JsonYoutubeVideoAsset,
 };
 
 pub fn from_search_response(raw: &str) -> Result<ExportInput, String> {
@@ -77,6 +79,7 @@ struct AdapterState {
     campaign_assets: BTreeMap<String, JsonCampaignAsset>,
     ad_group_assets: BTreeMap<String, JsonAdGroupAsset>,
     shared_sets: BTreeMap<String, SharedSetBuilder>,
+    custom_audiences: BTreeMap<String, JsonCustomAudience>,
     // value: (real criterion resource-name segment `<setId>~<critId>`, keyword)
     shared_criteria: BTreeMap<String, Vec<(String, JsonKeyword)>>,
     campaign_shared_sets: BTreeMap<String, JsonCampaignSharedSet>,
@@ -128,6 +131,9 @@ impl AdapterState {
         }
         if let Some(v) = row.get("adGroupAsset") {
             self.merge_ad_group_asset(v);
+        }
+        if let Some(v) = row.get("customAudience") {
+            self.merge_custom_audience(v);
         }
         if let Some(v) = row.get("sharedSet") {
             self.merge_shared_set(v);
@@ -546,6 +552,13 @@ impl AdapterState {
                 language: None,
                 proximity: None,
                 device: None,
+                youtube_channel: None,
+                youtube_video: None,
+                topic: None,
+                user_interest: None,
+                age_range: None,
+                gender: None,
+                audience: None,
             });
         if !campaign_id.is_empty() {
             entry.campaign = campaign_id;
@@ -615,6 +628,85 @@ impl AdapterState {
                     radius_units: units.to_string(),
                 });
             }
+        }
+        if let Some(id) = nested_str(v, "youtubeChannel", "channelId") {
+            entry.youtube_channel = Some(JsonYoutubeChannel { channel_id: id });
+        }
+        if let Some(id) = nested_str(v, "youtubeVideo", "videoId") {
+            entry.youtube_video = Some(JsonYoutubeVideo { video_id: id });
+        }
+        if let Some(c) = nested_str(v, "topic", "topicConstant") {
+            entry.topic = Some(JsonTopic { topic_constant: c });
+        }
+        if let Some(c) = nested_str(v, "userInterest", "userInterestCategory") {
+            entry.user_interest = Some(JsonUserInterest {
+                user_interest_category: c,
+            });
+        }
+        if let Some(t) = nested_enum(v, "ageRange", "type") {
+            entry.age_range = Some(JsonAgeRange { ty: t });
+        }
+        if let Some(t) = nested_enum(v, "gender", "type") {
+            entry.gender = Some(JsonGender { ty: t });
+        }
+        for (message, field) in [
+            ("customAudience", "customAudience"),
+            ("userList", "userList"),
+            ("combinedAudience", "combinedAudience"),
+        ] {
+            let Some(rn) = nested_str(v, message, field) else {
+                continue;
+            };
+            entry.audience = Some(match message {
+                "customAudience" => JsonAudience {
+                    custom_audience: Some(rn),
+                    user_list: None,
+                    combined_audience: None,
+                },
+                "userList" => JsonAudience {
+                    custom_audience: None,
+                    user_list: Some(rn),
+                    combined_audience: None,
+                },
+                _ => JsonAudience {
+                    custom_audience: None,
+                    user_list: None,
+                    combined_audience: Some(rn),
+                },
+            });
+        }
+    }
+
+    fn merge_custom_audience(&mut self, v: &Value) {
+        if let Some(rn) = v.get("resourceName").and_then(Value::as_str) {
+            self.note_customer(rn);
+        }
+        let Some(id) = extract_id(v) else { return };
+        let entry = self
+            .custom_audiences
+            .entry(id.clone())
+            .or_insert_with(|| JsonCustomAudience {
+                id,
+                name: String::new(),
+                description: None,
+                ty: None,
+                status: None,
+                members: Vec::new(),
+            });
+        if let Some(s) = v.get("name").and_then(Value::as_str) {
+            entry.name = s.to_string();
+        }
+        if let Some(s) = v.get("description").and_then(Value::as_str) {
+            entry.description = Some(s.to_string());
+        }
+        if let Some(s) = v.get("type").and_then(Value::as_str) {
+            entry.ty = Some(s.to_string());
+        }
+        if let Some(s) = v.get("status").and_then(Value::as_str) {
+            entry.status = Some(s.to_string());
+        }
+        if let Some(members) = v.get("members").and_then(Value::as_array) {
+            entry.members = members.iter().filter_map(parse_custom_audience_member).collect();
         }
     }
 
@@ -1076,6 +1168,7 @@ impl AdapterState {
             shared_criteria: shared_criteria_out,
             campaign_shared_sets: self.campaign_shared_sets.into_values().collect(),
             youtube_video_assets: self.youtube_video_assets.into_values().collect(),
+            custom_audiences: self.custom_audiences.into_values().collect(),
             labels: self.labels.into_iter().collect(),
             claim_labels: self.claim_labels.into_iter().collect(),
             campaign_claims: self.campaign_claims.into_iter().collect(),
@@ -1127,6 +1220,33 @@ fn parse_frequency_cap(v: &Value) -> Option<JsonFrequencyCap> {
             .and_then(Value::as_str)
             .map(str::to_string),
     })
+}
+
+fn nested_str(v: &Value, message: &str, field: &str) -> Option<String> {
+    v.get(message)?
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Google returns `UNSPECIFIED` / `UNKNOWN` for an enum it declines to name;
+/// neither is a value a `.bid` may declare, so treat them as absent.
+fn nested_enum(v: &Value, message: &str, field: &str) -> Option<String> {
+    nested_str(v, message, field).filter(|s| s != "UNSPECIFIED" && s != "UNKNOWN")
+}
+
+fn parse_custom_audience_member(v: &Value) -> Option<JsonCustomAudienceMember> {
+    let m = JsonCustomAudienceMember {
+        keyword: v.get("keyword").and_then(Value::as_str).map(str::to_string),
+        url: v.get("url").and_then(Value::as_str).map(str::to_string),
+        place_category: v
+            .get("placeCategory")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        app: v.get("app").and_then(Value::as_str).map(str::to_string),
+    };
+    m.payload().is_some().then_some(m)
 }
 
 fn parse_i64(v: Option<&Value>) -> Option<i64> {

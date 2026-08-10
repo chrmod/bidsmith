@@ -7,6 +7,24 @@ resource "google_ads_youtube_video_asset" "brand_12s" {
   youtube_video_title = "Ghostery — Block Ads & Trackers (12s)"
 }
 
+resource "google_ads_custom_audience" "privacy_searchers" {
+  name = "Privacy tool searchers"
+  description = "People searching for ad and tracker blocking"
+  type = "SEARCH"
+
+  member {
+    keyword = "ad blocker"
+  }
+
+  member {
+    keyword = "block trackers"
+  }
+
+  member {
+    keyword = "stop being tracked online"
+  }
+}
+
 resource "google_ads_campaign_budget" "preroll" {
   name = "Instream Preroll India 12sec"
   amount_micros = 10000000
@@ -40,6 +58,31 @@ resource "google_ads_campaign" "preroll" {
     time_unit = "DAY"
     time_length = 1
     cap = 1
+  }
+}
+
+resource "google_ads_campaign_criterion" "privacy_intent" {
+  campaign = google_ads_campaign.preroll.id
+
+  audience {
+    custom_audience = google_ads_custom_audience.privacy_searchers.id
+  }
+}
+
+resource "google_ads_campaign_criterion" "computers_topic" {
+  campaign = google_ads_campaign.preroll.id
+
+  topic {
+    topic_constant = "topicConstants/278"
+  }
+}
+
+resource "google_ads_campaign_criterion" "exclude_under_25" {
+  campaign = google_ads_campaign.preroll.id
+  negative = true
+
+  age_range {
+    type = "AGE_RANGE_18_24"
   }
 }
 

@@ -1,6 +1,6 @@
 ---
 title: google_ads_campaign_criterion
-description: Campaign-wide targeting — negative keywords, geo, language, proximity, device.
+description: Campaign-wide targeting — negative keywords, geo, language, proximity, device, YouTube placements, topics, demographics, audiences.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -15,12 +15,24 @@ export const location = resource.blocks.find((b) => b.name === 'location');
 export const language = resource.blocks.find((b) => b.name === 'language');
 export const proximity = resource.blocks.find((b) => b.name === 'proximity');
 export const device = resource.blocks.find((b) => b.name === 'device');
+export const youtube_channel = resource.blocks.find((b) => b.name === 'youtube_channel');
+export const youtube_video = resource.blocks.find((b) => b.name === 'youtube_video');
+export const topic = resource.blocks.find((b) => b.name === 'topic');
+export const user_interest = resource.blocks.find((b) => b.name === 'user_interest');
+export const age_range = resource.blocks.find((b) => b.name === 'age_range');
+export const gender = resource.blocks.find((b) => b.name === 'gender');
+export const audience = resource.blocks.find((b) => b.name === 'audience');
 
 A **campaign criterion** is targeting that applies to a whole campaign:
 negative keywords (excluded across every ad group), geo targets (which
 locations your ads can show in), language targets, proximity
 (latitude / longitude radius around a point), and device bid
 adjustments (spend more or less — or nothing at all — on a device type).
+
+For video campaigns it is also how you say *who* should see the ad and
+*where* it can run: [audiences](#audience), [YouTube channels and
+videos](#youtube_channel), [topics](#topic), [interests](#user_interest),
+and [age](#age_range) / [gender](#gender).
 
 <Aside type="tip">
   For plain *positive* country and language targeting, prefer the inline
@@ -154,6 +166,42 @@ resource "google_ads_campaign_criterion" "tablet_trim" {
 }
 ```
 
+### Narrowing a video campaign
+
+Video campaigns are the case where targeting *is* the strategy. Show
+only to people who searched for what you sell, on the channels where
+they already watch, and exclude the slices you don't want:
+
+```hcl
+resource "google_ads_campaign_criterion" "privacy_intent" {
+  campaign = google_ads_campaign.instream.id
+
+  audience {
+    custom_audience = google_ads_custom_audience.privacy_searchers.id
+  }
+}
+
+resource "google_ads_campaign_criterion" "tech_channel" {
+  campaign = google_ads_campaign.instream.id
+
+  youtube_channel {
+    channel_id = "UCXuqSBlHAE6Xw-yeJA0Tunw"
+  }
+}
+
+resource "google_ads_campaign_criterion" "exclude_under_25" {
+  campaign = google_ads_campaign.instream.id
+  negative = true
+
+  age_range {
+    type = "AGE_RANGE_18_24"
+  }
+}
+```
+
+Every one of these blocks takes `negative = true` to flip it from
+"target this" to "exclude this" — the same switch negative keywords use.
+
 ## Schema
 
 <AttributeTable block={resource} headingLevel={3} />
@@ -230,8 +278,77 @@ add a matching `device` block to take it over, or leave out
 
 <AttributeTable block={device} headingLevel={4} />
 
+### `audience`
+
+Who should see the ad, by audience. Set **exactly one** of three
+sources:
+
+- **`custom_audience`** — a segment you build yourself from search
+  terms, URLs, or apps. Point it at a
+  [`google_ads_custom_audience`](./google_ads_custom_audience/) you
+  declare, or paste the resource name of one that already exists
+  (`customers/1234567890/customAudiences/9876`).
+- **`user_list`** — a remarketing list (site visitors, customer match).
+  bidsmith doesn't build these; name the existing list by its resource
+  name.
+- **`combined_audience`** — an audience assembled in the Google Ads
+  website out of other audiences, again named by resource name.
+
+<AttributeTable block={audience} headingLevel={4} />
+
+### `youtube_channel`
+
+A YouTube channel to run on (or, with `negative = true`, to stay off).
+`channel_id` is the `UC…` id in the channel's URL —
+`youtube.com/channel/UCXuqSBlHAE6Xw-yeJA0Tunw`. For a channel that only
+shows a handle (`youtube.com/@somechannel`), open any of its videos and
+click the channel name to get the `UC…` form.
+
+<AttributeTable block={youtube_channel} headingLevel={4} />
+
+### `youtube_video`
+
+A single YouTube video to run on. `video_id` is the 11-character id
+after `watch?v=`.
+
+<AttributeTable block={youtube_video} headingLevel={4} />
+
+### `topic`
+
+A subject category — ads run on videos and pages about that topic. Use
+Google's
+[verticals table](https://developers.google.com/google-ads/api/data/verticals)
+for the id (e.g. `topicConstants/278` for Computers & Electronics).
+
+<AttributeTable block={topic} headingLevel={4} />
+
+### `user_interest`
+
+An affinity or in-market audience — people Google has classified by
+interest or purchase intent. Use Google's
+[user interest table](https://developers.google.com/google-ads/api/data/codes-formats)
+for the id.
+
+<AttributeTable block={user_interest} headingLevel={4} />
+
+### `age_range`
+
+An age bracket. Most often used with `negative = true` to exclude one.
+Note `AGE_RANGE_UNDETERMINED` — people Google can't place in a bracket,
+which is a large share of viewers; excluding it cuts reach hard.
+
+<AttributeTable block={age_range} headingLevel={4} />
+
+### `gender`
+
+A gender bracket, with the same `UNDETERMINED` caveat as `age_range`.
+
+<AttributeTable block={gender} headingLevel={4} />
+
 ## See also
 
 - [`google_ads_campaign`](./google_ads_campaign/) — required parent.
+- [`google_ads_custom_audience`](./google_ads_custom_audience/) — build the segment an `audience` block targets.
 - [`google_ads_ad_group_criterion`](./google_ads_ad_group_criterion/) — ad-group-scoped criteria.
 - [`google_ads_shared_set`](./google_ads_shared_set/) — share negative lists across campaigns.
+- [Recipe: Narrow a video campaign to a specific audience](/bidsmith/recipes/narrow-a-video-audience/).

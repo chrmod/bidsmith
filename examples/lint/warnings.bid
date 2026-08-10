@@ -55,3 +55,12 @@ resource "google_ads_ad_group_ad" "fall_thin_rsa" {
     }
   }
 }
+
+resource "google_ads_campaign_criterion" "fall_exclude_unknown_age" {
+  campaign = google_ads_campaign.fall_search.id
+  negative = true
+
+  age_range {
+    type = "AGE_RANGE_UNDETERMINED"
+  }
+}

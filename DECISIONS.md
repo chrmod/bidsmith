@@ -699,6 +699,34 @@ resource type, any file layout, modules, schema validation.
   bootstrap `refresh` renders them. Frequency capping is unsupported on
   Demand Gen, so `validate` warns rather than letting the setting apply
   and do nothing.
+- **Video targeting is criterion subtypes plus one segment builder**
+  (issue #99): `google_ads_campaign_criterion` gains `youtube_channel`,
+  `youtube_video`, `topic`, `user_interest`, `age_range`, `gender`, and
+  an `audience` block — each one more `CampaignCriterion` variant on the
+  existing create / read / diff / destroy path, so the whole set is
+  additive and `negative = true` flips any of them to an exclusion. The
+  `audience` block is the one departure from the schema's usual 1:1
+  naming: `CustomAudienceInfo` / `UserListInfo` / `CombinedAudienceInfo`
+  are three API messages that all answer "which audience?", and the
+  faithful shape (`custom_audience { custom_audience = … }`) stutters, so
+  they collapse into one block taking exactly one of three attributes —
+  the shape the issue proposed, and the one Google's newer unified
+  `Audience` resource can join later as a fourth. Ownership follows the
+  existing rule unchanged: declaring one criterion of a kind on a
+  campaign makes bidsmith own that kind there, so a channel added in the
+  UI reads as drift while kinds you never declare stay untouched.
+  Rendering a criterion had to start emitting `negative` — negative
+  keywords fold into the grouped form, but every other exclusion is a
+  singleton and would otherwise round-trip as positive targeting.
+  `google_ads_custom_audience` is the one new resource, because a
+  search-intent segment is the piece Google has no *other* way to
+  express declaratively (user lists and combined audiences have no
+  create API worth wrapping — they are referenced by resource name).
+  It matches live **by name** like `shared_set` (custom audiences carry
+  no labels), its repeated `member` blocks are a whole-set field like
+  `frequency_caps`, and `type` is creation-only. Its mutate op is
+  emitted ahead of the criteria that target it, the same temp-resource-name
+  ordering the video assets need.
 - **Keyword Planner is a read-only research verb, not a resource**: Google
   Keyword Planner (`KeywordPlanIdeaService.GenerateKeywordIdeas`) is surfaced
   as `bidsmith keyword-ideas` — an imperative, live-only command in the same
@@ -1098,7 +1126,17 @@ Validator covers (so far):
   every device type once any device targeting exists (issue #82), so an
   undeclared default-state device criterion is implicitly desired and one
   carrying an adjustment surfaces as a plan warning instead of a doomed
-  remove op that would sink the whole atomic batch), plus a bulk
+  remove op that would sink the whole atomic batch; plus the video
+  targeting axes from issue #99 — `youtube_channel { channel_id }`,
+  `youtube_video { video_id }`, `topic { topic_constant }`,
+  `user_interest { user_interest_category }`, `age_range { type }`,
+  `gender { type }`, and `audience { custom_audience | user_list |
+  combined_audience }` taking exactly one of three — each usable as an
+  exclusion via `negative = true`), `google_ads_custom_audience`
+  (`name`, `description`, creation-only `type` = `AUTO` / `INTEREST` /
+  `PURCHASE_INTENT` / `SEARCH`, `status`, and repeatable
+  `member { keyword | url | place_category | app }` blocks managed as a
+  whole set; matched to live by name like `shared_set`), plus a bulk
   syntactic-sugar form where repeating `negative_keyword { text,
   match_type }` sub-blocks in one resource expand into N individual
   negative criteria at import time (same `negative`-from-block-shape

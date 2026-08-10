@@ -97,6 +97,8 @@ pub struct ExportInput {
     pub campaign_shared_sets: Vec<JsonCampaignSharedSet>,
     #[serde(default)]
     pub youtube_video_assets: Vec<JsonYoutubeVideoAsset>,
+    #[serde(default)]
+    pub custom_audiences: Vec<JsonCustomAudience>,
     /// Live `bidsmith:address=<addr>` labels keyed by address -> label
     /// resource_name. Lets the mutate builder reuse an existing label instead
     /// of re-creating one (a duplicate name is an API error). Live-only; empty
@@ -325,6 +327,80 @@ pub struct JsonCampaignCriterion {
     pub proximity: Option<JsonProximity>,
     #[serde(default)]
     pub device: Option<JsonDevice>,
+    #[serde(default)]
+    pub youtube_channel: Option<JsonYoutubeChannel>,
+    #[serde(default)]
+    pub youtube_video: Option<JsonYoutubeVideo>,
+    #[serde(default)]
+    pub topic: Option<JsonTopic>,
+    #[serde(default)]
+    pub user_interest: Option<JsonUserInterest>,
+    #[serde(default)]
+    pub age_range: Option<JsonAgeRange>,
+    #[serde(default)]
+    pub gender: Option<JsonGender>,
+    #[serde(default)]
+    pub audience: Option<JsonAudience>,
+}
+
+#[derive(Deserialize)]
+pub struct JsonYoutubeChannel {
+    pub channel_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct JsonYoutubeVideo {
+    pub video_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct JsonTopic {
+    pub topic_constant: String,
+}
+
+#[derive(Deserialize)]
+pub struct JsonUserInterest {
+    pub user_interest_category: String,
+}
+
+#[derive(Deserialize)]
+pub struct JsonAgeRange {
+    #[serde(rename = "type")]
+    pub ty: String,
+}
+
+#[derive(Deserialize)]
+pub struct JsonGender {
+    #[serde(rename = "type")]
+    pub ty: String,
+}
+
+/// Exactly one field is ever set — three distinct API criterion messages that
+/// all answer "which audience?". `custom_audience` holds a declared
+/// `google_ads_custom_audience` address or a live resource name; the other two
+/// are always resource names (bidsmith has no resource that builds them).
+#[derive(Deserialize)]
+pub struct JsonAudience {
+    #[serde(default)]
+    pub custom_audience: Option<String>,
+    #[serde(default)]
+    pub user_list: Option<String>,
+    #[serde(default)]
+    pub combined_audience: Option<String>,
+}
+
+impl JsonAudience {
+    pub fn source(&self) -> Option<(&'static str, &str)> {
+        if let Some(v) = &self.custom_audience {
+            return Some(("custom_audience", v));
+        }
+        if let Some(v) = &self.user_list {
+            return Some(("user_list", v));
+        }
+        self.combined_audience
+            .as_deref()
+            .map(|v| ("combined_audience", v))
+    }
 }
 
 #[derive(Deserialize, Clone)]
@@ -472,6 +548,49 @@ pub struct JsonSharedCriterion {
 }
 
 #[derive(Deserialize)]
+pub struct JsonCustomAudience {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default, rename = "type")]
+    pub ty: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Managed as a whole set: the API replaces the repeated field wholesale.
+    #[serde(default)]
+    pub members: Vec<JsonCustomAudienceMember>,
+}
+
+#[derive(Deserialize, Clone, PartialEq, Eq)]
+pub struct JsonCustomAudienceMember {
+    #[serde(default)]
+    pub keyword: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub place_category: Option<String>,
+    #[serde(default)]
+    pub app: Option<String>,
+}
+
+impl JsonCustomAudienceMember {
+    /// The set attribute as (bidsmith name, API `member_type`, value).
+    pub fn payload(&self) -> Option<(&'static str, &'static str, &str)> {
+        if let Some(v) = &self.keyword {
+            return Some(("keyword", "KEYWORD", v));
+        }
+        if let Some(v) = &self.url {
+            return Some(("url", "URL", v));
+        }
+        if let Some(v) = &self.place_category {
+            return Some(("place_category", "PLACE_CATEGORY", v));
+        }
+        self.app.as_deref().map(|v| ("app", "APP", v))
+    }
+}
+
+#[derive(Deserialize)]
 pub struct JsonCampaignSharedSet {
     pub id: String,
     pub campaign: String,
@@ -504,8 +623,8 @@ impl ExportInput {
     /// diffing — never on the render path, where defaults are stripped instead.
     pub fn apply_schema_defaults(&mut self) {
         use crate::schema::{
-            DEFAULT_DELIVERY_METHOD, DEFAULT_EU_POLITICAL, DEFAULT_EXPLICITLY_SHARED,
-            DEFAULT_NEGATIVE, DEFAULT_STATUS,
+            DEFAULT_CUSTOM_AUDIENCE_TYPE, DEFAULT_DELIVERY_METHOD, DEFAULT_EU_POLITICAL,
+            DEFAULT_EXPLICITLY_SHARED, DEFAULT_NEGATIVE, DEFAULT_STATUS,
         };
         let status = || DEFAULT_STATUS.to_string();
 
@@ -547,6 +666,10 @@ impl ExportInput {
         }
         for s in &mut self.shared_sets {
             s.status.get_or_insert_with(status);
+        }
+        for a in &mut self.custom_audiences {
+            a.status.get_or_insert_with(status);
+            a.ty.get_or_insert_with(|| DEFAULT_CUSTOM_AUDIENCE_TYPE.to_string());
         }
         for s in &mut self.campaign_shared_sets {
             s.status.get_or_insert_with(status);
@@ -640,6 +763,7 @@ pub fn filter_removed(input: &mut ExportInput) {
     input.campaign_assets.retain(|a| !is_removed(&a.status));
     input.ad_group_assets.retain(|a| !is_removed(&a.status));
     input.shared_sets.retain(|s| !is_removed(&s.status));
+    input.custom_audiences.retain(|a| !is_removed(&a.status));
     input
         .campaign_shared_sets
         .retain(|s| !is_removed(&s.status));
@@ -900,6 +1024,20 @@ fn write_campaign_assets(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn write_custom_audiences(
+    out: &mut String,
+    input: &ExportInput,
+    names: &mut NameAllocator,
+    custom_audience_addr: &mut HashMap<String, String>,
+) {
+    for a in &input.custom_audiences {
+        let name = names.allocate("google_ads_custom_audience", &slugify(&a.name));
+        custom_audience_addr.insert(a.id.clone(), format!("google_ads_custom_audience.{name}"));
+        write_custom_audience(out, &name, a);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn write_campaign_tree(
     out: &mut String,
     input: &ExportInput,
@@ -910,6 +1048,7 @@ fn write_campaign_tree(
     campaign_addr: &mut HashMap<String, String>,
     ad_group_addr: &mut HashMap<String, String>,
     youtube_asset_addr: &HashMap<String, String>,
+    custom_audience_addr: &HashMap<String, String>,
 ) {
     for b in &input.campaign_budgets {
         let name = names.allocate("google_ads_campaign_budget", &slugify(&b.name));
@@ -957,7 +1096,7 @@ fn write_campaign_tree(
     for c in singletons {
         let base = criterion_base(c);
         let name = names.allocate("google_ads_campaign_criterion", &slugify(&base));
-        write_campaign_criterion(out, &name, c, campaign_addr);
+        write_campaign_criterion(out, &name, c, campaign_addr, custom_audience_addr);
     }
 }
 
@@ -999,6 +1138,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
     let mut asset_addr: HashMap<String, String> = HashMap::new();
     let mut youtube_asset_addr: HashMap<String, String> = HashMap::new();
     let mut shared_set_addr: HashMap<String, String> = HashMap::new();
+    let mut custom_audience_addr: HashMap<String, String> = HashMap::new();
 
     write_provider(&mut account, input);
     write_account_assets(
@@ -1009,6 +1149,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
         &mut asset_addr,
         &mut youtube_asset_addr,
     );
+    write_custom_audiences(&mut account, input, &mut names, &mut custom_audience_addr);
     write_shared_sets_and_criteria(&mut account, input, &mut names, &mut shared_set_addr);
 
     let has_campaign_resources = !input.campaign_budgets.is_empty()
@@ -1036,6 +1177,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
             &mut campaign_addr,
             &mut ad_group_addr,
             &youtube_asset_addr,
+            &custom_audience_addr,
         );
         write_campaign_shared_sets(
             &mut campaigns,
@@ -1081,6 +1223,7 @@ fn render_inner(input: &ExportInput, fold: bool) -> String {
     let mut asset_addr: HashMap<String, String> = HashMap::new();
     let mut youtube_asset_addr: HashMap<String, String> = HashMap::new();
     let mut shared_set_addr: HashMap<String, String> = HashMap::new();
+    let mut custom_audience_addr: HashMap<String, String> = HashMap::new();
 
     write_provider(&mut out, input);
     write_account_assets(
@@ -1091,6 +1234,7 @@ fn render_inner(input: &ExportInput, fold: bool) -> String {
         &mut asset_addr,
         &mut youtube_asset_addr,
     );
+    write_custom_audiences(&mut out, input, &mut names, &mut custom_audience_addr);
     if let Some(p) = &plan {
         if p.has_decls() {
             write_fold_decls(&mut out, p);
@@ -1106,6 +1250,7 @@ fn render_inner(input: &ExportInput, fold: bool) -> String {
         &mut campaign_addr,
         &mut ad_group_addr,
         &youtube_asset_addr,
+        &custom_audience_addr,
     );
     write_shared_sets_and_criteria(&mut out, input, &mut names, &mut shared_set_addr);
     write_campaign_shared_sets(&mut out, input, &mut names, &campaign_addr, &shared_set_addr);
@@ -1940,6 +2085,7 @@ fn write_campaign_criterion(
     name: &str,
     c: &JsonCampaignCriterion,
     campaign_addr: &HashMap<String, String>,
+    custom_audience_addr: &HashMap<String, String>,
 ) {
     let _ = writeln!(
         out,
@@ -1952,6 +2098,12 @@ fn write_campaign_criterion(
     write_attr(out, 1, "campaign", &camp_ref);
     if let Some(s) = &c.status {
         write_attr(out, 1, "status", &fmt_string(s));
+    }
+    // Negative keywords render through the grouped form; every other exclusion
+    // (placement, topic, demographic, audience) is a singleton and has to carry
+    // its own polarity or the render round-trips as positive targeting.
+    if c.negative.unwrap_or(false) {
+        write_attr(out, 1, "negative", "true");
     }
     if let Some(bm) = c.bid_modifier {
         write_attr(out, 1, "bid_modifier", &format_number(bm));
@@ -1990,6 +2142,87 @@ fn write_campaign_criterion(
     if let Some(dev) = &c.device {
         out.push_str("\n  device {\n");
         write_attr(out, 2, "type", &fmt_string(&dev.ty));
+        out.push_str("  }\n");
+    }
+    if let Some(ch) = &c.youtube_channel {
+        out.push_str("\n  youtube_channel {\n");
+        write_attr(out, 2, "channel_id", &fmt_string(&ch.channel_id));
+        out.push_str("  }\n");
+    }
+    if let Some(v) = &c.youtube_video {
+        out.push_str("\n  youtube_video {\n");
+        write_attr(out, 2, "video_id", &fmt_string(&v.video_id));
+        out.push_str("  }\n");
+    }
+    if let Some(t) = &c.topic {
+        out.push_str("\n  topic {\n");
+        write_attr(out, 2, "topic_constant", &fmt_string(&t.topic_constant));
+        out.push_str("  }\n");
+    }
+    if let Some(u) = &c.user_interest {
+        out.push_str("\n  user_interest {\n");
+        write_attr(
+            out,
+            2,
+            "user_interest_category",
+            &fmt_string(&u.user_interest_category),
+        );
+        out.push_str("  }\n");
+    }
+    if let Some(a) = &c.age_range {
+        out.push_str("\n  age_range {\n");
+        write_attr(out, 2, "type", &fmt_string(&a.ty));
+        out.push_str("  }\n");
+    }
+    if let Some(g) = &c.gender {
+        out.push_str("\n  gender {\n");
+        write_attr(out, 2, "type", &fmt_string(&g.ty));
+        out.push_str("  }\n");
+    }
+    if let Some((field, value)) = c.audience.as_ref().and_then(JsonAudience::source) {
+        out.push_str("\n  audience {\n");
+        let rendered = if field == "custom_audience" {
+            custom_audience_ref(value, custom_audience_addr)
+        } else {
+            fmt_string(value)
+        };
+        write_attr(out, 2, field, &rendered);
+        out.push_str("  }\n");
+    }
+    out.push_str("}\n\n");
+}
+
+/// A declared `google_ads_custom_audience.<name>.id` reference when the target
+/// is one bidsmith renders, else the raw resource name.
+fn custom_audience_ref(value: &str, custom_audience_addr: &HashMap<String, String>) -> String {
+    let bare = value.rsplit('/').next().unwrap_or(value);
+    match custom_audience_addr
+        .get(value)
+        .or_else(|| custom_audience_addr.get(bare))
+    {
+        Some(addr) => format!("{addr}.id"),
+        None => fmt_string(value),
+    }
+}
+
+fn write_custom_audience(out: &mut String, name: &str, a: &JsonCustomAudience) {
+    let _ = writeln!(out, "resource \"google_ads_custom_audience\" \"{name}\" {{");
+    write_attr(out, 1, "name", &fmt_string(&a.name));
+    if let Some(d) = &a.description {
+        write_attr(out, 1, "description", &fmt_string(d));
+    }
+    if let Some(t) = &a.ty {
+        write_attr(out, 1, "type", &fmt_string(t));
+    }
+    if let Some(s) = &a.status {
+        write_attr(out, 1, "status", &fmt_string(s));
+    }
+    for m in &a.members {
+        let Some((field, _, value)) = m.payload() else {
+            continue;
+        };
+        out.push_str("\n  member {\n");
+        write_attr(out, 2, field, &fmt_string(value));
         out.push_str("  }\n");
     }
     out.push_str("}\n\n");
@@ -2308,7 +2541,32 @@ fn criterion_base(c: &JsonCampaignCriterion) -> String {
     if let Some(dev) = &c.device {
         return format!("device_{}", dev.ty.to_ascii_lowercase());
     }
+    if let Some(ch) = &c.youtube_channel {
+        return format!("channel_{}", ch.channel_id);
+    }
+    if let Some(v) = &c.youtube_video {
+        return format!("video_{}", v.video_id);
+    }
+    if let Some(t) = &c.topic {
+        return format!("topic_{}", last_segment(&t.topic_constant));
+    }
+    if let Some(u) = &c.user_interest {
+        return format!("interest_{}", last_segment(&u.user_interest_category));
+    }
+    if let Some(a) = &c.age_range {
+        return a.ty.to_ascii_lowercase();
+    }
+    if let Some(g) = &c.gender {
+        return format!("gender_{}", g.ty.to_ascii_lowercase());
+    }
+    if let Some((field, value)) = c.audience.as_ref().and_then(JsonAudience::source) {
+        return format!("{field}_{}", last_segment(value));
+    }
     c.id.clone()
+}
+
+fn last_segment(s: &str) -> &str {
+    s.rsplit('/').next().unwrap_or(s)
 }
 
 fn fmt_rsa_asset_list(assets: &[JsonRsaAsset]) -> String {
@@ -2520,6 +2778,34 @@ mod tests {
         // The default level stays implicit; a non-default one is written out.
         assert_eq!(out.matches("level = ").count(), 1, "{out}");
         assert!(out.contains("level = \"AD_GROUP\""), "{out}");
+    }
+
+    #[test]
+    fn video_targeting_renders_and_links_the_declared_segment() {
+        let raw = r#"[{"results":[
+            { "customAudience": { "resourceName": "customers/9/customAudiences/501", "id": "501", "name": "Ad blocker searchers", "type": "SEARCH", "status": "ENABLED", "members": [
+                { "memberType": "KEYWORD", "keyword": "ad blocker" },
+                { "memberType": "URL", "url": "https://example.com/privacy" }
+            ] } },
+            { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget", "amountMicros": "5000000" } },
+            { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Preroll", "status": "PAUSED", "advertisingChannelType": "VIDEO", "campaignBudget": "customers/9/campaignBudgets/1001" } },
+            { "campaignCriterion": { "resourceName": "customers/9/campaignCriteria/2001~1", "campaign": "customers/9/campaigns/2001", "status": "ENABLED", "negative": false, "customAudience": { "customAudience": "customers/9/customAudiences/501" } } },
+            { "campaignCriterion": { "resourceName": "customers/9/campaignCriteria/2001~2", "campaign": "customers/9/campaigns/2001", "status": "ENABLED", "negative": true, "youtubeChannel": { "channelId": "UCabc" } } }
+        ]}]"#;
+        let input = from_search_response(raw).expect("adapter");
+        let out = render(&input);
+
+        assert_eq!(out.matches("member {").count(), 2, "{out}");
+        assert!(out.contains("keyword = \"ad blocker\""), "{out}");
+        // The criterion links the rendered segment by address, not by the
+        // resource name a fresh account would not have.
+        assert!(
+            out.contains("custom_audience = google_ads_custom_audience.ad_blocker_searchers.id"),
+            "{out}"
+        );
+        // A singleton exclusion has to carry its own polarity.
+        assert!(out.contains("negative = true"), "{out}");
+        assert!(out.contains("channel_id = \"UCabc\""), "{out}");
     }
 
     #[test]
@@ -2847,7 +3133,9 @@ mod tests {
                     { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Brand Awareness Video", "status": "ENABLED", "advertisingChannelType": "VIDEO", "campaignBudget": "customers/9/campaignBudgets/1001" } },
                     { "adGroup": { "resourceName": "customers/9/adGroups/3001", "id": "3001", "name": "Non-skippable", "campaign": "customers/9/campaigns/2001", "status": "ENABLED", "type": "VIDEO_NON_SKIPPABLE_IN_STREAM" } },
                     { "adGroup": { "resourceName": "customers/9/adGroups/3002", "id": "3002", "name": "Responsive", "campaign": "customers/9/campaigns/2001", "status": "ENABLED", "type": "VIDEO_RESPONSIVE" } },
-                    { "conversionAction": { "resourceName": "customers/9/conversionActions/4001", "id": "4001", "name": "Engaged View", "type": "UNKNOWN", "category": "UNKNOWN", "status": "ENABLED" } }
+                    { "conversionAction": { "resourceName": "customers/9/conversionActions/4001", "id": "4001", "name": "Engaged View", "type": "UNKNOWN", "category": "UNKNOWN", "status": "ENABLED" } },
+                    { "customAudience": { "resourceName": "customers/9/customAudiences/5001", "id": "5001", "name": "Ad blocker searchers", "type": "SEARCH", "status": "ENABLED", "members": [ { "memberType": "KEYWORD", "keyword": "ad blocker" } ] } },
+                    { "campaignCriterion": { "resourceName": "customers/9/campaignCriteria/2001~1", "campaign": "customers/9/campaigns/2001", "status": "ENABLED", "negative": false, "customAudience": { "customAudience": "customers/9/customAudiences/5001" } } }
                 ]
             }
         ]"#;
