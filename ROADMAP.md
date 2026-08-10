@@ -167,6 +167,11 @@ declared HCL against live labeled state. Local cache is rebuildable.
   membership) is reported, not edited — the diff engine only emits
   scalar `Update`s, so changed copy is a create+destroy handled by
   `apply`. Pure core (`reconcile_sources`) is unit-tested offline.
+  Loads the tree through the same `Program` path `validate` / `plan`
+  use (issue #93), so `module` templates reconcile as instance scopes
+  instead of failing as standalone roots; a shared template is only
+  patched where every instance drifted to the same value, and never
+  where the attribute holds a `var.` / `local.` / reference.
 - ⏳ `import <address> <api-resource>`: adopt an unlabeled live
   resource into a specific `.bid` address. Now unblocked — apply
   already adopts unlabeled live resources by content and labels them;
