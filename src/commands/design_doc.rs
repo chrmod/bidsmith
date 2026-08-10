@@ -362,6 +362,10 @@ fn rmf_table() -> Vec<RmfRow> {
             satisfied_by: "Modelled as <code>google_ads_ad_group_criterion</code> (positive/negative keyword with <code>match_type</code> and optional <code>cpc_bid_micros</code>).",
         },
         RmfRow {
+            requirement: "Show and edit audience / placement targeting",
+            satisfied_by: "Modelled as <code>google_ads_campaign_criterion</code> sub-blocks (<code>audience</code>, <code>youtube_channel</code>, <code>youtube_video</code>, <code>topic</code>, <code>user_interest</code>, <code>age_range</code>, <code>gender</code>), each usable as an exclusion via <code>negative = true</code>. Search-intent segments are built declaratively as <code>google_ads_custom_audience</code> via <code>CustomAudienceService</code>.",
+        },
+        RmfRow {
             requirement: "Pause / enable campaigns and ad groups",
             satisfied_by: "The <code>status</code> attribute on every campaign / ad-group / ad / criterion resource is editable. Toggling it produces a <code>~ update (status)</code> diff in <code>plan</code> and is applied via the normal mutate flow.",
         },

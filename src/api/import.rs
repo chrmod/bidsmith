@@ -6,11 +6,12 @@ use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
     JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCustomerAsset,
-    JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonKeyword, JsonLanguage,
-    JsonLocation, JsonManualCpc, JsonNetworkSettings,
+    JsonAgeRange, JsonAudience, JsonCustomAudience, JsonCustomAudienceMember,
+    JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonGender, JsonKeyword,
+    JsonLanguage, JsonLocation, JsonManualCpc, JsonNetworkSettings,
     JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedCriterion, JsonSharedSet,
-    JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonValueSettings, JsonVideoResponsiveAd,
-    JsonYoutubeVideoAsset,
+    JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonTopic, JsonUserInterest, JsonValueSettings,
+    JsonVideoResponsiveAd, JsonYoutubeChannel, JsonYoutubeVideo, JsonYoutubeVideoAsset,
 };
 use crate::diagnostics::Diag;
 use crate::parser::ParsedFile;
@@ -83,6 +84,7 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
         shared_criteria: Vec::new(),
         campaign_shared_sets: Vec::new(),
         youtube_video_assets: Vec::new(),
+        custom_audiences: Vec::new(),
         labels: Default::default(),
         claim_labels: Default::default(),
         campaign_claims: Default::default(),
@@ -199,6 +201,10 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
                                 x.negative_keywords.clear();
                                 input.shared_sets.push(x);
                             }),
+                        ),
+                        "google_ads_custom_audience" => emit(
+                            import_custom_audience(&ctx, b, &address)
+                                .map(|x| input.custom_audiences.push(x)),
                         ),
                         "google_ads_shared_criterion" => emit(
                             import_shared_criterion(&ctx, b, &address)
@@ -387,6 +393,13 @@ fn expand_inline_targeting(
             language: Some(JsonLanguage { language_constant: constant }),
             proximity: None,
             device: None,
+            youtube_channel: None,
+            youtube_video: None,
+            topic: None,
+            user_interest: None,
+            age_range: None,
+            gender: None,
+            audience: None,
         });
     }
     let mut seen_loc: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -411,6 +424,13 @@ fn expand_inline_targeting(
             language: None,
             proximity: None,
             device: None,
+            youtube_channel: None,
+            youtube_video: None,
+            topic: None,
+            user_interest: None,
+            age_range: None,
+            gender: None,
+            audience: None,
         });
     }
     out
@@ -965,6 +985,13 @@ fn import_campaign_criterion(
     let mut language = None;
     let mut proximity = None;
     let mut device = None;
+    let mut youtube_channel = None;
+    let mut youtube_video = None;
+    let mut topic = None;
+    let mut user_interest = None;
+    let mut age_range = None;
+    let mut gender = None;
+    let mut audience = None;
     let mut bulk_negatives: Vec<JsonKeyword> = Vec::new();
 
     for s in block.body.iter() {
@@ -988,6 +1015,27 @@ fn import_campaign_criterion(
                 "language" => language = import_language(ctx, b),
                 "proximity" => proximity = import_proximity(ctx, b),
                 "device" => device = import_device(ctx, b),
+                "youtube_channel" => {
+                    youtube_channel = one_string(ctx, b, "channel_id")
+                        .map(|channel_id| JsonYoutubeChannel { channel_id })
+                }
+                "youtube_video" => {
+                    youtube_video =
+                        one_string(ctx, b, "video_id").map(|video_id| JsonYoutubeVideo { video_id })
+                }
+                "topic" => {
+                    topic = one_string(ctx, b, "topic_constant")
+                        .map(|topic_constant| JsonTopic { topic_constant })
+                }
+                "user_interest" => {
+                    user_interest = one_string(ctx, b, "user_interest_category")
+                        .map(|user_interest_category| JsonUserInterest {
+                            user_interest_category,
+                        })
+                }
+                "age_range" => age_range = one_string(ctx, b, "type").map(|ty| JsonAgeRange { ty }),
+                "gender" => gender = one_string(ctx, b, "type").map(|ty| JsonGender { ty }),
+                "audience" => audience = import_audience(ctx, b),
                 _ => {}
             },
         }
@@ -1023,6 +1071,13 @@ fn import_campaign_criterion(
                 language: None,
                 proximity: None,
                 device: None,
+                youtube_channel: None,
+                youtube_video: None,
+                topic: None,
+                user_interest: None,
+                age_range: None,
+                gender: None,
+                audience: None,
             });
         }
         return Ok(out);
@@ -1032,7 +1087,14 @@ fn import_campaign_criterion(
         || location.is_some()
         || language.is_some()
         || proximity.is_some()
-        || device.is_some();
+        || device.is_some()
+        || youtube_channel.is_some()
+        || youtube_video.is_some()
+        || topic.is_some()
+        || user_interest.is_some()
+        || age_range.is_some()
+        || gender.is_some()
+        || audience.is_some();
     Ok(vec![JsonCampaignCriterion {
         id: address.to_string(),
         campaign,
@@ -1044,7 +1106,103 @@ fn import_campaign_criterion(
         language,
         proximity,
         device,
+        youtube_channel,
+        youtube_video,
+        topic,
+        user_interest,
+        age_range,
+        gender,
+        audience,
     }])
+}
+
+/// A single-attribute criterion block: the value, or `None` when unset or
+/// non-literal (`validate` already reported it).
+fn one_string(ctx: &Ctx, block: &Block, key: &str) -> Option<String> {
+    block.body.iter().find_map(|s| match s {
+        Structure::Attribute(a) if a.key.as_str() == key => expect_string_owned(ctx, a),
+        _ => None,
+    })
+}
+
+fn import_audience(ctx: &Ctx, block: &Block) -> Option<JsonAudience> {
+    let mut out = JsonAudience {
+        custom_audience: None,
+        user_list: None,
+        combined_audience: None,
+    };
+    for s in block.body.iter() {
+        let Structure::Attribute(a) = s else { continue };
+        match a.key.as_str() {
+            // A declared google_ads_custom_audience is referenced by address;
+            // a segment built elsewhere is named by its API resource name.
+            "custom_audience" => {
+                out.custom_audience = extract_resource_ref(ctx, &a.value)
+                    .map(|r| ctx.resolve_ref(&r))
+                    .or_else(|| expect_string_owned(ctx, a));
+            }
+            "user_list" => out.user_list = expect_string_owned(ctx, a),
+            "combined_audience" => out.combined_audience = expect_string_owned(ctx, a),
+            _ => {}
+        }
+    }
+    out.source().is_some().then_some(out)
+}
+
+fn import_custom_audience(
+    ctx: &Ctx,
+    block: &Block,
+    address: &str,
+) -> Result<JsonCustomAudience, Diag> {
+    let mut name = None;
+    let mut description = None;
+    let mut ty = None;
+    let mut status = None;
+    let mut members: Vec<JsonCustomAudienceMember> = Vec::new();
+    for s in block.body.iter() {
+        match s {
+            Structure::Attribute(a) => match a.key.as_str() {
+                "name" => name = expect_string_owned(ctx, a),
+                "description" => description = expect_string_owned(ctx, a),
+                "type" => ty = expect_string_owned(ctx, a),
+                "status" => status = expect_string_owned(ctx, a),
+                _ => {}
+            },
+            Structure::Block(b) if b.ident.as_str() == "member" => {
+                members.extend(import_custom_audience_member(ctx, b));
+            }
+            Structure::Block(_) => {}
+        }
+    }
+    let name = name.ok_or_else(|| missing(ctx.file, block, address, "name"))?;
+    Ok(JsonCustomAudience {
+        id: address.to_string(),
+        name,
+        description,
+        ty,
+        status,
+        members,
+    })
+}
+
+fn import_custom_audience_member(ctx: &Ctx, block: &Block) -> Option<JsonCustomAudienceMember> {
+    let mut m = JsonCustomAudienceMember {
+        keyword: None,
+        url: None,
+        place_category: None,
+        app: None,
+    };
+    for s in block.body.iter() {
+        let Structure::Attribute(a) = s else { continue };
+        match a.key.as_str() {
+            "keyword" => m.keyword = expect_string_owned(ctx, a),
+            "url" => m.url = expect_string_owned(ctx, a),
+            "place_category" => m.place_category = expect_string_owned(ctx, a),
+            "app" => m.app = expect_string_owned(ctx, a),
+            _ => {}
+        }
+    }
+    m.payload().is_some().then_some(m)
 }
 
 fn import_keyword(ctx: &Ctx, block: &Block) -> Option<JsonKeyword> {
@@ -1682,6 +1840,7 @@ pub fn import_program(program: &Program) -> Result<ImportResult, Vec<Diag>> {
         shared_criteria: Vec::new(),
         campaign_shared_sets: Vec::new(),
         youtube_video_assets: Vec::new(),
+        custom_audiences: Vec::new(),
         labels: Default::default(),
         claim_labels: Default::default(),
         campaign_claims: Default::default(),
@@ -1718,6 +1877,7 @@ pub fn import_program(program: &Program) -> Result<ImportResult, Vec<Diag>> {
                 combined.shared_criteria.extend(r.input.shared_criteria);
                 combined.campaign_shared_sets.extend(r.input.campaign_shared_sets);
                 combined.youtube_video_assets.extend(r.input.youtube_video_assets);
+                combined.custom_audiences.extend(r.input.custom_audiences);
                 skipped.extend(r.skipped);
             }
             Err(ds) => diags.extend(ds),
@@ -2742,6 +2902,144 @@ resource "google_ads_campaign" "v" {{
             "diffs: {:?}",
             report.diffs
         );
+    }
+
+    const VIDEO_TARGETING_BID: &str = r#"
+resource "google_ads_custom_audience" "adblock" {
+  name        = "Ad blocker searchers"
+  description = "Search-intent segment"
+  type        = "SEARCH"
+
+  member { keyword = "ad blocker" }
+  member { keyword = "block ads" }
+}
+
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "v" {
+  name                     = "V"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+
+resource "google_ads_campaign_criterion" "intent" {
+  campaign = google_ads_campaign.v.id
+
+  audience {
+    custom_audience = google_ads_custom_audience.adblock.id
+  }
+}
+
+resource "google_ads_campaign_criterion" "channel" {
+  campaign = google_ads_campaign.v.id
+
+  youtube_channel { channel_id = "UCabc" }
+}
+
+resource "google_ads_campaign_criterion" "no_kids" {
+  campaign = google_ads_campaign.v.id
+  negative = true
+
+  age_range { type = "AGE_RANGE_18_24" }
+}
+"#;
+
+    const LIVE_VIDEO_TARGETING: &str = r#"[{"results":[
+      {"customAudience":{"resourceName":"customers/9/customAudiences/501","id":"501","name":"Ad blocker searchers","description":"Search-intent segment","type":"SEARCH","status":"ENABLED","members":[
+        {"memberType":"KEYWORD","keyword":"block ads"},
+        {"memberType":"KEYWORD","keyword":"ad blocker"}
+      ]}},
+      {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+      {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"V","status":"ENABLED","advertisingChannelType":"VIDEO","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"}},
+      {"campaignCriterion":{"resourceName":"customers/9/campaignCriteria/2~9001","campaign":"customers/9/campaigns/2","status":"ENABLED","negative":false,"customAudience":{"customAudience":"customers/9/customAudiences/501"}}},
+      {"campaignCriterion":{"resourceName":"customers/9/campaignCriteria/2~9002","campaign":"customers/9/campaigns/2","status":"ENABLED","negative":false,"youtubeChannel":{"channelId":"UCabc"}}},
+      {"campaignCriterion":{"resourceName":"customers/9/campaignCriteria/2~9003","campaign":"customers/9/campaigns/2","status":"ENABLED","negative":true,"ageRange":{"type":"AGE_RANGE_18_24"}}}
+    ]}]"#;
+
+    #[test]
+    fn video_targeting_criteria_import_and_match_live() {
+        let declared = import_str("video_targeting", VIDEO_TARGETING_BID);
+        assert_eq!(declared.custom_audiences.len(), 1);
+        assert_eq!(declared.custom_audiences[0].members.len(), 2);
+        // The audience criterion references the declared segment by address,
+        // not by a resource name it cannot know before apply.
+        let audience = declared
+            .campaign_criteria
+            .iter()
+            .find_map(|c| c.audience.as_ref())
+            .expect("audience criterion");
+        assert!(
+            audience
+                .custom_audience
+                .as_deref()
+                .is_some_and(|a| a.ends_with("google_ads_custom_audience.adblock")),
+            "{:?}",
+            audience.custom_audience
+        );
+
+        let live =
+            crate::commands::adapt::from_search_response(LIVE_VIDEO_TARGETING).expect("adapt live");
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(report.create_count, 0, "diffs: {:?}", report.diffs);
+        assert_eq!(report.update_count, 0, "diffs: {:?}", report.diffs);
+        assert_eq!(report.delete_count, 0, "diffs: {:?}", report.diffs);
+    }
+
+    #[test]
+    fn dropping_a_placement_plans_a_delete_but_spares_other_axes() {
+        // Removing the youtube_channel block leaves the campaign declaring an
+        // audience and an age_range: bidsmith owns the placement category on
+        // this campaign only while it declares one, so the live channel is the
+        // single delete and the untouched axes stay put.
+        let declared = import_str(
+            "video_targeting_prune",
+            &VIDEO_TARGETING_BID.replace(
+                r#"resource "google_ads_campaign_criterion" "channel" {
+  campaign = google_ads_campaign.v.id
+
+  youtube_channel { channel_id = "UCabc" }
+}"#,
+                r#"resource "google_ads_campaign_criterion" "other_channel" {
+  campaign = google_ads_campaign.v.id
+
+  youtube_channel { channel_id = "UCdef" }
+}"#,
+            ),
+        );
+        let live =
+            crate::commands::adapt::from_search_response(LIVE_VIDEO_TARGETING).expect("adapt live");
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(report.create_count, 1, "diffs: {:?}", report.diffs);
+        assert_eq!(report.delete_count, 1, "diffs: {:?}", report.diffs);
+        let addrs = delete_addresses(&report);
+        assert!(addrs[0].contains("youtube_channel UCabc"), "{addrs:?}");
+    }
+
+    #[test]
+    fn an_edited_segment_member_plans_an_update_not_a_recreate() {
+        let declared = import_str(
+            "custom_audience_members",
+            &VIDEO_TARGETING_BID.replace(r#"member { keyword = "block ads" }"#, ""),
+        );
+        let live =
+            crate::commands::adapt::from_search_response(LIVE_VIDEO_TARGETING).expect("adapt live");
+        let report = diff_after_defaults(declared, live);
+        let changed: Vec<(&str, &Vec<String>)> = report
+            .diffs
+            .iter()
+            .filter_map(|d| match &d.action {
+                crate::api::diff::Action::Update { changed_fields, .. } => {
+                    Some((d.kind, changed_fields))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(changed.len(), 1, "diffs: {:?}", report.diffs);
+        assert_eq!(changed[0].0, "custom_audience");
+        assert_eq!(changed[0].1, &vec!["members".to_string()]);
     }
 
     #[test]

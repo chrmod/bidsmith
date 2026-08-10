@@ -52,6 +52,7 @@ export default defineConfig({
             { label: 'Move a keyword between match types', slug: 'recipes/change-keyword-match-type' },
             { label: 'Target specific countries and languages', slug: 'recipes/target-countries-and-languages' },
             { label: 'Cap how often people see your video ad', slug: 'recipes/cap-how-often-people-see-your-video' },
+            { label: 'Narrow a video campaign to a specific audience', slug: 'recipes/narrow-a-video-audience' },
             { label: 'Add a whole keyword list at once', slug: 'recipes/add-many-keywords' },
             { label: 'Remove a whole keyword list safely', slug: 'recipes/remove-keywords-safely' },
             { label: 'Reuse a headline set across many ads', slug: 'recipes/reuse-a-headline-set' },
@@ -142,6 +143,7 @@ export default defineConfig({
               items: [
                 { label: 'google_ads_ad_group_criterion', slug: 'resources/google_ads_ad_group_criterion' },
                 { label: 'google_ads_campaign_criterion', slug: 'resources/google_ads_campaign_criterion' },
+                { label: 'google_ads_custom_audience', slug: 'resources/google_ads_custom_audience' },
               ],
             },
             {

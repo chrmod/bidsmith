@@ -76,6 +76,46 @@ fn lint_resource(file: &ParsedFile, block: &Block, bindings: &Bindings, diags: &
         if let Some(lang_block) = find_block(&block.body, "language") {
             lint_language(file, lang_block, &address, bindings, diags);
         }
+        lint_undetermined_demographic(file, block, &address, bindings, diags);
+    }
+}
+
+/// Google can't classify age or gender for a large share of viewers, so the
+/// `UNDETERMINED` bucket is not an edge case — excluding it is usually an
+/// accidental reach cut rather than the narrowing the author intended.
+fn lint_undetermined_demographic(
+    file: &ParsedFile,
+    block: &Block,
+    address: &str,
+    bindings: &Bindings,
+    diags: &mut Vec<Diag>,
+) {
+    let excluded = find_attr(&block.body, "negative")
+        .map(|a| matches!(&a.value, Expression::Bool(b) if *b.as_ref()))
+        .unwrap_or(false);
+    if !excluded {
+        return;
+    }
+    for (name, noun, undetermined) in [
+        ("age_range", "age", "AGE_RANGE_UNDETERMINED"),
+        ("gender", "gender", "UNDETERMINED"),
+    ] {
+        let Some(inner) = find_block(&block.body, name) else {
+            continue;
+        };
+        let Some(attr) = find_attr(&inner.body, "type") else {
+            continue;
+        };
+        if eval_str(bindings, &file.module, &attr.value).as_deref() != Some(undetermined) {
+            continue;
+        }
+        diags.push(Diag::warning(
+            file.src.clone(),
+            span_of(attr.value.span()),
+            format!(
+                "{address} excludes {undetermined}: Google Ads cannot determine {noun} for a large share of viewers, so this removes most of the campaign's reach rather than a small slice"
+            ),
+        ));
     }
 }
 
@@ -471,6 +511,47 @@ resource "google_ads_campaign" "c" {{
     #[test]
     fn frequency_caps_on_video_are_quiet() {
         let msgs = campaign_with_caps("caps_video", "VIDEO");
+        assert!(msgs.is_empty(), "{msgs:?}");
+    }
+
+    #[test]
+    fn excluding_the_undetermined_bucket_warns() {
+        let msgs = lint_str(
+            "undetermined_gender",
+            r#"
+resource "google_ads_campaign_criterion" "no_unknown" {
+  campaign = google_ads_campaign.v.id
+  negative = true
+
+  gender { type = "UNDETERMINED" }
+}
+"#,
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("removes most of the campaign's reach")),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn a_named_bracket_and_a_positive_undetermined_are_quiet() {
+        let msgs = lint_str(
+            "named_bracket",
+            r#"
+resource "google_ads_campaign_criterion" "no_kids" {
+  campaign = google_ads_campaign.v.id
+  negative = true
+
+  age_range { type = "AGE_RANGE_18_24" }
+}
+
+resource "google_ads_campaign_criterion" "reach_unknown" {
+  campaign = google_ads_campaign.v.id
+
+  gender { type = "UNDETERMINED" }
+}
+"#,
+        );
         assert!(msgs.is_empty(), "{msgs:?}");
     }
 

@@ -128,10 +128,36 @@ pub const QUERIES: &[(&str, &str)] = &[
           campaign_criterion.proximity.geo_point.longitude_in_micro_degrees,
           campaign_criterion.proximity.radius,
           campaign_criterion.proximity.radius_units,
-          campaign_criterion.device.type
+          campaign_criterion.device.type,
+          campaign_criterion.youtube_channel.channel_id,
+          campaign_criterion.youtube_video.video_id,
+          campaign_criterion.topic.topic_constant,
+          campaign_criterion.user_interest.user_interest_category,
+          campaign_criterion.age_range.type,
+          campaign_criterion.gender.type,
+          campaign_criterion.custom_audience.custom_audience,
+          campaign_criterion.user_list.user_list,
+          campaign_criterion.combined_audience.combined_audience
         FROM campaign_criterion
-        WHERE campaign_criterion.type IN (KEYWORD, LOCATION, LANGUAGE, PROXIMITY, DEVICE)
+        WHERE campaign_criterion.type IN (
+            KEYWORD, LOCATION, LANGUAGE, PROXIMITY, DEVICE,
+            YOUTUBE_CHANNEL, YOUTUBE_VIDEO, TOPIC, USER_INTEREST,
+            AGE_RANGE, GENDER, CUSTOM_AUDIENCE, USER_LIST, COMBINED_AUDIENCE
+          )
           AND campaign_criterion.status != 'REMOVED'",
+    ),
+    (
+        "custom_audience",
+        "SELECT
+          custom_audience.resource_name,
+          custom_audience.id,
+          custom_audience.name,
+          custom_audience.description,
+          custom_audience.type,
+          custom_audience.status,
+          custom_audience.members
+        FROM custom_audience
+        WHERE custom_audience.status != 'REMOVED'",
     ),
     (
         "conversion_action",

@@ -1,0 +1,110 @@
+---
+title: google_ads_custom_audience
+description: A segment you build yourself — people who searched for particular terms, browsed particular sites, or use particular apps.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_custom_audience'];
+export const member = resource.blocks.find((b) => b.name === 'member');
+
+A **custom audience** is a segment you describe rather than one Google
+picks for you. You list the signals — search terms people used, sites
+they browsed, apps they use — and Google finds the people who match.
+
+This is the targeting to reach for when you have no conversion data to
+learn from. Google's automatic audiences work by watching what converts;
+if nothing on your site is tracked, there is nothing to learn from, and
+saying *"people who searched for an ad blocker"* out loud is the whole
+signal.
+
+## Example
+
+```hcl
+resource "google_ads_custom_audience" "privacy_searchers" {
+  name        = "Privacy tool searchers"
+  description = "People searching for ad and tracker blocking"
+  type        = "SEARCH"
+
+  member { keyword = "ad blocker" }
+  member { keyword = "block trackers" }
+  member { keyword = "stop being tracked online" }
+}
+```
+
+Then point a campaign at it:
+
+```hcl
+resource "google_ads_campaign_criterion" "privacy_intent" {
+  campaign = google_ads_campaign.instream.id
+
+  audience {
+    custom_audience = google_ads_custom_audience.privacy_searchers.id
+  }
+}
+```
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+`type` says what kind of signal the segment is built from, and Google
+does not let you change it after the segment exists:
+
+- **`SEARCH`** — people who searched Google for your `keyword` members.
+  The most direct form of intent.
+- **`INTEREST`** — people interested in the subjects your members
+  describe. Broader reach, looser match.
+- **`PURCHASE_INTENT`** — people actively shopping for what your
+  members describe.
+- **`AUTO`** — let Google decide from the members you gave it. This is
+  the default when you leave `type` out.
+
+## Nested blocks
+
+### `member`
+
+One signal. Repeat the block to list many — a segment is the union of
+its members. Set **exactly one** attribute per block:
+
+- **`keyword`** — a search term or phrase.
+- **`url`** — a site whose visitors are the signal (people who browse
+  sites like this one, not visitors to *your* site — that's a
+  remarketing list, which bidsmith doesn't build).
+- **`app`** — an app id whose users are the signal.
+- **`place_category`** — a place-category id for location interest.
+
+<AttributeTable block={member} headingLevel={4} />
+
+<Aside type="note">
+  Members are managed as a **whole set**. Whatever the blocks say is
+  what the segment ends up with, so a term somebody added in the Google
+  Ads website shows up in `plan` as drift, and the order of the blocks
+  doesn't matter. Editing a member is an in-place update — the segment
+  keeps its id and every campaign targeting it stays pointed at it.
+</Aside>
+
+## Matching an audience that already exists
+
+bidsmith matches a declared segment to a live one **by name**, the same
+way shared sets work. Declaring a segment whose name already exists in
+the account adopts it rather than creating a duplicate — which is how
+you bring a UI-built audience under management: run `bidsmith refresh`,
+keep the block it writes, and edit from there.
+
+If you'd rather leave a segment unmanaged, don't declare it — point the
+campaign's `audience` block at its resource name instead:
+
+```hcl
+audience {
+  custom_audience = "customers/1234567890/customAudiences/9876543210"
+}
+```
+
+## See also
+
+- [`google_ads_campaign_criterion`](./google_ads_campaign_criterion/) — how a campaign targets the segment.
+- [Recipe: Narrow a video campaign to a specific audience](/bidsmith/recipes/narrow-a-video-audience/).
+- [Google's custom segments help page](https://support.google.com/google-ads/answer/9805516).

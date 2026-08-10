@@ -4,8 +4,8 @@ use crate::commands::export::{
     address_label_payload, ExportInput, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset,
     JsonAdGroupCriterion, JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign,
     JsonCampaignAsset, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
-    JsonCustomerAsset, JsonSharedCriterion, JsonSharedSet, JsonSitelinkAsset,
-    JsonStructuredSnippetAsset, JsonYoutubeVideoAsset,
+    JsonAudience, JsonCustomAudience, JsonCustomerAsset, JsonSharedCriterion, JsonSharedSet,
+    JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonYoutubeVideoAsset,
 };
 
 #[derive(Debug, Clone)]
@@ -435,15 +435,41 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         });
     }
 
+    // Ahead of the criteria that reference them: an `audience` criterion is
+    // keyed on the live custom audience id, which this match supplies.
+    let mut custom_audience_match: HashMap<String, String> = HashMap::new();
+    let live_custom_audiences: HashMap<&str, &JsonCustomAudience> = live
+        .custom_audiences
+        .iter()
+        .map(|a| (a.name.as_str(), a))
+        .collect();
+    for d in &declared.custom_audiences {
+        let action = match live_custom_audiences.get(d.name.as_str()) {
+            Some(l) => {
+                custom_audience_match.insert(d.id.clone(), l.id.clone());
+                action_for_match(l.id.clone(), diff_custom_audience(d, l))
+            }
+            None => Action::Create,
+        };
+        diffs.push(ResourceDiff {
+            address: d.id.clone(),
+            kind: "custom_audience",
+            action,
+        });
+    }
+
     // ---- campaign_criteria (match by campaign + criterion key) -----------
     let mut live_c_criteria: HashMap<(String, String), &JsonCampaignCriterion> = HashMap::new();
     for c in &live.campaign_criteria {
-        if let Some(key) = campaign_criterion_key(c) {
+        if let Some(key) = campaign_criterion_key(c, &HashMap::new()) {
             live_c_criteria.insert((c.campaign.clone(), key), c);
         }
     }
     for d in &declared.campaign_criteria {
-        let action = match (campaign_match.get(&d.campaign), campaign_criterion_key(d)) {
+        let action = match (
+            campaign_match.get(&d.campaign),
+            campaign_criterion_key(d, &custom_audience_match),
+        ) {
             (Some(parent_id), Some(key)) => match live_c_criteria.get(&(parent_id.clone(), key)) {
                 Some(l) => action_for_match(l.id.clone(), diff_campaign_criterion(d, l)),
                 None => Action::Create,
@@ -782,6 +808,13 @@ fn canonical_category(cat: &str) -> Option<&'static str> {
         "location" => "location",
         "language" => "language",
         "proximity" => "proximity",
+        "youtube_channel" => "youtube_channel",
+        "youtube_video" => "youtube_video",
+        "topic" => "topic",
+        "user_interest" => "user_interest",
+        "age_range" => "age_range",
+        "gender" => "gender",
+        "audience" => "audience",
         _ => return None,
     })
 }
@@ -1130,6 +1163,20 @@ fn campaign_criterion_category(cr: &JsonCampaignCriterion) -> &'static str {
         "proximity"
     } else if cr.device.is_some() {
         "device"
+    } else if cr.youtube_channel.is_some() {
+        "youtube_channel"
+    } else if cr.youtube_video.is_some() {
+        "youtube_video"
+    } else if cr.topic.is_some() {
+        "topic"
+    } else if cr.user_interest.is_some() {
+        "user_interest"
+    } else if cr.age_range.is_some() {
+        "age_range"
+    } else if cr.gender.is_some() {
+        "gender"
+    } else if cr.audience.is_some() {
+        "audience"
     } else {
         "other"
     }
@@ -1149,6 +1196,20 @@ fn campaign_criterion_descriptor(cr: &JsonCampaignCriterion) -> Option<String> {
         Some(format!("language {}", lang.language_constant))
     } else if let Some(dev) = &cr.device {
         Some(format!("device {}", dev.ty))
+    } else if let Some(c) = &cr.youtube_channel {
+        Some(format!("youtube_channel {}", c.channel_id))
+    } else if let Some(v) = &cr.youtube_video {
+        Some(format!("youtube_video {}", v.video_id))
+    } else if let Some(t) = &cr.topic {
+        Some(format!("topic {}", t.topic_constant))
+    } else if let Some(u) = &cr.user_interest {
+        Some(format!("user_interest {}", u.user_interest_category))
+    } else if let Some(a) = &cr.age_range {
+        Some(format!("age_range {}", a.ty))
+    } else if let Some(g) = &cr.gender {
+        Some(format!("gender {}", g.ty))
+    } else if let Some((field, value)) = cr.audience.as_ref().and_then(JsonAudience::source) {
+        Some(format!("{field} {value}"))
     } else {
         cr.proximity.as_ref().map(|_| "proximity".to_string())
     }
@@ -1636,7 +1697,48 @@ fn diff_campaign_shared_set(d: &JsonCampaignSharedSet, l: &JsonCampaignSharedSet
     c
 }
 
-fn campaign_criterion_key(cr: &JsonCampaignCriterion) -> Option<String> {
+fn diff_custom_audience(d: &JsonCustomAudience, l: &JsonCustomAudience) -> Vec<String> {
+    let mut c = Vec::new();
+    if d.description != l.description && d.description.is_some() {
+        c.push("description".into());
+    }
+    if d.status != l.status {
+        c.push("status".into());
+    }
+    // `type` is creation-only: the API rejects changing what a segment is built from.
+    if sorted_members(d) != sorted_members(l) {
+        c.push("members".into());
+    }
+    c
+}
+
+/// The member list is one API field, so it diffs as a set — reordering the
+/// blocks in a `.bid` is not a change.
+fn sorted_members(a: &JsonCustomAudience) -> Vec<(&'static str, &str)> {
+    let mut members: Vec<_> = a
+        .members
+        .iter()
+        .filter_map(|m| m.payload().map(|(_, ty, v)| (ty, v)))
+        .collect();
+    members.sort_unstable();
+    members
+}
+
+/// The live-comparable token for an audience reference. A declared
+/// `google_ads_custom_audience.<name>` resolves through the match to the live
+/// id; anything else falls back to the resource name's last segment, so a raw
+/// `customers/X/customAudiences/999` and the live row agree on `999`.
+fn canonical_audience(value: &str, custom_audience_match: &HashMap<String, String>) -> String {
+    match custom_audience_match.get(value) {
+        Some(live_id) => live_id.clone(),
+        None => value.rsplit('/').next().unwrap_or(value).to_string(),
+    }
+}
+
+fn campaign_criterion_key(
+    cr: &JsonCampaignCriterion,
+    custom_audience_match: &HashMap<String, String>,
+) -> Option<String> {
     if let Some(kw) = &cr.keyword {
         let polarity = if cr.negative.unwrap_or(false) { "neg" } else { "pos" };
         return Some(format!("kw:{polarity}:{}|{}", kw.match_type, kw.text));
@@ -1658,6 +1760,30 @@ fn campaign_criterion_key(cr: &JsonCampaignCriterion) -> Option<String> {
     }
     if let Some(d) = &cr.device {
         return Some(format!("dev:{}", d.ty));
+    }
+    if let Some(c) = &cr.youtube_channel {
+        return Some(format!("ytchan:{}", c.channel_id));
+    }
+    if let Some(v) = &cr.youtube_video {
+        return Some(format!("ytvid:{}", v.video_id));
+    }
+    if let Some(t) = &cr.topic {
+        return Some(format!("topic:{}", t.topic_constant));
+    }
+    if let Some(u) = &cr.user_interest {
+        return Some(format!("interest:{}", u.user_interest_category));
+    }
+    if let Some(a) = &cr.age_range {
+        return Some(format!("age:{}", a.ty));
+    }
+    if let Some(g) = &cr.gender {
+        return Some(format!("gender:{}", g.ty));
+    }
+    if let Some((field, value)) = cr.audience.as_ref().and_then(JsonAudience::source) {
+        return Some(format!(
+            "{field}:{}",
+            canonical_audience(value, custom_audience_match)
+        ));
     }
     None
 }
