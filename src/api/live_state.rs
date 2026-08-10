@@ -266,9 +266,14 @@ pub const QUERIES: &[(&str, &str)] = &[
     ),
     (
         "label",
+        // A removed label still answers this query but can no longer be
+        // attached to anything ("Inactive labels cannot be applied."), so
+        // reusing its resource_name sinks the whole atomic batch. Skipping it
+        // here makes the mutate builder mint a fresh label under the same name.
         "SELECT label.resource_name, label.name
         FROM label
-        WHERE label.name LIKE 'bidsmith:%'",
+        WHERE label.name LIKE 'bidsmith:%'
+          AND label.status != 'REMOVED'",
     ),
     (
         "campaign_label",
@@ -406,4 +411,19 @@ pub fn fetch_with_cache(
 
 pub fn invalidate_cache() {
     cache::invalidate_live_state(&cache::project_cache_dir());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn label_query_skips_removed_labels() {
+        let (_, query) = QUERIES.iter().find(|(name, _)| *name == "label").unwrap();
+        assert!(
+            query.contains("label.status != 'REMOVED'"),
+            "a removed label cannot be attached to anything; indexing one makes \
+             the mutate builder reuse it and the whole batch is rejected"
+        );
+    }
 }
