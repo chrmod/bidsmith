@@ -650,6 +650,7 @@ fn import_demand_gen_video_ad(ctx: &Ctx, block: &Block) -> JsonDemandGenVideoRes
     let mut call_to_actions: Vec<String> = Vec::new();
     let mut breadcrumb1 = None;
     let mut breadcrumb2 = None;
+    let mut business_name = None;
     for s in block.body.iter() {
         let Structure::Attribute(a) = s else { continue };
         match a.key.as_str() {
@@ -665,6 +666,7 @@ fn import_demand_gen_video_ad(ctx: &Ctx, block: &Block) -> JsonDemandGenVideoRes
             "call_to_actions" => call_to_actions = expect_string_list(ctx, &a.value),
             "breadcrumb1" => breadcrumb1 = expect_string_owned(ctx, a),
             "breadcrumb2" => breadcrumb2 = expect_string_owned(ctx, a),
+            "business_name" => business_name = expect_string_owned(ctx, a),
             _ => {}
         }
     }
@@ -676,6 +678,7 @@ fn import_demand_gen_video_ad(ctx: &Ctx, block: &Block) -> JsonDemandGenVideoRes
         call_to_actions,
         breadcrumb1,
         breadcrumb2,
+        business_name,
     }
 }
 

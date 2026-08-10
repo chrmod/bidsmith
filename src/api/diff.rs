@@ -5,7 +5,7 @@ use crate::commands::export::{
     JsonAdGroupCriterion, JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign,
     JsonCampaignAsset, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
     JsonCustomerAsset, JsonSharedCriterion, JsonSharedSet, JsonSitelinkAsset,
-    JsonStructuredSnippetAsset,
+    JsonStructuredSnippetAsset, JsonYoutubeVideoAsset,
 };
 
 #[derive(Debug, Clone)]
@@ -210,10 +210,25 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     let mut campaign_match: HashMap<String, String> = HashMap::new();
     let mut ad_group_match: HashMap<String, String> = HashMap::new();
     // declared asset address -> live asset id, across every asset type
-    // (call / sitelink / callout / structured snippet). Consumed by the
-    // customer_asset / campaign_asset / ad_group_asset link diffs.
+    // (call / sitelink / callout / structured snippet / youtube video).
+    // Consumed by the customer_asset / campaign_asset / ad_group_asset link
+    // diffs and by the video ad body key.
     let mut asset_match: HashMap<String, String> = HashMap::new();
     let customer_id = declared.customer_id.as_str();
+
+    // Video assets resolve ahead of the ad_group_ad pass: a video ad's body key
+    // names its video by live asset id, so the mapping has to exist before ads
+    // are matched. The diff entries themselves are pushed with the other assets.
+    let live_youtube_video_assets: HashMap<&str, &JsonYoutubeVideoAsset> = live
+        .youtube_video_assets
+        .iter()
+        .map(|a| (a.youtube_video_id.as_str(), a))
+        .collect();
+    for d in &declared.youtube_video_assets {
+        if let Some(l) = live_youtube_video_assets.get(d.youtube_video_id.as_str()) {
+            asset_match.insert(d.id.clone(), l.id.clone());
+        }
+    }
 
     // ---- campaign_budgets (match by name) --------------------------------
     let live_budgets: HashMap<&str, &JsonBudget> = live
@@ -334,8 +349,12 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     }
 
     // ---- ad_group_ads (label hit, else body 1:1; label authorizes destroy) -
-    let ad_outcomes =
-        match_ad_group_ads(&declared.ad_group_ads, &live.ad_group_ads, &ad_group_match);
+    let ad_outcomes = match_ad_group_ads(
+        &declared.ad_group_ads,
+        &live.ad_group_ads,
+        &ad_group_match,
+        &asset_match,
+    );
     let mut ad_claimed = vec![false; live.ad_group_ads.len()];
     for (di, (action, li)) in ad_outcomes.iter().enumerate() {
         let d = &declared.ad_group_ads[di];
@@ -530,6 +549,18 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         diffs.push(ResourceDiff {
             address: d.id.clone(),
             kind: "structured_snippet_asset",
+            action,
+        });
+    }
+
+    for d in &declared.youtube_video_assets {
+        let action = match live_youtube_video_assets.get(d.youtube_video_id.as_str()) {
+            Some(l) => action_for_match(l.id.clone(), Vec::new()),
+            None => Action::Create,
+        };
+        diffs.push(ResourceDiff {
+            address: d.id.clone(),
+            kind: "youtube_video_asset",
             action,
         });
     }
@@ -1232,6 +1263,7 @@ fn match_ad_group_ads(
     declared: &[JsonAdGroupAd],
     live: &[JsonAdGroupAd],
     ad_group_match: &HashMap<String, String>,
+    asset_match: &HashMap<String, String>,
 ) -> Vec<(Action, Option<usize>)> {
     let mut consumed = vec![false; live.len()];
     let mut out: Vec<(Action, Option<usize>)> = vec![(Action::Create, None); declared.len()];
@@ -1247,7 +1279,7 @@ fn match_ad_group_ads(
     }
     for (di, d) in declared.iter().enumerate() {
         if let Some(&li) = live_by_addr.get(address_label_payload(&d.id).as_str()) {
-            if !consumed[li] && ad_body_key(d) == ad_body_key(&live[li]) {
+            if !consumed[li] && ad_bodies_match(d, &live[li], asset_match) {
                 consumed[li] = true;
                 out[di] = (
                     action_for_match(live[li].id.clone(), diff_ad_group_ad(d, &live[li])),
@@ -1266,7 +1298,7 @@ fn match_ad_group_ads(
             continue;
         }
         live_buckets
-            .entry((l.ad_group.clone(), ad_body_key(l)))
+            .entry((l.ad_group.clone(), ad_body_key(l, asset_match)))
             .or_default()
             .push(i);
     }
@@ -1277,7 +1309,7 @@ fn match_ad_group_ads(
         }
         if let Some(parent_id) = ad_group_match.get(&d.ad_group) {
             declared_buckets
-                .entry((parent_id.clone(), ad_body_key(d)))
+                .entry((parent_id.clone(), ad_body_key(d, asset_match)))
                 .or_default()
                 .push(i);
         }
@@ -1317,16 +1349,72 @@ fn match_ad_group_ads(
         }
     }
 
+    // Last pass: an `ad {}` with no creative block declares the URLs and leaves
+    // the creative unmanaged — what a refresh of a UI-built ad renders. It
+    // matches any live ad in the group with the same URLs, creative and all,
+    // so adopting one never plans as a destroy plus an ad-less create.
+    for (di, d) in declared.iter().enumerate() {
+        if out[di].1.is_some() || declares_creative(d) {
+            continue;
+        }
+        let Some(parent_id) = ad_group_match.get(&d.ad_group) else {
+            continue;
+        };
+        let claimed = live
+            .iter()
+            .enumerate()
+            .filter(|(li, l)| {
+                !consumed[*li] && &l.ad_group == parent_id && ad_urls_key(l) == ad_urls_key(d)
+            })
+            .map(|(li, _)| li)
+            .min_by_key(|&li| usize::from(!diff_ad_group_ad(d, &live[li]).is_empty()));
+        if let Some(li) = claimed {
+            consumed[li] = true;
+            out[di] = (
+                action_for_match(live[li].id.clone(), diff_ad_group_ad(d, &live[li])),
+                Some(li),
+            );
+        }
+    }
+
     out
+}
+
+fn declares_creative(a: &JsonAdGroupAd) -> bool {
+    a.ad.responsive_search_ad.is_some()
+        || a.ad.video_responsive_ad.is_some()
+        || a.ad.demand_gen_video_responsive_ad.is_some()
+}
+
+/// Body match for the label pass: a declared ad that leaves the creative
+/// unmanaged compares on URLs alone, everything else on the full body.
+fn ad_bodies_match(
+    d: &JsonAdGroupAd,
+    l: &JsonAdGroupAd,
+    asset_match: &HashMap<String, String>,
+) -> bool {
+    if declares_creative(d) {
+        ad_body_key(d, asset_match) == ad_body_key(l, asset_match)
+    } else {
+        ad_urls_key(d) == ad_urls_key(l)
+    }
+}
+
+fn ad_urls_key(a: &JsonAdGroupAd) -> String {
+    a.ad.final_urls.join("\u{1f}")
 }
 
 /// A stable key for an ad's content (everything `diff_ad_group_ad` treats as
 /// creation-only). Status is deliberately excluded so identical-bodied ads in
-/// different states share a bucket and get assigned 1:1.
-fn ad_body_key(a: &JsonAdGroupAd) -> String {
+/// different states share a bucket and get assigned 1:1. Video refs run through
+/// `asset_match` so a declared asset address and the live asset id it matched
+/// produce the same key; a live id is its own key, so one function serves both
+/// sides.
+fn ad_body_key(a: &JsonAdGroupAd, asset_match: &HashMap<String, String>) -> String {
     use std::fmt::Write;
+    let video_id = |r: &String| asset_match.get(r).unwrap_or(r).clone();
     let mut k = String::new();
-    let _ = write!(k, "urls:{}", a.ad.final_urls.join("\u{1f}"));
+    let _ = write!(k, "urls:{}", ad_urls_key(a));
     if let Some(rsa) = &a.ad.responsive_search_ad {
         k.push_str("\u{1e}h:");
         for h in &rsa.headlines {
@@ -1341,6 +1429,34 @@ fn ad_body_key(a: &JsonAdGroupAd) -> String {
             "\u{1e}p1:{}\u{1e}p2:{}",
             rsa.path1.as_deref().unwrap_or(""),
             rsa.path2.as_deref().unwrap_or(""),
+        );
+    }
+    if let Some(v) = &a.ad.video_responsive_ad {
+        let _ = write!(
+            k,
+            "\u{1e}video:{}\u{1e}vh:{}\u{1e}vlh:{}\u{1e}vd:{}\u{1e}vcta:{}",
+            video_id(&v.video),
+            v.headlines.join("\u{1f}"),
+            v.long_headlines.join("\u{1f}"),
+            v.descriptions.join("\u{1f}"),
+            v.call_to_actions.join("\u{1f}"),
+        );
+    }
+    if let Some(dg) = &a.ad.demand_gen_video_responsive_ad {
+        // call_to_actions are left out: live Demand Gen CTAs are asset refs, so
+        // reading them back never reproduces the declared text and every ad
+        // would look like a body change.
+        let videos: Vec<String> = dg.videos.iter().map(video_id).collect();
+        let _ = write!(
+            k,
+            "\u{1e}dgvideos:{}\u{1e}dgh:{}\u{1e}dglh:{}\u{1e}dgd:{}\u{1e}dgb1:{}\u{1e}dgb2:{}\u{1e}dgbn:{}",
+            videos.join("\u{1f}"),
+            dg.headlines.join("\u{1f}"),
+            dg.long_headlines.join("\u{1f}"),
+            dg.descriptions.join("\u{1f}"),
+            dg.breadcrumb1.as_deref().unwrap_or(""),
+            dg.breadcrumb2.as_deref().unwrap_or(""),
+            dg.business_name.as_deref().unwrap_or(""),
         );
     }
     k
@@ -1589,10 +1705,11 @@ mod ad_match_tests {
             ad("102", "ag", "ENABLED", "Block ads now"),
         ];
 
-        let actions: Vec<Action> = match_ad_group_ads(&declared, &live, &identity_match())
-            .into_iter()
-            .map(|(a, _)| a)
-            .collect();
+        let actions: Vec<Action> =
+            match_ad_group_ads(&declared, &live, &identity_match(), &HashMap::new())
+                .into_iter()
+                .map(|(a, _)| a)
+                .collect();
 
         assert!(
             actions.iter().all(|a| matches!(a, Action::NoOp { .. })),
@@ -1616,10 +1733,11 @@ mod ad_match_tests {
             ad("201", "ag", "ENABLED", "Same body"),
         ];
 
-        let actions: Vec<Action> = match_ad_group_ads(&declared, &live, &identity_match())
-            .into_iter()
-            .map(|(a, _)| a)
-            .collect();
+        let actions: Vec<Action> =
+            match_ad_group_ads(&declared, &live, &identity_match(), &HashMap::new())
+                .into_iter()
+                .map(|(a, _)| a)
+                .collect();
 
         assert!(matches!(&actions[0], Action::NoOp { live_id } if live_id == "201"));
         assert!(matches!(&actions[1], Action::NoOp { live_id } if live_id == "200"));
@@ -1638,10 +1756,11 @@ mod ad_match_tests {
             ad("301", "ag", "PAUSED", "Same body"),
         ];
 
-        let actions: Vec<Action> = match_ad_group_ads(&declared, &live, &identity_match())
-            .into_iter()
-            .map(|(a, _)| a)
-            .collect();
+        let actions: Vec<Action> =
+            match_ad_group_ads(&declared, &live, &identity_match(), &HashMap::new())
+                .into_iter()
+                .map(|(a, _)| a)
+                .collect();
 
         let noops = actions.iter().filter(|a| matches!(a, Action::NoOp { .. })).count();
         let updates = actions
@@ -1661,10 +1780,11 @@ mod ad_match_tests {
         let declared = vec![ad("new", "ag", "ENABLED", "Brand new copy")];
         let live = vec![ad("400", "ag", "ENABLED", "Old copy")];
 
-        let actions: Vec<Action> = match_ad_group_ads(&declared, &live, &identity_match())
-            .into_iter()
-            .map(|(a, _)| a)
-            .collect();
+        let actions: Vec<Action> =
+            match_ad_group_ads(&declared, &live, &identity_match(), &HashMap::new())
+                .into_iter()
+                .map(|(a, _)| a)
+                .collect();
 
         assert!(matches!(&actions[0], Action::Create));
     }
@@ -1674,10 +1794,11 @@ mod ad_match_tests {
         let declared = vec![ad("x", "missing_ag", "ENABLED", "Copy")];
         let live = vec![ad("500", "ag", "ENABLED", "Copy")];
 
-        let actions: Vec<Action> = match_ad_group_ads(&declared, &live, &identity_match())
-            .into_iter()
-            .map(|(a, _)| a)
-            .collect();
+        let actions: Vec<Action> =
+            match_ad_group_ads(&declared, &live, &identity_match(), &HashMap::new())
+                .into_iter()
+                .map(|(a, _)| a)
+                .collect();
 
         assert!(matches!(&actions[0], Action::Create));
     }
@@ -2089,6 +2210,181 @@ mod removed_resource_tests {
             .filter(|d| d.kind == "ad_group_ad" && matches!(d.action, Action::Delete { .. }))
             .filter_map(|d| d.action.live_id())
             .collect()
+    }
+
+    #[test]
+    fn a_video_ad_matching_live_plans_as_a_no_op() {
+        // Second plan after `apply` created the asset and the creative: the
+        // declared video ref is an address, live reports an asset id, and the
+        // two have to reconcile or every plan would re-create the ad.
+        let declared = input(
+            r#"{
+            "customer_id": "100",
+            "ad_groups": [{"id":"m.ag","name":"In-stream","campaign":"m.c"}],
+            "youtube_video_assets": [{"id":"m.brand","youtube_video_id":"dQw4w9WgXcQ"}],
+            "ad_group_ads": [{
+                "id":"m.preroll","ad_group":"m.ag","status":"PAUSED",
+                "ad":{"final_urls":["https://e.com"],"video_responsive_ad":{
+                    "video":"m.brand","headlines":["Block ads"],"call_to_actions":["Install"]
+                }}
+            }]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "ad_groups": [{"id":"55","name":"In-stream","campaign":"c1","managed_address":"m.ag"}],
+            "youtube_video_assets": [{"id":"42","youtube_video_id":"dQw4w9WgXcQ"}],
+            "ad_group_ads": [{
+                "id":"55~9","ad_group":"55","status":"PAUSED",
+                "ad":{"final_urls":["https://e.com"],"video_responsive_ad":{
+                    "video":"42","headlines":["Block ads"],"call_to_actions":["Install"]
+                }},
+                "managed_address":"m.preroll"
+            }],
+            "labels": {"m.ag":"customers/100/labels/1","m.preroll":"customers/100/labels/2"}
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        let ad = report
+            .diffs
+            .iter()
+            .find(|d| d.address == "m.preroll")
+            .expect("the video ad is diffed");
+        assert!(
+            matches!(ad.action, Action::NoOp { .. }),
+            "an unchanged video ad must not re-create: {:?}",
+            ad.action
+        );
+        let asset = report
+            .diffs
+            .iter()
+            .find(|d| d.kind == "youtube_video_asset")
+            .expect("the video asset is diffed");
+        assert_eq!(asset.action.live_id(), Some("42"));
+        assert!(ad_destroys(&report).is_empty());
+    }
+
+    #[test]
+    fn a_scaffold_only_ad_still_adopts_a_ui_built_creative() {
+        // The shape `refresh` produced for a UI-built video ad before the
+        // creative was readable: URLs, no creative block. It has to keep
+        // adopting the live ad rather than destroying it and creating an
+        // ad with no creative at all.
+        let declared = input(
+            r#"{
+            "customer_id": "100",
+            "ad_groups": [{"id":"m.ag","name":"In-stream","campaign":"m.c"}],
+            "ad_group_ads": [{
+                "id":"m.preroll","ad_group":"m.ag","status":"PAUSED",
+                "ad":{"final_urls":["https://e.com"]}
+            }]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "ad_groups": [{"id":"55","name":"In-stream","campaign":"c1","managed_address":"m.ag"}],
+            "ad_group_ads": [{
+                "id":"55~9","ad_group":"55","status":"PAUSED",
+                "ad":{"final_urls":["https://e.com"],"video_responsive_ad":{
+                    "video":"42","headlines":["Built in the UI"]
+                }},
+                "managed_address":"m.preroll"
+            }],
+            "labels": {"m.ag":"customers/100/labels/1","m.preroll":"customers/100/labels/2"}
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        let ad = report
+            .diffs
+            .iter()
+            .find(|d| d.address == "m.preroll")
+            .expect("the ad is diffed");
+        assert_eq!(ad.action.live_id(), Some("55~9"), "{:?}", ad.action);
+        assert!(ad_destroys(&report).is_empty());
+    }
+
+    #[test]
+    fn an_unlabeled_ui_built_creative_adopts_onto_a_scaffold_only_ad() {
+        let declared = input(
+            r#"{
+            "customer_id": "100",
+            "ad_groups": [{"id":"m.ag","name":"In-stream","campaign":"m.c"}],
+            "ad_group_ads": [{
+                "id":"m.preroll","ad_group":"m.ag","status":"PAUSED",
+                "ad":{"final_urls":["https://e.com"]}
+            }]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "ad_groups": [{"id":"55","name":"In-stream","campaign":"c1","managed_address":"m.ag"}],
+            "ad_group_ads": [{
+                "id":"55~9","ad_group":"55","status":"PAUSED",
+                "ad":{"final_urls":["https://e.com"],"video_responsive_ad":{
+                    "video":"42","headlines":["Built in the UI"]
+                }}
+            }],
+            "labels": {"m.ag":"customers/100/labels/1"}
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        let ad = report
+            .diffs
+            .iter()
+            .find(|d| d.address == "m.preroll")
+            .expect("the ad is diffed");
+        assert_eq!(ad.action.live_id(), Some("55~9"), "{:?}", ad.action);
+    }
+
+    #[test]
+    fn a_changed_video_creative_replaces_the_ad() {
+        let declared = input(
+            r#"{
+            "customer_id": "100",
+            "ad_groups": [{"id":"m.ag","name":"In-stream","campaign":"m.c"}],
+            "youtube_video_assets": [{"id":"m.brand","youtube_video_id":"dQw4w9WgXcQ"}],
+            "ad_group_ads": [{
+                "id":"m.preroll","ad_group":"m.ag","status":"PAUSED",
+                "ad":{"final_urls":["https://e.com"],"video_responsive_ad":{
+                    "video":"m.brand","headlines":["Block trackers too"]
+                }}
+            }]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "ad_groups": [{"id":"55","name":"In-stream","campaign":"c1","managed_address":"m.ag"}],
+            "youtube_video_assets": [{"id":"42","youtube_video_id":"dQw4w9WgXcQ"}],
+            "ad_group_ads": [{
+                "id":"55~9","ad_group":"55","status":"PAUSED",
+                "ad":{"final_urls":["https://e.com"],"video_responsive_ad":{
+                    "video":"42","headlines":["Block ads"]
+                }},
+                "managed_address":"m.preroll"
+            }],
+            "labels": {"m.ag":"customers/100/labels/1","m.preroll":"customers/100/labels/2"}
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        let ad = report
+            .diffs
+            .iter()
+            .find(|d| d.address == "m.preroll")
+            .expect("the video ad is diffed");
+        assert!(
+            matches!(ad.action, Action::Create),
+            "an edited creative is a new ad: {:?}",
+            ad.action
+        );
+        assert_eq!(ad_destroys(&report), vec!["55~9"]);
     }
 
     #[test]

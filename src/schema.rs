@@ -276,8 +276,8 @@ fn ad_block(final_urls_required: bool) -> NestedBlockSchema {
                 },
                 // A YouTube in-stream / bumper / non-skippable video ad. `video`
                 // references an already-uploaded YouTube video by id — bidsmith does
-                // not (and cannot) upload the video file itself; see the CLI limitation
-                // notice surfaced by `plan` and the `google_ads_youtube_video_asset` lint.
+                // not (and cannot) upload the video file itself; see the upload
+                // notice `plan` surfaces.
                 NestedBlockSchema {
                     name: "video_responsive_ad",
                     schema: BlockSchema {
@@ -305,9 +305,9 @@ fn ad_block(final_urls_required: bool) -> NestedBlockSchema {
                 },
                 // A Demand Gen video responsive ad — the ad type a DEMAND_GEN
                 // campaign carries. A distinct API message from video_responsive_ad
-                // (VIDEO campaigns); the video assets are UI-managed like the
-                // youtube video ad, so bidsmith round-trips the creative but does
-                // not create/update it on the live account.
+                // (VIDEO campaigns). `business_name` is optional here but required
+                // by the API on create; `call_to_actions` are CALL_TO_ACTION asset
+                // refs on the wire, which bidsmith does not model yet.
                 NestedBlockSchema {
                     name: "demand_gen_video_responsive_ad",
                     schema: BlockSchema {
@@ -333,6 +333,7 @@ fn ad_block(final_urls_required: bool) -> NestedBlockSchema {
                             ),
                             attr("breadcrumb1", FieldType::String, false),
                             attr("breadcrumb2", FieldType::String, false),
+                            attr("business_name", FieldType::String, false),
                         ],
                         blocks: vec![],
                     },
@@ -752,10 +753,9 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
         );
 
         // A YouTube video Asset — a reference to a video already published on a
-        // YouTube channel, addressed by its 11-char video id. bidsmith records the
-        // reference so a video ad can point at it; it never uploads the video file
-        // (that is the YouTube Data API's job, a separate system). See the lint in
-        // `lint.rs` and the `plan` video notice for the full workflow.
+        // YouTube channel, addressed by its 11-char video id. `apply` creates the
+        // asset from that id; it never uploads the video file (that is the YouTube
+        // Data API's job, a separate system).
         m.insert(
             "google_ads_youtube_video_asset",
             BlockSchema {

@@ -22,14 +22,11 @@ creative you attach to a preroll / in-stream / bumper ad via a
   `youtube.com/watch?v=…` URL) into `youtube_video_id`.
 </Aside>
 
-<Aside type="note" title="Video ads are not applied yet">
-  `plan` and `apply` manage the **campaign scaffold** — budget,
-  targeting, status, final URLs — but do **not** create or update the
-  video asset or the video-ad creative on the live account. Build and
-  attach the video ad in the Google Ads UI, then pull the finished setup
-  back into your `.bid` files with `bidsmith refresh`. The CLI prints a
-  reminder whenever your configuration includes video.
-</Aside>
+`apply` creates the asset from that id and attaches it to the ad, so a
+video campaign runs end to end from your `.bid` files — the only manual
+step is getting the video onto YouTube. If the same video id is already
+an asset on the account, bidsmith reuses it instead of adding a
+duplicate.
 
 ## Where the video id comes from
 

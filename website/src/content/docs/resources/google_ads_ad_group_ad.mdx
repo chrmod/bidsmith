@@ -143,14 +143,13 @@ The ad group must be a video type (`VIDEO_TRUE_VIEW_IN_STREAM`,
 `VIDEO_BUMPER`, `VIDEO_NON_SKIPPABLE_IN_STREAM`, …) and its campaign
 must be `advertising_channel_type = "VIDEO"`.
 
-<Aside type="caution" title="bidsmith does not upload video, and does not apply video creatives yet">
+`apply` creates both the video asset and the creative. Ad copy is
+create-only, exactly as it is for RSAs: editing a headline plans as a new
+ad plus a destroy of the old one, not an in-place edit.
+
+<Aside type="caution" title="bidsmith does not upload video">
   The video must **already be published on YouTube** — bidsmith
-  references it by id and cannot upload video files. And while `plan` /
-  `apply` manage the campaign scaffold (budget, targeting, status, final
-  URLs), they do **not** create or update the video ad creative on the
-  live account yet. Build the video ad in the Google Ads UI, then pull it
-  into your `.bid` files with `bidsmith refresh`. The CLI warns you about
-  both limits whenever a configuration includes video. See
+  references it by id and cannot upload video files. See
   [`google_ads_youtube_video_asset`](./google_ads_youtube_video_asset/)
   for the full workflow.
 </Aside>
@@ -163,7 +162,8 @@ The creative a **Demand Gen** campaign runs
 (`advertising_channel_type = "DEMAND_GEN"`). It's a distinct ad type
 from `video_responsive_ad`: `videos` is a **list** of
 [`google_ads_youtube_video_asset`](./google_ads_youtube_video_asset/)
-references, and it adds `breadcrumb1` / `breadcrumb2`.
+references, and it adds `business_name` and `breadcrumb1` /
+`breadcrumb2`.
 
 ```hcl
 resource "google_ads_youtube_video_asset" "shorts" {
@@ -183,6 +183,7 @@ resource "google_ads_ad_group_ad" "shorts_ad" {
       headlines      = ["Block Ads & Trackers Free"]
       long_headlines = ["Block ads, trackers and cookie popups across the web"]
       descriptions   = ["Add the free privacy extension to your browser."]
+      business_name  = "Ghostery"
       breadcrumb1    = "Adblocker"
       breadcrumb2    = "Browser"
     }
@@ -196,13 +197,15 @@ the Google Ads UI — see
 `bidsmith pull` selects the Demand Gen creative and the campaign
 round-trips through `export`.
 
-<Aside type="caution" title="Creative is UI-managed; call-to-actions do not round-trip">
-  As with video ads, bidsmith round-trips the Demand Gen creative for
-  representation but `plan` / `apply` manage only the campaign scaffold —
-  they do **not** create or update the creative on the live account. The
-  video must already exist on YouTube. Note that `call_to_actions` come
-  back from the Google Ads API as **asset references** rather than inline
-  text, so they do not populate on a round-trip.
+<Aside type="caution" title="call_to_actions blocks creation">
+  `business_name` is optional in the schema but **required by the Google
+  Ads API** on this ad type, so `apply` cannot create a Demand Gen video
+  ad without it. And `call_to_actions` are **CALL_TO_ACTION asset
+  references** on the wire rather than inline text — bidsmith does not
+  model that asset type yet, so the attribute neither round-trips nor
+  applies; `plan` refuses to build an ad that sets it. Drop the attribute
+  to create the ad without a call-to-action button, or add the button in
+  the Google Ads UI.
 </Aside>
 
 <AttributeTable block={dgVideo} headingLevel={4} />
