@@ -6,8 +6,8 @@ use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
     JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCustomerAsset,
-    JsonDemandGenVideoResponsiveAd, JsonDevice, JsonKeyword, JsonLanguage, JsonLocation,
-    JsonManualCpc, JsonNetworkSettings,
+    JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonKeyword, JsonLanguage,
+    JsonLocation, JsonManualCpc, JsonNetworkSettings,
     JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedCriterion, JsonSharedSet,
     JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonValueSettings, JsonVideoResponsiveAd,
     JsonYoutubeVideoAsset,
@@ -305,6 +305,7 @@ fn import_campaign(
     let mut eu_political = None;
     let mut manual_cpc = None;
     let mut network_settings = None;
+    let mut frequency_caps: Vec<JsonFrequencyCap> = Vec::new();
     let mut languages: Vec<String> = Vec::new();
     let mut locations: Vec<String> = Vec::new();
 
@@ -323,6 +324,7 @@ fn import_campaign(
             Structure::Block(b) => match b.ident.as_str() {
                 "manual_cpc" => manual_cpc = Some(import_manual_cpc(ctx, b)),
                 "network_settings" => network_settings = Some(import_network_settings(ctx, b)),
+                "frequency_caps" => frequency_caps.extend(import_frequency_cap(ctx, b)),
                 _ => {}
             },
         }
@@ -344,6 +346,7 @@ fn import_campaign(
             contains_eu_political_advertising: eu_political,
             manual_cpc,
             network_settings,
+            frequency_caps,
             managed_address: None,
         },
         criteria,
@@ -479,6 +482,35 @@ fn import_network_settings(ctx: &Ctx, block: &Block) -> JsonNetworkSettings {
         }
     }
     s
+}
+
+/// `None` when a required attribute is missing or non-literal — `validate`
+/// already reported it, and a half-specified cap must not reach the API.
+fn import_frequency_cap(ctx: &Ctx, block: &Block) -> Option<JsonFrequencyCap> {
+    let mut event_type = None;
+    let mut time_unit = None;
+    let mut time_length = None;
+    let mut cap = None;
+    let mut level = None;
+    for st in block.body.iter() {
+        if let Structure::Attribute(a) = st {
+            match a.key.as_str() {
+                "event_type" => event_type = expect_string_owned(ctx, a),
+                "time_unit" => time_unit = expect_string_owned(ctx, a),
+                "time_length" => time_length = expect_i64(ctx, a),
+                "cap" => cap = expect_i64(ctx, a),
+                "level" => level = expect_string_owned(ctx, a),
+                _ => {}
+            }
+        }
+    }
+    Some(JsonFrequencyCap {
+        event_type: event_type?,
+        time_unit: time_unit?,
+        time_length: time_length?,
+        cap: cap?,
+        level,
+    })
 }
 
 fn import_ad_group(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonAdGroup, Diag> {
@@ -2590,6 +2622,125 @@ resource "google_ads_campaign" "shell" {
                 .as_ref()
                 .map(|l| l.language_constant.as_str()),
             Some("languageConstants/1000")
+        );
+    }
+
+    fn video_campaign_with_caps(name: &str, caps: &str) -> ExportInput {
+        import_str(
+            name,
+            &format!(
+                r#"
+locals {{
+  impression_cap = 3
+}}
+
+resource "google_ads_campaign_budget" "b" {{
+  name          = "B"
+  amount_micros = 1000000
+}}
+
+resource "google_ads_campaign" "v" {{
+  name                     = "V"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.b.id
+{caps}
+}}
+"#
+            ),
+        )
+    }
+
+    const LIVE_VIDEO_CAMPAIGN: &str = r#"[{"results":[
+      {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+      {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"V","status":"ENABLED","advertisingChannelType":"VIDEO","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","frequencyCaps":[
+        {"key":{"level":"CAMPAIGN","eventType":"IMPRESSION","timeUnit":"DAY","timeLength":1},"cap":3},
+        {"key":{"level":"CAMPAIGN","eventType":"VIDEO_VIEW","timeUnit":"DAY","timeLength":1},"cap":1}
+      ]}}
+    ]}]"#;
+
+    #[test]
+    fn frequency_caps_import_as_a_list_and_match_live_in_any_order() {
+        let declared = video_campaign_with_caps(
+            "freq_caps_order",
+            r#"
+  frequency_caps {
+    event_type  = "VIDEO_VIEW"
+    time_unit   = "DAY"
+    time_length = 1
+    cap         = 1
+  }
+
+  frequency_caps {
+    event_type  = "IMPRESSION"
+    time_unit   = "DAY"
+    time_length = 1
+    cap         = local.impression_cap
+  }
+"#,
+        );
+        assert_eq!(declared.campaigns[0].frequency_caps.len(), 2);
+        assert_eq!(
+            declared.campaigns[0].frequency_caps[0].level_or_default(),
+            "CAMPAIGN"
+        );
+
+        let live = crate::commands::adapt::from_search_response(LIVE_VIDEO_CAMPAIGN)
+            .expect("adapt live");
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(report.update_count, 0, "diffs: {:?}", report.diffs);
+    }
+
+    #[test]
+    fn a_changed_cap_plans_an_update() {
+        let declared = video_campaign_with_caps(
+            "freq_caps_changed",
+            r#"
+  frequency_caps {
+    event_type  = "IMPRESSION"
+    time_unit   = "DAY"
+    time_length = 1
+    cap         = 5
+  }
+
+  frequency_caps {
+    event_type  = "VIDEO_VIEW"
+    time_unit   = "DAY"
+    time_length = 1
+    cap         = 1
+  }
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(LIVE_VIDEO_CAMPAIGN)
+            .expect("adapt live");
+        let report = diff_after_defaults(declared, live);
+        let changed: Vec<&Vec<String>> = report
+            .diffs
+            .iter()
+            .filter_map(|d| match &d.action {
+                crate::api::diff::Action::Update { changed_fields, .. } => Some(changed_fields),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(changed.len(), 1, "diffs: {:?}", report.diffs);
+        assert_eq!(changed[0], &vec!["frequency_caps".to_string()]);
+    }
+
+    #[test]
+    fn caps_set_outside_bidsmith_surface_as_drift() {
+        // The whole point of the feature: a campaign bidsmith manages that
+        // declares no caps must not silently keep UI-set ones.
+        let declared = video_campaign_with_caps("freq_caps_none", "");
+        let live = crate::commands::adapt::from_search_response(LIVE_VIDEO_CAMPAIGN)
+            .expect("adapt live");
+        let report = diff_after_defaults(declared, live);
+        assert!(
+            report.diffs.iter().any(|d| matches!(
+                &d.action,
+                crate::api::diff::Action::Update { changed_fields, .. }
+                    if changed_fields.contains(&"frequency_caps".to_string())
+            )),
+            "diffs: {:?}",
+            report.diffs
         );
     }
 

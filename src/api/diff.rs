@@ -1220,7 +1220,18 @@ fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign) -> Vec<String> {
             c.push(path.into());
         }
     }
+    if sorted_frequency_caps(d) != sorted_frequency_caps(l) {
+        c.push("frequency_caps".into());
+    }
     c
+}
+
+/// The whole cap list is one API field, so it diffs as a set — reordering the
+/// blocks in a `.bid` is not a change.
+fn sorted_frequency_caps(c: &JsonCampaign) -> Vec<(&str, &str, &str, i64, i64)> {
+    let mut caps: Vec<_> = c.frequency_caps.iter().map(|f| f.sort_key()).collect();
+    caps.sort_unstable();
+    caps
 }
 
 fn diff_ad_group(d: &JsonAdGroup, l: &JsonAdGroup) -> Vec<String> {

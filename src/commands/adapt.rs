@@ -6,8 +6,9 @@ use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
     JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCustomerAsset,
-    JsonDemandGenVideoResponsiveAd, JsonDevice, JsonKeyword, JsonLanguage, JsonLocation,
-    JsonManualCpc, JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset,
+    JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonKeyword, JsonLanguage,
+    JsonLocation, JsonManualCpc, JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd,
+    JsonRsaAsset,
     JsonSharedSet, JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonValueSettings,
     JsonVideoResponsiveAd, JsonYoutubeVideoAsset,
 };
@@ -280,6 +281,7 @@ impl AdapterState {
                 contains_eu_political_advertising: None,
                 manual_cpc: None,
                 network_settings: None,
+                frequency_caps: Vec::new(),
                 managed_address: None,
             });
         if let Some(s) = v.get("name").and_then(Value::as_str) {
@@ -308,6 +310,9 @@ impl AdapterState {
                     .get("enhancedCpcEnabled")
                     .and_then(Value::as_bool),
             });
+        }
+        if let Some(caps) = v.get("frequencyCaps").and_then(Value::as_array) {
+            entry.frequency_caps = caps.iter().filter_map(parse_frequency_cap).collect();
         }
         if let Some(ns) = v.get("networkSettings") {
             entry.network_settings = Some(JsonNetworkSettings {
@@ -1108,6 +1113,20 @@ fn claim_category(label: Option<&Value>) -> Option<String> {
     let name = label?.get("name").and_then(Value::as_str)?;
     name.strip_prefix(crate::commands::export::OWNS_LABEL_PREFIX)
         .map(str::to_string)
+}
+
+fn parse_frequency_cap(v: &Value) -> Option<JsonFrequencyCap> {
+    let key = v.get("key")?;
+    Some(JsonFrequencyCap {
+        event_type: key.get("eventType").and_then(Value::as_str)?.to_string(),
+        time_unit: key.get("timeUnit").and_then(Value::as_str)?.to_string(),
+        time_length: parse_i64(key.get("timeLength")).unwrap_or(1),
+        cap: parse_i64(v.get("cap"))?,
+        level: key
+            .get("level")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
 }
 
 fn parse_i64(v: Option<&Value>) -> Option<i64> {

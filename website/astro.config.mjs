@@ -51,6 +51,7 @@ export default defineConfig({
             { label: 'Pause everything for the holidays', slug: 'recipes/pause-for-holidays' },
             { label: 'Move a keyword between match types', slug: 'recipes/change-keyword-match-type' },
             { label: 'Target specific countries and languages', slug: 'recipes/target-countries-and-languages' },
+            { label: 'Cap how often people see your video ad', slug: 'recipes/cap-how-often-people-see-your-video' },
             { label: 'Add a whole keyword list at once', slug: 'recipes/add-many-keywords' },
             { label: 'Remove a whole keyword list safely', slug: 'recipes/remove-keywords-safely' },
             { label: 'Reuse a headline set across many ads', slug: 'recipes/reuse-a-headline-set' },

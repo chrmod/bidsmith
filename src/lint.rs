@@ -68,10 +68,37 @@ fn lint_resource(file: &ParsedFile, block: &Block, bindings: &Bindings, diags: &
         lint_rsa_paths(file, &block.body, &address, bindings, diags);
     }
 
+    if ty == "google_ads_campaign" {
+        lint_frequency_caps(file, block, &address, bindings, diags);
+    }
+
     if ty == "google_ads_campaign_criterion" {
         if let Some(lang_block) = find_block(&block.body, "language") {
             lint_language(file, lang_block, &address, bindings, diags);
         }
+    }
+}
+
+fn lint_frequency_caps(
+    file: &ParsedFile,
+    block: &Block,
+    address: &str,
+    bindings: &Bindings,
+    diags: &mut Vec<Diag>,
+) {
+    let Some(caps) = find_block(&block.body, "frequency_caps") else {
+        return;
+    };
+    let channel = find_attr(&block.body, "advertising_channel_type")
+        .and_then(|a| eval_str(bindings, &file.module, &a.value));
+    if channel.as_deref() == Some("DEMAND_GEN") {
+        diags.push(Diag::warning(
+            file.src.clone(),
+            span_of(caps.ident.span()),
+            format!(
+                "{address} sets frequency_caps on a Demand Gen campaign: Google Ads does not support frequency capping for this channel, so the setting has no effect"
+            ),
+        ));
     }
 }
 
@@ -408,6 +435,43 @@ mod tests {
             .iter()
             .map(|d| d.message.clone())
             .collect()
+    }
+
+    fn campaign_with_caps(name: &str, channel: &str) -> Vec<String> {
+        lint_str(
+            name,
+            &format!(
+                r#"
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "{channel}"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  frequency_caps {{
+    event_type  = "IMPRESSION"
+    time_unit   = "DAY"
+    time_length = 1
+    cap         = 3
+  }}
+}}
+"#
+            ),
+        )
+    }
+
+    #[test]
+    fn frequency_caps_on_demand_gen_warn() {
+        let msgs = campaign_with_caps("caps_demand_gen", "DEMAND_GEN");
+        assert!(
+            msgs.iter().any(|m| m.contains("does not support frequency capping")),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn frequency_caps_on_video_are_quiet() {
+        let msgs = campaign_with_caps("caps_video", "VIDEO");
+        assert!(msgs.is_empty(), "{msgs:?}");
     }
 
     fn rsa(headlines: &str, descriptions: &str) -> String {

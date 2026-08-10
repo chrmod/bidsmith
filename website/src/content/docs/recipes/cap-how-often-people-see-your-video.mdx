@@ -1,0 +1,76 @@
+---
+title: Cap how often people see your video ad
+description: Limit impressions and views per person per day, week, or month with repeated frequency_caps blocks on a video campaign.
+---
+
+A YouTube in-stream campaign left uncapped will show the same person
+your ad over and over. Frequency capping puts a ceiling on that:
+*"at most 3 impressions a day, and count at most 1 as a watched view."*
+
+Say it with `frequency_caps` blocks on the campaign — one block per
+cap:
+
+```hcl
+resource "google_ads_campaign" "instream" {
+  name                     = "Preroll — India 12s"
+  status                   = "PAUSED"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.preroll.id
+
+  frequency_caps {
+    event_type  = "IMPRESSION"
+    time_unit   = "DAY"
+    time_length = 1
+    cap         = 3
+  }
+
+  frequency_caps {
+    event_type  = "VIDEO_VIEW"
+    time_unit   = "DAY"
+    time_length = 1
+    cap         = 1
+  }
+}
+```
+
+Each block is one cap:
+
+- **`event_type`** — what you're counting. `IMPRESSION` is "the ad was
+  shown"; `VIDEO_VIEW` is "the person actually watched it" (past the
+  skip point, or 30 seconds).
+- **`time_unit`** and **`time_length`** — the window. `"DAY"` with
+  `time_length = 1` is "per day"; `"WEEK"` with `time_length = 1` is
+  "per week".
+- **`cap`** — the ceiling itself, a whole number.
+
+## Loosening or removing a cap
+
+Edit the number and `plan` shows the change; delete the block and the
+cap goes away entirely:
+
+```diff
+   frequency_caps {
+     event_type  = "IMPRESSION"
+     time_unit   = "DAY"
+     time_length = 1
+-    cap         = 3
++    cap         = 5
+   }
+```
+
+The whole set is managed together, so your file is the final word: a
+cap somebody added in the Google Ads UI shows up in `plan` as drift
+on the campaign, and removing every block clears every cap. The order
+of the blocks doesn't matter.
+
+## Where capping applies
+
+Frequency capping works on **video** and **display** campaigns. Google
+Ads does not support it on Demand Gen campaigns — `validate` warns you
+if you set it there rather than letting it silently do nothing.
+
+## See also
+
+- [`google_ads_campaign`](/bidsmith/resources/google_ads_campaign/) — the full campaign reference.
+- [Drift](/bidsmith/concepts/drift/) — why a UI change shows up in `plan`.
+- [Google's frequency capping help page](https://support.google.com/google-ads/answer/6034106).

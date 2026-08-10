@@ -914,6 +914,10 @@ fn campaign_update_body(c: &JsonCampaign, resource_name: &str, fields: &[String]
                     sub.insert("targetPartnerSearchNetwork".into(), Value::Bool(v));
                 }
             }
+            // A repeated field is replaced wholesale; an empty list clears it.
+            "frequency_caps" => {
+                m.insert("frequencyCaps".into(), frequency_caps_value(c));
+            }
             _ => {}
         }
     }
@@ -1522,7 +1526,29 @@ fn campaign_create(c: &JsonCampaign, resource_name: &str, budget_rn: &str) -> Va
         }
         m.insert("networkSettings".into(), Value::Object(sub));
     }
+    if !c.frequency_caps.is_empty() {
+        m.insert("frequencyCaps".into(), frequency_caps_value(c));
+    }
     Value::Object(m)
+}
+
+fn frequency_caps_value(c: &JsonCampaign) -> Value {
+    Value::Array(
+        c.frequency_caps
+            .iter()
+            .map(|f| {
+                json!({
+                    "key": {
+                        "level": f.level_or_default(),
+                        "eventType": f.event_type,
+                        "timeUnit": f.time_unit,
+                        "timeLength": f.time_length,
+                    },
+                    "cap": f.cap,
+                })
+            })
+            .collect(),
+    )
 }
 
 fn ad_group_create(g: &JsonAdGroup, resource_name: &str, campaign_rn: &str) -> Value {
@@ -1813,6 +1839,91 @@ mod tests {
                     .join("; ")
             ),
         }
+    }
+
+    fn campaign_with_caps(caps: Value) -> ExportInput {
+        serde_json::from_value(json!({
+            "customer_id": "100",
+            "campaign_budgets": [{"id": "m.b", "name": "B", "amount_micros": 10000000}],
+            "campaigns": [{
+                "id": "m.c", "name": "V", "advertising_channel_type": "VIDEO",
+                "campaign_budget": "m.b", "frequency_caps": caps
+            }]
+        }))
+        .expect("valid ExportInput")
+    }
+
+    #[test]
+    fn frequency_caps_create_nests_the_key_and_defaults_the_level() {
+        let input = campaign_with_caps(json!([
+            {"event_type": "IMPRESSION", "time_unit": "DAY", "time_length": 1, "cap": 3},
+            {"event_type": "VIDEO_VIEW", "time_unit": "WEEK", "time_length": 2, "cap": 1,
+             "level": "AD_GROUP"}
+        ]));
+        let report = DiffReport {
+            diffs: vec![
+                create_diff("m.b", "campaign_budget"),
+                create_diff("m.c", "campaign"),
+            ],
+            label_plans: Vec::new(),
+            claim_plans: Vec::new(),
+            noop_count: 0,
+            create_count: 2,
+            update_count: 0,
+            delete_count: 0,
+            adopt_count: 0,
+            warnings: Vec::new(),
+        };
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let ops = plan.body["mutateOperations"].as_array().unwrap();
+        let campaign = ops
+            .iter()
+            .find_map(|op| op.get("campaignOperation").and_then(|o| o.get("create")))
+            .expect("campaign create op");
+        assert_eq!(
+            campaign["frequencyCaps"],
+            json!([
+                {"key": {"level": "CAMPAIGN", "eventType": "IMPRESSION",
+                         "timeUnit": "DAY", "timeLength": 1}, "cap": 3},
+                {"key": {"level": "AD_GROUP", "eventType": "VIDEO_VIEW",
+                         "timeUnit": "WEEK", "timeLength": 2}, "cap": 1}
+            ]),
+            "create body: {campaign}"
+        );
+    }
+
+    #[test]
+    fn clearing_every_cap_sends_an_empty_list_under_the_whole_field_mask() {
+        let input = campaign_with_caps(json!([]));
+        let report = DiffReport {
+            diffs: vec![
+                ResourceDiff {
+                    address: "m.b".to_string(),
+                    kind: "campaign_budget",
+                    action: Action::NoOp { live_id: "41".to_string() },
+                },
+                ResourceDiff {
+                    address: "m.c".to_string(),
+                    kind: "campaign",
+                    action: Action::Update {
+                        live_id: "42".to_string(),
+                        changed_fields: vec!["frequency_caps".to_string()],
+                    },
+                },
+            ],
+            label_plans: Vec::new(),
+            claim_plans: Vec::new(),
+            noop_count: 1,
+            create_count: 0,
+            update_count: 1,
+            delete_count: 0,
+            adopt_count: 0,
+            warnings: Vec::new(),
+        };
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let op = plan.body["mutateOperations"][0]["campaignOperation"].clone();
+        assert_eq!(op["updateMask"], json!("frequency_caps"));
+        assert_eq!(op["update"]["frequencyCaps"], json!([]));
     }
 
     #[test]
