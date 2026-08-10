@@ -9,7 +9,7 @@ use crate::commands::export::{
     JsonDemandGenVideoResponsiveAd, JsonDevice, JsonKeyword, JsonLanguage, JsonLocation,
     JsonManualCpc, JsonNetworkSettings, JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset,
     JsonSharedSet, JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonValueSettings,
-    JsonYoutubeVideoAsset,
+    JsonVideoResponsiveAd, JsonYoutubeVideoAsset,
 };
 
 pub fn from_search_response(raw: &str) -> Result<ExportInput, String> {
@@ -416,6 +416,18 @@ impl AdapterState {
                     path2: rsa.get("path2").and_then(Value::as_str).map(String::from),
                 });
             }
+            if let Some(video) = ad.get("videoResponsiveAd") {
+                entry.ad.video_responsive_ad = Some(JsonVideoResponsiveAd {
+                    video: extract_video_asset_ids(video.get("videos"))
+                        .into_iter()
+                        .next()
+                        .unwrap_or_default(),
+                    headlines: extract_ad_text_list(video.get("headlines")),
+                    long_headlines: extract_ad_text_list(video.get("longHeadlines")),
+                    descriptions: extract_ad_text_list(video.get("descriptions")),
+                    call_to_actions: extract_ad_text_list(video.get("callToActions")),
+                });
+            }
             if let Some(dg) = ad.get("demandGenVideoResponsiveAd") {
                 entry.ad.demand_gen_video_responsive_ad = Some(JsonDemandGenVideoResponsiveAd {
                     videos: extract_video_asset_ids(dg.get("videos")),
@@ -425,6 +437,11 @@ impl AdapterState {
                     call_to_actions: extract_ad_text_list(dg.get("callToActions")),
                     breadcrumb1: dg.get("breadcrumb1").and_then(Value::as_str).map(String::from),
                     breadcrumb2: dg.get("breadcrumb2").and_then(Value::as_str).map(String::from),
+                    business_name: dg
+                        .get("businessName")
+                        .and_then(|b| b.as_str().map(String::from).or_else(|| {
+                            b.get("text").and_then(Value::as_str).map(String::from)
+                        })),
                 });
             }
         }
@@ -1323,3 +1340,75 @@ mod label_tests {
     }
 }
 
+
+#[cfg(test)]
+mod video_tests {
+    use super::*;
+
+    fn adapt(rows: Value) -> ExportInput {
+        from_search_response(
+            &Value::Object([("results".to_string(), rows)].into_iter().collect()).to_string(),
+        )
+        .expect("adapter should succeed")
+    }
+
+    #[test]
+    fn video_responsive_ad_reads_back_with_its_asset_id() {
+        let input = adapt(serde_json::json!([
+            {
+                "adGroupAd": {
+                    "resourceName": "customers/123/adGroupAds/55~9",
+                    "adGroup": "customers/123/adGroups/55",
+                    "status": "PAUSED",
+                    "ad": {
+                        "finalUrls": ["https://ghostery.com/get"],
+                        "videoResponsiveAd": {
+                            "headlines": [{"text": "Block ads"}],
+                            "longHeadlines": [{"text": "Block ads and trackers"}],
+                            "descriptions": [{"text": "Free extension"}],
+                            "callToActions": [{"text": "Install"}],
+                            "videos": [{"asset": "customers/123/assets/42"}]
+                        }
+                    }
+                }
+            }
+        ]));
+
+        let ad = input.ad_group_ads.first().expect("the ad is adapted");
+        let video = ad.ad.video_responsive_ad.as_ref().expect("video creative");
+        assert_eq!(video.video, "42");
+        assert_eq!(video.headlines, vec!["Block ads"]);
+        assert_eq!(video.long_headlines, vec!["Block ads and trackers"]);
+        assert_eq!(video.descriptions, vec!["Free extension"]);
+        assert_eq!(video.call_to_actions, vec!["Install"]);
+    }
+
+    #[test]
+    fn demand_gen_business_name_reads_back_from_its_text_asset() {
+        let input = adapt(serde_json::json!([
+            {
+                "adGroupAd": {
+                    "resourceName": "customers/123/adGroupAds/55~9",
+                    "adGroup": "customers/123/adGroups/55",
+                    "ad": {
+                        "finalUrls": ["https://ghostery.com/get"],
+                        "demandGenVideoResponsiveAd": {
+                            "headlines": [{"text": "Block ads"}],
+                            "businessName": {"text": "Ghostery"},
+                            "videos": [{"asset": "customers/123/assets/42"}]
+                        }
+                    }
+                }
+            }
+        ]));
+
+        let ad = input.ad_group_ads.first().expect("the ad is adapted");
+        let dg = ad
+            .ad
+            .demand_gen_video_responsive_ad
+            .as_ref()
+            .expect("demand gen creative");
+        assert_eq!(dg.business_name.as_deref(), Some("Ghostery"));
+        assert_eq!(dg.videos, vec!["42"]);
+    }
+}

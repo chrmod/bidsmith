@@ -631,40 +631,55 @@ resource type, any file layout, modules, schema validation.
   for `apply`: keeping execution in the user's own GitHub Actions means
   the account stays under their control and there's no bidsmith-operated
   service holding live-mutation credentials.
-- **YouTube video ads — reference the video, don't upload it, and say so
-  from the CLI**: a `google_ads_youtube_video_asset` records a video that
-  is *already published on YouTube* by its `youtube_video_id`; a
-  `video_responsive_ad` block inside an `ad {}` attaches that asset as the
-  creative for a `VIDEO`-channel campaign's in-stream / bumper ad. bidsmith
-  deliberately does **not** upload video files — that is the YouTube Data
-  API's job (a separate system, separate OAuth scope, resumable binary
-  upload), and the Google Ads API itself only ever *references* a video, it
-  never hosts one. The current build models the **authoring + offline**
-  path only (schema / validate / `fmt` / `export` / `refresh` renderer +
-  round-trip); the **live** path for video assets and video-ad creatives is
-  intentionally out of `plan` / `apply` (video assets aren't diffed/mutated,
-  and `ad_value` ignores `video_responsive_ad` / `demand_gen_video_responsive_ad`,
-  so a video (or Demand Gen) ad mutates as a
-  scaffold-only stub — matching how UI-built video / Demand Gen ads are
-  adopted today). The same scaffold-only boundary is why a `DEMAND_GEN`
-  campaign is *adopted* rather than recreated: `apply` name-matches the
-  live campaign, stamps the `bidsmith:address` label, and manages the
-  scaffold while the UI-built creative is round-tripped for representation.
-  Because a partially-supported feature must never *silently* drop work, the
-  limit is surfaced **from the CLI**, per the "facts live in the binary"
-  rule: `validate` warns on every `google_ads_youtube_video_asset` and every
-  `video_responsive_ad` (the upload-out-of-band + adopt-via-UI workflow),
-  and `plan` / `apply` print an aggregate video notice
-  (`export::video_limitation_notice`) whenever the desired state contains a
-  `VIDEO` or `DEMAND_GEN` campaign, a `VIDEO_*` ad group, a video / Demand
-  Gen ad, or a video asset — so an operator or an agent driving bidsmith
-  learns the workaround without reading source. Chosen over (a) an `apply`-time upload (breaks the
-  no-networking-beyond-Google-Ads scope and can't be idempotent — YouTube
-  has no `bidsmith:address` label to dedupe re-uploads, and there is no
-  `.tfstate`), and (b) silently modelling video with no CLI signal (the
-  exact silent-partial-apply footgun the notice exists to prevent). The
-  live video-asset / video-ad-creative mutate path is a deferred follow-up
-  in ROADMAP.md.
+- **YouTube video ads — reference the video, don't upload it**: a
+  `google_ads_youtube_video_asset` records a video that is *already
+  published on YouTube* by its `youtube_video_id`; a `video_responsive_ad`
+  block inside an `ad {}` attaches that asset as the creative for a
+  `VIDEO`-channel campaign's in-stream / bumper ad. bidsmith deliberately
+  does **not** upload video files — that is the YouTube Data API's job (a
+  separate system, separate OAuth scope, resumable binary upload), and the
+  Google Ads API itself only ever *references* a video, it never hosts one.
+  Everything downstream of the upload *is* managed: `apply` creates the
+  asset via `AssetService` from the video id (+ optional title) and creates
+  the `AdGroupAd` with a `VideoResponsiveAdInfo` / `DemandGenVideoResponsiveAdInfo`
+  pointing at it, in one atomic batch (the asset op is emitted ahead of the
+  ad so the temp resource name resolves). Assets are content-addressed, not
+  labelled: a declared asset matches a live one by `youtube_video_id`, so
+  re-running `plan` reuses the account's existing asset instead of piling up
+  duplicates — the same rule the sitelink / callout / structured-snippet
+  assets follow, and the reason no video asset ever plans as an update or a
+  destroy (the API has no remove for `Asset`). The creative itself is
+  create-only like an RSA body: `ad_body_key` hashes the video ref plus the
+  copy, so editing a headline plans as a new ad + a destroy of the old one.
+  The corollary is that an `ad {}` with **no** creative block now means "the
+  URLs are mine, the creative is not": it matches any live ad in the group
+  with the same `final_urls`, creative and all. That is the shape a `refresh`
+  rendered for a UI-built video ad before the creative was readable, and
+  without the carve-out those adopted ads would plan as a destroy plus a
+  create of an ad with no creative at all.
+  Rejected: an `apply`-time upload — it breaks the
+  no-networking-beyond-Google-Ads scope and can't be idempotent (YouTube has
+  no `bidsmith:address` label to dedupe re-uploads, and there is no
+  `.tfstate`). The one remaining boundary is surfaced from the CLI per the
+  "facts live in the binary" rule: `plan` / `apply` print
+  `export::video_upload_notice` whenever the desired state references a
+  video, naming the out-of-band upload step.
+- **Demand Gen creatives apply, minus the call-to-action button**: the same
+  mutate path covers `demand_gen_video_responsive_ad`, with two model gaps
+  that are reported rather than silently dropped. `business_name` is
+  REQUIRED by the API on that ad type but only *optional* in the schema (a
+  required attribute would fail `validate` on every `.bid` written before it
+  existed), so a create without it is a `PlanBuildError` and `validate`
+  warns. `call_to_actions` are `AdCallToActionAsset` references on the wire
+  — asset ids, not text — which bidsmith has no resource type for; a
+  declared value therefore blocks the create with an explanatory error
+  instead of applying an ad that quietly lacks its button. For the same
+  reason live CTAs never round-trip, so `ad_body_key` leaves them out —
+  including them would make every adopted Demand Gen ad look like a body
+  change on the next plan. Chosen over inventing implicit CALL_TO_ACTION
+  assets at mutate time (every other asset in bidsmith is an explicit
+  declared resource) — a `google_ads_call_to_action_asset` resource is the
+  follow-up.
 - **Keyword Planner is a read-only research verb, not a resource**: Google
   Keyword Planner (`KeywordPlanIdeaService.GenerateKeywordIdeas`) is surfaced
   as `bidsmith keyword-ideas` — an imperative, live-only command in the same
@@ -1111,11 +1126,13 @@ Validator covers (so far):
   a `DEMAND_GEN` campaign carries — a `videos` list of
   `google_ads_youtube_video_asset` refs plus optional `headlines` /
   `long_headlines` / `descriptions` / `call_to_actions` / `breadcrumb1`
-  / `breadcrumb2`) as an alternative to `responsive_search_ad` — an `ad`
+  / `breadcrumb2` / `business_name`) as an alternative to
+  `responsive_search_ad` — an `ad`
   carries at most one creative, enforced at validate time. `pull` selects
-  the demand-gen creative and the `YOUTUBE_VIDEO` asset table, so an
-  existing Demand Gen campaign round-trips through `export` (headlines,
-  long headlines, descriptions, breadcrumbs, and the video-asset refs;
+  both video creatives and the `YOUTUBE_VIDEO` asset table, so an
+  existing video / Demand Gen campaign round-trips through `export`
+  (headlines, long headlines, descriptions, breadcrumbs, business name,
+  and the video-asset refs;
   `call_to_actions` come back from the API as asset references rather than
   inline text, so they do not populate on a round-trip)
 - `provider "google_ads"` (`customer_id` optional — resolved from
@@ -1133,7 +1150,9 @@ Validator covers (so far):
   chars or description text over 90 chars; `path1` / `path2` over 15
   chars or containing characters outside `[a-z0-9-]`; suspicious
   `language_constant` values (currently just `languageConstants/1045`,
-  Afar — a near-universal typo for `1030`, Polish).
+  Afar — a near-universal typo for `1030`, Polish); a
+  `demand_gen_video_responsive_ad` missing `business_name` or setting
+  `call_to_actions` (either one stops `apply` from creating the ad).
 
 **CLI verbs**:
 

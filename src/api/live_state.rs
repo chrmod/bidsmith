@@ -81,13 +81,19 @@ pub const QUERIES: &[(&str, &str)] = &[
           ad_group_ad.ad.responsive_search_ad.descriptions,
           ad_group_ad.ad.responsive_search_ad.path1,
           ad_group_ad.ad.responsive_search_ad.path2,
+          ad_group_ad.ad.video_responsive_ad.headlines,
+          ad_group_ad.ad.video_responsive_ad.long_headlines,
+          ad_group_ad.ad.video_responsive_ad.descriptions,
+          ad_group_ad.ad.video_responsive_ad.call_to_actions,
+          ad_group_ad.ad.video_responsive_ad.videos,
           ad_group_ad.ad.demand_gen_video_responsive_ad.headlines,
           ad_group_ad.ad.demand_gen_video_responsive_ad.long_headlines,
           ad_group_ad.ad.demand_gen_video_responsive_ad.descriptions,
           ad_group_ad.ad.demand_gen_video_responsive_ad.call_to_actions,
           ad_group_ad.ad.demand_gen_video_responsive_ad.videos,
           ad_group_ad.ad.demand_gen_video_responsive_ad.breadcrumb1,
-          ad_group_ad.ad.demand_gen_video_responsive_ad.breadcrumb2
+          ad_group_ad.ad.demand_gen_video_responsive_ad.breadcrumb2,
+          ad_group_ad.ad.demand_gen_video_responsive_ad.business_name
         FROM ad_group_ad
         WHERE ad_group_ad.status != 'REMOVED'",
     ),

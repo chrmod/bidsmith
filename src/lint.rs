@@ -60,34 +60,44 @@ fn lint_resource(file: &ParsedFile, block: &Block, bindings: &Bindings, diags: &
             if let Some(rsa_block) = find_block(&ad_block.body, "responsive_search_ad") {
                 lint_rsa(file, rsa_block, &address, bindings, diags);
             }
-            if let Some(video_block) = find_block(&ad_block.body, "video_responsive_ad") {
-                diags.push(Diag::warning(
-                    file.src.clone(),
-                    span_of(video_block.ident.span()),
-                    format!(
-                        "{address} declares a video ad: bidsmith records the creative but `plan`/`apply` do not create or update video ad creatives on the live account — build/attach the video ad in the Google Ads UI, then adopt the campaign scaffold with `bidsmith refresh`"
-                    ),
-                ));
+            if let Some(dg_block) = find_block(&ad_block.body, "demand_gen_video_responsive_ad") {
+                lint_demand_gen_video_ad(file, dg_block, &address, diags);
             }
         }
         // path1/path2 set at the resource level override a template's RSA paths; lint them too.
         lint_rsa_paths(file, &block.body, &address, bindings, diags);
     }
 
-    if ty == "google_ads_youtube_video_asset" {
-        diags.push(Diag::warning(
-            file.src.clone(),
-            span_of(block.ident.span()),
-            format!(
-                "{address} references a YouTube video by id: bidsmith cannot upload video files — the video must already be published on your YouTube channel (upload via YouTube Studio or the YouTube Data API). `plan`/`apply` do not create or link video assets on the live account yet; attach the creative in the Google Ads UI and adopt the scaffold with `bidsmith refresh`"
-            ),
-        ));
-    }
-
     if ty == "google_ads_campaign_criterion" {
         if let Some(lang_block) = find_block(&block.body, "language") {
             lint_language(file, lang_block, &address, bindings, diags);
         }
+    }
+}
+
+fn lint_demand_gen_video_ad(
+    file: &ParsedFile,
+    block: &Block,
+    address: &str,
+    diags: &mut Vec<Diag>,
+) {
+    if find_attr(&block.body, "business_name").is_none() {
+        diags.push(Diag::warning(
+            file.src.clone(),
+            span_of(block.ident.span()),
+            format!(
+                "{address} omits business_name: the Google Ads API requires the advertiser/brand name on a Demand Gen video ad, so `apply` cannot create this ad without it"
+            ),
+        ));
+    }
+    if let Some(cta) = find_attr(&block.body, "call_to_actions") {
+        diags.push(Diag::warning(
+            file.src.clone(),
+            span_of(cta.key.span()),
+            format!(
+                "{address} sets call_to_actions on a Demand Gen video ad: the API takes CALL_TO_ACTION asset references here rather than text, and bidsmith does not model that asset type yet — `apply` cannot create the ad while the attribute is set"
+            ),
+        ));
     }
 }
 

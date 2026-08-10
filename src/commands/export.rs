@@ -206,9 +206,8 @@ pub struct JsonAd {
 }
 
 /// A YouTube video ad body. `video` is the address of a
-/// `google_ads_youtube_video_asset` (the uploaded video, referenced by id).
-/// bidsmith records this creative but does not create/update it on the live
-/// account — see the `plan` video notice.
+/// `google_ads_youtube_video_asset` for declared state, and the live asset id
+/// when read back off the account.
 #[derive(Deserialize)]
 pub struct JsonVideoResponsiveAd {
     pub video: String,
@@ -224,8 +223,7 @@ pub struct JsonVideoResponsiveAd {
 
 /// A Demand Gen video responsive ad body (the ad type a DEMAND_GEN campaign
 /// carries). `videos` holds asset ids of `google_ads_youtube_video_asset`s,
-/// resolved to their addresses at render time. Like the youtube video ad, the
-/// creative is UI-managed — bidsmith round-trips it but does not mutate it.
+/// resolved to their addresses at render time.
 #[derive(Deserialize)]
 pub struct JsonDemandGenVideoResponsiveAd {
     #[serde(default)]
@@ -236,12 +234,16 @@ pub struct JsonDemandGenVideoResponsiveAd {
     pub long_headlines: Vec<String>,
     #[serde(default)]
     pub descriptions: Vec<String>,
+    /// Live Demand Gen CTAs are `AdCallToActionAsset` refs, not text, so this
+    /// list only ever carries hand-authored values — it never round-trips.
     #[serde(default)]
     pub call_to_actions: Vec<String>,
     #[serde(default)]
     pub breadcrumb1: Option<String>,
     #[serde(default)]
     pub breadcrumb2: Option<String>,
+    #[serde(default)]
+    pub business_name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -703,24 +705,15 @@ pub fn report_orphans(command: &str, orphans: Vec<String>) {
     }
 }
 
-/// A CLI-facing notice describing what bidsmith does and does *not* do for
-/// YouTube video advertising in this configuration, so an operator (or an agent
-/// driving bidsmith) knows the manual workaround before running `apply`.
+/// A CLI-facing notice naming the one thing bidsmith cannot do for YouTube
+/// video advertising: put the video file on YouTube. Everything downstream of
+/// that — the video asset, the creative that references it — is created and
+/// updated by `apply` like any other resource.
 ///
-/// Returns `None` when the desired state has no video content. Surfaced by
+/// Returns `None` when the desired state references no video. Surfaced by
 /// `plan`/`apply` (which run `validate_files` but not the warning-level lints,
 /// so this is how the boundary reaches those verbs).
-pub fn video_limitation_notice(input: &ExportInput) -> Option<String> {
-    let video_campaigns = input
-        .campaigns
-        .iter()
-        .filter(|c| c.advertising_channel_type == "VIDEO" || c.advertising_channel_type == "DEMAND_GEN")
-        .count();
-    let video_ad_groups = input
-        .ad_groups
-        .iter()
-        .filter(|g| g.ty.as_deref().is_some_and(|t| t.starts_with("VIDEO_")))
-        .count();
+pub fn video_upload_notice(input: &ExportInput) -> Option<String> {
     let video_ads = input
         .ad_group_ads
         .iter()
@@ -730,31 +723,22 @@ pub fn video_limitation_notice(input: &ExportInput) -> Option<String> {
         .count();
     let video_assets = input.youtube_video_assets.len();
 
-    if video_campaigns == 0 && video_ad_groups == 0 && video_ads == 0 && video_assets == 0 {
+    if video_ads == 0 && video_assets == 0 {
         return None;
     }
 
     let mut msg = String::from(
-        "note: this configuration includes YouTube video advertising, which bidsmith manages only partially:\n",
+        "note: bidsmith creates the video asset and the video ad creative, but it cannot upload\n",
     );
     msg.push_str(
-        "  - bidsmith cannot upload video files. The video must already exist on your YouTube\n",
+        "  video files. Every google_ads_youtube_video_asset must name a video that is already\n",
     );
     msg.push_str(
-        "    channel (upload via YouTube Studio or the YouTube Data API), then be referenced by id\n",
+        "  published on your YouTube channel (upload via YouTube Studio or the YouTube Data API)\n",
     );
-    msg.push_str("    in a google_ads_youtube_video_asset.\n");
-    msg.push_str(
-        "  - plan/apply manage the campaign scaffold (budget, targeting, status, final URLs) but do\n",
-    );
-    msg.push_str(
-        "    NOT create or update the video ad creative or the video-asset link on the live account.\n",
-    );
-    msg.push_str(
-        "    Build/attach the video ad in the Google Ads UI, then adopt the scaffold with `bidsmith refresh`.\n",
-    );
+    msg.push_str("  and visible to the Google Ads account.\n");
     msg.push_str(&format!(
-        "  found: {video_campaigns} video campaign(s), {video_ad_groups} video ad group(s), {video_ads} video ad(s), {video_assets} youtube video asset(s).",
+        "  found: {video_ads} video ad(s), {video_assets} youtube video asset(s).",
     ));
     Some(msg)
 }
@@ -1302,6 +1286,9 @@ fn write_ad_group_ad(
             if !items.is_empty() {
                 write_attr(out, 3, attr, &fmt_string_list(items));
             }
+        }
+        if let Some(b) = &dg.business_name {
+            write_attr(out, 3, "business_name", &fmt_string(b));
         }
         if let Some(b) = &dg.breadcrumb1 {
             write_attr(out, 3, "breadcrumb1", &fmt_string(b));
@@ -2471,12 +2458,14 @@ mod tests {
 
     #[test]
     fn video_notice_fires_only_on_video_content() {
+        // A VIDEO campaign with no video of its own is a scaffold like any
+        // other campaign — nothing about uploading applies to it.
         let plain: ExportInput = serde_json::from_value(json!({
             "customer_id": "1",
-            "campaigns": [{ "id": "c", "name": "Search", "advertising_channel_type": "SEARCH", "campaign_budget": "b" }]
+            "campaigns": [{ "id": "c", "name": "Preroll", "advertising_channel_type": "VIDEO", "campaign_budget": "b" }]
         }))
         .unwrap();
-        assert!(video_limitation_notice(&plain).is_none());
+        assert!(video_upload_notice(&plain).is_none());
 
         let video: ExportInput = serde_json::from_value(json!({
             "customer_id": "1",
@@ -2484,11 +2473,10 @@ mod tests {
             "campaigns": [{ "id": "c", "name": "Preroll", "advertising_channel_type": "VIDEO", "campaign_budget": "b" }]
         }))
         .unwrap();
-        let notice = video_limitation_notice(&video).expect("video content triggers the notice");
-        assert!(notice.contains("cannot upload video files"));
-        assert!(notice.contains("bidsmith refresh"));
-        assert!(notice.contains("1 video campaign(s)"));
+        let notice = video_upload_notice(&video).expect("video content triggers the notice");
+        assert!(notice.contains("cannot upload"));
         assert!(notice.contains("1 youtube video asset(s)"));
+        assert!(!notice.contains("bidsmith refresh"));
     }
 
     use serde_json::json;

@@ -201,7 +201,7 @@ pub fn prepare(
         return Ok(None);
     }
 
-    if let Some(notice) = crate::commands::export::video_limitation_notice(&imported.input) {
+    if let Some(notice) = crate::commands::export::video_upload_notice(&imported.input) {
         eprintln!("{label}: {notice}");
     }
 
