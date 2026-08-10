@@ -67,6 +67,14 @@ The markers are what keep the cleanup working even when you delete the
 bidsmith would have no way of knowing those live negatives were ever
 its job.
 
+The same marker guards settings that come as a set rather than a
+single value. A campaign's
+[frequency caps](./cap-how-often-people-see-your-video/) get a
+`~ claim (+frequency caps)` row the first time you apply one that
+declares a cap; deleting every `frequency_caps` block then clears the
+caps and drops the marker in one apply. Until that first claim, caps
+somebody set in the Google Ads UI are simply not bidsmith's to change.
+
 <Aside type="caution">
   The marker is written by `apply`. If you delete a keyword resource
   that was last applied by an **older bidsmith** (before the markers

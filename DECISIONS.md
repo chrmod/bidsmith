@@ -693,12 +693,28 @@ resource type, any file layout, modules, schema validation.
   `frequency_caps` entry in the update mask, replaced wholesale (an empty
   list clears every cap). Consequence, and the point of the issue: caps
   set in the Google Ads UI on a campaign bidsmith manages surface as
-  drift instead of staying invisible. `refresh --in-place` reports rather
-  than patches them — reconcile only writes scalars into blocks that
-  already exist, and materializing a repeated block is guesswork; a
-  bootstrap `refresh` renders them. Frequency capping is unsupported on
+  drift instead of staying invisible. Frequency capping is unsupported on
   Demand Gen, so `validate` warns rather than letting the setting apply
   and do nothing.
+- **An undeclared `frequency_caps` block means unmanaged, not "clear
+  the caps"** (issue #102): the set is the one non-criterion field whose
+  "declared as empty" is unwritable — a repeated block has no empty
+  form — so it follows the criteria ownership rule instead. Declaring
+  ≥1 cap claims the field (`bidsmith:owns=frequency_caps` on the
+  campaign, the same association the criterion categories use, shown as
+  a `~ claim (+frequency caps)` row); dropping the last block on a
+  claimed campaign plans the clear and releases the claim. A campaign
+  that never declared a cap diffs as if the field didn't exist. Without
+  the gate, merely *reading* a new repeated field turned every
+  UI-capped campaign into a pending clear — destructive where it
+  applied, and un-appliable where the API refuses to mutate the
+  campaign at all, which sinks the whole atomic batch. The same gate is
+  why reading further repeated fields later is safe by construction.
+  `refresh --in-place` now round-trips the blocks instead of reporting
+  them: the live set replaces the declared blocks wholesale (in place,
+  or appended when the file declared none), which is the one insert
+  reconcile will make — a repeated block has a canonical rendering, so
+  writing one isn't the formatting guesswork an absent scalar is.
 - **Video targeting is criterion subtypes plus one segment builder**
   (issue #99): `google_ads_campaign_criterion` gains `youtube_channel`,
   `youtube_video`, `topic`, `user_interest`, `age_range`, `gender`, and
@@ -1029,8 +1045,9 @@ Verified locally:
   reported, never inserted — formatting an insert is guesswork), and
   only 1:1-block scalar kinds (budget, campaign incl. `manual_cpc.*`
   / `network_settings.*`, ad_group, ad_group_ad, conversion_action,
-  customer_asset, shared_set, campaign_shared_set). Structural drift
-  (ad copy, keyword/criterion membership, `frequency_caps`) is
+  customer_asset, shared_set, campaign_shared_set), plus the campaign's
+  `frequency_caps` set, which round-trips as whole blocks (issue #102).
+  Structural drift (ad copy, keyword/criterion membership) is
   reported, not edited —
   the diff engine only ever yields scalar `Update`s, so a changed RSA
   is a create+destroy elsewhere, handled by `apply`, not this pass.
@@ -1078,7 +1095,7 @@ Validator covers (so far):
   (`"en"`, `"US"`) — or raw `languageConstants/NNNN` /
   `geoTargetConstants/NNNN` strings — to the API constants, plus a
   repeatable `frequency_caps { event_type, time_unit, time_length,
-  cap, level? }` block managed as a whole set, with a
+  cap, level? }` block managed as a whole set once declared, with a
   validate-time guard against declaring the same axis both inline and as
   an explicit positive criterion resource), `google_ads_ad_group`,
   `google_ads_ad_group_ad`

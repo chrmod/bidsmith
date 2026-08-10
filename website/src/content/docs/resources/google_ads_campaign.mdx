@@ -145,10 +145,13 @@ day, and count at most 1 of those as a watched view."*
 
 Two things worth knowing:
 
-- The caps are managed **as a set**. Whatever the blocks say is what
-  the campaign ends up with, so a cap somebody added in the Google Ads
-  UI shows up in `plan` as drift, and deleting every block removes
-  every cap. Order doesn't matter.
+- The caps are managed **as a set**, and only once you declare one.
+  A campaign whose file has no `frequency_caps` block leaves capping
+  to whoever set it in the Google Ads UI; write one block and the
+  whole set becomes yours — whatever the blocks say is what the
+  campaign ends up with, so a cap added in the UI afterwards shows up
+  in `plan` as drift, and deleting every block removes every cap.
+  Order doesn't matter.
 - Frequency capping applies to **video and display** campaigns.
   Google Ads does not support it on Demand Gen, and `validate` warns
   if you set it there.

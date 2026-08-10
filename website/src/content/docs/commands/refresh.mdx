@@ -122,6 +122,12 @@ drifted** — a `status`, a `name`, a budget `amount_micros`, a bid.
 Everything else is left exactly as you wrote it: comments, blank
 lines, block order, and any resource bidsmith doesn't manage.
 
+The one exception is a campaign's
+[`frequency_caps`](/bidsmith/recipes/cap-how-often-people-see-your-video/):
+because Google Ads treats the caps as a single setting, reconcile
+rewrites the whole set of blocks to match live rather than patching
+one number inside them.
+
 ```
   ~ campaigns.google_ads_campaign.summer_search (name, status)
   ~ campaigns.google_ads_campaign_budget.summer (amount_micros)
