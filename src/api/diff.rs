@@ -8,6 +8,9 @@ use crate::commands::export::{
     JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonYoutubeVideoAsset,
 };
 
+/// Claim category token for `Campaign.frequency_caps` — see `diff_campaign`.
+pub const FREQUENCY_CAPS_CATEGORY: &str = "frequency_caps";
+
 #[derive(Debug, Clone)]
 pub enum Action {
     NoOp {
@@ -268,8 +271,12 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
                     let l = live_campaigns[*li];
                     claimed[*li] = true;
                     campaign_match.insert(d.id.clone(), l.id.clone());
+                    let caps_claimed = live
+                        .campaign_claims
+                        .get(&l.id)
+                        .is_some_and(|cats| cats.iter().any(|c| c == FREQUENCY_CAPS_CATEGORY));
                     (
-                        action_for_match(l.id.clone(), diff_campaign(d, l)),
+                        action_for_match(l.id.clone(), diff_campaign(d, l, caps_claimed)),
                         Some((l.id.as_str(), l.managed_address.as_deref())),
                     )
                 }
@@ -798,11 +805,13 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     }
 }
 
-/// The criterion categories a `bidsmith:owns` claim can cover. Device is
-/// excluded (the API forbids removing device criteria, so a claim would never
-/// drive a destroy).
+/// The categories a `bidsmith:owns` claim can cover — criterion kinds plus
+/// `frequency_caps`, the one non-criterion field whose "declared as empty" is
+/// indistinguishable from "not managed here". Device is excluded (the API
+/// forbids removing device criteria, so a claim would never drive a destroy).
 fn canonical_category(cat: &str) -> Option<&'static str> {
     Some(match cat {
+        FREQUENCY_CAPS_CATEGORY => FREQUENCY_CAPS_CATEGORY,
         "keyword_positive" => "keyword_positive",
         "keyword_negative" => "keyword_negative",
         "location" => "location",
@@ -827,11 +836,12 @@ fn polarity_category(negative: bool) -> &'static str {
     }
 }
 
-/// Reconcile desired category claims (derived from declared criteria) against
-/// the live `bidsmith:owns` associations: a desired claim missing live plans an
-/// association add; a live claim on a still-declared parent whose category has
-/// no declared members plans an association remove. Parents that are no longer
-/// declared need nothing — their associations die with the resource.
+/// Reconcile desired category claims (derived from declared criteria, plus a
+/// campaign's declared `frequency_caps`) against the live `bidsmith:owns`
+/// associations: a desired claim missing live plans an association add; a live
+/// claim on a still-declared parent whose category has no declared members
+/// plans an association remove. Parents that are no longer declared need
+/// nothing — their associations die with the resource.
 fn claim_plan_entries(
     declared: &ExportInput,
     live: &ExportInput,
@@ -860,6 +870,11 @@ fn claim_plan_entries(
             if let Some(cat) = canonical_category(campaign_criterion_category(d)) {
                 desired_c.insert((&d.campaign, cat));
             }
+        }
+    }
+    for c in &declared.campaigns {
+        if !c.frequency_caps.is_empty() {
+            desired_c.insert((c.id.as_str(), FREQUENCY_CAPS_CATEGORY));
         }
     }
 
@@ -1243,7 +1258,11 @@ fn diff_budget(d: &JsonBudget, l: &JsonBudget) -> Vec<String> {
     c
 }
 
-fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign) -> Vec<String> {
+/// `caps_claimed` is the live `bidsmith:owns=frequency_caps` association: caps
+/// are only bidsmith's to reconcile once the file declared some. Without that
+/// gate, a campaign that never mentions `frequency_caps` would read as "desired
+/// = no caps" and plan a clear of whatever the Google Ads UI set (issue #102).
+fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign, caps_claimed: bool) -> Vec<String> {
     let mut c = Vec::new();
     if d.name != l.name {
         c.push("name".into());
@@ -1281,7 +1300,9 @@ fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign) -> Vec<String> {
             c.push(path.into());
         }
     }
-    if sorted_frequency_caps(d) != sorted_frequency_caps(l) {
+    if (!d.frequency_caps.is_empty() || caps_claimed)
+        && sorted_frequency_caps(d) != sorted_frequency_caps(l)
+    {
         c.push("frequency_caps".into());
     }
     c

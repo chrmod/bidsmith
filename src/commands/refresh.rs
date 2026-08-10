@@ -3,14 +3,15 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use hcl_edit::expr::Expression;
-use hcl_edit::structure::Body;
+use hcl_edit::structure::{Block, Body, Structure};
 
 use crate::api::diff::{Action, DiffReport};
 use crate::api::import::import_program;
 use crate::api::live_state::CacheMode;
 use crate::api::{auth, client, diff, live_state};
 use crate::commands::export::{
-    canonicalize, filter_removed, prune_orphans, render_split, report_orphans, ExportInput,
+    canonicalize, filter_removed, fmt_string, prune_orphans, render_split, report_orphans,
+    ExportInput, JsonFrequencyCap,
 };
 use crate::commands::vars;
 use crate::diagnostics::Diag;
@@ -310,7 +311,44 @@ pub fn run_reconcile(
 
 struct Edit {
     path: Vec<&'static str>,
-    value: Expression,
+    value: EditValue,
+}
+
+enum EditValue {
+    Scalar(Expression),
+    /// A whole repeated block set (`frequency_caps`), rendered from live and
+    /// swapped in as a unit — the entries carry no identity of their own, so
+    /// there is nothing to patch entry by entry.
+    Blocks(Vec<Block>),
+}
+
+impl EditValue {
+    /// Comparable form, used to decide whether every module instance behind one
+    /// template drifted the same way.
+    fn fingerprint(&self) -> String {
+        match self {
+            EditValue::Scalar(e) => e.to_string(),
+            EditValue::Blocks(bs) => {
+                let mut body = Body::new();
+                for b in bs {
+                    body.push(Structure::Block(b.clone()));
+                }
+                body.to_string()
+            }
+        }
+    }
+}
+
+impl From<Expression> for EditValue {
+    fn from(e: Expression) -> Self {
+        EditValue::Scalar(e)
+    }
+}
+
+impl From<Vec<Block>> for EditValue {
+    fn from(b: Vec<Block>) -> Self {
+        EditValue::Blocks(b)
+    }
 }
 
 struct ReconcileOutcome {
@@ -408,7 +446,7 @@ fn reconcile_sources(
             }
             let mut done: Vec<String> = Vec::new();
             for e in edits {
-                match set_existing_scalar(&mut b.body, &e.path, e.value.clone()) {
+                match apply_edit(&mut b.body, &e.path, &e.value) {
                     SetOutcome::Applied => {
                         done.push(e.path.join("."));
                         file_changed = true;
@@ -503,8 +541,8 @@ fn agreed_edits<'a>(
             ));
             continue;
         }
-        let first = found[0].value.to_string();
-        if found.iter().any(|e| e.value.to_string() != first) {
+        let first = found[0].value.fingerprint();
+        if found.iter().any(|e| e.value.fingerprint() != first) {
             conflicts.push((
                 p.join("."),
                 "module instances drifted to different values — edit the template or its inputs by hand"
@@ -521,6 +559,35 @@ enum SetOutcome {
     Applied,
     Missing,
     NonLiteral,
+}
+
+fn apply_edit(body: &mut Body, path: &[&str], value: &EditValue) -> SetOutcome {
+    match value {
+        EditValue::Scalar(v) => set_existing_scalar(body, path, v.clone()),
+        EditValue::Blocks(blocks) => set_repeated_blocks(body, path, blocks),
+    }
+}
+
+/// Swap every `path` block in `body` for `blocks`. The live set is one API
+/// field, so it round-trips whole: the replacements land where the first old
+/// block was, or at the end of the body when the file declared none — unlike a
+/// scalar, a repeated block has a canonical rendering, so materializing one
+/// isn't guesswork.
+fn set_repeated_blocks(body: &mut Body, path: &[&str], blocks: &[Block]) -> SetOutcome {
+    let [ident] = path else {
+        return SetOutcome::Missing;
+    };
+    let at = body
+        .iter()
+        .position(|s| s.as_block().is_some_and(|b| b.ident.as_str() == *ident));
+    body.remove_blocks(ident);
+    for (n, block) in blocks.iter().enumerate() {
+        match at {
+            Some(i) => body.insert(i + n, Structure::Block(block.clone())),
+            None => body.push(Structure::Block(block.clone())),
+        }
+    }
+    SetOutcome::Applied
 }
 
 /// Set a scalar at `path` within `body`, descending one block per non-terminal
@@ -558,6 +625,29 @@ fn s(v: &str) -> Expression {
     Expression::from(v.to_string())
 }
 
+/// Render the live frequency caps as source blocks in `export`'s shape (one
+/// blank-line-separated block per cap, indented for a resource body). Built by
+/// parsing rendered text rather than assembling structures, so the whitespace
+/// decor hcl-edit needs comes from the parser. `None` when the round-trip
+/// doesn't yield one block per cap — better to report the drift than to write a
+/// half-rendered set.
+fn frequency_cap_blocks(caps: &[JsonFrequencyCap]) -> Option<Vec<Block>> {
+    let mut src = String::new();
+    for f in caps {
+        src.push_str("\n  frequency_caps {\n");
+        src.push_str(&format!("    event_type = {}\n", fmt_string(&f.event_type)));
+        src.push_str(&format!("    time_unit = {}\n", fmt_string(&f.time_unit)));
+        src.push_str(&format!("    time_length = {}\n", f.time_length));
+        src.push_str(&format!("    cap = {}\n", f.cap));
+        if f.level_or_default() != crate::schema::DEFAULT_FREQUENCY_CAP_LEVEL {
+            src.push_str(&format!("    level = {}\n", fmt_string(f.level_or_default())));
+        }
+        src.push_str("  }\n");
+    }
+    let blocks: Vec<Block> = src.parse::<Body>().ok()?.into_blocks().collect();
+    (blocks.len() == caps.len()).then_some(blocks)
+}
+
 /// Map a resource's drifted field names to (source path, live value) edits.
 /// The second tuple element is the list of fields we can't reconcile in place
 /// (an unsupported resource kind, or a value cleared upstream).
@@ -572,7 +662,7 @@ fn collect_edits(
 
     macro_rules! push {
         ($path:expr, $val:expr) => {
-            e.push(Edit { path: $path, value: $val })
+            e.push(Edit { path: $path, value: $val.into() })
         };
     }
     macro_rules! opt {
@@ -644,10 +734,13 @@ fn collect_edits(
                         vec!["network_settings", "target_partner_search_network"],
                         c.network_settings.as_ref().and_then(|n| n.target_partner_search_network).map(Expression::from)
                     ),
-                    "frequency_caps" => skip.push(
-                        "frequency_caps (repeated block — edit the blocks by hand or run a bootstrap refresh)"
-                            .to_string(),
-                    ),
+                    "frequency_caps" => match frequency_cap_blocks(&c.frequency_caps) {
+                        Some(blocks) => push!(vec!["frequency_caps"], blocks),
+                        None => skip.push(
+                            "frequency_caps (live caps did not render as valid blocks — edit them by hand)"
+                                .to_string(),
+                        ),
+                    },
                     other => skip.push(other.to_string()),
                 }
             }
@@ -1012,6 +1105,107 @@ resource "google_ads_campaign" "summer_search" {
             "expected a skip note for status, got {:?}",
             outcome.skipped
         );
+    }
+
+    const CAPS_SRC: &str = r#"provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+resource "google_ads_campaign_budget" "budget" {
+  name          = "Budget"
+  amount_micros = 10000000
+}
+
+# keep this comment
+resource "google_ads_campaign" "brand_video" {
+  name                     = "Brand video"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.budget.id
+
+  frequency_caps {
+    event_type  = "IMPRESSION"
+    time_unit   = "DAY"
+    time_length = 1
+    cap         = 3
+  }
+}
+"#;
+
+    /// `CAPS_SRC` with the whole `frequency_caps` block (and the blank line
+    /// that sets it off) gone — the shape a cleared set must reduce to.
+    fn caps_src_without_blocks() -> String {
+        let head = CAPS_SRC
+            .split("\n\n  frequency_caps {")
+            .next()
+            .expect("split source");
+        format!("{head}\n}}\n")
+    }
+
+    fn caps_live(caps_json: &str) -> String {
+        format!(
+            r#"{{
+              "customer_id": "1234567890",
+              "campaign_budgets": [
+                {{"id":"111","name":"Budget","amount_micros":10000000,"delivery_method":"STANDARD"}}
+              ],
+              "campaigns": [
+                {{"id":"555","name":"Brand video","status":"ENABLED",
+                 "advertising_channel_type":"VIDEO","campaign_budget":"111",
+                 "managed_address":"main.google_ads_campaign.brand_video",
+                 "frequency_caps":[{caps_json}]}}
+              ]
+            }}"#
+        )
+    }
+
+    #[test]
+    fn drifted_frequency_caps_round_trip_into_the_blocks() {
+        let live = caps_live(
+            r#"{"event_type":"IMPRESSION","time_unit":"DAY","time_length":1,"cap":5},
+               {"event_type":"VIDEO_VIEW","time_unit":"WEEK","time_length":2,"cap":1,"level":"AD_GROUP"}"#,
+        );
+        let (out, outcome) = run(CAPS_SRC, &live);
+
+        assert!(
+            out.contains(
+                "\n  frequency_caps {\n    event_type = \"IMPRESSION\"\n    time_unit = \"DAY\"\n    \
+                 time_length = 1\n    cap = 5\n  }\n"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "\n  frequency_caps {\n    event_type = \"VIDEO_VIEW\"\n    time_unit = \"WEEK\"\n    \
+                 time_length = 2\n    cap = 1\n    level = \"AD_GROUP\"\n  }\n"
+            ),
+            "{out}"
+        );
+        assert_eq!(out.matches("frequency_caps {").count(), 2, "{out}");
+        assert!(out.contains("# keep this comment"), "{out}");
+        assert!(out.contains("campaign_budget          = google_ads_campaign_budget.budget.id"), "{out}");
+        assert_eq!(outcome.changed_files, vec![0]);
+        let (_, fields) = &outcome.applied[0];
+        assert_eq!(fields, &vec!["frequency_caps".to_string()]);
+        assert!(outcome.skipped.is_empty(), "{:?}", outcome.skipped);
+    }
+
+    #[test]
+    fn caps_cleared_upstream_drop_the_blocks() {
+        let (out, outcome) = run(CAPS_SRC, &caps_live(""));
+        assert_eq!(out, caps_src_without_blocks(), "{out}");
+        assert_eq!(outcome.changed_files, vec![0]);
+    }
+
+    #[test]
+    fn undeclared_caps_are_left_alone() {
+        // Issue #102: the field is unmanaged until the file declares a cap, so
+        // reconcile has nothing to write back either.
+        let src = caps_src_without_blocks();
+        let live = caps_live(r#"{"event_type":"IMPRESSION","time_unit":"DAY","time_length":1,"cap":3}"#);
+        let (out, outcome) = run(&src, &live);
+        assert_eq!(out, src, "an unmanaged field must not be materialized");
+        assert!(outcome.applied.is_empty());
+        assert!(outcome.skipped.is_empty(), "{:?}", outcome.skipped);
     }
 
     // ---- module / template trees ------------------------------------------

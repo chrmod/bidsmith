@@ -670,6 +670,7 @@ fn claim_category_display(category: &str) -> &'static str {
         "location" => "locations",
         "language" => "languages",
         "proximity" => "proximity",
+        "frequency_caps" => "frequency caps",
         _ => "criteria",
     }
 }

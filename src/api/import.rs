@@ -2885,22 +2885,103 @@ resource "google_ads_campaign" "v" {{
         assert_eq!(changed[0], &vec!["frequency_caps".to_string()]);
     }
 
+    /// `LIVE_VIDEO_CAMPAIGN` plus the `bidsmith:owns=frequency_caps`
+    /// association a previous apply wrote when the file still declared caps.
+    fn live_video_campaign_claiming_caps() -> ExportInput {
+        let mut batches: serde_json::Value =
+            serde_json::from_str(LIVE_VIDEO_CAMPAIGN).expect("live json");
+        batches[0]["results"]
+            .as_array_mut()
+            .expect("results array")
+            .push(serde_json::json!({
+                "campaignLabel": {
+                    "resourceName": "customers/9/campaignLabels/2~777",
+                    "campaign": "customers/9/campaigns/2",
+                    "label": "customers/9/labels/777"
+                },
+                "label": {
+                    "resourceName": "customers/9/labels/777",
+                    "name": "bidsmith:owns=frequency_caps"
+                }
+            }));
+        crate::commands::adapt::from_search_response(&batches.to_string()).expect("adapt live")
+    }
+
+    fn caps_update_planned(report: &crate::api::diff::DiffReport) -> bool {
+        report.diffs.iter().any(|d| {
+            matches!(
+                &d.action,
+                crate::api::diff::Action::Update { changed_fields, .. }
+                    if changed_fields.contains(&"frequency_caps".to_string())
+            )
+        })
+    }
+
     #[test]
-    fn caps_set_outside_bidsmith_surface_as_drift() {
-        // The whole point of the feature: a campaign bidsmith manages that
-        // declares no caps must not silently keep UI-set ones.
+    fn caps_set_outside_bidsmith_stay_unmanaged() {
+        // Issue #102: a campaign that never declared a cap doesn't own the
+        // field, so UI-set caps must not plan a clear (which the API rejects
+        // outright on some campaigns, poisoning the whole atomic batch).
         let declared = video_campaign_with_caps("freq_caps_none", "");
         let live = crate::commands::adapt::from_search_response(LIVE_VIDEO_CAMPAIGN)
             .expect("adapt live");
         let report = diff_after_defaults(declared, live);
+        assert!(!caps_update_planned(&report), "diffs: {:?}", report.diffs);
         assert!(
-            report.diffs.iter().any(|d| matches!(
-                &d.action,
-                crate::api::diff::Action::Update { changed_fields, .. }
-                    if changed_fields.contains(&"frequency_caps".to_string())
-            )),
-            "diffs: {:?}",
-            report.diffs
+            report
+                .claim_plans
+                .iter()
+                .all(|p| p.category != "frequency_caps"),
+            "an undeclared field claims nothing",
+        );
+    }
+
+    #[test]
+    fn declaring_a_cap_claims_the_field() {
+        let declared = video_campaign_with_caps(
+            "freq_caps_claimed",
+            r#"
+  frequency_caps {
+    event_type  = "IMPRESSION"
+    time_unit   = "DAY"
+    time_length = 1
+    cap         = 3
+  }
+
+  frequency_caps {
+    event_type  = "VIDEO_VIEW"
+    time_unit   = "DAY"
+    time_length = 1
+    cap         = 1
+  }
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(LIVE_VIDEO_CAMPAIGN)
+            .expect("adapt live");
+        let report = diff_after_defaults(declared, live);
+        assert!(!caps_update_planned(&report), "diffs: {:?}", report.diffs);
+        assert!(
+            report
+                .claim_plans
+                .iter()
+                .any(|p| p.category == "frequency_caps" && p.stale_assoc_rn.is_none()),
+            "claims: {:?}",
+            report.claim_plans
+        );
+    }
+
+    #[test]
+    fn dropping_the_last_declared_cap_clears_and_releases_the_claim() {
+        let declared = video_campaign_with_caps("freq_caps_dropped", "");
+        let report = diff_after_defaults(declared, live_video_campaign_claiming_caps());
+        assert!(caps_update_planned(&report), "diffs: {:?}", report.diffs);
+        assert!(
+            report
+                .claim_plans
+                .iter()
+                .any(|p| p.category == "frequency_caps" && p.stale_assoc_rn.is_some()),
+            "claims: {:?}",
+            report.claim_plans
         );
     }
 

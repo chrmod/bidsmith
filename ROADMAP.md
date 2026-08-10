@@ -225,10 +225,11 @@ what closes the most user-facing gaps next:
    `.bid` by their `bidsmith:address` label and writes back drifted
    scalar fields in place, leaving structure intact. The bootstrap
    modes (`-d` / `-o` / stdout) still exist for first-time pulls.
-   Remaining reconcile follow-ups: inserting an attribute that's
-   absent from source (today reported, not written) and per-asset RSA
-   / criterion-membership reconcile (waits on the per-asset RSA diff
-   below). Next priorities:
+   A campaign's `frequency_caps` set round-trips too — the whole
+   block set is rewritten from live (issue #102). Remaining reconcile
+   follow-ups: inserting an attribute that's absent from source (today
+   reported, not written) and per-asset RSA / criterion-membership
+   reconcile (waits on the per-asset RSA diff below). Next priorities:
 2. **`import <address> <api-resource>`** (unblocked). `apply`
    already adopts unlabeled live resources by content and labels them;
    `import` is the explicit, address-targeted form — adopt one named

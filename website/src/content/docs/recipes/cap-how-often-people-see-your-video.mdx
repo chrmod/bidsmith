@@ -63,6 +63,23 @@ cap somebody added in the Google Ads UI shows up in `plan` as drift
 on the campaign, and removing every block clears every cap. The order
 of the blocks doesn't matter.
 
+## Campaigns you never capped
+
+Declaring your first `frequency_caps` block is what hands the setting
+to bidsmith. Until then the campaign's caps belong to whoever set them
+in the Google Ads UI: they don't show up as drift, `plan` won't offer
+to clear them, and `apply` leaves them alone. That's why upgrading to a
+bidsmith version that reads a new setting never rewrites campaigns you
+haven't touched.
+
+To take an existing UI-set cap under management, copy it into the
+campaign as a block — `bidsmith refresh --in-place` will keep it in
+sync from then on, rewriting the blocks whenever the live caps drift.
+The first `apply` after you declare a cap shows a
+`~ claim (+frequency caps)` row on the campaign: that's bidsmith
+[marking the setting as its own](./remove-keywords-safely/), which is
+what lets a later "delete every block" mean "clear every cap".
+
 ## Where capping applies
 
 Frequency capping works on **video** and **display** campaigns. Google

@@ -2609,7 +2609,7 @@ fn write_attr(out: &mut String, indent: usize, name: &str, value: &str) {
     let _ = writeln!(out, "{name} = {value}");
 }
 
-fn fmt_string(s: &str) -> String {
+pub fn fmt_string(s: &str) -> String {
     let mut escaped = String::with_capacity(s.len() + 2);
     escaped.push('"');
     for ch in s.chars() {
