@@ -38,6 +38,24 @@ resource "google_ads_campaign_budget" "brand" {
 }
 ```
 
+<Aside type="caution" title="Sharing a budget takes one extra line">
+  `explicitly_shared` defaults to `false`, and pointing a **second**
+  campaign at a budget that isn't explicitly shared is an error Google
+  Ads rejects — *"Only explicitly shared campaign budgets can be used
+  with multiple campaigns."* Nothing in the file hints at it, because the
+  default is applied for you.
+
+  If you want two campaigns on one budget, say `explicitly_shared = true`
+  as above. If you wanted them independent, give each its own budget —
+  that's usually what you want, since a shared budget means the campaigns
+  compete for the same daily spend.
+
+  `plan` catches this before it sends anything and names the budget and
+  the campaigns. Worth letting it: the raw API rejection lands on the
+  *second* campaign, while the first reports a misleading "Resource was
+  not found" and the batch takes every unrelated change down with it.
+</Aside>
+
 ## Schema
 
 <AttributeTable block={resource} headingLevel={3} />

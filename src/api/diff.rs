@@ -775,6 +775,7 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     );
     diffs.extend(deletes);
     warnings.extend(campaign_warnings);
+    warnings.extend(shared_budget_warnings(declared));
 
     let mut noop_count = 0;
     let mut create_count = 0;
@@ -1249,6 +1250,44 @@ fn action_for_match(live_id: String, changed: Vec<String>) -> Action {
             changed_fields: changed,
         }
     }
+}
+
+/// Google Ads accepts a budget on a second campaign only when it is
+/// `explicitly_shared`. The trap is that `explicitly_shared` defaults to
+/// `false` and bidsmith fills that default in, so the file that earns the
+/// rejection never mentions the field — and the rejection lands on the second
+/// campaign, while the first reports a misleading "Resource was not found".
+/// Grouped by resolved address: five modules each declaring their own local
+/// `budget` are five budgets, not one shared five ways.
+fn shared_budget_warnings(declared: &ExportInput) -> Vec<String> {
+    let mut users: HashMap<&str, Vec<&str>> = HashMap::new();
+    for c in &declared.campaigns {
+        users
+            .entry(c.campaign_budget.as_str())
+            .or_default()
+            .push(c.id.as_str());
+    }
+    let mut out = Vec::new();
+    for b in &declared.campaign_budgets {
+        if b.explicitly_shared == Some(true) {
+            continue;
+        }
+        let Some(campaigns) = users.get(b.id.as_str()) else {
+            continue;
+        };
+        if campaigns.len() < 2 {
+            continue;
+        }
+        out.push(format!(
+            "{} backs {} campaigns ({}) but is not explicitly shared — Google Ads rejects the \
+             second one; set 'explicitly_shared = true' on the budget, or give each campaign \
+             its own",
+            b.id,
+            campaigns.len(),
+            campaigns.join(", "),
+        ));
+    }
+    out
 }
 
 /// Google Ads requires a bidding strategy to *create* a campaign, and rejects
@@ -3042,6 +3081,101 @@ mod bidding_warning_tests {
         }"#,
         );
         let report = diff(&declared, &input(LIVE));
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    }
+}
+
+#[cfg(test)]
+mod shared_budget_tests {
+    use super::*;
+
+    fn input(json: &str) -> ExportInput {
+        serde_json::from_str(json).expect("valid test input")
+    }
+
+    fn two_campaigns_on(budget: &str) -> ExportInput {
+        input(&format!(
+            r#"{{
+            "customer_id": "1",
+            "campaign_budgets": [{budget}],
+            "campaigns": [
+                {{"id":"a","name":"A","advertising_channel_type":"SEARCH",
+                  "campaign_budget":"b","manual_cpc":{{}}}},
+                {{"id":"z","name":"Z","advertising_channel_type":"SEARCH",
+                  "campaign_budget":"b","manual_cpc":{{}}}}
+            ]
+        }}"#
+        ))
+    }
+
+    const EMPTY_LIVE: &str = r#"{"customer_id": "1"}"#;
+
+    #[test]
+    fn two_campaigns_on_an_implicitly_shared_budget_warn() {
+        let declared = two_campaigns_on(r#"{"id":"b","name":"B","amount_micros":1000000}"#);
+        let report = diff(&declared, &input(EMPTY_LIVE));
+        let w = report
+            .warnings
+            .iter()
+            .find(|w| w.contains("not explicitly shared"))
+            .unwrap_or_else(|| panic!("{:?}", report.warnings));
+        assert!(w.contains("backs 2 campaigns") && w.contains("a, z"), "{w}");
+    }
+
+    #[test]
+    fn an_explicitly_shared_budget_is_fine() {
+        let declared = two_campaigns_on(
+            r#"{"id":"b","name":"B","amount_micros":1000000,"explicitly_shared":true}"#,
+        );
+        let report = diff(&declared, &input(EMPTY_LIVE));
+        assert!(
+            !report.warnings.iter().any(|w| w.contains("not explicitly shared")),
+            "{:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn one_campaign_per_budget_is_fine() {
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "campaign_budgets": [
+                {"id":"b1","name":"B1","amount_micros":1000000},
+                {"id":"b2","name":"B2","amount_micros":1000000}
+            ],
+            "campaigns": [
+                {"id":"a","name":"A","advertising_channel_type":"SEARCH",
+                 "campaign_budget":"b1","manual_cpc":{}},
+                {"id":"z","name":"Z","advertising_channel_type":"SEARCH",
+                 "campaign_budget":"b2","manual_cpc":{}}
+            ]
+        }"#,
+        );
+        let report = diff(&declared, &input(EMPTY_LIVE));
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    }
+
+    #[test]
+    fn same_local_name_in_two_modules_is_two_budgets() {
+        // The false positive a source-level check produces: `m1.budget` and
+        // `m2.budget` are distinct budgets, each backing one campaign.
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "campaign_budgets": [
+                {"id":"m1.budget","name":"B","amount_micros":1000000},
+                {"id":"m2.budget","name":"B","amount_micros":1000000}
+            ],
+            "campaigns": [
+                {"id":"m1.c","name":"A","advertising_channel_type":"SEARCH",
+                 "campaign_budget":"m1.budget","manual_cpc":{}},
+                {"id":"m2.c","name":"Z","advertising_channel_type":"SEARCH",
+                 "campaign_budget":"m2.budget","manual_cpc":{}}
+            ]
+        }"#,
+        );
+        let report = diff(&declared, &input(EMPTY_LIVE));
         assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     }
 }
