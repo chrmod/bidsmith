@@ -103,6 +103,24 @@ audience {
 }
 ```
 
+## How it applies
+
+Custom audiences are the one resource Google Ads won't accept in the
+same request as everything else, so `apply` writes them in a call of
+their own that runs **first** — the campaigns and criteria that target
+them go in the main batch afterwards, pointing at the segments it just
+created.
+
+Two things follow from that, both visible in `plan`:
+
+- A criterion targeting a segment that doesn't exist yet shows as
+  `deferred` rather than `ok`. There is nothing to validate it against
+  until the segment is real; `apply` creates the segment and then applies
+  the criterion normally.
+- The two calls aren't one transaction. If the main batch fails after
+  the segments were written, the segments stay. Re-running `apply` after
+  fixing the error adopts them by name instead of creating duplicates.
+
 ## See also
 
 - [`google_ads_campaign_criterion`](./google_ads_campaign_criterion/) — how a campaign targets the segment.

@@ -106,7 +106,10 @@ core safety property of the tool.
 <p>
 All writes in one <code>apply</code> go to <code>googleAds:mutate</code> as a single atomic batch,
 ordered by resource dependency (budgets &rarr; campaigns &rarr; ad groups &rarr; ads &rarr; criteria),
-so either every operation in the batch succeeds or none are written. Every change to a
+so either every operation in the batch succeeds or none are written. The one exception is the custom
+audience, which <code>GoogleAdsService.Mutate</code> has no operation type for: those go first, in a
+separate <code>customAudiences:mutate</code> call, and the batch then references the resource names it
+returned. Both calls run under <code>validateOnly</code> before either is committed. Every change to a
 <code>.bid</code> file is a reviewable Git commit, and the Google Ads change-history view records the
 same operations under the operator&rsquo;s identity. Parse, schema, and policy errors render with file
 path, line number, and a source snippet (via the <code>miette</code> diagnostic library), so a
@@ -131,7 +134,9 @@ It calls these endpoints:
 Reads use <code>googleAds:searchStream</code> with {{ gaql_query_count }} fixed GAQL queries — one per
 resource type {{ tool_name }} models ({% for q in gaql_queries %}<code>{{ q.label }}</code>{% if not loop.last %}, {% endif %}{% endfor %}) — plus the read-only <code>query</code> passthrough for
 ad-hoc reporting and the read-only <code>keyword-ideas</code> research call
-(<code>KeywordPlanIdeaService.GenerateKeywordIdeas</code>). Writes use <code>googleAds:mutate</code> as described in §3.
+(<code>KeywordPlanIdeaService.GenerateKeywordIdeas</code>). Writes use <code>googleAds:mutate</code> — plus
+<code>CustomAudienceService.MutateCustomAudiences</code> for the one resource type that batch cannot
+carry — as described in §3.
 </p>
 
 <p>

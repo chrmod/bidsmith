@@ -696,6 +696,30 @@ resource type, any file layout, modules, schema validation.
   drift instead of staying invisible. Frequency capping is unsupported on
   Demand Gen, so `validate` warns rather than letting the setting apply
   and do nothing.
+- **Bidding is one block, chosen from a fixed set** (issue #104):
+  `Campaign.campaign_bidding_strategy` is a protobuf `oneof`, so the
+  campaign takes at most one of `manual_cpc`, `manual_cpm`,
+  `manual_cpv`, `target_cpm`, `target_cpv` — declaring two is a
+  validate error, and a `defaults "google_ads_campaign"` bidding block
+  is suppressed wholesale (not per-name) once the resource picks its
+  own, so a video campaign can opt out of a shared `manual_cpc`. Every
+  strategy but `manual_cpc` is an empty message in the API, so its
+  block carries no attributes: picking it is the whole declaration and
+  the bid amount lives on the ad group. The empty ones are also
+  unreadable through GAQL — there is no leaf field to select — so the
+  live side derives them from `campaign.bidding_strategy_type`
+  (`manual_cpc` still comes off `manual_cpc.enhanced_cpc_enabled`,
+  because enhanced CPC reports as `ENHANCED_CPC` rather than
+  `MANUAL_CPC`). A strategy switch masks the desired member alone;
+  setting one member of a `oneof` clears the others. Conversion-based
+  strategies (`target_cpa`, `maximize_conversions`, …) stay out until
+  bidsmith models conversion tracking.
+- **An undeclared bidding block means unmanaged**: the same rule the
+  frequency caps follow, for the same reason — a file that never names
+  a strategy diffs as if the field didn't exist rather than planning a
+  switch to whatever the block list happens to default to. Consequence:
+  a campaign adopted without a bidding block no longer reports
+  `manual_cpc.enhanced_cpc_enabled` drift against the live account.
 - **An undeclared `frequency_caps` block means unmanaged, not "clear
   the caps"** (issue #102): the set is the one non-criterion field whose
   "declared as empty" is unwritable — a repeated block has no empty
@@ -740,9 +764,24 @@ resource type, any file layout, modules, schema validation.
   create API worth wrapping — they are referenced by resource name).
   It matches live **by name** like `shared_set` (custom audiences carry
   no labels), its repeated `member` blocks are a whole-set field like
-  `frequency_caps`, and `type` is creation-only. Its mutate op is
-  emitted ahead of the criteria that target it, the same temp-resource-name
-  ordering the video assets need.
+  `frequency_caps`, and `type` is creation-only.
+- **Custom audiences are mutated by their own service, before the batch**
+  (issue #105): `MutateOperation` has no `custom_audience_operation`
+  member, so a `customAudienceOperation` in the unified batch is rejected
+  at JSON-parse time and takes every other op down with it. They go to
+  `CustomAudienceService.MutateCustomAudiences` in a call of their own,
+  issued first, and the batch references the real resource names it
+  returns. That service has no temp-id mechanism, so a create body
+  carries no `resourceName` — and under `validateOnly` it returns errors
+  but no results, which means the pre-flight has no name to give a
+  criterion that targets a *new* audience. Those criteria are held out
+  of the validate batch and reported as `deferred` rather than sunk with
+  a resource-not-found; the real apply, which does get names back,
+  includes them. Consequence to know: the two calls are not one
+  transaction, so a batch that fails after the audiences committed
+  leaves them created. Chosen over dropping the resource or making the
+  user pre-create audiences in the UI — the ordering is the same
+  dependency the plan already models, just across two calls.
 - **Keyword Planner is a read-only research verb, not a resource**: Google
   Keyword Planner (`KeywordPlanIdeaService.GenerateKeywordIdeas`) is surfaced
   as `bidsmith keyword-ideas` — an imperative, live-only command in the same
@@ -1084,8 +1123,9 @@ Verified locally:
   that lock in the account-vs-campaign split (`render_split`).
 
 Validator covers (so far):
-- `google_ads_campaign_budget`, `google_ads_campaign` (SEARCH with
-  `manual_cpc` / `network_settings` and the required
+- `google_ads_campaign_budget`, `google_ads_campaign` (one bidding
+  block out of `manual_cpc` / `manual_cpm` / `manual_cpv` /
+  `target_cpm` / `target_cpv`, plus `network_settings` and the required
   `contains_eu_political_advertising` enum — defaults to
   `DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING` at mutate time when the
   attribute is omitted, since Google Ads rejects new campaigns that

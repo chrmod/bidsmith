@@ -88,6 +88,17 @@ impl Client {
         self.post_json(access_token, "googleAds:mutate", body, false)
     }
 
+    /// A resource-specific `…:mutate` for the types `GoogleAdsService.Mutate`
+    /// has no `MutateOperation` member for (`customAudiences:mutate`).
+    pub fn service_mutate(
+        &self,
+        access_token: &str,
+        endpoint: &str,
+        body: &Value,
+    ) -> Result<MutateResponse, ApiError> {
+        self.post_json(access_token, endpoint, body, false)
+    }
+
     pub fn search_stream(
         &self,
         access_token: &str,

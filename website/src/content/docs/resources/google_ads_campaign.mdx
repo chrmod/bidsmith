@@ -96,6 +96,48 @@ default for plain positive targeting.
 
 <AttributeTable block={resource} headingLevel={3} />
 
+## Bidding
+
+Every campaign picks exactly **one** bidding strategy, and Google Ads
+refuses to create one that picks none. Which strategies are legal
+depends on the channel: search campaigns bid on clicks, video campaigns
+bid on views or impressions. Declaring two is a validation error.
+
+| Block | Google Ads UI name | Use it for |
+| --- | --- | --- |
+| `manual_cpc` | Manual CPC | Search and display — you pay per click |
+| `manual_cpv` | Maximum CPV | Video — you pay per view, bid set on the ad group |
+| `target_cpv` | Target CPV | Video — Google averages your cost per view to a target |
+| `target_cpm` | Target CPM | Video reach — Google averages your cost per thousand impressions |
+| `manual_cpm` | Maximum CPM | Video — you pay a fixed rate per thousand impressions |
+
+Apart from `manual_cpc`, these blocks carry no settings — picking the
+strategy is the whole declaration, and the bid amount lives on the
+[ad group](./google_ads_ad_group/):
+
+```hcl
+resource "google_ads_campaign" "preroll" {
+  name                     = "Instream Preroll — India"
+  status                   = "PAUSED"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.preroll.id
+
+  manual_cpv {}
+}
+```
+
+<Aside type="tip">
+  A campaign whose file declares no bidding block leaves the strategy to
+  whoever set it in the Google Ads UI — bidsmith won't plan a change.
+  That's fine for a campaign you adopted, but a *new* campaign has
+  nothing to inherit, so `validate` warns when a VIDEO campaign has no
+  strategy (or bids with `manual_cpc`, which the channel rejects).
+</Aside>
+
+Switching strategies on a live campaign is a normal update — swap the
+block and `plan` shows the change. `refresh` can't do that swap for you;
+it reports the drift and leaves the block alone.
+
 ## Nested blocks
 
 ### manual_cpc

@@ -47,6 +47,7 @@ pub const QUERIES: &[(&str, &str)] = &[
           campaign.advertising_channel_type,
           campaign.campaign_budget,
           campaign.contains_eu_political_advertising,
+          campaign.bidding_strategy_type,
           campaign.manual_cpc.enhanced_cpc_enabled,
           campaign.network_settings.target_google_search,
           campaign.network_settings.target_search_network,
