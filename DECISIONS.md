@@ -696,6 +696,26 @@ resource type, any file layout, modules, schema validation.
   drift instead of staying invisible. Frequency capping is unsupported on
   Demand Gen, so `validate` warns rather than letting the setting apply
   and do nothing.
+- **A budget backing two campaigns must say `explicitly_shared = true`**,
+  and `plan` says so first (verified live). Google Ads rejects the second
+  campaign with "Only explicitly shared campaign budgets can be used with
+  multiple campaigns" — a trap precisely because `explicitly_shared`
+  defaults to `false` and bidsmith *fills that default in*, so the file
+  that earns the rejection never mentions the field. The raw failure is
+  also badly attributed: it lands on the second campaign while the first
+  reports "Resource was not found", and the atomic batch takes every
+  unrelated change with it. Checked in `diff` over the resolved
+  `ExportInput`, not in `lint`: grouping by source name counts five
+  modules that each declare a local `budget` as one budget shared five
+  ways — the same false-positive class the video check hit. bidsmith
+  warns rather than flipping the flag itself, because `explicitly_shared`
+  is real Google Ads state (a shared budget behaves differently and shows
+  up in the shared library), not a formality. The neighbouring
+  `BIDDING_STRATEGY_TYPE_INCOMPATIBLE_WITH_SHARED_BUDGET` is deliberately
+  *not* modelled: it needs a shared budget plus a CPM/CPV strategy, and
+  every channel that reaches that pairing is already refused (VIDEO is
+  unmutable, DISPLAY rejects `target_cpm` regardless of the budget), so
+  there is no reachable case to warn about.
 - **The VIDEO channel is read-only through the Google Ads API** (issue
   #104, verified live): "You cannot create new Video campaigns or update
   existing ones using the Google Ads API"
