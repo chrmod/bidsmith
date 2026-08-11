@@ -4,7 +4,7 @@ use hcl_edit::structure::{Attribute, Block, Structure};
 
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
-    JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
+    JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCustomerAsset,
     JsonAgeRange, JsonAudience, JsonCustomAudience, JsonCustomAudienceMember,
     JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonGender, JsonKeyword,
@@ -310,6 +310,10 @@ fn import_campaign(
     let mut budget_ref = None;
     let mut eu_political = None;
     let mut manual_cpc = None;
+    let mut manual_cpm = None;
+    let mut manual_cpv = None;
+    let mut target_cpm = None;
+    let mut target_cpv = None;
     let mut network_settings = None;
     let mut frequency_caps: Vec<JsonFrequencyCap> = Vec::new();
     let mut languages: Vec<String> = Vec::new();
@@ -329,6 +333,10 @@ fn import_campaign(
             },
             Structure::Block(b) => match b.ident.as_str() {
                 "manual_cpc" => manual_cpc = Some(import_manual_cpc(ctx, b)),
+                "manual_cpm" => manual_cpm = Some(JsonBidSelector {}),
+                "manual_cpv" => manual_cpv = Some(JsonBidSelector {}),
+                "target_cpm" => target_cpm = Some(JsonBidSelector {}),
+                "target_cpv" => target_cpv = Some(JsonBidSelector {}),
                 "network_settings" => network_settings = Some(import_network_settings(ctx, b)),
                 "frequency_caps" => frequency_caps.extend(import_frequency_cap(ctx, b)),
                 _ => {}
@@ -351,6 +359,10 @@ fn import_campaign(
             campaign_budget: budget,
             contains_eu_political_advertising: eu_political,
             manual_cpc,
+            manual_cpm,
+            manual_cpv,
+            target_cpm,
+            target_cpv,
             network_settings,
             frequency_caps,
             managed_address: None,
@@ -2783,6 +2795,36 @@ resource "google_ads_campaign" "shell" {
                 .map(|l| l.language_constant.as_str()),
             Some("languageConstants/1000")
         );
+    }
+
+    #[test]
+    fn a_video_strategy_keeps_the_defaults_manual_cpc_out() {
+        let input = import_str(
+            "defaults_bidding",
+            r#"
+defaults "google_ads_campaign" {
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+}
+
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "preroll" {
+  name                     = "Preroll"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  manual_cpv {}
+}
+"#,
+        );
+        let c = &input.campaigns[0];
+        assert!(c.manual_cpc.is_none());
+        assert_eq!(c.bidding_strategy(), Some("manual_cpv"));
     }
 
     fn video_campaign_with_caps(name: &str, caps: &str) -> ExportInput {

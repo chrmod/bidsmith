@@ -142,6 +142,14 @@ pub struct JsonCampaign {
     #[serde(default)]
     pub manual_cpc: Option<JsonManualCpc>,
     #[serde(default)]
+    pub manual_cpm: Option<JsonBidSelector>,
+    #[serde(default)]
+    pub manual_cpv: Option<JsonBidSelector>,
+    #[serde(default)]
+    pub target_cpm: Option<JsonBidSelector>,
+    #[serde(default)]
+    pub target_cpv: Option<JsonBidSelector>,
+    #[serde(default)]
     pub network_settings: Option<JsonNetworkSettings>,
     /// Repeated, and managed as a whole list: an empty list means "this
     /// campaign has no frequency caps", so caps set in the UI on a declared
@@ -158,6 +166,32 @@ pub struct JsonCampaign {
 pub struct JsonManualCpc {
     #[serde(default)]
     pub enhanced_cpc_enabled: Option<bool>,
+}
+
+/// A bidding strategy the API models as an empty message (`ManualCpv`,
+/// `TargetCpm`, …) — the block's presence is the whole setting.
+#[derive(Deserialize)]
+pub struct JsonBidSelector {}
+
+impl JsonCampaign {
+    /// Which `campaign_bidding_strategy` the campaign picks, as the block name
+    /// the file uses and the API field the update mask names. `None` means the
+    /// file left bidding unmanaged.
+    pub fn bidding_strategy(&self) -> Option<&'static str> {
+        if self.manual_cpc.is_some() {
+            Some("manual_cpc")
+        } else if self.manual_cpm.is_some() {
+            Some("manual_cpm")
+        } else if self.manual_cpv.is_some() {
+            Some("manual_cpv")
+        } else if self.target_cpm.is_some() {
+            Some("target_cpm")
+        } else if self.target_cpv.is_some() {
+            Some("target_cpv")
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -1326,11 +1360,24 @@ fn write_campaign(
     }
 
     if let Some(m) = &c.manual_cpc {
-        out.push_str("\n  manual_cpc {\n");
-        if let Some(e) = m.enhanced_cpc_enabled {
-            write_attr(out, 2, "enhanced_cpc_enabled", &e.to_string());
+        match m.enhanced_cpc_enabled {
+            Some(e) => {
+                out.push_str("\n  manual_cpc {\n");
+                write_attr(out, 2, "enhanced_cpc_enabled", &e.to_string());
+                out.push_str("  }\n");
+            }
+            None => out.push_str("\n  manual_cpc {}\n"),
         }
-        out.push_str("  }\n");
+    }
+    for (name, set) in [
+        ("manual_cpm", c.manual_cpm.is_some()),
+        ("manual_cpv", c.manual_cpv.is_some()),
+        ("target_cpm", c.target_cpm.is_some()),
+        ("target_cpv", c.target_cpv.is_some()),
+    ] {
+        if set {
+            let _ = writeln!(out, "\n  {name} {{}}");
+        }
     }
     if let Some(n) = &c.network_settings {
         out.push_str("\n  network_settings {\n");

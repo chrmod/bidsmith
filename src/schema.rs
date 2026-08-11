@@ -53,6 +53,17 @@ pub const DEFAULT_NEGATIVE: bool = false;
 pub const DEFAULT_FREQUENCY_CAP_LEVEL: &str = "CAMPAIGN";
 pub const DEFAULT_CUSTOM_AUDIENCE_TYPE: &str = "AUTO";
 
+/// `Campaign.campaign_bidding_strategy` is a protobuf `oneof`, so these blocks
+/// are alternatives: a campaign declares at most one. Ordered as the plan and
+/// the rendered file emit them.
+pub const CAMPAIGN_BIDDING_BLOCKS: &[&str] = &[
+    "manual_cpc",
+    "manual_cpm",
+    "manual_cpv",
+    "target_cpm",
+    "target_cpv",
+];
+
 pub struct AttributeSchema {
     pub name: &'static str,
     pub ty: FieldType,
@@ -405,6 +416,18 @@ fn compact_keywords_block(name: &'static str) -> NestedBlockSchema {
     }
 }
 
+/// A bidding strategy the Google Ads API models as an empty message: the
+/// block's presence is the whole setting, the bid amount lives on the ad group.
+fn bidding_selector_block(name: &'static str) -> NestedBlockSchema {
+    NestedBlockSchema {
+        name,
+        schema: BlockSchema {
+            attributes: vec![],
+            blocks: vec![],
+        },
+    }
+}
+
 fn attr(name: &'static str, ty: FieldType, required: bool) -> AttributeSchema {
     AttributeSchema {
         name,
@@ -492,6 +515,10 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                             blocks: vec![],
                         },
                     },
+                    bidding_selector_block("manual_cpm"),
+                    bidding_selector_block("manual_cpv"),
+                    bidding_selector_block("target_cpm"),
+                    bidding_selector_block("target_cpv"),
                     NestedBlockSchema {
                         name: "network_settings",
                         schema: BlockSchema {
@@ -1380,13 +1407,23 @@ impl DefaultsRegistry {
                 _ => None,
             })
             .collect();
+        // A bidding block is one slot, not five: a campaign picking `target_cpv`
+        // must not also inherit the defaults' `manual_cpc`, or the merged
+        // resource declares two alternatives of the same `oneof`.
+        let have_bidding = ty == "google_ads_campaign"
+            && have_blocks
+                .iter()
+                .any(|b| CAMPAIGN_BIDDING_BLOCKS.contains(b));
         let additions: Vec<&Structure> = decl
             .block
             .body
             .iter()
             .filter(|s| match s {
                 Structure::Attribute(a) => !have_attrs.contains(a.key.as_str()),
-                Structure::Block(b) => !have_blocks.contains(b.ident.as_str()),
+                Structure::Block(b) => {
+                    !have_blocks.contains(b.ident.as_str())
+                        && !(have_bidding && CAMPAIGN_BIDDING_BLOCKS.contains(&b.ident.as_str()))
+                }
             })
             .collect();
         if additions.is_empty() {
@@ -2237,18 +2274,22 @@ fn validate_defaults(
     let Some(schema) = resource_schemas().get(ty) else {
         return;
     };
+    let address = format!("defaults.{ty}");
     validate_body(
         file,
         block,
         &block.body,
         schema,
-        &format!("defaults.{ty}"),
+        &address,
         registry,
         locals,
         variables,
         RequiredCheck::Skip,
         diags,
     );
+    if ty == "google_ads_campaign" {
+        validate_single_bidding_strategy(file, &block.body, &address, diags);
+    }
 }
 
 fn validate_provider(
@@ -2330,18 +2371,50 @@ fn validate_resource(
         }
     };
     let provided = defaults.provided_attrs(ty);
+    let address = format!("{ty}.{name}");
     validate_body(
         file,
         block,
         &block.body,
         schema,
-        &format!("{ty}.{name}"),
+        &address,
         registry,
         locals,
         variables,
         RequiredCheck::SatisfiedBy(&provided),
         diags,
     );
+    if ty == "google_ads_campaign" {
+        validate_single_bidding_strategy(file, &block.body, &address, diags);
+    }
+}
+
+/// The campaign's bidding blocks map to one protobuf `oneof`, which the block
+/// schema can list but not constrain — declaring two is an API error at apply
+/// time, so it is a validate error here.
+fn validate_single_bidding_strategy(
+    file: &ParsedFile,
+    body: &Body,
+    address: &str,
+    diags: &mut Vec<Diag>,
+) {
+    let declared: Vec<&Block> = body
+        .iter()
+        .filter_map(|s| match s {
+            Structure::Block(b) if CAMPAIGN_BIDDING_BLOCKS.contains(&b.ident.as_str()) => Some(b),
+            _ => None,
+        })
+        .collect();
+    let Some(extra) = declared.get(1) else { return };
+    let names: Vec<&str> = declared.iter().map(|b| b.ident.as_str()).collect();
+    diags.push(Diag::new(
+        file.src.clone(),
+        span_of(extra.ident.span()),
+        format!(
+            "{address} sets {}; a campaign has exactly one bidding strategy — keep one",
+            quoted_list(&names)
+        ),
+    ));
 }
 
 enum RequiredCheck<'a> {
@@ -3686,6 +3759,101 @@ resource "google_ads_campaign_budget" "b" {
   amount_micros = 1000000
 }
 "#;
+
+    #[test]
+    fn video_bidding_selector_blocks_validate() {
+        let diags = validate_str(
+            "video_bidding_ok",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  target_cpm {{}}
+}}
+"#
+            ),
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn two_bidding_blocks_on_one_campaign_error() {
+        let diags = validate_str(
+            "video_bidding_conflict",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  manual_cpc {{}}
+
+  target_cpv {{}}
+}}
+"#
+            ),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("exactly one bidding strategy")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_campaigns_own_bidding_block_replaces_the_defaults_one() {
+        let pf = parse_str(
+            "bidding_defaults",
+            r#"
+defaults "google_ads_campaign" {
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+
+  network_settings {
+    target_google_search = true
+  }
+}
+
+resource "google_ads_campaign" "video" {
+  name                     = "V"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  target_cpv {}
+}
+"#,
+        );
+        let (defaults, _) = DefaultsRegistry::build(std::slice::from_ref(&pf));
+        let campaign = pf
+            .body
+            .iter()
+            .filter_map(|s| match s {
+                Structure::Block(b) if b.ident.as_str() == "resource" => Some(b),
+                _ => None,
+            })
+            .next()
+            .expect("campaign block");
+        let merged = defaults
+            .merge("google_ads_campaign", campaign)
+            .expect("network_settings still merges in");
+        let blocks: Vec<&str> = merged
+            .body
+            .iter()
+            .filter_map(|s| match s {
+                Structure::Block(b) => Some(b.ident.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(blocks, vec!["target_cpv", "network_settings"], "{blocks:?}");
+    }
 
     #[test]
     fn inline_targeting_validates_clean() {

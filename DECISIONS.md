@@ -696,6 +696,30 @@ resource type, any file layout, modules, schema validation.
   drift instead of staying invisible. Frequency capping is unsupported on
   Demand Gen, so `validate` warns rather than letting the setting apply
   and do nothing.
+- **Bidding is one block, chosen from a fixed set** (issue #104):
+  `Campaign.campaign_bidding_strategy` is a protobuf `oneof`, so the
+  campaign takes at most one of `manual_cpc`, `manual_cpm`,
+  `manual_cpv`, `target_cpm`, `target_cpv` — declaring two is a
+  validate error, and a `defaults "google_ads_campaign"` bidding block
+  is suppressed wholesale (not per-name) once the resource picks its
+  own, so a video campaign can opt out of a shared `manual_cpc`. Every
+  strategy but `manual_cpc` is an empty message in the API, so its
+  block carries no attributes: picking it is the whole declaration and
+  the bid amount lives on the ad group. The empty ones are also
+  unreadable through GAQL — there is no leaf field to select — so the
+  live side derives them from `campaign.bidding_strategy_type`
+  (`manual_cpc` still comes off `manual_cpc.enhanced_cpc_enabled`,
+  because enhanced CPC reports as `ENHANCED_CPC` rather than
+  `MANUAL_CPC`). A strategy switch masks the desired member alone;
+  setting one member of a `oneof` clears the others. Conversion-based
+  strategies (`target_cpa`, `maximize_conversions`, …) stay out until
+  bidsmith models conversion tracking.
+- **An undeclared bidding block means unmanaged**: the same rule the
+  frequency caps follow, for the same reason — a file that never names
+  a strategy diffs as if the field didn't exist rather than planning a
+  switch to whatever the block list happens to default to. Consequence:
+  a campaign adopted without a bidding block no longer reports
+  `manual_cpc.enhanced_cpc_enabled` drift against the live account.
 - **An undeclared `frequency_caps` block means unmanaged, not "clear
   the caps"** (issue #102): the set is the one non-criterion field whose
   "declared as empty" is unwritable — a repeated block has no empty
@@ -1084,8 +1108,9 @@ Verified locally:
   that lock in the account-vs-campaign split (`render_split`).
 
 Validator covers (so far):
-- `google_ads_campaign_budget`, `google_ads_campaign` (SEARCH with
-  `manual_cpc` / `network_settings` and the required
+- `google_ads_campaign_budget`, `google_ads_campaign` (one bidding
+  block out of `manual_cpc` / `manual_cpm` / `manual_cpv` /
+  `target_cpm` / `target_cpv`, plus `network_settings` and the required
   `contains_eu_political_advertising` enum — defaults to
   `DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING` at mutate time when the
   attribute is omitted, since Google Ads rejects new campaigns that

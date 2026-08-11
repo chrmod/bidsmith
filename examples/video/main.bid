@@ -39,6 +39,8 @@ resource "google_ads_campaign" "preroll" {
   languages = ["en"]
   locations = ["IN"]
 
+  manual_cpv {}
+
   network_settings {
     target_google_search = false
     target_search_network = false

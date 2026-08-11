@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
-    JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
+    JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCustomerAsset,
     JsonAgeRange, JsonAudience, JsonCustomAudience, JsonCustomAudienceMember,
     JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonGender, JsonKeyword,
@@ -286,6 +286,10 @@ impl AdapterState {
                 campaign_budget: String::new(),
                 contains_eu_political_advertising: None,
                 manual_cpc: None,
+                manual_cpm: None,
+                manual_cpv: None,
+                target_cpm: None,
+                target_cpv: None,
                 network_settings: None,
                 frequency_caps: Vec::new(),
                 managed_address: None,
@@ -316,6 +320,16 @@ impl AdapterState {
                     .get("enhancedCpcEnabled")
                     .and_then(Value::as_bool),
             });
+        } else {
+            // The video strategies are empty messages, so GAQL exposes no leaf
+            // field to select — `bidding_strategy_type` is the only tell.
+            match v.get("biddingStrategyType").and_then(Value::as_str) {
+                Some("MANUAL_CPM") => entry.manual_cpm = Some(JsonBidSelector {}),
+                Some("MANUAL_CPV") => entry.manual_cpv = Some(JsonBidSelector {}),
+                Some("TARGET_CPM") => entry.target_cpm = Some(JsonBidSelector {}),
+                Some("TARGET_CPV") => entry.target_cpv = Some(JsonBidSelector {}),
+                _ => {}
+            }
         }
         if let Some(caps) = v.get("frequencyCaps").and_then(Value::as_array) {
             entry.frequency_caps = caps.iter().filter_map(parse_frequency_cap).collect();

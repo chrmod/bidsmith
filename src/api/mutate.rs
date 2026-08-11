@@ -907,6 +907,12 @@ fn campaign_update_body(c: &JsonCampaign, resource_name: &str, fields: &[String]
                     sub.insert("enhancedCpcEnabled".into(), Value::Bool(e));
                 }
             }
+            // Switching which member of the bidding `oneof` is set.
+            "manual_cpc" | "manual_cpm" | "manual_cpv" | "target_cpm" | "target_cpv" => {
+                if let Some((field, body)) = bidding_strategy_value(c) {
+                    m.insert(field.into(), body);
+                }
+            }
             "network_settings.target_google_search" => {
                 let sub = network_sub.get_or_insert_with(Map::new);
                 if let Some(v) = c
@@ -1536,12 +1542,8 @@ fn campaign_create(c: &JsonCampaign, resource_name: &str, budget_rn: &str) -> Va
         "containsEuPoliticalAdvertising".into(),
         Value::String(eu_political),
     );
-    if let Some(mc) = &c.manual_cpc {
-        let mut sub = Map::new();
-        if let Some(e) = mc.enhanced_cpc_enabled {
-            sub.insert("enhancedCpcEnabled".into(), Value::Bool(e));
-        }
-        m.insert("manualCpc".into(), Value::Object(sub));
+    if let Some((field, body)) = bidding_strategy_value(c) {
+        m.insert(field.into(), body);
     }
     if let Some(ns) = &c.network_settings {
         let mut sub = Map::new();
@@ -1563,6 +1565,27 @@ fn campaign_create(c: &JsonCampaign, resource_name: &str, budget_rn: &str) -> Va
         m.insert("frequencyCaps".into(), frequency_caps_value(c));
     }
     Value::Object(m)
+}
+
+/// The campaign's chosen `campaign_bidding_strategy` member as a
+/// (camelCase field, message body) pair. Setting one member of the `oneof`
+/// clears the rest, so this is also all an update needs to switch strategies.
+fn bidding_strategy_value(c: &JsonCampaign) -> Option<(&'static str, Value)> {
+    let body = match c.bidding_strategy()? {
+        "manual_cpc" => {
+            let mut sub = Map::new();
+            if let Some(e) = c.manual_cpc.as_ref().and_then(|m| m.enhanced_cpc_enabled) {
+                sub.insert("enhancedCpcEnabled".into(), Value::Bool(e));
+            }
+            return Some(("manualCpc", Value::Object(sub)));
+        }
+        "manual_cpm" => ("manualCpm", json!({})),
+        "manual_cpv" => ("manualCpv", json!({})),
+        "target_cpm" => ("targetCpm", json!({})),
+        "target_cpv" => ("targetCpv", json!({})),
+        _ => return None,
+    };
+    Some(body)
 }
 
 fn frequency_caps_value(c: &JsonCampaign) -> Value {
@@ -1985,6 +2008,94 @@ mod tests {
             }]
         }))
         .expect("valid ExportInput")
+    }
+
+    fn video_campaign_bidding(bidding: Value) -> ExportInput {
+        let mut campaign = json!({
+            "id": "m.c", "name": "V", "advertising_channel_type": "VIDEO",
+            "campaign_budget": "m.b"
+        });
+        for (k, v) in bidding.as_object().unwrap() {
+            campaign[k] = v.clone();
+        }
+        serde_json::from_value(json!({
+            "customer_id": "100",
+            "campaign_budgets": [{"id": "m.b", "name": "B", "amount_micros": 10000000}],
+            "campaigns": [campaign]
+        }))
+        .expect("valid ExportInput")
+    }
+
+    #[test]
+    fn video_bidding_strategies_create_as_empty_messages() {
+        for (field, api_field) in [
+            ("manual_cpm", "manualCpm"),
+            ("manual_cpv", "manualCpv"),
+            ("target_cpm", "targetCpm"),
+            ("target_cpv", "targetCpv"),
+        ] {
+            let input = video_campaign_bidding(json!({ field: {} }));
+            let report = DiffReport {
+                diffs: vec![
+                    create_diff("m.b", "campaign_budget"),
+                    create_diff("m.c", "campaign"),
+                ],
+                label_plans: Vec::new(),
+                claim_plans: Vec::new(),
+                noop_count: 0,
+                create_count: 2,
+                update_count: 0,
+                delete_count: 0,
+                adopt_count: 0,
+                warnings: Vec::new(),
+            };
+            let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+            let ops = plan.body["mutateOperations"].as_array().unwrap();
+            let campaign = ops
+                .iter()
+                .find_map(|op| op.get("campaignOperation").and_then(|o| o.get("create")))
+                .expect("campaign create op");
+            assert_eq!(campaign[api_field], json!({}), "create body: {campaign}");
+            assert!(campaign.get("manualCpc").is_none(), "{field}: {campaign}");
+        }
+    }
+
+    #[test]
+    fn switching_bidding_strategy_masks_the_whole_oneof_member() {
+        let input = video_campaign_bidding(json!({ "target_cpv": {} }));
+        let report = DiffReport {
+            diffs: vec![
+                ResourceDiff {
+                    address: "m.b".to_string(),
+                    kind: "campaign_budget",
+                    action: Action::NoOp { live_id: "41".to_string() },
+                },
+                ResourceDiff {
+                    address: "m.c".to_string(),
+                    kind: "campaign",
+                    action: Action::Update {
+                        live_id: "42".to_string(),
+                        changed_fields: vec!["target_cpv".to_string()],
+                    },
+                },
+            ],
+            label_plans: Vec::new(),
+            claim_plans: Vec::new(),
+            noop_count: 1,
+            create_count: 0,
+            update_count: 1,
+            delete_count: 0,
+            adopt_count: 0,
+            warnings: Vec::new(),
+        };
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let ops = plan.body["mutateOperations"].as_array().unwrap();
+        let op = ops
+            .iter()
+            .find_map(|op| op.get("campaignOperation"))
+            .expect("campaign update op");
+        assert_eq!(op["updateMask"], json!("target_cpv"));
+        assert_eq!(op["update"]["targetCpv"], json!({}));
     }
 
     #[test]

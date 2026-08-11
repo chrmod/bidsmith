@@ -368,6 +368,16 @@ Smaller follow-ups that can ride along:
   `tests/e2e.rs` fixture with a video campaign; multiple `videos` per
   `video_responsive_ad` (today one `video` ref); companion / logo images;
   and per-asset RSA/video-asset diffs.
+- ✅ Video bidding strategies (issue #104). `google_ads_campaign` takes
+  one bidding block out of `manual_cpc` / `manual_cpm` / `manual_cpv` /
+  `target_cpm` / `target_cpv`, closing the gap that made a *new* VIDEO
+  campaign un-appliable. **Deferred:** `target_cpm`'s optional
+  `target_frequency_goal` (target-frequency reach buying), `fixed_cpm`,
+  a portfolio `google_ads_bidding_strategy` resource, the ad group's
+  `cpv_bid_micros` / `target_cpm_micros` companions to
+  `cpc_bid_micros`, and the conversion-based strategies (`target_cpa`,
+  `maximize_conversions`, …), which want conversion tracking modelled
+  first.
 - Repeating-block field-level diff for RSA `headline` / `description`
   blocks and the `final_urls` list. Today these are matched
   all-or-nothing; per-asset add/remove/repin detection would close

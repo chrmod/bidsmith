@@ -1276,10 +1276,18 @@ fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign, caps_claimed: bool) -> Vec<
         c.push("contains_eu_political_advertising".into());
     }
     // advertising_channel_type is creation-only; skip.
-    let dm = d.manual_cpc.as_ref().and_then(|m| m.enhanced_cpc_enabled);
-    let lm = l.manual_cpc.as_ref().and_then(|m| m.enhanced_cpc_enabled);
-    if dm != lm {
-        c.push("manual_cpc.enhanced_cpc_enabled".into());
+    // The bidding strategy is a `oneof`, so a file that declares none leaves it
+    // unmanaged rather than asking to clear whatever the account is bidding on.
+    match (d.bidding_strategy(), l.bidding_strategy()) {
+        (Some(desired), live) if Some(desired) != live => c.push(desired.into()),
+        (Some("manual_cpc"), _) => {
+            let dm = d.manual_cpc.as_ref().and_then(|m| m.enhanced_cpc_enabled);
+            let lm = l.manual_cpc.as_ref().and_then(|m| m.enhanced_cpc_enabled);
+            if dm != lm {
+                c.push("manual_cpc.enhanced_cpc_enabled".into());
+            }
+        }
+        _ => {}
     }
     let pairs = [
         ("network_settings.target_google_search",
@@ -2828,5 +2836,58 @@ mod claim_tests {
             "live members of an adopted set must not be pruned: {:?}",
             report.diffs.iter().map(|d| (&d.address, &d.action)).collect::<Vec<_>>()
         );
+    }
+}
+
+#[cfg(test)]
+mod campaign_bidding_tests {
+    use super::*;
+
+    fn campaign(bidding: &str) -> JsonCampaign {
+        serde_json::from_str(&format!(
+            r#"{{"id":"c","name":"C","advertising_channel_type":"VIDEO",
+                 "campaign_budget":"b"{bidding}}}"#
+        ))
+        .expect("valid test campaign")
+    }
+
+    #[test]
+    fn switching_strategy_masks_the_desired_member() {
+        let changed = diff_campaign(
+            &campaign(r#","target_cpv":{}"#),
+            &campaign(r#","manual_cpv":{}"#),
+            false,
+        );
+        assert_eq!(changed, vec!["target_cpv".to_string()]);
+    }
+
+    #[test]
+    fn the_same_strategy_is_a_noop() {
+        let changed = diff_campaign(
+            &campaign(r#","target_cpm":{}"#),
+            &campaign(r#","target_cpm":{}"#),
+            false,
+        );
+        assert!(changed.is_empty(), "{changed:?}");
+    }
+
+    #[test]
+    fn enhanced_cpc_still_diffs_within_manual_cpc() {
+        let changed = diff_campaign(
+            &campaign(r#","manual_cpc":{"enhanced_cpc_enabled":true}"#),
+            &campaign(r#","manual_cpc":{"enhanced_cpc_enabled":false}"#),
+            false,
+        );
+        assert_eq!(changed, vec!["manual_cpc.enhanced_cpc_enabled".to_string()]);
+    }
+
+    #[test]
+    fn a_file_that_declares_no_strategy_leaves_bidding_alone() {
+        let changed = diff_campaign(
+            &campaign(""),
+            &campaign(r#","manual_cpc":{"enhanced_cpc_enabled":false}"#),
+            false,
+        );
+        assert!(changed.is_empty(), "{changed:?}");
     }
 }

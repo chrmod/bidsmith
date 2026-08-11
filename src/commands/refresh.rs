@@ -706,6 +706,14 @@ fn collect_edits(
                         vec!["contains_eu_political_advertising"],
                         c.contains_eu_political_advertising.as_deref().map(s)
                     ),
+                    // A strategy switch replaces one block with another, which
+                    // the scalar-path edit model can't express.
+                    "manual_cpc" | "manual_cpm" | "manual_cpv" | "target_cpm" | "target_cpv" => {
+                        let live_block = c.bidding_strategy().unwrap_or("none");
+                        skip.push(format!(
+                            "{f} (live campaign bids with {live_block} — swap the block by hand)"
+                        ));
+                    }
                     "manual_cpc.enhanced_cpc_enabled" => opt!(
                         f,
                         vec!["manual_cpc", "enhanced_cpc_enabled"],
