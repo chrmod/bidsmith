@@ -210,6 +210,7 @@ fn make_label_plan(
 pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     let mut diffs: Vec<ResourceDiff> = Vec::new();
     let mut label_plans: Vec<LabelPlanEntry> = Vec::new();
+    let mut campaign_warnings: Vec<String> = Vec::new();
     let mut campaign_match: HashMap<String, String> = HashMap::new();
     let mut ad_group_match: HashMap<String, String> = HashMap::new();
     // declared asset address -> live asset id, across every asset type
@@ -280,8 +281,16 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
                         Some((l.id.as_str(), l.managed_address.as_deref())),
                     )
                 }
-                None => (Action::Create, None),
+                None => {
+                    if let Some(w) = missing_bidding_strategy_warning(d) {
+                        campaign_warnings.push(w);
+                    }
+                    (Action::Create, None)
+                }
             };
+            if let Some(w) = video_is_read_only_warning(d, &action) {
+                campaign_warnings.push(w);
+            }
             if let Some(plan) =
                 make_label_plan("campaign", &d.id, matched, customer_id, &live.labels)
             {
@@ -756,7 +765,7 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
 
     let claim_plans = claim_plan_entries(declared, live, &campaign_match, &ad_group_match);
 
-    let (deletes, warnings) = orphan_criteria_deletes(
+    let (deletes, mut warnings) = orphan_criteria_deletes(
         declared,
         live,
         &diffs,
@@ -765,6 +774,7 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         &shared_set_match,
     );
     diffs.extend(deletes);
+    warnings.extend(campaign_warnings);
 
     let mut noop_count = 0;
     let mut create_count = 0;
@@ -1239,6 +1249,43 @@ fn action_for_match(live_id: String, changed: Vec<String>) -> Action {
             changed_fields: changed,
         }
     }
+}
+
+/// Google Ads requires a bidding strategy to *create* a campaign, and rejects
+/// the create with a bare "The required field was not present." that names no
+/// field. Only creates: an adopted campaign keeps whatever the account bids
+/// with, which is why this can't live in the offline lint (issue #104).
+fn missing_bidding_strategy_warning(d: &JsonCampaign) -> Option<String> {
+    // A VIDEO campaign can't be created at all; the stronger warning covers it.
+    if d.bidding_strategy().is_some() || d.advertising_channel_type == "VIDEO" {
+        return None;
+    }
+    Some(format!(
+        "{} is a new {} campaign with no bidding strategy — Google Ads will reject the create; \
+         add a bidding block (e.g. 'manual_cpc')",
+        d.id, d.advertising_channel_type
+    ))
+}
+
+/// Every create or update against the VIDEO channel is rejected, and because
+/// the batch is atomic it takes every unrelated operation with it — so this is
+/// worth saying before the request goes out, not after (issue #104).
+fn video_is_read_only_warning(d: &JsonCampaign, action: &Action) -> Option<String> {
+    if d.advertising_channel_type != "VIDEO" {
+        return None;
+    }
+    let what = match action {
+        Action::Create => "would be created".to_string(),
+        Action::Update { changed_fields, .. } => {
+            format!("has drift on {}", changed_fields.join(", "))
+        }
+        _ => return None,
+    };
+    Some(format!(
+        "{} {what}, but {} — the whole atomic batch is rejected with it",
+        d.id,
+        crate::schema::VIDEO_IS_READ_ONLY
+    ))
 }
 
 fn diff_budget(d: &JsonBudget, l: &JsonBudget) -> Vec<String> {
@@ -2889,5 +2936,112 @@ mod campaign_bidding_tests {
             false,
         );
         assert!(changed.is_empty(), "{changed:?}");
+    }
+}
+
+#[cfg(test)]
+mod bidding_warning_tests {
+    use super::*;
+
+    fn input(json: &str) -> ExportInput {
+        serde_json::from_str(json).expect("valid test input")
+    }
+
+    const LIVE: &str = r#"{
+        "customer_id": "1",
+        "campaign_budgets": [{"id":"7","name":"B","amount_micros":1000000}],
+        "campaigns": [{"id":"9","name":"Preroll","advertising_channel_type":"VIDEO",
+                       "campaign_budget":"7"}]
+    }"#;
+
+    #[test]
+    fn a_new_search_campaign_without_bidding_warns() {
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "campaign_budgets": [{"id":"b","name":"B","amount_micros":1000000}],
+            "campaigns": [{"id":"c","name":"Brand new","advertising_channel_type":"SEARCH",
+                           "campaign_budget":"b"}]
+        }"#,
+        );
+        let report = diff(&declared, &input(LIVE));
+        assert!(
+            report.warnings.iter().any(|w| w.contains("no bidding strategy")),
+            "{:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn a_new_video_campaign_warns_that_the_api_cannot_create_it() {
+        // No bidding block makes a video campaign appliable — the channel is
+        // read-only through the API, whatever it bids with.
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "campaign_budgets": [{"id":"b","name":"B","amount_micros":1000000}],
+            "campaigns": [{"id":"c","name":"Brand new","advertising_channel_type":"VIDEO",
+                           "campaign_budget":"b","manual_cpv":{}}]
+        }"#,
+        );
+        let report = diff(&declared, &input(LIVE));
+        assert!(
+            report.warnings.iter().any(|w| w.contains("cannot create or update VIDEO")),
+            "{:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn drift_on_a_live_video_campaign_warns_before_the_batch_goes_out() {
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "campaign_budgets": [{"id":"b","name":"B","amount_micros":1000000}],
+            "campaigns": [{"id":"c","name":"Preroll","advertising_channel_type":"VIDEO",
+                           "campaign_budget":"b","status":"ENABLED"}]
+        }"#,
+        );
+        let report = diff(&declared, &input(LIVE));
+        assert!(
+            report.warnings.iter().any(|w| w.contains("cannot create or update VIDEO")
+                && w.contains("status")),
+            "{:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn an_adopted_video_campaign_without_bidding_is_quiet() {
+        // Matched by name, so bidding stays whatever the account already bids
+        // with — the 88-warning case a purely offline check produced.
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "campaign_budgets": [{"id":"b","name":"B","amount_micros":1000000}],
+            "campaigns": [{"id":"c","name":"Preroll","advertising_channel_type":"VIDEO",
+                           "campaign_budget":"b"}]
+        }"#,
+        );
+        let report = diff(&declared, &input(LIVE));
+        assert!(
+            !report.warnings.iter().any(|w| w.contains("no bidding strategy")),
+            "{:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn a_new_search_campaign_with_a_strategy_is_quiet() {
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "campaign_budgets": [{"id":"b","name":"B","amount_micros":1000000}],
+            "campaigns": [{"id":"c","name":"Brand new","advertising_channel_type":"SEARCH",
+                           "campaign_budget":"b","manual_cpc":{}}]
+        }"#,
+        );
+        let report = diff(&declared, &input(LIVE));
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     }
 }

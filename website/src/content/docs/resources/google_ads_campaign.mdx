@@ -111,6 +111,10 @@ bid on views or impressions. Declaring two is a validation error.
 | `target_cpm` | Target CPM | Video reach — Google averages your cost per thousand impressions |
 | `manual_cpm` | Maximum CPM | Video — you pay a fixed rate per thousand impressions |
 
+The four video strategies are **read-only** — they record what a video
+campaign already bids with, because Google Ads won't let any API client
+change one. See the caution below.
+
 Apart from `manual_cpc`, these blocks carry no settings — picking the
 strategy is the whole declaration, and the bid amount lives on the
 [ad group](./google_ads_ad_group/):
@@ -126,17 +130,43 @@ resource "google_ads_campaign" "preroll" {
 }
 ```
 
+Conversion-based strategies (Target CPA, Maximize Conversions, tROAS)
+aren't modelled — they need conversion tracking, which is a separate
+piece bidsmith doesn't manage yet.
+
 <Aside type="tip">
   A campaign whose file declares no bidding block leaves the strategy to
   whoever set it in the Google Ads UI — bidsmith won't plan a change.
   That's fine for a campaign you adopted, but a *new* campaign has
-  nothing to inherit, so `validate` warns when a VIDEO campaign has no
-  strategy (or bids with `manual_cpc`, which the channel rejects).
+  nothing to inherit, so `plan` warns when one is missing a strategy
+  Google Ads will demand.
 </Aside>
 
 Switching strategies on a live campaign is a normal update — swap the
 block and `plan` shows the change. `refresh` can't do that swap for you;
 it reports the drift and leaves the block alone.
+
+<Aside type="caution" title="Video campaigns are read-only through the API">
+  The video bidding blocks describe campaigns bidsmith **reads**. Google
+  Ads does not let *any* API client create or change a campaign whose
+  `advertising_channel_type` is `"VIDEO"` — see
+  [Video campaigns](https://developers.google.com/google-ads/api/docs/video/overview):
+  *"You cannot create new Video campaigns or update existing ones using
+  the Google Ads API."* Every such operation comes back
+  `MUTATE_NOT_ALLOWED`, and because `apply` sends one atomic batch, a
+  single video change takes every unrelated operation down with it.
+
+  So build and edit video campaigns in the Google Ads UI. bidsmith then
+  adopts them by name, keeps them in your `.bid` files as the record of
+  what's live, and plans them as no-ops. `plan` warns before it sends the
+  request if a video campaign would be created or has drift, so you find
+  out from bidsmith rather than from a rejected batch.
+
+  This is a Google restriction, not a bidsmith gap — it applies to
+  `google_ads_ad_group`, `google_ads_ad_group_ad`, and criteria under a
+  video campaign too. Demand Gen (`"DEMAND_GEN"`) is the fully
+  API-manageable channel for YouTube inventory.
+</Aside>
 
 ## Nested blocks
 

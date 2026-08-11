@@ -370,8 +370,13 @@ Smaller follow-ups that can ride along:
   and per-asset RSA/video-asset diffs.
 - ✅ Video bidding strategies (issue #104). `google_ads_campaign` takes
   one bidding block out of `manual_cpc` / `manual_cpm` / `manual_cpv` /
-  `target_cpm` / `target_cpv`, closing the gap that made a *new* VIDEO
-  campaign un-appliable. **Deferred:** `target_cpm`'s optional
+  `target_cpm` / `target_cpv`, so a video campaign's strategy round-trips
+  instead of being invisible. **This does not make a new VIDEO campaign
+  appliable** — the issue assumed the bidding field was the blocker, but
+  live testing showed Google refuses *every* create and update on the
+  channel (`MUTATE_NOT_ALLOWED`), which their docs confirm. Video is
+  adopt-only; `plan` now warns before sending a batch that contains one.
+  **Deferred:** `target_cpm`'s optional
   `target_frequency_goal` (target-frequency reach buying), `fixed_cpm`,
   a portfolio `google_ads_bidding_strategy` resource, the ad group's
   `cpv_bid_micros` / `target_cpm_micros` companions to

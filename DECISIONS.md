@@ -696,6 +696,24 @@ resource type, any file layout, modules, schema validation.
   drift instead of staying invisible. Frequency capping is unsupported on
   Demand Gen, so `validate` warns rather than letting the setting apply
   and do nothing.
+- **The VIDEO channel is read-only through the Google Ads API** (issue
+  #104, verified live): "You cannot create new Video campaigns or update
+  existing ones using the Google Ads API"
+  (developers.google.com/google-ads/api/docs/video/overview). Confirmed
+  against a real account — a `validateOnly` create of a VIDEO campaign
+  returns `MUTATE_NOT_ALLOWED` on the operation whatever bidding
+  strategy it carries, and so does a no-op rename of a live one, while
+  the identical SEARCH and DISPLAY operations are accepted. No bidsmith
+  change can lift this. Video campaigns are therefore an **adopt-only**
+  resource: built in the UI, adopted by name, held in `.bid` files as the
+  record of what's live, and planned as no-ops. Because `apply` sends one
+  atomic batch, a single video op would reject every unrelated operation
+  with it — so `diff` warns *before* the request goes out on any video
+  create or drift. The check lives in `diff`, not `lint`: only the live
+  side knows whether a declared video campaign is new (uncreatable) or
+  adopted (fine), and an offline rule fired on all 21 adopted campaigns
+  in the first real-account run. Demand Gen is the API-manageable
+  channel for YouTube inventory.
 - **Bidding is one block, chosen from a fixed set** (issue #104):
   `Campaign.campaign_bidding_strategy` is a protobuf `oneof`, so the
   campaign takes at most one of `manual_cpc`, `manual_cpm`,
@@ -705,8 +723,10 @@ resource type, any file layout, modules, schema validation.
   own, so a video campaign can opt out of a shared `manual_cpc`. Every
   strategy but `manual_cpc` is an empty message in the API, so its
   block carries no attributes: picking it is the whole declaration and
-  the bid amount lives on the ad group. The empty ones are also
-  unreadable through GAQL — there is no leaf field to select — so the
+  the bid amount lives on the ad group. For the four video strategies
+  that makes the block a *read* surface (see the VIDEO entry above) —
+  `manual_cpc` is the one bidsmith genuinely writes. The empty ones are
+  also unreadable through GAQL — there is no leaf field to select — so the
   live side derives them from `campaign.bidding_strategy_type`
   (`manual_cpc` still comes off `manual_cpc.enhanced_cpc_enabled`,
   because enhanced CPC reports as `ENHANCED_CPC` rather than

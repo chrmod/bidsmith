@@ -70,7 +70,6 @@ fn lint_resource(file: &ParsedFile, block: &Block, bindings: &Bindings, diags: &
 
     if ty == "google_ads_campaign" {
         lint_frequency_caps(file, block, &address, bindings, diags);
-        lint_video_bidding(file, block, &address, bindings, diags);
     }
 
     if ty == "google_ads_campaign_criterion" {
@@ -118,49 +117,6 @@ fn lint_undetermined_demographic(
             ),
         ));
     }
-}
-
-/// Google Ads requires a bidding strategy to create a campaign, and the VIDEO
-/// channel refuses the click-based ones — both failures land at apply time as
-/// an opaque "The required field was not present." / "The operation is not
-/// allowed for the given context." on an atomic batch (issue #104).
-fn lint_video_bidding(
-    file: &ParsedFile,
-    block: &Block,
-    address: &str,
-    bindings: &Bindings,
-    diags: &mut Vec<Diag>,
-) {
-    let channel = find_attr(&block.body, "advertising_channel_type")
-        .and_then(|a| eval_str(bindings, &file.module, &a.value));
-    if channel.as_deref() != Some("VIDEO") {
-        return;
-    }
-    const VIDEO_STRATEGIES: &str = "'manual_cpv' (Maximum CPV), 'target_cpv', \
-                                    'target_cpm', or 'manual_cpm' (Maximum CPM)";
-    if let Some(cpc) = find_block(&block.body, "manual_cpc") {
-        diags.push(Diag::warning(
-            file.src.clone(),
-            span_of(cpc.ident.span()),
-            format!(
-                "{address} bids a VIDEO campaign with manual_cpc: Google Ads rejects click-based bidding on this channel — use {VIDEO_STRATEGIES}"
-            ),
-        ));
-        return;
-    }
-    if crate::schema::CAMPAIGN_BIDDING_BLOCKS
-        .iter()
-        .any(|b| find_block(&block.body, b).is_some())
-    {
-        return;
-    }
-    diags.push(Diag::warning(
-        file.src.clone(),
-        span_of(block.ident.span()),
-        format!(
-            "{address} is a VIDEO campaign with no bidding strategy: Google Ads requires one to create the campaign — add {VIDEO_STRATEGIES}"
-        ),
-    ));
 }
 
 fn lint_frequency_caps(
@@ -578,21 +534,13 @@ resource "google_ads_campaign" "c" {{
     }
 
     #[test]
-    fn video_campaign_without_bidding_warns() {
-        let msgs = video_campaign_with("video_no_bidding", "");
-        assert!(
-            msgs.iter().any(|m| m.contains("no bidding strategy")),
-            "{msgs:?}"
-        );
-    }
-
-    #[test]
-    fn video_campaign_with_manual_cpc_warns() {
-        let msgs = video_campaign_with("video_manual_cpc", "  manual_cpc {}");
-        assert!(
-            msgs.iter().any(|m| m.contains("click-based bidding")),
-            "{msgs:?}"
-        );
+    fn video_campaign_bidding_is_not_linted_offline() {
+        // Whether a video campaign is new (uncreatable) or adopted (fine as-is)
+        // is a question only `diff` can answer, so nothing is flagged here.
+        for block in ["", "  manual_cpc {}", "  manual_cpv {}"] {
+            let msgs = video_campaign_with("video_bidding_quiet", block);
+            assert!(msgs.is_empty(), "{block}: {msgs:?}");
+        }
     }
 
     #[test]
