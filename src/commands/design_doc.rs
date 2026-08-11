@@ -235,6 +235,12 @@ fn build_context(cfg: &DesignDocConfig) -> Context {
             used_by: "plan (validateOnly=true), apply (validateOnly=false only after prompt)",
             validate_only: "both branches",
         },
+        Endpoint {
+            endpoint: format!("/{api_v}/customers/{{id}}/customAudiences:mutate"),
+            method: "POST",
+            used_by: "plan / apply — custom audiences, which GoogleAdsService.Mutate cannot batch",
+            validate_only: "both branches",
+        },
     ];
 
     let gaql_queries: Vec<GaqlQuery> = live_state::QUERIES

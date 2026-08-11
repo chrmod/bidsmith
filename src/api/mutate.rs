@@ -21,6 +21,19 @@ pub struct PlanOperation {
 pub struct PlanBody {
     pub body: Value,
     pub operations: Vec<PlanOperation>,
+    /// Addresses left out of the batch because they reference a custom audience
+    /// this run has not created yet — only reachable under `validateOnly`, see
+    /// [`build_custom_audience_mutate`].
+    pub deferred: Vec<String>,
+}
+
+/// A mutation that cannot ride in `GoogleAdsService.Mutate` and needs its own
+/// service endpoint.
+pub struct ServiceMutation {
+    pub endpoint: &'static str,
+    pub label: &'static str,
+    pub body: Value,
+    pub operations: Vec<PlanOperation>,
 }
 
 pub struct PlanBuildError {
@@ -28,10 +41,58 @@ pub struct PlanBuildError {
     pub message: String,
 }
 
+/// `CustomAudienceOperation` is not a member of `MutateOperation`, so custom
+/// audiences go to `CustomAudienceService.MutateCustomAudiences` in a call of
+/// their own that has to land before the criteria targeting them (issue #105).
+/// That service takes no temp resource names, which is why the create bodies
+/// carry none and the batch below waits on the real names this call returns.
+pub fn build_custom_audience_mutate(
+    input: &ExportInput,
+    report: &DiffReport,
+    validate_only: bool,
+) -> Option<ServiceMutation> {
+    let customer_id = input.customer_id.as_str();
+    let mut actions: HashMap<&str, &Action> = HashMap::new();
+    for d in &report.diffs {
+        if d.kind == "custom_audience" {
+            actions.insert(d.address.as_str(), &d.action);
+        }
+    }
+
+    let mut operations: Vec<PlanOperation> = Vec::new();
+    let mut ops: Vec<Value> = Vec::new();
+    for a in &input.custom_audiences {
+        match actions.get(a.id.as_str()) {
+            Some(Action::Create) => {
+                ops.push(json!({ "create": custom_audience_create(a) }));
+            }
+            Some(Action::Update { live_id, changed_fields }) => {
+                let rn = format!("customers/{customer_id}/customAudiences/{live_id}");
+                ops.push(json!({
+                    "update": custom_audience_update_body(a, &rn, changed_fields),
+                    "updateMask": changed_fields.join(","),
+                }));
+            }
+            _ => continue,
+        }
+        operations.push(PlanOperation { address: a.id.clone(), kind: "custom_audience" });
+    }
+    if ops.is_empty() {
+        return None;
+    }
+    Some(ServiceMutation {
+        endpoint: "customAudiences:mutate",
+        label: "custom audiences",
+        body: json!({ "operations": ops, "validateOnly": validate_only }),
+        operations,
+    })
+}
+
 pub fn build_mutate_with_diff(
     input: &ExportInput,
     report: &DiffReport,
     validate_only: bool,
+    created_custom_audiences: &HashMap<String, String>,
 ) -> Result<PlanBody, Vec<PlanBuildError>> {
     let customer_id = input.customer_id.as_str();
     let mut refs: HashMap<String, String> = HashMap::new();
@@ -77,6 +138,15 @@ pub fn build_mutate_with_diff(
             }
         } else {
             create_set.insert(d.address.clone());
+            // A custom audience is created by its own service before this batch
+            // is built; it has a real resource name or none at all (a
+            // `validateOnly` run creates nothing), never a temp id.
+            if d.kind == "custom_audience" {
+                if let Some(rn) = created_custom_audiences.get(&d.address) {
+                    refs.insert(d.address.clone(), rn.clone());
+                }
+                continue;
+            }
             let rn = match d.kind {
                 "ad_group_ad" => {
                     let parent_addr = input
@@ -178,6 +248,7 @@ pub fn build_mutate_with_diff(
     let mut errors: Vec<PlanBuildError> = Vec::new();
     let mut operations: Vec<PlanOperation> = Vec::new();
     let mut mutate_ops: Vec<Value> = Vec::new();
+    let mut deferred: Vec<String> = Vec::new();
 
     // Removes go first, before any create. Replacing an immutable resource
     // (an RSA copy edit) is a destroy of the old body plus a create of the new
@@ -339,27 +410,6 @@ pub fn build_mutate_with_diff(
             operations.push(PlanOperation { address: cr.id.clone(), kind: "ad_group_criterion" });
         }
     }
-    // Ahead of the criteria that target them, for the same temp-resource-name
-    // reason as the video assets above.
-    for a in &input.custom_audiences {
-        let Some(rn) = plan_rn(&refs, &a.id, "custom_audience", &mut errors) else {
-            continue;
-        };
-        if create_set.contains(&a.id) {
-            mutate_ops.push(json!({
-                "customAudienceOperation": { "create": custom_audience_create(a, rn) }
-            }));
-            operations.push(PlanOperation { address: a.id.clone(), kind: "custom_audience" });
-        } else if let Some(fields) = update_set.get(&a.id) {
-            mutate_ops.push(json!({
-                "customAudienceOperation": {
-                    "update": custom_audience_update_body(a, rn, fields),
-                    "updateMask": fields.join(","),
-                }
-            }));
-            operations.push(PlanOperation { address: a.id.clone(), kind: "custom_audience" });
-        }
-    }
     for cr in &input.campaign_criteria {
         let Some(rn) = plan_rn(&refs, &cr.id, "campaign_criterion", &mut errors) else {
             continue;
@@ -370,6 +420,10 @@ pub fn build_mutate_with_diff(
                 None => continue,
             };
             let audience_rn = match cr.audience.as_ref().and_then(JsonAudience::source) {
+                Some(("custom_audience", v)) if pending_custom_audience(&refs, &create_set, v) => {
+                    deferred.push(cr.id.clone());
+                    continue;
+                }
                 Some(("custom_audience", v)) => {
                     match resolve_ref_or_literal(&refs, v, &cr.id, "custom_audience", &mut errors) {
                         Some(rn) => Some(rn),
@@ -752,7 +806,7 @@ pub fn build_mutate_with_diff(
         "mutateOperations": mutate_ops,
         "validateOnly": validate_only,
     });
-    Ok(PlanBody { body, operations })
+    Ok(PlanBody { body, operations, deferred })
 }
 
 fn remove_segment_for(kind: &str) -> Option<&'static str> {
@@ -1459,6 +1513,19 @@ fn resolve(
 
 /// Resolve a reference that may be either a typed address (looked up in `refs`)
 /// or a literal Google Ads resource-name string (`customers/…`), used passthrough.
+/// True when the reference names a declared custom audience whose real
+/// resource name this run does not have yet — the `validateOnly` case, where
+/// `CustomAudienceService` returns errors but no results.
+fn pending_custom_audience(
+    refs: &HashMap<String, String>,
+    create_set: &HashSet<String>,
+    address: &str,
+) -> bool {
+    !address.starts_with("customers/")
+        && create_set.contains(address)
+        && !refs.contains_key(address)
+}
+
 fn resolve_ref_or_literal(
     refs: &HashMap<String, String>,
     address: &str,
@@ -1910,9 +1977,10 @@ fn campaign_criterion_create(
     Value::Object(m)
 }
 
-fn custom_audience_create(a: &JsonCustomAudience, resource_name: &str) -> Value {
+// "No resource name is expected for the new custom audience" — this service
+// has no temp-id mechanism to claim one with.
+fn custom_audience_create(a: &JsonCustomAudience) -> Value {
     let mut m = Map::new();
-    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
     m.insert("name".into(), Value::String(a.name.clone()));
     if let Some(d) = &a.description {
         m.insert("description".into(), Value::String(d.clone()));
@@ -1976,6 +2044,16 @@ fn custom_audience_members_value(a: &JsonCustomAudience) -> Value {
 mod tests {
     use super::*;
     use crate::api::diff::{Action, ClaimPlanEntry, DiffReport, LabelPlanEntry, ResourceDiff};
+
+    /// The unified batch as it looks when no custom audience had to be created
+    /// first — the shape every case but the custom-audience tests exercises.
+    fn build_mutate_with_diff(
+        input: &ExportInput,
+        report: &DiffReport,
+        validate_only: bool,
+    ) -> Result<PlanBody, Vec<PlanBuildError>> {
+        super::build_mutate_with_diff(input, report, validate_only, &HashMap::new())
+    }
 
     fn create_diff(address: &str, kind: &'static str) -> ResourceDiff {
         ResourceDiff {
@@ -2171,10 +2249,7 @@ mod tests {
         assert_eq!(op["update"]["frequencyCaps"], json!([]));
     }
 
-    #[test]
-    fn a_new_segment_is_created_before_the_criterion_that_targets_it() {
-        // Same temp-resource-name rule as the video assets: the API resolves a
-        // temp name only against an operation earlier in the list.
+    fn segment_and_criterion() -> (ExportInput, DiffReport) {
         let input: ExportInput = serde_json::from_value(json!({
             "customer_id": "100",
             "custom_audiences": [{
@@ -2208,21 +2283,25 @@ mod tests {
             adopt_count: 0,
             warnings: Vec::new(),
         };
-        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
-        let ops = plan.body["mutateOperations"].as_array().unwrap();
+        (input, report)
+    }
 
-        let seg_idx = ops
-            .iter()
-            .position(|op| op.get("customAudienceOperation").is_some())
-            .expect("custom audience op");
-        let cr_idx = ops
-            .iter()
-            .position(|op| op.get("campaignCriterionOperation").is_some())
-            .expect("criterion op");
-        assert!(seg_idx < cr_idx, "segment must precede its criterion: {ops:#?}");
+    #[test]
+    fn a_new_segment_goes_to_its_own_service_not_the_unified_batch() {
+        // Issue #105: `MutateOperation` has no `custom_audience_operation`, so
+        // one in the batch takes the whole atomic request down at parse time.
+        let (input, report) = segment_and_criterion();
+        let pass = build_custom_audience_mutate(&input, &report, true).expect("pre-batch call");
+        assert_eq!(pass.endpoint, "customAudiences:mutate");
+        assert_eq!(pass.operations.len(), 1);
+        assert_eq!(pass.operations[0].address, "m.seg");
 
-        let seg = &ops[seg_idx]["customAudienceOperation"]["create"];
+        let seg = &pass.body["operations"][0]["create"];
         assert_eq!(seg["type"], json!("SEARCH"));
+        assert!(
+            seg.get("resourceName").is_none(),
+            "CustomAudienceService has no temp ids to claim: {seg}"
+        );
         assert_eq!(
             seg["members"],
             json!([
@@ -2232,9 +2311,47 @@ mod tests {
             "segment body: {seg}"
         );
 
-        // The criterion points at the segment's temp resource name.
-        let cr = &ops[cr_idx]["campaignCriterionOperation"]["create"];
-        assert_eq!(cr["customAudience"]["customAudience"], seg["resourceName"]);
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let ops = plan.body["mutateOperations"].as_array().unwrap();
+        assert!(
+            ops.iter().all(|op| op.get("customAudienceOperation").is_none()),
+            "{ops:#?}"
+        );
+    }
+
+    #[test]
+    fn a_criterion_targets_the_segment_the_first_call_created() {
+        let (input, report) = segment_and_criterion();
+        let created = HashMap::from([(
+            "m.seg".to_string(),
+            "customers/100/customAudiences/777".to_string(),
+        )]);
+        let plan =
+            expect_plan(super::build_mutate_with_diff(&input, &report, false, &created));
+        let ops = plan.body["mutateOperations"].as_array().unwrap();
+        let cr = ops
+            .iter()
+            .find_map(|op| op.get("campaignCriterionOperation").and_then(|o| o.get("create")))
+            .expect("criterion op");
+        assert_eq!(
+            cr["customAudience"]["customAudience"],
+            json!("customers/100/customAudiences/777")
+        );
+        assert!(plan.deferred.is_empty(), "{:?}", plan.deferred);
+    }
+
+    #[test]
+    fn a_criterion_waits_when_its_segment_has_no_resource_name_yet() {
+        // The validateOnly pre-flight: CustomAudienceService returns errors but
+        // no results, so there is nothing for the criterion to point at.
+        let (input, report) = segment_and_criterion();
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        assert_eq!(plan.deferred, vec!["m.cr".to_string()]);
+        let ops = plan.body["mutateOperations"].as_array().unwrap();
+        assert!(
+            ops.iter().all(|op| op.get("campaignCriterionOperation").is_none()),
+            "a criterion with an unresolvable audience must not sink the batch: {ops:#?}"
+        );
     }
 
     #[test]

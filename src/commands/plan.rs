@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -376,16 +376,27 @@ pub fn execute(
         return display_offline_diff(prepared, validate_only, show_unchanged, format, detailed_exitcode);
     };
 
-    let plan_body =
-        match mutate::build_mutate_with_diff(&prepared.imported.input, report, validate_only) {
-            Ok(b) => b,
-            Err(errs) => {
-                for e in errs {
-                    eprintln!("{label}: {} — {}", display_address(&e.address, strip), e.message);
-                }
-                return ExitCode::from(1);
+    // Resources their own service owns go first: the unified batch below
+    // references the resource names they return.
+    let pre = match run_service_mutations(prepared, client, &token.token, validate_only, verbose) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+
+    let plan_body = match mutate::build_mutate_with_diff(
+        &prepared.imported.input,
+        report,
+        validate_only,
+        &pre.created,
+    ) {
+        Ok(b) => b,
+        Err(errs) => {
+            for e in errs {
+                eprintln!("{label}: {} — {}", display_address(&e.address, strip), e.message);
             }
-        };
+            return ExitCode::from(1);
+        }
+    };
 
     if verbose {
         let mode = if validate_only { "validateOnly" } else { "real apply" };
@@ -413,6 +424,9 @@ pub fn execute(
     }
 
     let mut errors_by_address: HashMap<String, Vec<&str>> = HashMap::new();
+    for (address, msgs) in &pre.errors_by_address {
+        errors_by_address.insert(address.clone(), msgs.iter().map(String::as_str).collect());
+    }
     let parsed_errors = extract_google_ads_errors(&response.body);
     let success = response.status >= 200 && response.status < 300;
     if !success {
@@ -434,10 +448,12 @@ pub fn execute(
         }
     }
 
+    let deferred: HashSet<&str> = plan_body.deferred.iter().map(String::as_str).collect();
     let adopted = adopted_addresses(report);
     let claims = claim_details(report);
     let mut accepted = 0usize;
     let mut rejected = 0usize;
+    let mut deferred_count = 0usize;
     let mut md_rows: Vec<(String, String, String)> = Vec::new();
     for d in &report.diffs {
         let is_adopt = adopted.contains(d.address.as_str());
@@ -448,9 +464,15 @@ pub fn execute(
         let is_mutating =
             is_adopt || claim.is_some() || !matches!(d.action, diff::Action::NoOp { .. });
         let has_err = errors_by_address.contains_key(&d.address);
+        // A row a pre-batch service handled lives or dies by that call's status,
+        // not the unified batch's.
+        let batch_ok = pre.handled.get(&d.address).copied().unwrap_or(success);
+        let is_deferred = deferred.contains(d.address.as_str());
         if is_mutating {
-            if has_err || !success {
+            if has_err || (!batch_ok && !is_deferred) {
                 rejected += 1;
+            } else if is_deferred {
+                deferred_count += 1;
             } else {
                 accepted += 1;
             }
@@ -462,30 +484,35 @@ pub fn execute(
             continue;
         }
         let addr = display_address(&d.address, strip);
+        let first_err = errors_by_address
+            .get(&d.address)
+            .map(|msgs| msgs.first().copied().unwrap_or("(unknown)"));
         match format {
             Format::Text => {
-                let outcome = if is_mutating {
-                    match errors_by_address.get(&d.address) {
-                        Some(msgs) => format!("  err: {}", msgs.first().copied().unwrap_or("(unknown)")),
-                        None if success => "  ok".to_string(),
-                        None => "  (no result — batch rejected)".to_string(),
-                    }
-                } else {
+                let outcome = if !is_mutating {
                     String::new()
+                } else if let Some(msg) = first_err {
+                    format!("  err: {msg}")
+                } else if is_deferred {
+                    "  (not validated — waits on its custom audience)".to_string()
+                } else if batch_ok {
+                    "  ok".to_string()
+                } else {
+                    "  (no result — batch rejected)".to_string()
                 };
                 println!("{addr:<width$}  {verb}{detail}{outcome}", width = width);
             }
             Format::Markdown => {
                 let result = if !is_mutating {
                     String::new()
+                } else if let Some(msg) = first_err {
+                    format!("❌ {}", md_cell(msg))
+                } else if is_deferred {
+                    "⏳ waits on its custom audience".to_string()
+                } else if batch_ok {
+                    "✅".to_string()
                 } else {
-                    match errors_by_address.get(&d.address) {
-                        Some(msgs) => {
-                            format!("❌ {}", md_cell(msgs.first().copied().unwrap_or("(unknown)")))
-                        }
-                        None if success => "✅".to_string(),
-                        None => "⚠️ batch rejected".to_string(),
-                    }
+                    "⚠️ batch rejected".to_string()
                 };
                 let action = format!("{}{}", md_action(verb), detail);
                 md_rows.push((addr.to_string(), action, result));
@@ -508,7 +535,7 @@ pub fn execute(
             if matches!(display, DisplayMode::PerResource) {
                 println!();
             }
-            print_text_summary(report, validate_only, accepted, rejected);
+            print_text_summary(report, validate_only, accepted, rejected, deferred_count);
             if !success && !unattributed.is_empty() {
                 eprintln!();
                 eprintln!("Other errors:");
@@ -524,11 +551,19 @@ pub fn execute(
             }
         }
         Format::Markdown => {
-            print_markdown(report, validate_only, accepted, rejected, &md_rows, &unattributed);
+            print_markdown(
+                report,
+                validate_only,
+                accepted,
+                rejected,
+                deferred_count,
+                &md_rows,
+                &unattributed,
+            );
         }
     }
 
-    if rejected > 0 || !success {
+    if rejected > 0 || !success || pre.handled.values().any(|ok| !ok) {
         ExitCode::from(1)
     } else if detailed_exitcode {
         ExitCode::from(2)
@@ -537,20 +572,37 @@ pub fn execute(
     }
 }
 
-fn print_text_summary(report: &diff::DiffReport, validate_only: bool, accepted: usize, rejected: usize) {
+fn print_text_summary(
+    report: &diff::DiffReport,
+    validate_only: bool,
+    accepted: usize,
+    rejected: usize,
+    deferred: usize,
+) {
     let title = summary_title(validate_only);
+    let deferred_clause = deferred_clause(deferred);
     if validate_only {
         println!(
-            "{title}: {} to create, {} to update, {} to destroy, {}{} unchanged. ({} accepted, {} rejected)",
+            "{title}: {} to create, {} to update, {} to destroy, {}{} unchanged. ({} accepted, {} rejected{deferred_clause})",
             report.create_count, report.update_count, report.delete_count,
             adopt_clause(report, false), report.noop_count - report.adopt_count, accepted, rejected,
         );
     } else {
         println!(
-            "{title}: {} created, {} updated, {} destroyed, {}{} unchanged. ({} succeeded, {} failed)",
+            "{title}: {} created, {} updated, {} destroyed, {}{} unchanged. ({} succeeded, {} failed{deferred_clause})",
             report.create_count, report.update_count, report.delete_count,
             adopt_clause(report, true), report.noop_count - report.adopt_count, accepted, rejected,
         );
+    }
+}
+
+/// Only shown when something was actually held back, so the common summary
+/// line keeps its familiar shape.
+fn deferred_clause(deferred: usize) -> String {
+    if deferred == 0 {
+        String::new()
+    } else {
+        format!(", {deferred} deferred")
     }
 }
 
@@ -561,6 +613,7 @@ fn print_markdown(
     validate_only: bool,
     accepted: usize,
     rejected: usize,
+    deferred: usize,
     rows: &[(String, String, String)],
     unattributed: &[&GoogleAdsErrorEntry],
 ) {
@@ -574,9 +627,10 @@ fn print_markdown(
         println!();
     }
     println!(
-        "**Plan:** {} to create, {} to update, {} to destroy, {}{} unchanged. ({} accepted, {} rejected)",
+        "**Plan:** {} to create, {} to update, {} to destroy, {}{} unchanged. ({} accepted, {} rejected{})",
         report.create_count, report.update_count, report.delete_count,
         adopt_clause(report, false), report.noop_count - report.adopt_count, accepted, rejected,
+        deferred_clause(deferred),
     );
     if !unattributed.is_empty() {
         println!("\n### Other errors\n");
@@ -786,6 +840,99 @@ pub fn declared_input(prepared: &Prepared) -> &ExportInput {
     &prepared.imported.input
 }
 
+/// What the pre-batch service calls left behind for the unified batch and the
+/// result table: real resource names for what they created, and their own
+/// per-address outcomes (those rows are not covered by the batch's status).
+#[derive(Default)]
+struct ServiceMutationOutcome {
+    created: HashMap<String, String>,
+    errors_by_address: HashMap<String, Vec<String>>,
+    /// Addresses this pass mutated, with whether their call succeeded.
+    handled: HashMap<String, bool>,
+}
+
+fn run_service_mutations(
+    prepared: &Prepared,
+    client: &client::Client,
+    access_token: &str,
+    validate_only: bool,
+    verbose: bool,
+) -> Result<ServiceMutationOutcome, ExitCode> {
+    let label = prepared.label;
+    let mut outcome = ServiceMutationOutcome::default();
+    let Some(pass) = mutate::build_custom_audience_mutate(
+        &prepared.imported.input,
+        &prepared.report,
+        validate_only,
+    ) else {
+        return Ok(outcome);
+    };
+
+    if verbose {
+        let mode = if validate_only { "validateOnly" } else { "real apply" };
+        eprintln!(
+            "{label}: POST /{}/customers/{}/{} ({} op(s), {mode})",
+            client::api_version(),
+            client.customer_id,
+            pass.endpoint,
+            pass.operations.len(),
+        );
+        eprintln!("--- request body ---");
+        eprintln!("{}", serde_json::to_string_pretty(&pass.body).unwrap_or_default());
+    }
+
+    let response = match client.service_mutate(access_token, pass.endpoint, &pass.body) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{label}: {} — {e}", pass.label);
+            return Err(ExitCode::from(1));
+        }
+    };
+
+    if verbose {
+        eprintln!("--- response (HTTP {}) ---", response.status);
+        eprintln!("{}", response.body_raw);
+    }
+
+    let success = response.status >= 200 && response.status < 300;
+    for op in &pass.operations {
+        outcome.handled.insert(op.address.clone(), success);
+    }
+    if success {
+        // A `validateOnly` call returns errors but no results, so nothing to map.
+        if let Some(results) = response.body.get("results").and_then(Value::as_array) {
+            for (op, result) in pass.operations.iter().zip(results) {
+                if let Some(rn) = result.get("resourceName").and_then(Value::as_str) {
+                    outcome.created.insert(op.address.clone(), rn.to_string());
+                }
+            }
+        }
+        return Ok(outcome);
+    }
+
+    let mut attributed = false;
+    for err in extract_google_ads_errors(&response.body) {
+        match err.op_index.and_then(|i| pass.operations.get(i)) {
+            Some(op) => {
+                outcome
+                    .errors_by_address
+                    .entry(op.address.clone())
+                    .or_default()
+                    .push(err.message);
+                attributed = true;
+            }
+            None => eprintln!("{label}: {} — {}", pass.label, err.message),
+        }
+    }
+    if !attributed && outcome.errors_by_address.is_empty() {
+        eprintln!(
+            "{label}: {} rejected (HTTP {}): {}",
+            pass.label, response.status, response.body_raw
+        );
+    }
+    Ok(outcome)
+}
+
 struct GoogleAdsErrorEntry {
     message: String,
     path: String,
@@ -826,6 +973,11 @@ fn extract_google_ads_errors(body: &Value) -> Vec<GoogleAdsErrorEntry> {
                         Some(i) => {
                             path_parts.push(format!("{name}[{i}]"));
                             if name == "mutate_operations" || name == "mutateOperations" {
+                                op_index = Some(i as usize);
+                            } else if name == "operations" && op_index.is_none() {
+                                // A resource-specific service names its list
+                                // plain `operations`; inside the unified batch
+                                // the outer `mutate_operations` already won.
                                 op_index = Some(i as usize);
                             }
                         }

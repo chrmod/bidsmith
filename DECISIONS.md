@@ -764,9 +764,24 @@ resource type, any file layout, modules, schema validation.
   create API worth wrapping — they are referenced by resource name).
   It matches live **by name** like `shared_set` (custom audiences carry
   no labels), its repeated `member` blocks are a whole-set field like
-  `frequency_caps`, and `type` is creation-only. Its mutate op is
-  emitted ahead of the criteria that target it, the same temp-resource-name
-  ordering the video assets need.
+  `frequency_caps`, and `type` is creation-only.
+- **Custom audiences are mutated by their own service, before the batch**
+  (issue #105): `MutateOperation` has no `custom_audience_operation`
+  member, so a `customAudienceOperation` in the unified batch is rejected
+  at JSON-parse time and takes every other op down with it. They go to
+  `CustomAudienceService.MutateCustomAudiences` in a call of their own,
+  issued first, and the batch references the real resource names it
+  returns. That service has no temp-id mechanism, so a create body
+  carries no `resourceName` — and under `validateOnly` it returns errors
+  but no results, which means the pre-flight has no name to give a
+  criterion that targets a *new* audience. Those criteria are held out
+  of the validate batch and reported as `deferred` rather than sunk with
+  a resource-not-found; the real apply, which does get names back,
+  includes them. Consequence to know: the two calls are not one
+  transaction, so a batch that fails after the audiences committed
+  leaves them created. Chosen over dropping the resource or making the
+  user pre-create audiences in the UI — the ordering is the same
+  dependency the plan already models, just across two calls.
 - **Keyword Planner is a read-only research verb, not a resource**: Google
   Keyword Planner (`KeywordPlanIdeaService.GenerateKeywordIdeas`) is surfaced
   as `bidsmith keyword-ideas` — an imperative, live-only command in the same
