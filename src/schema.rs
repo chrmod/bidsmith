@@ -64,6 +64,16 @@ pub const CAMPAIGN_BIDDING_BLOCKS: &[&str] = &[
     "target_cpv",
 ];
 
+/// The Google Ads API is read-only for the VIDEO channel: "You cannot create
+/// new Video campaigns or update existing ones using the Google Ads API"
+/// (developers.google.com/google-ads/api/docs/video/overview). Every mutate op
+/// on one comes back `MUTATE_NOT_ALLOWED`, which — in an atomic batch — takes
+/// every unrelated operation down with it.
+pub const VIDEO_IS_READ_ONLY: &str =
+    "the Google Ads API cannot create or update VIDEO campaigns \
+     (see developers.google.com/google-ads/api/docs/video/overview) — make the change in the \
+     Google Ads UI, then let bidsmith adopt it";
+
 pub struct AttributeSchema {
     pub name: &'static str,
     pub ty: FieldType,
