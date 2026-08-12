@@ -272,6 +272,12 @@ const RSA_PIN: &[&str] = &[
 ];
 const PROXIMITY_RADIUS_UNITS: &[&str] = &["MILES", "KILOMETERS"];
 const DEVICE_TYPE: &[&str] = &["MOBILE", "DESKTOP", "TABLET", "CONNECTED_TV", "OTHER"];
+
+/// The device types Google auto-materializes on a search or display campaign,
+/// and therefore the set `devices` takes the complement of. CONNECTED_TV is
+/// video-only and OTHER is not settable, so neither is implied by omission —
+/// list them in `devices` explicitly to target them.
+pub const CORE_DEVICE_TYPES: &[&str] = &["MOBILE", "DESKTOP", "TABLET"];
 const AGE_RANGE_TYPE: &[&str] = &[
     "AGE_RANGE_18_24",
     "AGE_RANGE_25_34",
@@ -821,6 +827,16 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                     attr("end_date", FieldType::Date, false),
                     attr("languages", FieldType::LanguageList, false),
                     attr("locations", FieldType::LocationList, false),
+                    attr(
+                        "devices",
+                        FieldType::list_of(FieldType::Enum(DEVICE_TYPE)),
+                        false,
+                    ),
+                    attr(
+                        "excluded_devices",
+                        FieldType::list_of(FieldType::Enum(DEVICE_TYPE)),
+                        false,
+                    ),
                 ],
                 blocks: vec![
                     NestedBlockSchema {
@@ -2446,12 +2462,16 @@ fn validate_ad_creative_exclusivity(
 struct InlineAxes {
     languages: bool,
     locations: bool,
+    /// Which spelling declared the device axis, so the conflict diagnostic
+    /// names the attribute the author actually wrote.
+    devices: Option<&'static str>,
 }
 
-/// A campaign can declare targeting *either* inline (`languages` / `locations`)
-/// *or* via explicit positive `google_ads_campaign_criterion` resources — not
-/// both for the same axis. (Negative locations, proximity, keywords, and
-/// non-positive criteria are unaffected — they only live in explicit form.)
+/// A campaign can declare targeting *either* inline (`languages` / `locations`
+/// / `devices`) *or* via explicit positive `google_ads_campaign_criterion`
+/// resources — not both for the same axis. (Negative locations, proximity,
+/// keywords, and non-positive criteria are unaffected — they only live in
+/// explicit form.)
 fn validate_targeting_conflicts(
     files: &[ParsedFile],
     registry: &ResourceRegistry,
@@ -2462,6 +2482,13 @@ fn validate_targeting_conflicts(
     let default_axes = InlineAxes {
         languages: campaign_defaults.contains("languages"),
         locations: campaign_defaults.contains("locations"),
+        devices: if campaign_defaults.contains("devices") {
+            Some("devices")
+        } else if campaign_defaults.contains("excluded_devices") {
+            Some("excluded_devices")
+        } else {
+            None
+        },
     };
     let mut inline: HashMap<String, InlineAxes> = HashMap::new();
     for f in files {
@@ -2475,16 +2502,41 @@ fn validate_targeting_conflicts(
             }
             let name = b.labels[1].as_str();
             let mut axes = default_axes;
+            let mut devices_span = None;
+            let mut excluded_span = None;
             for inner in b.body.iter() {
                 if let Structure::Attribute(a) = inner {
                     match a.key.as_str() {
                         "languages" => axes.languages = true,
                         "locations" => axes.locations = true,
+                        "devices" => {
+                            axes.devices = Some("devices");
+                            devices_span = Some(span_of(a.key.span()));
+                        }
+                        "excluded_devices" => {
+                            if axes.devices.is_none() {
+                                axes.devices = Some("excluded_devices");
+                            }
+                            excluded_span = Some(span_of(a.key.span()));
+                        }
                         _ => {}
                     }
                 }
             }
-            if axes.languages || axes.locations {
+            // Two spellings of one axis: `devices` already excludes everything
+            // it omits, so a second list saying so again can only contradict it.
+            if let (Some(_), Some(span)) = (devices_span, excluded_span) {
+                diags.push(Diag::new(
+                    f.src.clone(),
+                    span,
+                    format!(
+                        "google_ads_campaign.{name} declares both 'devices' and \
+                         'excluded_devices'; 'devices' already excludes every device \
+                         type it omits — keep one"
+                    ),
+                ));
+            }
+            if axes.languages || axes.locations || axes.devices.is_some() {
                 inline.insert(
                     ResourceRegistry::qualified(&f.module, "google_ads_campaign", name),
                     axes,
@@ -2509,6 +2561,7 @@ fn validate_targeting_conflicts(
             let mut campaign_ref: Option<(String, String)> = None;
             let mut loc_block: Option<&Block> = None;
             let mut lang_block: Option<&Block> = None;
+            let mut device_block: Option<&Block> = None;
             for inner in b.body.iter() {
                 match inner {
                     Structure::Attribute(a) => match a.key.as_str() {
@@ -2523,11 +2576,14 @@ fn validate_targeting_conflicts(
                     Structure::Block(ib) => match ib.ident.as_str() {
                         "location" => loc_block = Some(ib),
                         "language" => lang_block = Some(ib),
+                        "device" => device_block = Some(ib),
                         _ => {}
                     },
                 }
             }
-            if negative || (loc_block.is_none() && lang_block.is_none()) {
+            if negative
+                || (loc_block.is_none() && lang_block.is_none() && device_block.is_none())
+            {
                 continue;
             }
             let Some((ty, name)) = campaign_ref else { continue };
@@ -2547,6 +2603,11 @@ fn validate_targeting_conflicts(
             if axes.languages {
                 if let Some(ib) = lang_block {
                     diags.push(conflict_diag(f, ib, &name, "languages", "language"));
+                }
+            }
+            if let Some(attr) = axes.devices {
+                if let Some(ib) = device_block {
+                    diags.push(conflict_diag(f, ib, &name, attr, "device"));
                 }
             }
         }
@@ -5075,6 +5136,135 @@ resource "google_ads_campaign_criterion" "exclude_ak" {{
   location {{
     geo_target_constant = "geoTargetConstants/21132"
   }}
+}}
+"#
+            ),
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn inline_devices_conflict_with_an_explicit_device_criterion() {
+        let diags = validate_str(
+            "inline_dev_conflict",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  devices                  = ["DESKTOP"]
+}}
+
+resource "google_ads_campaign_criterion" "c_mobile" {{
+  campaign     = google_ads_campaign.c.id
+  bid_modifier = 0
+  device {{
+    type = "MOBILE"
+  }}
+}}
+"#
+            ),
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("already declares inline 'devices'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn excluded_devices_names_itself_in_the_conflict() {
+        let diags = validate_str(
+            "excl_dev_conflict",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  excluded_devices         = ["MOBILE"]
+}}
+
+resource "google_ads_campaign_criterion" "c_desktop" {{
+  campaign = google_ads_campaign.c.id
+  device {{
+    type = "DESKTOP"
+  }}
+}}
+"#
+            ),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("already declares inline 'excluded_devices'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn devices_and_excluded_devices_on_one_campaign_is_an_error() {
+        // `devices` is closed — it already excludes what it omits — so a second
+        // list can only agree redundantly or contradict.
+        let diags = validate_str(
+            "both_device_attrs",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  devices                  = ["DESKTOP"]
+  excluded_devices         = ["MOBILE"]
+}}
+"#
+            ),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("declares both 'devices' and 'excluded_devices'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn inline_devices_reject_a_value_outside_the_device_enum() {
+        let diags = validate_str(
+            "bad_device",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  devices                  = ["LAPTOP"]
+}}
+"#
+            ),
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("invalid value \"LAPTOP\"")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn inline_devices_alone_validate_clean() {
+        let diags = validate_str(
+            "inline_dev_ok",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  devices                  = ["DESKTOP"]
 }}
 "#
             ),

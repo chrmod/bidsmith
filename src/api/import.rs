@@ -345,6 +345,8 @@ fn import_campaign(
     let mut frequency_caps: Vec<JsonFrequencyCap> = Vec::new();
     let mut languages: Vec<String> = Vec::new();
     let mut locations: Vec<String> = Vec::new();
+    let mut devices: Vec<String> = Vec::new();
+    let mut excluded_devices: Vec<String> = Vec::new();
 
     for s in block.body.iter() {
         match s {
@@ -359,6 +361,8 @@ fn import_campaign(
                 "end_date" => end_date = expect_string_owned(ctx, a),
                 "languages" => languages = expect_string_list(ctx, &a.value),
                 "locations" => locations = expect_string_list(ctx, &a.value),
+                "devices" => devices = expect_string_list(ctx, &a.value),
+                "excluded_devices" => excluded_devices = expect_string_list(ctx, &a.value),
                 _ => {}
             },
             Structure::Block(b) => match b.ident.as_str() {
@@ -389,7 +393,13 @@ fn import_campaign(
     let channel = channel.ok_or_else(|| missing(ctx.file, block, address, "advertising_channel_type"))?;
     let budget = budget_ref.ok_or_else(|| missing(ctx.file, block, address, "campaign_budget"))?;
 
-    let criteria = expand_inline_targeting(address, &languages, &locations);
+    let criteria = expand_inline_targeting(
+        address,
+        &languages,
+        &locations,
+        &devices,
+        &excluded_devices,
+    );
 
     Ok((
         JsonCampaign {
@@ -429,6 +439,8 @@ fn expand_inline_targeting(
     campaign_address: &str,
     languages: &[String],
     locations: &[String],
+    devices: &[String],
+    excluded_devices: &[String],
 ) -> Vec<JsonCampaignCriterion> {
     let (module, cname) = split_campaign_address(campaign_address);
     let mut out = Vec::new();
@@ -478,7 +490,71 @@ fn expand_inline_targeting(
             },
         });
     }
+    out.extend(expand_inline_devices(
+        campaign_address,
+        module,
+        cname,
+        devices,
+        excluded_devices,
+    ));
     out
+}
+
+/// Expand a campaign's inline `devices` / `excluded_devices` into device
+/// criteria.
+///
+/// A device criterion cannot be removed once it exists and Google
+/// auto-materializes the whole set, so "not targeted" is spelled as a zero bid
+/// modifier rather than as an absent or negative criterion. `devices` is
+/// therefore a *closed* list: every core device type it omits is emitted at
+/// zero. `excluded_devices` is the open form — it zeroes exactly what it names
+/// and says nothing about the rest.
+fn expand_inline_devices(
+    campaign_address: &str,
+    module: &str,
+    campaign_name: &str,
+    devices: &[String],
+    excluded_devices: &[String],
+) -> Vec<JsonCampaignCriterion> {
+    let targeted: Vec<String> = dedup_upper(devices);
+    let excluded: Vec<String> = if targeted.is_empty() {
+        dedup_upper(excluded_devices)
+    } else {
+        crate::schema::CORE_DEVICE_TYPES
+            .iter()
+            .filter(|d| !targeted.iter().any(|t| t == *d))
+            .map(|d| d.to_string())
+            .collect()
+    };
+
+    let mut out = Vec::new();
+    for (ty, bid_modifier) in targeted
+        .iter()
+        .map(|d| (d, None))
+        .chain(excluded.iter().map(|d| (d, Some(0.0))))
+    {
+        out.push(JsonCampaignCriterion {
+            id: criterion_address(module, campaign_name, "device", &ty.to_lowercase()),
+            campaign: campaign_address.to_string(),
+            status: Some("ENABLED".to_string()),
+            negative: Some(false),
+            bid_modifier,
+            target: JsonCriterion {
+                device: Some(JsonDevice { ty: ty.clone() }),
+                ..JsonCriterion::default()
+            },
+        });
+    }
+    out
+}
+
+fn dedup_upper(values: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    values
+        .iter()
+        .map(|v| v.to_uppercase())
+        .filter(|v| seen.insert(v.clone()))
+        .collect()
 }
 
 // Campaign address is `<module>.google_ads_campaign.<name>`; module may itself
@@ -2560,6 +2636,191 @@ resource "google_ads_campaign" "c" {
         // Every expanded criterion targets the campaign's address.
         let camp = &input.campaigns[0].id;
         assert!(input.campaign_criteria.iter().all(|c| &c.campaign == camp));
+    }
+
+    /// Device criteria as the diff engine sees them: schema defaults filled in,
+    /// so an omitted `status` and an explicit `"ENABLED"` compare equal.
+    fn device_criteria(
+        input: &mut crate::commands::export::ExportInput,
+    ) -> Vec<(String, Option<f64>, Option<String>, Option<bool>)> {
+        input.apply_schema_defaults();
+        let mut out: Vec<_> = input
+            .campaign_criteria
+            .iter()
+            .filter_map(|c| {
+                let d = c.target.device.as_ref()?;
+                Some((d.ty.clone(), c.bid_modifier, c.status.clone(), c.negative))
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    fn device_types(
+        input: &mut crate::commands::export::ExportInput,
+    ) -> Vec<(String, Option<f64>)> {
+        device_criteria(input)
+            .into_iter()
+            .map(|(ty, bm, status, negative)| {
+                assert_eq!(status.as_deref(), Some("ENABLED"));
+                assert_eq!(negative, Some(false), "a device is never a negative criterion");
+                (ty, bm)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn inline_devices_target_the_listed_types_and_zero_out_the_rest() {
+        // The mandated trio — DESKTOP targeted, MOBILE and TABLET at zero —
+        // written as one attribute (issue #145).
+        let mut input = import_str(
+            "inline_devices",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  devices                  = ["DESKTOP"]
+}
+"#,
+        );
+        assert_eq!(
+            device_types(&mut input),
+            vec![
+                ("DESKTOP".to_string(), None),
+                ("MOBILE".to_string(), Some(0.0)),
+                ("TABLET".to_string(), Some(0.0)),
+            ]
+        );
+        let camp = &input.campaigns[0].id;
+        assert!(input.campaign_criteria.iter().all(|c| &c.campaign == camp));
+    }
+
+    #[test]
+    fn excluded_devices_zeroes_only_what_it_names() {
+        // The open form: it says nothing about DESKTOP, so no DESKTOP criterion
+        // is invented for it.
+        let mut input = import_str(
+            "excluded_devices",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  excluded_devices         = ["MOBILE", "TABLET"]
+}
+"#,
+        );
+        assert_eq!(
+            device_types(&mut input),
+            vec![
+                ("MOBILE".to_string(), Some(0.0)),
+                ("TABLET".to_string(), Some(0.0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn devices_can_name_a_type_outside_the_core_set() {
+        // CONNECTED_TV is not implied by omission, so targeting it has to be
+        // possible without also making it the complement's problem.
+        let mut input = import_str(
+            "devices_ctv",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  devices                  = ["DESKTOP", "CONNECTED_TV"]
+}
+"#,
+        );
+        assert_eq!(
+            device_types(&mut input),
+            vec![
+                ("CONNECTED_TV".to_string(), None),
+                ("DESKTOP".to_string(), None),
+                ("MOBILE".to_string(), Some(0.0)),
+                ("TABLET".to_string(), Some(0.0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn inline_devices_match_what_explicit_criteria_produce() {
+        // The whole point of the sugar: same mutate, fewer lines. Addresses are
+        // the campaign's own, so this is drift-free against a live account that
+        // already carries the explicit trio.
+        let mut inline = import_str(
+            "dev_inline",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  devices                  = ["DESKTOP"]
+}
+"#,
+        );
+        let mut explicit = import_str(
+            "dev_explicit",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+
+resource "google_ads_campaign_criterion" "c_device_desktop" {
+  campaign = google_ads_campaign.c.id
+  device {
+    type = "DESKTOP"
+  }
+}
+
+resource "google_ads_campaign_criterion" "c_device_mobile" {
+  campaign     = google_ads_campaign.c.id
+  bid_modifier = 0
+  device {
+    type = "MOBILE"
+  }
+}
+
+resource "google_ads_campaign_criterion" "c_device_tablet" {
+  campaign     = google_ads_campaign.c.id
+  bid_modifier = 0
+  device {
+    type = "TABLET"
+  }
+}
+"#,
+        );
+        assert_eq!(device_criteria(&mut inline), device_criteria(&mut explicit));
     }
 
     #[test]

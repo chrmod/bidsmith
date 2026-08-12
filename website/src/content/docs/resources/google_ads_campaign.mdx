@@ -176,6 +176,59 @@ keeps whatever the account has. Set one and leave the other out and only
 the one you named is managed; the negative side governs the same
 in-versus-interested-in question for locations you *exclude*.
 
+## Device targeting
+
+`devices` says which kinds of screen a campaign is for. A desktop-only
+product is one line:
+
+```hcl
+resource "google_ads_campaign" "search_ublock" {
+  name                     = "Search_uBlock"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.search_ublock.id
+
+  devices = ["DESKTOP"]
+}
+```
+
+`devices` is a **closed** list: whatever it leaves out is switched off.
+The line above targets desktop and stops mobile and tablet from serving.
+
+That is not the same as deleting them. Google creates a criterion for
+every device type on every campaign and the API refuses to remove one,
+so "not targeted" is spelled as a **bid modifier of zero** — the ad is
+eligible in name only and never wins an auction. bidsmith writes those
+zeros for you.
+
+If you would rather zero specific devices and stay silent about the
+rest, `excluded_devices` is the open form:
+
+```hcl
+excluded_devices = ["MOBILE", "TABLET"]
+```
+
+It zeroes exactly what it names and invents no criterion for anything
+else. Declaring both on one campaign is a validation error — `devices`
+already excludes what it omits, so a second list can only repeat it or
+contradict it.
+
+Three notes:
+
+- Only `MOBILE`, `DESKTOP`, and `TABLET` are implied by omission.
+  `CONNECTED_TV` (video campaigns) and `OTHER` are never switched off
+  behind your back — name them in `devices` to target them.
+- A **bid adjustment** is not an exclusion. `bid_modifier = 0.8` on
+  mobile means "bid less here", which no spelling of these attributes
+  can express; keep it as an explicit
+  [`google_ads_campaign_criterion`](./google_ads_campaign_criterion/).
+  `refresh` leaves such campaigns in the explicit form.
+- As with `locations` and `languages`, a campaign declares the axis
+  **once**. Setting `devices` *and* a `device {}` criterion pointing at
+  the same campaign is a validation error.
+
+Converting an existing device trio to the inline form plans as a no-op:
+bidsmith matches live criteria by device type, not by address.
+
 ## Channel and sub-type
 
 `advertising_channel_type` is the broad category — search, display,
