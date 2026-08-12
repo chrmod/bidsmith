@@ -1,7 +1,6 @@
 use std::io::{BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
-use crate::api::live_state;
 use crate::commands::{plan, vars};
 
 pub fn run(
@@ -99,7 +98,10 @@ pub fn run(
 
     eprintln!();
     eprintln!("apply: mutating Google Ads (no undo from bidsmith)...");
-    let code = plan::execute(
+    // The cached state is dropped by `execute` on its way into the mutate, so a
+    // lost response or a killed process cannot leave a snapshot behind that
+    // still looks fresh (issue #144).
+    plan::execute(
         &prepared,
         /* validate_only */ false,
         verbose,
@@ -107,9 +109,7 @@ pub fn run(
         plan::DisplayMode::Summary,
         plan::Format::Text,
         /* detailed_exitcode */ false,
-    );
-    live_state::invalidate_cache();
-    code
+    )
 }
 
 fn prompt_for_yes() -> std::io::Result<bool> {

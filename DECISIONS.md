@@ -38,10 +38,26 @@ resource type, any file layout, modules, schema validation.
   file — bidsmith never trusts it as ground truth. It exists purely to
   reduce API/quota usage on tight authoring loops. Default TTL 15 min
   for live state; access tokens reuse their server-issued expiry. Bust
-  via `--refresh-state` (plan/apply), or `BIDSMITH_NO_CACHE=1` for a
-  full bypass. Cache directory is gitignored; token file is written
-  mode `0600`. A successful `apply` invalidates the live-state cache
-  so the next `plan` starts from fresh data.
+  via `--refresh-state` (plan/apply), which a cache hit can never
+  satisfy, or `BIDSMITH_NO_CACHE=1` for a full bypass. Cache directory
+  is gitignored; token file is written mode `0600`. `apply` invalidates
+  the live-state cache on its way *into* the mutate, not on the way out
+  — once the request is in flight the snapshot is stale whatever comes
+  back, and a lost response or a killed process must not leave one
+  behind that still looks fresh.
+- **State provenance is always reported** (issue #144): a diff is only
+  as true as the snapshot it was computed from, and its rejections are
+  checked against the *live* account, so a snapshot the account has
+  moved past yields per-resource API errors indistinguishable from a
+  genuinely bad `.bid`. Every path that loads live state — fresh fetch,
+  cache hit, `--offline` — prints one line of the same shape naming the
+  customer, the age, and the source; a plan that is not clean repeats it
+  next to the rejections. Rejections whose error code or message says
+  "already removed / missing / already present" are additionally called
+  out as the shape of stale state, with a pointer to `--refresh-state`.
+  The cache is per-project, so an `apply` from CI or another machine
+  cannot invalidate a local one — that case is caught by the rejection
+  shape, not by invalidation.
 - **`locals` block**: HCL2-style top-level `locals { ... }` blocks declare
   reusable constants. References use `local.<name>` and resolve at
   validate / plan / apply time — the value is substituted for type

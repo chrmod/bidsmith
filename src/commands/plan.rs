@@ -4,9 +4,9 @@ use std::process::ExitCode;
 
 use serde_json::Value;
 
-use crate::api::live_state::CacheMode;
+use crate::api::live_state::{CacheMode, StateProvenance, StateSource};
 use crate::api::spend::SpendSummary;
-use crate::api::{auth, client, diff, import, live_state, mutate, spend};
+use crate::api::{auth, cache, client, diff, import, live_state, mutate, spend};
 use crate::commands::export::ExportInput;
 use crate::commands::vars;
 use crate::diagnostics::Diag;
@@ -88,6 +88,10 @@ pub struct Prepared {
     pub spend: SpendSummary,
     pub width: usize,
     pub strip_module: bool,
+    /// What this diff was computed against. Reported whenever the plan is not
+    /// clean, so a rejection can be read against the age of the state that
+    /// produced it (issue #144).
+    pub provenance: StateProvenance,
 }
 
 // The module segment may contain dots (a `for_each` instance is `<label>.<key>`),
@@ -211,7 +215,7 @@ pub fn prepare(
         eprintln!("{label}: {notice}");
     }
 
-    let live = if offline {
+    let (live, provenance) = if offline {
         load_live_from_cache(label, &mut imported.input)?
     } else {
         let client = match client::Client::for_target(
@@ -241,12 +245,17 @@ pub fn prepare(
                 return Err(ExitCode::from(1));
             }
         };
-        let live = outcome.state;
-
-        return Ok(Some(build_prepared(label, Some(client), Some(token), imported, live)));
+        return Ok(Some(build_prepared(
+            label,
+            Some(client),
+            Some(token),
+            imported,
+            outcome.state,
+            outcome.provenance,
+        )));
     };
 
-    Ok(Some(build_prepared(label, None, None, imported, live)))
+    Ok(Some(build_prepared(label, None, None, imported, live, provenance)))
 }
 
 fn build_prepared(
@@ -255,6 +264,7 @@ fn build_prepared(
     token: Option<auth::AccessToken>,
     mut imported: import::ImportResult,
     mut live: ExportInput,
+    provenance: StateProvenance,
 ) -> Prepared {
     // Normalize both sides so an omitted attribute carrying a schema default is
     // compared (and mutated) as that default — "omitted" means "managed at the
@@ -286,14 +296,14 @@ fn build_prepared(
         spend,
         width,
         strip_module,
+        provenance,
     }
 }
 
 fn load_live_from_cache(
     label: &'static str,
     declared: &mut ExportInput,
-) -> Result<ExportInput, ExitCode> {
-    use crate::api::cache;
+) -> Result<(ExportInput, StateProvenance), ExitCode> {
     if declared.customer_id.is_empty() {
         eprintln!(
             "{label}: --offline still needs a customer id (provider block, bidsmith.toml, \
@@ -325,15 +335,18 @@ fn load_live_from_cache(
             return Err(ExitCode::from(1));
         }
     };
-    eprintln!(
-        "{label}: using cached live state from {} ago (offline — no API call).",
-        cache::format_age(hit.age_secs),
-    );
+    let provenance = StateProvenance {
+        source: StateSource::CachedOffline,
+        customer_id,
+        fetched_at: cache::now_unix().saturating_sub(hit.age_secs),
+    };
+    eprintln!("{label}: {}.", provenance.describe());
     let mega = Value::Array(hit.batches).to_string();
-    crate::commands::adapt::from_search_response(&mega).map_err(|e| {
+    let state = crate::commands::adapt::from_search_response(&mega).map_err(|e| {
         eprintln!("{label}: cached live state failed to re-adapt: {e}");
         ExitCode::from(1)
-    })
+    })?;
+    Ok((state, provenance))
 }
 
 /// Build the mutate body for `prepared.report` and POST it. Display behaviour
@@ -406,6 +419,9 @@ pub fn execute(
              all-or-nothing — nothing was sent. Resolve them, or drop them from the plan.",
             report.blockers.len()
         );
+        // A blocker is read out of the live state alone, so it is only ever as
+        // true as the snapshot it came from (issue #144).
+        eprintln!("{label}: decided against {}.", prepared.provenance.describe());
         return ExitCode::from(1);
     }
 
@@ -419,6 +435,13 @@ pub fn execute(
             "offline — diff only, not server-validated",
         );
     };
+
+    // Read before the mutate below records its own marker, so an apply never
+    // reports itself as the recent apply its state might predate.
+    let secs_after_local_mutate = prepared.provenance.secs_after_local_mutate();
+    if !validate_only {
+        live_state::note_mutate(&client.customer_id);
+    }
 
     // Resources their own service owns go first: the unified batch below
     // references the resource names they return.
@@ -468,8 +491,12 @@ pub fn execute(
     }
 
     let mut errors_by_address: HashMap<String, Vec<&str>> = HashMap::new();
+    let mut stale_addresses: HashSet<String> = HashSet::new();
     for (address, msgs) in &pre.errors_by_address {
         errors_by_address.insert(address.clone(), msgs.iter().map(String::as_str).collect());
+        if msgs.iter().any(|m| looks_like_stale_state(None, m)) {
+            stale_addresses.insert(address.clone());
+        }
     }
     let parsed_errors = extract_google_ads_errors(&response.body);
     let success = response.status >= 200 && response.status < 300;
@@ -487,6 +514,9 @@ pub fn execute(
                 .and_then(|i| plan_body.operations.get(i))
                 .map(|op| op.address.clone())
             {
+                if looks_like_stale_state(err.code.as_deref(), &err.message) {
+                    stale_addresses.insert(addr.clone());
+                }
                 errors_by_address.entry(addr).or_default().push(&err.message);
             }
         }
@@ -497,6 +527,7 @@ pub fn execute(
     let claims = claim_details(report);
     let mut accepted = 0usize;
     let mut rejected = 0usize;
+    let mut stale_rejected = 0usize;
     let mut collateral = 0usize;
     let mut deferred_count = 0usize;
     let mut label_only_shown = false;
@@ -517,6 +548,9 @@ pub fn execute(
         if is_mutating {
             if has_err {
                 rejected += 1;
+                if stale_addresses.contains(&d.address) {
+                    stale_rejected += 1;
+                }
             } else if !batch_ok && !is_deferred {
                 // No error of its own: this operation was fine and went down
                 // with the batch. Counting it as "rejected" is what sends a PR
@@ -601,6 +635,15 @@ pub fn execute(
                 print_text_spend(spend);
             }
             print_text_unchanged_note(report);
+            for note in state_notes(
+                &prepared.provenance,
+                secs_after_local_mutate,
+                rejected,
+                stale_rejected,
+                collateral,
+            ) {
+                println!("{note}");
+            }
             if !success && !unattributed.is_empty() {
                 eprintln!();
                 eprintln!("Other errors:");
@@ -627,6 +670,13 @@ pub fn execute(
                 label_only_shown,
                 &unattributed,
                 spend,
+                &state_notes(
+                    &prepared.provenance,
+                    secs_after_local_mutate,
+                    rejected,
+                    stale_rejected,
+                    collateral,
+                ),
             );
         }
     }
@@ -665,6 +715,49 @@ fn print_text_summary(
             adopt_clause(report, true), report.noop_count - report.adopt_count, accepted, rejected,
         );
     }
+}
+
+/// What a red plan says about the state it was computed from.
+///
+/// A rejection names a resource and quotes an API error, which reads as a fact
+/// about the account. It is only a fact about the account *as this snapshot
+/// described it*: the operations are built from state read at some earlier
+/// moment and checked against the account as it is now. Where those disagree,
+/// the output is indistinguishable from a genuinely poisoned batch unless the
+/// plan says which snapshot it used (issue #144).
+fn state_notes(
+    provenance: &StateProvenance,
+    secs_after_local_mutate: Option<u64>,
+    rejected: usize,
+    stale_rejected: usize,
+    collateral: usize,
+) -> Vec<String> {
+    if rejected == 0 && collateral == 0 {
+        return Vec::new();
+    }
+    let mut notes = vec![format!("State: diffed against {}.", provenance.describe())];
+    if stale_rejected > 0 {
+        let subject = if stale_rejected == rejected {
+            format!("All {rejected} rejected operation(s) name")
+        } else {
+            format!("{stale_rejected} of {rejected} rejected operation(s) name")
+        };
+        notes.push(format!(
+            "Note: {subject} a resource the account reports as already removed, missing, \
+             or already present. That is what a state snapshot the account has moved past \
+             looks like — re-run with --refresh-state to rule it out before treating this \
+             as a real failure.",
+        ));
+    }
+    if let Some(gap) = secs_after_local_mutate {
+        notes.push(format!(
+            "Note: this state was read {} after an apply from this working copy finished. \
+             A Google Ads read is not guaranteed to see a mutate that just landed, so a \
+             re-run in a minute may plan clean.",
+            cache::format_age(gap),
+        ));
+    }
+    notes
 }
 
 /// What an `unchanged` count is actually a statement about. bidsmith diffs the
@@ -768,6 +861,7 @@ fn print_markdown(
     label_only_shown: bool,
     unattributed: &[&GoogleAdsErrorEntry],
     spend: Option<&SpendSummary>,
+    state_notes: &[String],
 ) {
     println!("## bidsmith {}\n", summary_title(validate_only).to_lowercase());
     if !rows.is_empty() {
@@ -791,6 +885,9 @@ fn print_markdown(
         print_markdown_spend(spend);
     }
     print_markdown_unchanged_note(report);
+    for note in state_notes {
+        println!("\n_{note}_");
+    }
     if !unattributed.is_empty() {
         println!("\n### Other errors\n");
         for err in unattributed {
@@ -1142,6 +1239,37 @@ struct GoogleAdsErrorEntry {
     path: String,
     op_index: Option<usize>,
     policy_topics: Vec<String>,
+    /// The leaf of `errorCode`, e.g. `CANNOT_MODIFY_REMOVED_AD` from
+    /// `{"adGroupAdError": "CANNOT_MODIFY_REMOVED_AD"}`.
+    code: Option<String>,
+}
+
+/// Whether an error says "the resource you described is not in the state you
+/// think it is" rather than "your .bid is wrong". Both arrive as an ordinary
+/// per-operation rejection, but only the first is cleared by re-reading the
+/// account, and telling them apart is the difference between a real incident
+/// and a re-run (issue #144).
+///
+/// Matching is on the shape of the code, not an enum whitelist: the same three
+/// shapes recur across every Google Ads error enum, and a table of exact names
+/// would silently stop recognising the ones added after it was written.
+fn looks_like_stale_state(code: Option<&str>, message: &str) -> bool {
+    if let Some(code) = code {
+        if code.ends_with("_NOT_FOUND")
+            || code.contains("REMOVED")
+            || code == "CONCURRENT_MODIFICATION"
+            || code.starts_with("DUPLICATE_")
+            || code.ends_with("_ALREADY_EXISTS")
+        {
+            return true;
+        }
+    }
+    let m = message.to_ascii_lowercase();
+    (m.contains("removed") && (m.contains("may not be") || m.contains("cannot be")))
+        || m.contains("does not exist")
+        || m.contains("no longer exists")
+        || m.contains("already exists")
+        || m.contains("was not found")
 }
 
 fn extract_google_ads_errors(body: &Value) -> Vec<GoogleAdsErrorEntry> {
@@ -1195,10 +1323,22 @@ fn extract_google_ads_errors(body: &Value) -> Vec<GoogleAdsErrorEntry> {
                 path: path_parts.join("."),
                 op_index,
                 policy_topics,
+                code: extract_error_code(err),
             });
         }
     }
     out
+}
+
+/// `errorCode` is a one-of: whichever enum applies is the single key present,
+/// and the value is the enum member. The wrapper name varies per resource, so
+/// only the member is useful to a caller.
+fn extract_error_code(err: &Value) -> Option<String> {
+    err.get("errorCode")?
+        .as_object()?
+        .values()
+        .find_map(Value::as_str)
+        .map(str::to_string)
 }
 
 fn extract_policy_topics(err: &Value) -> Vec<String> {
@@ -1346,10 +1486,13 @@ fn tail(s: &str, n: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::{
-        claim_details, display_address, md_action, md_cell, module_of, row_is_visible,
-        split_module, verb_detail, DisplayMode,
+        claim_details, display_address, extract_error_code, extract_google_ads_errors,
+        looks_like_stale_state, md_action, md_cell, module_of, row_is_visible, split_module,
+        state_notes, verb_detail, DisplayMode,
     };
+    use crate::api::cache;
     use crate::api::diff::{Action, ClaimPlanEntry, DiffReport, FieldChange};
+    use crate::api::live_state::{StateProvenance, StateSource};
 
     #[test]
     fn a_plan_with_unchanged_rows_says_what_unchanged_covers() {
@@ -1489,6 +1632,125 @@ mod tests {
             details.get("m.google_ads_campaign.c").map(String::as_str),
             Some("claims frequency caps, languages; releases locations")
         );
+    }
+
+    fn provenance(source: StateSource, age_secs: u64) -> StateProvenance {
+        StateProvenance {
+            source,
+            customer_id: "6571974784".into(),
+            fetched_at: cache::now_unix().saturating_sub(age_secs),
+        }
+    }
+
+    #[test]
+    fn a_clean_plan_says_nothing_about_state() {
+        assert!(state_notes(&provenance(StateSource::Fresh, 0), None, 0, 0, 0).is_empty());
+        assert!(
+            state_notes(&provenance(StateSource::Fresh, 0), Some(4), 0, 0, 0).is_empty(),
+            "a clean plan right after an apply is the expected outcome, not a warning",
+        );
+    }
+
+    #[test]
+    fn every_red_plan_names_the_state_it_was_computed_from() {
+        // A refetch used to print nothing about what it fetched, so two runs
+        // that disagreed looked identical in the output (issue #144).
+        let notes = state_notes(&provenance(StateSource::Fresh, 0), None, 0, 0, 4);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("customers/6571974784"), "{}", notes[0]);
+        assert!(notes[0].contains("just now"), "{}", notes[0]);
+        assert!(notes[0].contains("fresh read"), "{}", notes[0]);
+
+        let cached = state_notes(&provenance(StateSource::Cached, 70), None, 1, 0, 0);
+        assert!(cached[0].contains("1m10s ago"), "{}", cached[0]);
+        assert!(cached[0].contains("--refresh-state"), "{}", cached[0]);
+    }
+
+    #[test]
+    fn rejections_that_smell_of_stale_state_say_so() {
+        let notes = state_notes(&provenance(StateSource::Cached, 70), None, 2, 2, 4);
+        let stale = notes.iter().find(|n| n.starts_with("Note:")).expect("a stale-state note");
+        assert!(stale.contains("All 2 rejected"), "{stale}");
+        assert!(stale.contains("--refresh-state"), "{stale}");
+
+        let partial = state_notes(&provenance(StateSource::Cached, 70), None, 3, 1, 0);
+        assert!(
+            partial.iter().any(|n| n.contains("1 of 3 rejected")),
+            "a partial match must not claim the whole batch is stale: {partial:?}",
+        );
+
+        let genuine = state_notes(&provenance(StateSource::Fresh, 0), None, 2, 0, 0);
+        assert_eq!(
+            genuine.len(),
+            1,
+            "errors that are not stale-shaped get no excuse made for them: {genuine:?}",
+        );
+    }
+
+    #[test]
+    fn a_red_plan_read_moments_after_an_apply_says_which_apply() {
+        // The exact shape of issue #144: state read seconds after a mutate, and
+        // a read is not guaranteed to see it.
+        let notes = state_notes(&provenance(StateSource::Fresh, 4), Some(4), 2, 2, 4);
+        assert!(
+            notes.iter().any(|n| n.contains("4s after an apply")),
+            "{notes:?}",
+        );
+    }
+
+    #[test]
+    fn stale_state_is_recognised_by_code_shape_and_by_message() {
+        // The error that started issue #144: the account had already removed the
+        // ads a stale snapshot still showed as live.
+        assert!(looks_like_stale_state(None, "Removed ads may not be modified."));
+        assert!(looks_like_stale_state(
+            Some("CANNOT_MODIFY_REMOVED_AD"),
+            "Removed ads may not be modified.",
+        ));
+        assert!(looks_like_stale_state(Some("RESOURCE_NOT_FOUND"), "Resource not found."));
+        assert!(looks_like_stale_state(Some("AD_GROUP_NOT_FOUND"), "whatever"));
+        assert!(looks_like_stale_state(Some("CONCURRENT_MODIFICATION"), "whatever"));
+        assert!(looks_like_stale_state(Some("DUPLICATE_CAMPAIGN_NAME"), "whatever"));
+        assert!(looks_like_stale_state(None, "This campaign does not exist."));
+
+        // A .bid the account will never accept, however often it is re-read.
+        assert!(!looks_like_stale_state(
+            Some("HEADLINE_TOO_LONG"),
+            "Headline exceeds 30 characters.",
+        ));
+        assert!(!looks_like_stale_state(
+            Some("BUDGET_AMOUNT_TOO_SMALL"),
+            "The budget amount is below the minimum for this currency.",
+        ));
+        assert!(!looks_like_stale_state(None, "Policy violation: destination not working."));
+    }
+
+    #[test]
+    fn error_code_is_read_out_of_whichever_enum_carried_it() {
+        let err = serde_json::json!({
+            "errorCode": {"adGroupAdError": "CANNOT_MODIFY_REMOVED_AD"},
+            "message": "Removed ads may not be modified.",
+        });
+        assert_eq!(extract_error_code(&err).as_deref(), Some("CANNOT_MODIFY_REMOVED_AD"));
+        assert_eq!(extract_error_code(&serde_json::json!({"message": "x"})), None);
+    }
+
+    #[test]
+    fn parsed_errors_carry_their_code_alongside_the_message() {
+        let body = serde_json::json!({
+            "error": {"details": [{"errors": [{
+                "errorCode": {"mutateError": "RESOURCE_NOT_FOUND"},
+                "message": "Resource was not found.",
+                "location": {"fieldPathElements": [
+                    {"fieldName": "mutate_operations", "index": 3}
+                ]},
+            }]}]}
+        });
+        let errors = extract_google_ads_errors(&body);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code.as_deref(), Some("RESOURCE_NOT_FOUND"));
+        assert_eq!(errors[0].op_index, Some(3));
+        assert!(looks_like_stale_state(errors[0].code.as_deref(), &errors[0].message));
     }
 
     #[test]

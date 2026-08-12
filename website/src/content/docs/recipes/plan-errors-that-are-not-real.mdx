@@ -1,0 +1,142 @@
+---
+title: A plan reported errors that turned out not to be real
+description: How to tell a stale snapshot from a genuinely broken change when plan comes back red.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+`bidsmith plan` sometimes comes back red for a reason that has nothing
+to do with your files: it was working from a picture of the account
+that the account has already moved past. The plan looks the same either
+way — named resources, quoted Google Ads errors — so this page is about
+telling the two apart in under a minute.
+
+## What causes it
+
+A plan is built in two steps, and they read the account at different
+moments:
+
+1. bidsmith **reads** the account once and compares it to your `.bid`
+   files. That read is a snapshot.
+2. bidsmith **checks** the resulting changes against Google Ads, live,
+   without applying them.
+
+If something changed the account between those two moments — a
+colleague's `apply`, a CI run on `main`, someone in the Google Ads UI —
+step 2 rejects changes that step 1 thought were needed. Google Ads is
+also not guaranteed to show you a change the instant it lands, so a
+read taken seconds after an `apply` can still answer with the old
+picture.
+
+## How to tell
+
+Every plan says what it was working from. Look for the `State:` line
+under the summary:
+
+```
+Plan: 2 to create, 0 to update, 2 to destroy, 1507 unchanged. (0 accepted, 2 rejected, 4 blocked by those failures)
+State: diffed against live state for customers/1234567890 read 12m4s ago (cached — --refresh-state to refetch).
+```
+
+Two things to read off it:
+
+- **Age.** State read twelve minutes ago is twelve minutes' worth of
+  other people's changes out of date.
+- **Source.** `cached` means the picture came from your last read, not
+  from this run. `fresh read` means bidsmith asked Google Ads just now.
+
+When the rejections themselves look like stale state, bidsmith says so
+rather than leaving you to spot it:
+
+```
+Note: All 2 rejected operation(s) name a resource the account reports as already
+      removed, missing, or already present. That is what a state snapshot the
+      account has moved past looks like — re-run with --refresh-state to rule it
+      out before treating this as a real failure.
+```
+
+That note is a strong hint, not a verdict. Confirming takes one
+command.
+
+## What to do
+
+<Steps>
+
+1. **Re-run with a forced refetch.**
+
+   ```sh
+   bidsmith plan --refresh-state .
+   ```
+
+   `--refresh-state` never answers from the cache — it always asks
+   Google Ads.
+
+2. **If the plan comes back clean, you're done.** The rejections were
+   an artifact of the snapshot. Nothing in the account or in your files
+   needs fixing.
+
+3. **If the same rejections come back, they're real.** Read the
+   per-resource error and fix the `.bid` — the account is genuinely
+   refusing the change.
+
+4. **If it happened seconds after an `apply`, wait a minute and try
+   once more.** A Google Ads read is not guaranteed to see a mutate
+   that just landed. bidsmith flags this case for you when the `apply`
+   came from the same working copy:
+
+   ```
+   Note: this state was read 4s after an apply from this working copy finished.
+         A Google Ads read is not guaranteed to see a mutate that just landed,
+         so a re-run in a minute may plan clean.
+   ```
+
+</Steps>
+
+<Aside type="tip" title="A red plan is worth one re-run, not a rollback">
+Before you revert a merge or open an incident, spend the one command.
+`plan --refresh-state` costs a single account read and settles the
+question outright.
+</Aside>
+
+## The case bidsmith can't see
+
+Your cache is a file in *your* project folder. When CI applies to the
+account, it clears the cache on the CI runner — yours is untouched and
+still looks fresh. Same for a colleague applying from their laptop.
+
+So: after anyone else applies, your first local plan is the one to
+distrust. Two ways to stay ahead of it:
+
+- Reach for `--refresh-state` on the first plan after a merge to
+  `main`.
+- Shorten the window with `BIDSMITH_CACHE_TTL_SECS` if your account has
+  several people or pipelines writing to it:
+
+  ```sh
+  export BIDSMITH_CACHE_TTL_SECS=120
+  ```
+
+## A destroy and a create on the same address
+
+This pair is normal, not a loop:
+
+```
+google_ads_ad_group_ad.spring_rsa                             + create
+google_ads_ad_group_ad.spring_rsa (managed, no longer declared)  - destroy
+```
+
+Google Ads ads are mostly immutable — an edited headline can't be
+changed in place, so bidsmith replaces the ad. The `destroy` is the old
+creative, the `create` is the new one, and both carry the same address
+because it's the same ad in your files. It only warrants a second look
+if the destroy is *rejected*, which is one of the stale-state
+signatures above.
+
+## See also
+
+- [Cut Google Ads API quota usage](/bidsmith/recipes/reduce-api-calls/)
+  — what the cache holds, how long it lives, and how to bypass it.
+- [`bidsmith plan`](/bidsmith/commands/plan/) — the full flag
+  reference.
+- [Plan and apply](/bidsmith/concepts/plan-and-apply/) — why plan reads
+  and checks at two different moments.

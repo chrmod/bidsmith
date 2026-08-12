@@ -38,27 +38,33 @@ The defaults:
 - **Live-state cache TTL**: 15 minutes.
 - **Access-token cache**: reused until 60 seconds before its
   server-issued expiry (typically ~1 hour).
-- **After every successful `apply`**: the live-state cache is
-  invalidated automatically, so the next `plan` starts from real
-  data.
+- **Whenever `apply` mutates the account**: the live-state cache is
+  dropped as the change is sent, not after it comes back — so even a
+  timeout or an interrupted run leaves no stale copy behind. The next
+  `plan` starts from real data.
 - **`.bidsmith/` is gitignored** by default — nothing to commit.
 
-When the cache is used, bidsmith prints a banner so you always know
-which mode you're in:
+Every `plan`, `apply`, and `drift` says out loud which account it read,
+when, and where the answer came from — one line, same shape either way:
 
 ```
-plan: using cached live state from 4m12s ago (--refresh-state to refetch).
+plan: live state for customers/1234567890 read 4m12s ago (cached — --refresh-state to refetch).
+plan: live state for customers/1234567890 read just now (fresh read).
 ```
 
-If you don't see that line, the live API was contacted.
+That line is the answer to "am I looking at current data?", so you never
+have to infer it from what the output *doesn't* say.
 
 ## When to bust the cache
 
 You normally don't need to. The 15-minute TTL is short enough that
-genuinely stale data is rare, and `apply` invalidates the cache on
-success. But you might want a fresh fetch if:
+genuinely stale data is rare, and `apply` invalidates the cache when it
+mutates. But you might want a fresh fetch if:
 
 - Someone edited the account in the Google Ads UI mid-session.
+- Someone else — a colleague, or your CI — applied to the same account
+  from a different machine. Their `apply` cleared *their* cache, not
+  yours.
 - You're chasing a "this looks wrong" diff and want to rule out
   stale state.
 - You're about to apply something high-stakes and want a final
@@ -154,7 +160,7 @@ For long authoring sessions:
    bidsmith pull -o /tmp/snapshot.json
    ```
 
-   `pull` always fetches fresh from the API and also writes the
+   `pull` always fetches fresh from the API and writes
    `.bidsmith/cache/live-state.json` as a side effect, so the next
    `plan` is cache-served.
 
@@ -177,7 +183,7 @@ For long authoring sessions:
    bidsmith apply .
    ```
 
-   `apply` clears the cache on success, so the next session starts
+   `apply` clears the cache as it mutates, so the next session starts
    clean.
 
 </Steps>
@@ -210,17 +216,21 @@ SearchStream queries.
 
 Everything in `.bidsmith/cache/`:
 
-| File              | Contents                                            | Lifetime                      |
-|-------------------|-----------------------------------------------------|-------------------------------|
-| `live-state.json` | Raw SearchStream batches keyed by customer + version | TTL (default 15 min)          |
-| `token.json`      | OAuth access token + expiry (mode `0600`)            | ~1 hour, server-issued        |
+| File               | Contents                                             | Lifetime                      |
+|--------------------|------------------------------------------------------|-------------------------------|
+| `live-state.json`  | Raw SearchStream batches keyed by customer + version  | TTL (default 15 min)          |
+| `token.json`       | OAuth access token + expiry (mode `0600`)             | ~1 hour, server-issued        |
+| `last-mutate.json` | When this copy last applied, and to which account     | Until the next apply          |
 
-Both files are JSON, both are gitignored, both are safe to delete by
-hand — `rm -rf .bidsmith/cache/` is a valid "reset everything"
-command.
+All three are JSON, all three are gitignored, all three are safe to
+delete by hand — `rm -rf .bidsmith/cache/` is a valid "reset
+everything" command.
 
 ## See also
 
+- [A plan reported errors that turned out not to be
+  real](/bidsmith/recipes/plan-errors-that-are-not-real/) — how to tell
+  a stale snapshot from a genuinely broken change.
 - [`bidsmith plan`](/bidsmith/commands/plan/) — the verb that
   benefits most from the cache.
 - [`bidsmith pull`](/bidsmith/commands/pull/) — the explicit

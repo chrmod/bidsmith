@@ -8,6 +8,7 @@ use serde_json::Value;
 pub const CACHE_DIR: &str = ".bidsmith/cache";
 pub const TOKEN_FILE: &str = "token.json";
 pub const LIVE_STATE_FILE: &str = "live-state.json";
+pub const LAST_MUTATE_FILE: &str = "last-mutate.json";
 pub const DEFAULT_LIVE_STATE_TTL_SECS: u64 = 900;
 
 pub fn disabled_by_env() -> bool {
@@ -141,6 +142,35 @@ pub fn invalidate_live_state(cache_dir: &Path) {
     let _ = std::fs::remove_file(cache_dir.join(LIVE_STATE_FILE));
 }
 
+/// When this machine last sent a real mutate for a customer. A live read taken
+/// moments after one can still show the pre-mutate account (the Google Ads API
+/// is not read-your-writes), so a plan built on it disagrees with the account
+/// in ways that read as genuine rejections (issue #144).
+#[derive(Serialize, Deserialize)]
+pub struct LastMutate {
+    pub customer_id: String,
+    pub at: u64,
+}
+
+pub fn record_last_mutate(cache_dir: &Path, customer_id: &str) {
+    let record = LastMutate {
+        customer_id: customer_id.to_string(),
+        at: now_unix(),
+    };
+    if std::fs::create_dir_all(cache_dir).is_err() {
+        return;
+    }
+    if let Ok(raw) = serde_json::to_string(&record) {
+        let _ = write_atomic(&cache_dir.join(LAST_MUTATE_FILE), raw.as_bytes(), 0o644);
+    }
+}
+
+pub fn load_last_mutate(cache_dir: &Path, customer_id: &str) -> Option<u64> {
+    let raw = std::fs::read_to_string(cache_dir.join(LAST_MUTATE_FILE)).ok()?;
+    let record: LastMutate = serde_json::from_str(&raw).ok()?;
+    (record.customer_id == customer_id).then_some(record.at)
+}
+
 pub(crate) fn write_atomic(path: &Path, data: &[u8], _mode: u32) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path
@@ -169,6 +199,16 @@ pub fn format_age(secs: u64) -> String {
         format!("{}m{}s", secs / 60, secs % 60)
     } else {
         format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+/// `format_age` as a sentence fragment, so a fetch that just happened does not
+/// render as the puzzling "0s ago".
+pub fn format_age_phrase(secs: u64) -> String {
+    if secs == 0 {
+        "just now".to_string()
+    } else {
+        format!("{} ago", format_age(secs))
     }
 }
 
@@ -262,6 +302,29 @@ mod tests {
         assert!(load_live_state(&dir, "123", Some("999"), "v22", "qfp", 900).is_none());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn last_mutate_is_scoped_to_the_customer_it_mutated() {
+        let dir = tmp_dir("last-mutate");
+        assert!(load_last_mutate(&dir, "123").is_none());
+
+        record_last_mutate(&dir, "123");
+        let at = load_last_mutate(&dir, "123").expect("the mutated customer has a marker");
+        assert!(at >= now_unix().saturating_sub(5));
+        assert!(
+            load_last_mutate(&dir, "456").is_none(),
+            "a mutate on one account says nothing about another",
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_fetch_that_just_happened_does_not_read_as_zero_seconds() {
+        assert_eq!(format_age_phrase(0), "just now");
+        assert_eq!(format_age_phrase(4), "4s ago");
+        assert_eq!(format_age_phrase(70), "1m10s ago");
     }
 
     #[test]

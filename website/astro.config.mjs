@@ -65,6 +65,7 @@ export default defineConfig({
             { label: 'Roll back a bad change', slug: 'recipes/roll-back-a-bad-change' },
             { label: 'Audit who changed what, when', slug: 'recipes/audit-who-changed-what' },
             { label: 'Cut Google Ads API quota usage', slug: 'recipes/reduce-api-calls' },
+            { label: 'A plan reported errors that turned out not to be real', slug: 'recipes/plan-errors-that-are-not-real' },
             { label: 'Manage multiple client accounts', slug: 'recipes/manage-multiple-accounts' },
             { label: 'See how your campaigns are performing', slug: 'recipes/see-campaign-performance' },
             { label: 'Organize a big account into folders', slug: 'recipes/organize-account-into-folders' },
