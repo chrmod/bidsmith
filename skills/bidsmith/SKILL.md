@@ -158,6 +158,11 @@ negative-keyword lists shared across campaigns),
 (`10000000` = 10 currency units). `status` for campaigns and ad groups:
 `ENABLED` | `PAUSED` | `REMOVED`.
 
+A budget that runs for a fixed flight says `period = "CUSTOM_PERIOD"`
+and `total_amount_micros` (the whole run) instead of `amount_micros`
+(per day) — exactly one of the two, and `period` / `type` can never be
+changed once the budget exists.
+
 ## Compact forms for repetitive resources
 
 A real campaign accumulates dozens of negative keywords and many RSA

@@ -51,6 +51,7 @@ pub const DEFAULT_STATUS: &str = "ENABLED";
 pub const DEFAULT_DELIVERY_METHOD: &str = "STANDARD";
 pub const DEFAULT_EU_POLITICAL: &str = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING";
 pub const DEFAULT_EXPLICITLY_SHARED: bool = false;
+pub const DEFAULT_BUDGET_PERIOD: &str = "DAILY";
 pub const DEFAULT_NEGATIVE: bool = false;
 pub const DEFAULT_FREQUENCY_CAP_LEVEL: &str = "CAMPAIGN";
 pub const DEFAULT_CUSTOM_AUDIENCE_TYPE: &str = "AUTO";
@@ -191,6 +192,10 @@ pub struct BlockSchema {
 
 const STATUS: &[&str] = &["ENABLED", "PAUSED", "REMOVED"];
 const KEYWORD_MATCH_TYPE: &[&str] = &["EXACT", "PHRASE", "BROAD"];
+const BUDGET_PERIOD: &[&str] = &["DAILY", "CUSTOM_PERIOD"];
+const BUDGET_TYPE: &[&str] = &["STANDARD", "FIXED_CPA", "SMART_CAMPAIGN", "LOCAL_SERVICES"];
+/// The `period` whose amount is a lifetime cap rather than a daily rate.
+pub const CUSTOM_PERIOD: &str = "CUSTOM_PERIOD";
 const RSA_PIN: &[&str] = &[
     "HEADLINE_1",
     "HEADLINE_2",
@@ -598,7 +603,15 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
             BlockSchema {
                 attributes: vec![
                     attr("name", FieldType::String, true),
-                    attr("amount_micros", FieldType::Integer, true),
+                    // Which of the two amounts is required depends on `period`;
+                    // enforced by validate_budget_amount.
+                    attr("amount_micros", FieldType::Integer, false),
+                    attr("total_amount_micros", FieldType::Integer, false),
+                    attr("period", FieldType::Enum(BUDGET_PERIOD), false)
+                        .with_default(DefaultValue::Str(DEFAULT_BUDGET_PERIOD)),
+                    // No default: the API documents one for `period` but not for
+                    // `type`, so an omitted type is left for Google to pick.
+                    attr("type", FieldType::Enum(BUDGET_TYPE), false),
                     attr(
                         "delivery_method",
                         FieldType::Enum(&["STANDARD", "ACCELERATED"]),
@@ -2541,6 +2554,11 @@ fn validate_resource(
     if ty == "google_ads_campaign" {
         validate_single_bidding_strategy(file, &block.body, &address, diags);
     }
+    if ty == "google_ads_campaign_budget" {
+        let merged = defaults.merge(ty, block);
+        let body = merged.as_ref().map_or(&block.body, |b| &b.body);
+        validate_budget_amount(file, block, body, &address, locals, variables, diags);
+    }
 }
 
 /// Check the resource's `lifecycle` meta-block and return the rest of its body
@@ -2605,6 +2623,66 @@ fn validate_lifecycle(
         diags,
     );
     Some(rest)
+}
+
+/// `amount_micros` and `total_amount_micros` are mutually exclusive, and which
+/// one a budget needs is decided by `period`: a daily budget spends a rate, a
+/// custom-period budget spends a lifetime cap and Google Ads ignores the rate.
+/// The schema can mark both optional but not tie them to `period`.
+fn validate_budget_amount(
+    file: &ParsedFile,
+    block: &Block,
+    body: &Body,
+    address: &str,
+    locals: &LocalsRegistry,
+    variables: &VariablesRegistry,
+    diags: &mut Vec<Diag>,
+) {
+    let mut period: Option<String> = None;
+    let mut has_amount = false;
+    let mut has_total = false;
+    for s in body.iter() {
+        let Structure::Attribute(a) = s else { continue };
+        match a.key.as_str() {
+            "amount_micros" => has_amount = true,
+            "total_amount_micros" => has_total = true,
+            "period" => {
+                match resolve_for_lint(file, &a.value, locals, variables).as_ref() {
+                    Expression::String(s) => period = Some(s.to_string()),
+                    // An unresolvable expression could be either period, so the
+                    // pairing below is unknowable — leave it to the API.
+                    _ => return,
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let custom = period.as_deref() == Some(CUSTOM_PERIOD);
+    let message = match (custom, has_amount, has_total) {
+        (true, _, false) => format!(
+            "{address} sets period = \"{CUSTOM_PERIOD}\" but no 'total_amount_micros' — a \
+             custom-period budget spends a lifetime total, not a daily amount"
+        ),
+        (true, true, true) => format!(
+            "{address} sets both 'amount_micros' and 'total_amount_micros'; Google Ads ignores \
+             the daily amount on a period = \"{CUSTOM_PERIOD}\" budget — keep \
+             'total_amount_micros'"
+        ),
+        (false, _, true) => format!(
+            "{address} sets 'total_amount_micros' on a daily budget — a lifetime total needs \
+             period = \"{CUSTOM_PERIOD}\", otherwise say 'amount_micros'"
+        ),
+        (false, false, false) => {
+            format!("missing required attribute 'amount_micros' in {address}")
+        }
+        _ => return,
+    };
+    diags.push(Diag::new(
+        file.src.clone(),
+        span_of(block.ident.span()),
+        message,
+    ));
 }
 
 /// The campaign's bidding blocks map to one protobuf `oneof`, which the block
@@ -3795,6 +3873,120 @@ resource "google_ads_ad_group_criterion" "kw" {
         );
         assert!(
             diags.iter().any(|d| d.message.contains("use one or the other")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_custom_period_budget_declares_a_lifetime_total() {
+        let diags = validate_str(
+            "budget_custom_period",
+            r#"
+resource "google_ads_campaign_budget" "flight" {
+  name                = "Q3 Flight"
+  total_amount_micros = 91000000
+  period              = "CUSTOM_PERIOD"
+}
+"#,
+        );
+        assert!(
+            diags.is_empty(),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_budget_with_no_amount_at_all_is_an_error() {
+        let diags = validate_str(
+            "budget_no_amount",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name = "B"
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("missing required attribute 'amount_micros'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_lifetime_total_without_a_custom_period_is_an_error() {
+        let diags = validate_str(
+            "budget_total_daily",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name                = "B"
+  total_amount_micros = 91000000
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("needs period = \"CUSTOM_PERIOD\"")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_custom_period_budget_without_a_total_is_an_error() {
+        let diags = validate_str(
+            "budget_custom_no_total",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+  period        = "CUSTOM_PERIOD"
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("but no 'total_amount_micros'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_budget_setting_both_amounts_is_an_error() {
+        let diags = validate_str(
+            "budget_both_amounts",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name                = "B"
+  amount_micros       = 1000000
+  total_amount_micros = 91000000
+  period              = "CUSTOM_PERIOD"
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("sets both 'amount_micros'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_budget_amount_a_defaults_block_provides_is_not_missing() {
+        let diags = validate_str(
+            "budget_from_defaults",
+            r#"
+defaults "google_ads_campaign_budget" {
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign_budget" "b" {
+  name = "B"
+}
+"#,
+        );
+        assert!(
+            diags.is_empty(),
             "{:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );

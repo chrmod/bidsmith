@@ -265,7 +265,10 @@ impl AdapterState {
         let entry = self.budgets.entry(id.clone()).or_insert_with(|| JsonBudget {
             id,
             name: String::new(),
-            amount_micros: 0,
+            amount_micros: None,
+            total_amount_micros: None,
+            period: None,
+            ty: None,
             delivery_method: None,
             explicitly_shared: None,
         });
@@ -273,7 +276,16 @@ impl AdapterState {
             entry.name = s.to_string();
         }
         if let Some(n) = parse_i64(v.get("amountMicros")) {
-            entry.amount_micros = n;
+            entry.amount_micros = Some(n);
+        }
+        if let Some(n) = parse_i64(v.get("totalAmountMicros")) {
+            entry.total_amount_micros = Some(n);
+        }
+        if let Some(s) = v.get("period").and_then(Value::as_str) {
+            entry.period = Some(s.to_string());
+        }
+        if let Some(s) = v.get("type").and_then(Value::as_str) {
+            entry.ty = Some(s.to_string());
         }
         if let Some(s) = v.get("deliveryMethod").and_then(Value::as_str) {
             entry.delivery_method = Some(s.to_string());

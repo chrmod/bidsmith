@@ -130,11 +130,38 @@ pub struct ExportInput {
 pub struct JsonBudget {
     pub id: String,
     pub name: String,
-    pub amount_micros: i64,
+    /// The daily rate. `None` on a `CUSTOM_PERIOD` budget, which spends
+    /// `total_amount_micros` over its lifetime instead — the API treats the two
+    /// as mutually exclusive.
+    #[serde(default)]
+    pub amount_micros: Option<i64>,
+    #[serde(default)]
+    pub total_amount_micros: Option<i64>,
+    #[serde(default)]
+    pub period: Option<String>,
+    #[serde(default, rename = "type")]
+    pub ty: Option<String>,
     #[serde(default)]
     pub delivery_method: Option<String>,
     #[serde(default)]
     pub explicitly_shared: Option<bool>,
+}
+
+impl JsonBudget {
+    /// Whether this budget's amount is a lifetime cap rather than a daily rate.
+    /// An absent period is the API's documented `DAILY` default.
+    pub fn is_custom_period(&self) -> bool {
+        self.period.as_deref() == Some(crate::schema::CUSTOM_PERIOD)
+    }
+
+    /// The amount the budget actually commits, in the unit its period implies.
+    pub fn committed_micros(&self) -> i64 {
+        if self.is_custom_period() {
+            self.total_amount_micros.unwrap_or(0)
+        } else {
+            self.amount_micros.unwrap_or(0)
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -805,8 +832,8 @@ impl ExportInput {
     /// diffing — never on the render path, where defaults are stripped instead.
     pub fn apply_schema_defaults(&mut self) {
         use crate::schema::{
-            DEFAULT_CUSTOM_AUDIENCE_TYPE, DEFAULT_DELIVERY_METHOD, DEFAULT_EU_POLITICAL,
-            DEFAULT_EXPLICITLY_SHARED, DEFAULT_NEGATIVE, DEFAULT_STATUS,
+            DEFAULT_BUDGET_PERIOD, DEFAULT_CUSTOM_AUDIENCE_TYPE, DEFAULT_DELIVERY_METHOD,
+            DEFAULT_EU_POLITICAL, DEFAULT_EXPLICITLY_SHARED, DEFAULT_NEGATIVE, DEFAULT_STATUS,
         };
         let status = || DEFAULT_STATUS.to_string();
 
@@ -814,6 +841,7 @@ impl ExportInput {
             b.delivery_method
                 .get_or_insert_with(|| DEFAULT_DELIVERY_METHOD.to_string());
             b.explicitly_shared.get_or_insert(DEFAULT_EXPLICITLY_SHARED);
+            b.period.get_or_insert_with(|| DEFAULT_BUDGET_PERIOD.to_string());
         }
         for c in &mut self.campaigns {
             c.status.get_or_insert_with(status);
@@ -1466,10 +1494,35 @@ fn write_provider(out: &mut String, input: &ExportInput) {
     out.push_str("}\n\n");
 }
 
+/// The budget type an ordinary campaign gets; rendering it on every budget
+/// would be noise, and it is what Google picks when `type` is omitted.
+const STANDARD_BUDGET_TYPE: &str = "STANDARD";
+
 fn write_budget(out: &mut String, name: &str, b: &JsonBudget) {
     let _ = writeln!(out, "resource \"google_ads_campaign_budget\" \"{name}\" {{");
     write_attr(out, 1, "name", &fmt_string(&b.name));
-    write_attr(out, 1, "amount_micros", &b.amount_micros.to_string());
+    // Only the amount the period actually spends: a live custom-period budget
+    // can still carry a stale `amount_micros`, and rendering both would produce
+    // a file the validator rejects.
+    if b.is_custom_period() {
+        write_attr(
+            out,
+            1,
+            "total_amount_micros",
+            &b.total_amount_micros.unwrap_or(0).to_string(),
+        );
+        write_attr(out, 1, "period", &fmt_string(crate::schema::CUSTOM_PERIOD));
+    } else {
+        write_attr(
+            out,
+            1,
+            "amount_micros",
+            &b.amount_micros.unwrap_or(0).to_string(),
+        );
+    }
+    if let Some(t) = b.ty.as_deref().filter(|t| *t != STANDARD_BUDGET_TYPE) {
+        write_attr(out, 1, "type", &fmt_string(t));
+    }
     if let Some(dm) = &b.delivery_method {
         write_attr(out, 1, "delivery_method", &fmt_string(dm));
     }
@@ -3525,6 +3578,33 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_custom_period_budget_renders_its_lifetime_total() {
+        // The live budget carries a stale `amountMicros` alongside the total it
+        // actually spends; rendering both would not validate.
+        let raw = r#"[
+            {
+                "results": [
+                    { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Q3 Flight", "amountMicros": "0", "totalAmountMicros": "91000000", "period": "CUSTOM_PERIOD", "type": "STANDARD" } }
+                ]
+            }
+        ]"#;
+        let input = from_search_response(raw).expect("adapter");
+        let out = render(&input);
+
+        assert!(out.contains("total_amount_micros = 91000000"), "{out}");
+        assert!(out.contains(r#"period = "CUSTOM_PERIOD""#), "{out}");
+        assert!(!out.contains("amount_micros = 0"), "{out}");
+        assert!(!out.contains(r#"type = "STANDARD""#), "{out}");
+
+        let pf = crate::parser::parse_str(std::path::Path::new("rt.bid"), &out)
+            .expect("rendered file parses");
+        let diags =
+            crate::schema::validate_files(&[pf], &crate::schema::InputBindings::default());
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{:?}\n{out}", errors);
     }
 
     #[test]

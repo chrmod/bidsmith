@@ -71,6 +71,7 @@ export default defineConfig({
             { label: 'Rename a resource without recreating it', slug: 'recipes/rename-without-recreating' },
             { label: 'Leave a note explaining a number', slug: 'recipes/leave-a-note-explaining-a-number' },
             { label: 'See what a change costs before you merge it', slug: 'recipes/see-what-a-change-costs' },
+            { label: 'Budget a campaign that runs for a fixed period', slug: 'recipes/budget-a-fixed-flight' },
             { label: 'Adopt a campaign you built in the Google Ads UI', slug: 'recipes/adopt-a-campaign-from-the-ui' },
           ],
         },

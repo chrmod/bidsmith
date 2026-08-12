@@ -911,10 +911,10 @@ fn budget_update_body(b: &JsonBudget, resource_name: &str, fields: &[String]) ->
                 m.insert("name".into(), Value::String(b.name.clone()));
             }
             "amount_micros" => {
-                m.insert(
-                    "amountMicros".into(),
-                    Value::String(b.amount_micros.to_string()),
-                );
+                m.insert("amountMicros".into(), micros(b.amount_micros));
+            }
+            "total_amount_micros" => {
+                m.insert("totalAmountMicros".into(), micros(b.total_amount_micros));
             }
             "delivery_method" => {
                 m.insert(
@@ -1662,14 +1662,36 @@ fn plan_rn<'a>(
     }
 }
 
+/// Google Ads takes 64-bit amounts as JSON strings. A cleared one is `null`,
+/// which only an update mask can carry.
+fn micros(value: Option<i64>) -> Value {
+    match value {
+        Some(v) => Value::String(v.to_string()),
+        None => Value::Null,
+    }
+}
+
 fn budget_create(b: &JsonBudget, resource_name: &str) -> Value {
     let mut m = Map::new();
     m.insert("resourceName".into(), Value::String(resource_name.to_string()));
     m.insert("name".into(), Value::String(b.name.clone()));
-    m.insert(
-        "amountMicros".into(),
-        Value::String(b.amount_micros.to_string()),
-    );
+    // The two amounts are mutually exclusive, and which one applies is decided
+    // by `period` — which the API defaults to DAILY, so it only needs saying
+    // for the other one.
+    if b.is_custom_period() {
+        m.insert(
+            "period".into(),
+            Value::String(crate::schema::CUSTOM_PERIOD.to_string()),
+        );
+        if let Some(v) = b.total_amount_micros {
+            m.insert("totalAmountMicros".into(), Value::String(v.to_string()));
+        }
+    } else if let Some(v) = b.amount_micros {
+        m.insert("amountMicros".into(), Value::String(v.to_string()));
+    }
+    if let Some(t) = &b.ty {
+        m.insert("type".into(), Value::String(t.clone()));
+    }
     if let Some(dm) = &b.delivery_method {
         m.insert("deliveryMethod".into(), Value::String(dm.clone()));
     }
@@ -2276,6 +2298,29 @@ mod tests {
             .iter()
             .find_map(|op| op.get("campaignOperation").cloned())
             .expect("campaign update op")
+    }
+
+    #[test]
+    fn a_custom_period_budget_creates_with_its_lifetime_total() {
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "campaign_budgets": [{
+                "id": "m.b", "name": "Q3 Flight",
+                "total_amount_micros": 91000000, "period": "CUSTOM_PERIOD"
+            }]
+        }))
+        .expect("valid ExportInput");
+        let report = DiffReport {
+            diffs: vec![create_diff("m.b", "campaign_budget")],
+            create_count: 1,
+            ..DiffReport::default()
+        };
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let create = plan.body["mutateOperations"][0]["campaignBudgetOperation"]["create"].clone();
+
+        assert_eq!(create["period"], "CUSTOM_PERIOD");
+        assert_eq!(create["totalAmountMicros"], "91000000");
+        assert!(create.get("amountMicros").is_none(), "{create}");
     }
 
     #[test]

@@ -765,6 +765,21 @@ resource type, any file layout, modules, schema validation.
   every channel that reaches that pairing is already refused (VIDEO is
   unmutable, DISPLAY rejects `target_cpm` regardless of the budget), so
   there is no reachable case to warn about.
+- **A budget's amount is whichever one its `period` selects** (issue
+  #131). `amount_micros` is a daily rate, `total_amount_micros` is a
+  lifetime cap on a `period = "CUSTOM_PERIOD"` budget, and the API
+  treats them as mutually exclusive — so `amount_micros` stopped being
+  a schema-level required attribute and `validate` enforces the pairing
+  instead (exactly one, matching the period). The diff compares only the
+  selected one; the other is whatever the account happens to carry and
+  writing it is an API error. `period` and `type` are **immutable**, so
+  they are modelled and warned about but never diffed into an update —
+  same treatment as a campaign's `advertising_channel_type`, and for the
+  same reason: a file describing a daily budget that adopts a lifetime
+  one would otherwise report a clean plan while Google ignored the
+  amount it declared. `export` renders only the amount the period uses,
+  since a live custom-period budget can still carry a stale
+  `amount_micros` and rendering both produces a file `validate` rejects.
 - **The VIDEO channel is read-only through the Google Ads API** (issue
   #104, verified live): "You cannot create new Video campaigns or update
   existing ones using the Google Ads API"
@@ -1280,7 +1295,11 @@ Verified locally:
   sibling PRs each adding EUR 20/day show the running total the third
   one would otherwise hide. Computed in `src/api/spend.rs` from the
   diff plus live state; amounts render in the account currency read by
-  the `customer` GAQL query.
+  the `customer` GAQL query. Custom-period budgets commit a lifetime
+  total rather than a rate, so they get their own continuation line
+  (`plus 2 custom-period budgets totalling 140.00 EUR over their
+  lifetime`) instead of being summed into a figure labelled `/day`
+  (issue #131).
 - `bidsmith plan examples/basic` against the rezolutnie account
   validates 8 CREATE operations on the live API and prints
   `8 accepted, 0 rejected (validateOnly)`. Proves every resource
@@ -1363,7 +1382,9 @@ Verified locally:
   that lock in the account-vs-campaign split (`render_split`).
 
 Validator covers (so far):
-- `google_ads_campaign_budget`, `google_ads_campaign` (one bidding
+- `google_ads_campaign_budget` (`amount_micros` *or*
+  `total_amount_micros`, whichever the immutable `period` selects, plus
+  the immutable `type`), `google_ads_campaign` (one bidding
   block out of `manual_cpc` / `manual_cpm` / `manual_cpv` /
   `target_cpm` / `target_cpv`, plus `network_settings` and the required
   `contains_eu_political_advertising` enum — defaults to

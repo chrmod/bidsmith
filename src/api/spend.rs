@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::api::diff::{Action, DiffReport};
-use crate::commands::export::ExportInput;
+use crate::commands::export::{ExportInput, JsonBudget};
 
 const ENABLED: &str = "ENABLED";
 const MICROS_PER_UNIT: u64 = 1_000_000;
@@ -13,10 +13,17 @@ const MICROS_PER_UNIT: u64 = 1_000_000;
 /// Only budgets backing a campaign that will be `ENABLED` after apply are
 /// counted: a budget on a paused campaign commits nothing. A budget several
 /// campaigns share counts once.
+///
+/// A `CUSTOM_PERIOD` budget commits a lifetime total rather than a daily rate,
+/// so it is reported on its own line instead of being summed into a figure
+/// labelled `/day` (issue #131).
 pub struct SpendSummary {
     pub before_micros: i64,
     pub after_micros: i64,
     pub enabled_campaigns_after: usize,
+    pub custom_before_micros: i64,
+    pub custom_after_micros: i64,
+    pub custom_budgets_after: usize,
     pub currency_code: Option<String>,
 }
 
@@ -33,9 +40,24 @@ impl SpendSummary {
         self.after_micros - self.before_micros
     }
 
-    /// The summary sentence, or None when the account commits nothing either
-    /// way and the line would only add noise.
-    pub fn line(&self) -> Option<String> {
+    /// The summary, one line per unit of commitment — empty when the account
+    /// commits nothing either way and the lines would only add noise.
+    pub fn lines(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(daily) = self.daily_line() {
+            out.push(daily);
+        }
+        if let Some(custom) = self.custom_period_line() {
+            out.push(if out.is_empty() {
+                custom
+            } else {
+                format!("plus {custom}")
+            });
+        }
+        out
+    }
+
+    fn daily_line(&self) -> Option<String> {
         if self.before_micros == 0 && self.after_micros == 0 {
             return None;
         }
@@ -57,6 +79,28 @@ impl SpendSummary {
             if delta > 0 { "+" } else { "-" },
             self.money(delta.abs()),
         ))
+    }
+
+    /// Custom-period budgets are lifetime caps, so they get their own sentence
+    /// with no `/day` on it and no delta to read as a rate change.
+    fn custom_period_line(&self) -> Option<String> {
+        if self.custom_budgets_after == 0 {
+            return None;
+        }
+        let budgets = match self.custom_budgets_after {
+            1 => "1 custom-period budget".to_string(),
+            n => format!("{n} custom-period budgets"),
+        };
+        let totals = if self.custom_before_micros == self.custom_after_micros {
+            self.money(self.custom_after_micros)
+        } else {
+            format!(
+                "{} -> {}",
+                self.money(self.custom_before_micros),
+                self.money(self.custom_after_micros),
+            )
+        };
+        Some(format!("{budgets} totalling {totals} over their lifetime"))
     }
 
     fn money(&self, micros: i64) -> String {
@@ -98,17 +142,17 @@ pub fn summarize(declared: &ExportInput, live: &ExportInput, report: &DiffReport
         }
     }
 
-    let live_amount: HashMap<&str, i64> = live
+    let live_amount: HashMap<&str, Commitment> = live
         .campaign_budgets
         .iter()
-        .map(|b| (b.id.as_str(), b.amount_micros))
+        .map(|b| (b.id.as_str(), Commitment::of(b)))
         .collect();
-    let mut after_amount: HashMap<BudgetKey, i64> = live_amount
+    let mut after_amount: HashMap<BudgetKey, Commitment> = live_amount
         .iter()
-        .map(|(id, micros)| (BudgetKey::Live(id), *micros))
+        .map(|(id, c)| (BudgetKey::Live(id), *c))
         .collect();
     for b in &declared.campaign_budgets {
-        after_amount.insert(budget_key(&b.id, &budget_match), b.amount_micros);
+        after_amount.insert(budget_key(&b.id, &budget_match), Commitment::of(b));
     }
 
     let mut before_used: HashSet<&str> = HashSet::new();
@@ -140,11 +184,55 @@ pub fn summarize(declared: &ExportInput, live: &ExportInput, report: &DiffReport
         }
     }
 
+    let before = Totals::of(before_used.iter().filter_map(|id| live_amount.get(id)));
+    let after = Totals::of(after_used.iter().filter_map(|k| after_amount.get(k)));
+
     SpendSummary {
-        before_micros: before_used.iter().filter_map(|id| live_amount.get(id)).sum(),
-        after_micros: after_used.iter().filter_map(|k| after_amount.get(k)).sum(),
+        before_micros: before.daily_micros,
+        after_micros: after.daily_micros,
         enabled_campaigns_after,
+        custom_before_micros: before.custom_micros,
+        custom_after_micros: after.custom_micros,
+        custom_budgets_after: after.custom_budgets,
         currency_code: live.currency_code.clone(),
+    }
+}
+
+/// What one budget commits, in the unit its period implies.
+#[derive(Clone, Copy)]
+struct Commitment {
+    micros: i64,
+    custom_period: bool,
+}
+
+impl Commitment {
+    fn of(b: &JsonBudget) -> Self {
+        Commitment {
+            micros: b.committed_micros(),
+            custom_period: b.is_custom_period(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct Totals {
+    daily_micros: i64,
+    custom_micros: i64,
+    custom_budgets: usize,
+}
+
+impl Totals {
+    fn of<'a>(commitments: impl Iterator<Item = &'a Commitment>) -> Self {
+        let mut t = Totals::default();
+        for c in commitments {
+            if c.custom_period {
+                t.custom_micros += c.micros;
+                t.custom_budgets += 1;
+            } else {
+                t.daily_micros += c.micros;
+            }
+        }
+        t
     }
 }
 
@@ -210,9 +298,9 @@ mod tests {
         assert_eq!(s.after_micros, 320_000_000);
         assert_eq!(s.enabled_campaigns_after, 2);
         assert_eq!(
-            s.line().unwrap(),
-            "committed daily spend 300.00 EUR -> 320.00 EUR (+20.00 EUR/day) \
-             across 2 enabled campaigns"
+            s.lines(),
+            ["committed daily spend 300.00 EUR -> 320.00 EUR (+20.00 EUR/day) \
+              across 2 enabled campaigns"]
         );
     }
 
@@ -229,7 +317,7 @@ mod tests {
         );
         assert_eq!(s.after_micros, 0);
         assert_eq!(s.enabled_campaigns_after, 0);
-        assert!(s.line().is_none());
+        assert!(s.lines().is_empty());
     }
 
     #[test]
@@ -251,9 +339,9 @@ mod tests {
         assert_eq!(s.before_micros, 20_000_000);
         assert_eq!(s.after_micros, 0);
         assert_eq!(
-            s.line().unwrap(),
-            "committed daily spend 20.00 EUR -> 0.00 EUR (-20.00 EUR/day) \
-             across 0 enabled campaigns"
+            s.lines(),
+            ["committed daily spend 20.00 EUR -> 0.00 EUR (-20.00 EUR/day) \
+              across 0 enabled campaigns"]
         );
     }
 
@@ -357,8 +445,8 @@ mod tests {
         );
         assert_eq!(s.delta_micros(), 0);
         assert_eq!(
-            s.line().unwrap(),
-            "committed daily spend 20.00 EUR/day across 1 enabled campaign"
+            s.lines(),
+            ["committed daily spend 20.00 EUR/day across 1 enabled campaign"]
         );
     }
 
@@ -374,8 +462,100 @@ mod tests {
             r#"{"customer_id":"1"}"#,
         );
         assert_eq!(
-            s.line().unwrap(),
-            "committed daily spend 0.00 -> 20.00 (+20.00/day) across 1 enabled campaign"
+            s.lines(),
+            ["committed daily spend 0.00 -> 20.00 (+20.00/day) across 1 enabled campaign"]
+        );
+    }
+
+    #[test]
+    fn a_custom_period_budget_is_not_folded_into_the_daily_figure() {
+        let s = summary(
+            r#"{
+                "customer_id":"1",
+                "campaign_budgets":[
+                  {"id":"m.d","name":"Daily","amount_micros":20000000},
+                  {"id":"m.t","name":"Flight","total_amount_micros":91000000,
+                   "period":"CUSTOM_PERIOD"}
+                ],
+                "campaigns":[
+                  {"id":"m.a","name":"A","status":"ENABLED",
+                   "advertising_channel_type":"SEARCH","campaign_budget":"m.d","manual_cpc":{}},
+                  {"id":"m.z","name":"Z","status":"ENABLED",
+                   "advertising_channel_type":"SEARCH","campaign_budget":"m.t","manual_cpc":{}}
+                ]
+            }"#,
+            NO_LIVE,
+        );
+        assert_eq!(s.after_micros, 20_000_000);
+        assert_eq!(s.custom_after_micros, 91_000_000);
+        assert_eq!(s.custom_budgets_after, 1);
+        assert_eq!(
+            s.lines(),
+            [
+                "committed daily spend 0.00 EUR -> 20.00 EUR (+20.00 EUR/day) \
+                 across 2 enabled campaigns",
+                "plus 1 custom-period budget totalling 0.00 EUR -> 91.00 EUR over their lifetime",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_custom_period_budget_on_a_paused_campaign_commits_nothing() {
+        let s = summary(
+            r#"{
+                "customer_id":"1",
+                "campaign_budgets":[{"id":"m.t","name":"Flight",
+                  "total_amount_micros":91000000,"period":"CUSTOM_PERIOD"}],
+                "campaigns":[{"id":"m.z","name":"Z","status":"PAUSED",
+                  "advertising_channel_type":"SEARCH","campaign_budget":"m.t","manual_cpc":{}}]
+            }"#,
+            NO_LIVE,
+        );
+        assert_eq!(s.custom_budgets_after, 0);
+        assert!(s.lines().is_empty());
+    }
+
+    #[test]
+    fn a_lifetime_only_account_reports_the_lifetime_line_alone() {
+        let s = summary(
+            r#"{
+                "customer_id":"1",
+                "campaign_budgets":[{"id":"m.t","name":"Flight",
+                  "total_amount_micros":150000000,"period":"CUSTOM_PERIOD"}],
+                "campaigns":[{"id":"m.z","name":"Z","status":"ENABLED",
+                  "advertising_channel_type":"SEARCH","campaign_budget":"m.t","manual_cpc":{}}]
+            }"#,
+            NO_LIVE,
+        );
+        assert_eq!(
+            s.lines(),
+            ["1 custom-period budget totalling 0.00 EUR -> 150.00 EUR over their lifetime"]
+        );
+    }
+
+    #[test]
+    fn raising_a_lifetime_cap_reads_as_a_total_not_a_rate() {
+        let s = summary(
+            r#"{
+                "customer_id":"1",
+                "campaign_budgets":[{"id":"m.t","name":"Flight",
+                  "total_amount_micros":150000000,"period":"CUSTOM_PERIOD"}],
+                "campaigns":[{"id":"m.z","name":"Flight","status":"ENABLED",
+                  "advertising_channel_type":"SEARCH","campaign_budget":"m.t","manual_cpc":{}}]
+            }"#,
+            r#"{
+                "customer_id":"1","currency_code":"EUR",
+                "campaign_budgets":[{"id":"900","name":"Flight",
+                  "total_amount_micros":91000000,"period":"CUSTOM_PERIOD"}],
+                "campaigns":[{"id":"500","name":"Flight","status":"ENABLED",
+                  "advertising_channel_type":"SEARCH","campaign_budget":"900"}]
+            }"#,
+        );
+        assert_eq!(s.before_micros, 0);
+        assert_eq!(s.after_micros, 0);
+        assert_eq!(
+            s.lines(),
+            ["1 custom-period budget totalling 91.00 EUR -> 150.00 EUR over their lifetime"]
         );
     }
 }
