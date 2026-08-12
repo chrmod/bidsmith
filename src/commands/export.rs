@@ -181,6 +181,10 @@ pub struct JsonCampaign {
     #[serde(default)]
     pub end_date: Option<String>,
     #[serde(default)]
+    pub final_url_suffix: Option<String>,
+    #[serde(default)]
+    pub custom_parameters: Option<Vec<JsonCustomParameter>>,
+    #[serde(default)]
     pub manual_cpc: Option<JsonManualCpc>,
     #[serde(default)]
     pub manual_cpm: Option<JsonBidSelector>,
@@ -504,6 +508,10 @@ pub struct JsonAdGroup {
     #[serde(default)]
     pub fixed_cpm_micros: Option<i64>,
     #[serde(default)]
+    pub final_url_suffix: Option<String>,
+    #[serde(default)]
+    pub custom_parameters: Option<Vec<JsonCustomParameter>>,
+    #[serde(default)]
     pub targeting_setting: Option<JsonTargetingSetting>,
     #[serde(default)]
     pub managed_address: Option<String>,
@@ -562,6 +570,10 @@ pub struct JsonAd {
     #[serde(default)]
     pub display_url: Option<String>,
     #[serde(default)]
+    pub final_url_suffix: Option<String>,
+    #[serde(default)]
+    pub custom_parameters: Option<Vec<JsonCustomParameter>>,
+    #[serde(default)]
     pub responsive_search_ad: Option<JsonResponsiveSearchAd>,
     #[serde(default)]
     pub video_responsive_ad: Option<JsonVideoResponsiveAd>,
@@ -569,6 +581,14 @@ pub struct JsonAd {
     pub video_ad: Option<JsonVideoAd>,
     #[serde(default)]
     pub demand_gen_video_responsive_ad: Option<JsonDemandGenVideoResponsiveAd>,
+}
+
+/// One `url_custom_parameters` entry. Kept sorted by name wherever it is built
+/// so a map — which has no order — diffs deterministically against live state.
+#[derive(Deserialize, Clone, PartialEq, Debug)]
+pub struct JsonCustomParameter {
+    pub key: String,
+    pub value: String,
 }
 
 /// A YouTube video ad body. `video` is the address of a
@@ -1725,6 +1745,29 @@ fn write_budget(out: &mut String, name: &str, b: &JsonBudget) {
     out.push_str("}\n\n");
 }
 
+/// The `final_url_suffix` / `custom_parameters` pair, rendered wherever it
+/// appears (campaign, ad group, ad body).
+fn write_tracking(
+    out: &mut String,
+    indent: usize,
+    suffix: &Option<String>,
+    params: &Option<Vec<JsonCustomParameter>>,
+) {
+    if let Some(s) = suffix {
+        write_attr(out, indent, "final_url_suffix", &fmt_string(s));
+    }
+    let Some(params) = params else { return };
+    if params.is_empty() {
+        return;
+    }
+    let body = params
+        .iter()
+        .map(|p| format!("{} = {}", p.key, fmt_string(&p.value)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    write_attr(out, indent, "custom_parameters", &format!("{{ {body} }}"));
+}
+
 fn write_campaign(
     out: &mut String,
     name: &str,
@@ -1771,6 +1814,7 @@ fn write_campaign(
     if let Some(d) = devices {
         write_attr(out, 1, d.attr, &fmt_string_list(&d.values));
     }
+    write_tracking(out, 1, &c.final_url_suffix, &c.custom_parameters);
 
     if let Some(m) = &c.manual_cpc {
         match m.enhanced_cpc_enabled {
@@ -1892,6 +1936,7 @@ fn write_ad_group(
             }
         }
     }
+    write_tracking(out, 1, &g.final_url_suffix, &g.custom_parameters);
     write_targeting_setting(out, g.targeting_setting.as_ref());
     out.push_str("}\n\n");
 }
@@ -1964,6 +2009,7 @@ fn write_ad_group_ad(
     if let Some(u) = &a.ad.display_url {
         write_attr(out, 2, "display_url", &fmt_string(u));
     }
+    write_tracking(out, 2, &a.ad.final_url_suffix, &a.ad.custom_parameters);
     if let Some(rsa) = &a.ad.responsive_search_ad {
         out.push_str("\n    responsive_search_ad {\n");
         write_rsa_list_attr(out, 3, "headlines", &rsa.headlines, plan.map(|p| &p.headline_local_by_key));
@@ -3858,6 +3904,36 @@ mod tests {
         }
     ]"#;
 
+    // Suffix + custom parameters at all three levels, which is how a UTM
+    // convention is actually spread across a tree.
+    const TRACKING_FIXTURE: &str = r#"[
+        {
+            "results": [
+                { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget", "amountMicros": "5000000" } },
+                { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Search", "status": "ENABLED", "advertisingChannelType": "SEARCH", "campaignBudget": "customers/9/campaignBudgets/1001", "finalUrlSuffix": "utm_source=google&utm_campaign=search_{_slug}", "urlCustomParameters": [{ "key": "region", "value": "us" }] } },
+                { "adGroup": { "resourceName": "customers/9/adGroups/3001", "id": "3001", "name": "Chrome", "campaign": "customers/9/campaigns/2001", "status": "ENABLED", "finalUrlSuffix": "utm_term=chrome" } },
+                { "adGroupAd": { "resourceName": "customers/9/adGroupAds/3001~4001", "adGroup": "customers/9/adGroups/3001", "status": "ENABLED", "ad": { "finalUrls": ["https://example.com/chrome"], "urlCustomParameters": [{ "key": "slug", "value": "rsa_a" }, { "key": "creative", "value": "v2" }], "responsiveSearchAd": { "headlines": [{"text": "A"}, {"text": "B"}, {"text": "C"}], "descriptions": [{"text": "D1"}, {"text": "D2"}] } } } }
+            ]
+        }
+    ]"#;
+
+    #[test]
+    fn tracking_fields_render_at_every_level() {
+        let input = from_search_response(TRACKING_FIXTURE).expect("adapter");
+        let out = render(&input);
+        assert!(
+            out.contains(r#"final_url_suffix = "utm_source=google&utm_campaign=search_{_slug}""#),
+            "{out}"
+        );
+        assert!(out.contains(r#"custom_parameters = { region = "us" }"#), "{out}");
+        assert!(out.contains(r#"final_url_suffix = "utm_term=chrome""#), "{out}");
+        // Sorted by name, so a map with no inherent order still round-trips.
+        assert!(
+            out.contains(r#"custom_parameters = { creative = "v2", slug = "rsa_a" }"#),
+            "{out}"
+        );
+    }
+
     #[test]
     fn fold_roundtrips_to_verbose() {
         assert_fold_roundtrips(FULL_FIXTURE);
@@ -3865,6 +3941,7 @@ mod tests {
         assert_fold_roundtrips(NEG_FIXTURE);
         assert_fold_roundtrips(MIXED_FIXTURE);
         assert_fold_roundtrips(DEVICE_FIXTURE);
+        assert_fold_roundtrips(TRACKING_FIXTURE);
     }
 
     #[test]

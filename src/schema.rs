@@ -27,6 +27,10 @@ pub enum FieldType {
     RsaAssetList,
     LanguageList,
     LocationList,
+    /// `{ name = "value", … }` — the shape Google Ads calls
+    /// `url_custom_parameters`, a repeated key/value message that reads far
+    /// better as a map than as a list of two-field objects.
+    StringMap,
 }
 
 impl FieldType {
@@ -468,6 +472,17 @@ fn rsa_asset_block(name: &'static str) -> NestedBlockSchema {
     }
 }
 
+/// The tracking-template pair every level of the hierarchy carries. Google
+/// appends the suffix to the landing page at click time — it never appears in
+/// the displayed URL — and `custom_parameters` supplies the `{_name}`
+/// placeholders it can reference.
+fn tracking_attrs() -> Vec<AttributeSchema> {
+    vec![
+        attr("final_url_suffix", FieldType::String, false),
+        attr("custom_parameters", FieldType::StringMap, false),
+    ]
+}
+
 // The `ad {}` body, shared by `google_ads_ad_group_ad` and the `ad_template` block.
 // `final_urls` is required on an inline `ad {}` (an RSA needs a landing page) but
 // optional on an `ad_template`, which may be URL-agnostic and let every reference
@@ -489,7 +504,10 @@ fn ad_block(final_urls_required: bool) -> NestedBlockSchema {
                     false,
                 ),
                 attr("display_url", FieldType::String, false),
-            ],
+            ]
+            .into_iter()
+            .chain(tracking_attrs())
+            .collect(),
             blocks: vec![
                 NestedBlockSchema {
                     name: "responsive_search_ad",
@@ -837,7 +855,10 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         FieldType::list_of(FieldType::Enum(DEVICE_TYPE)),
                         false,
                     ),
-                ],
+                ]
+                .into_iter()
+                .chain(tracking_attrs())
+                .collect(),
                 blocks: vec![
                     NestedBlockSchema {
                         name: "manual_cpc",
@@ -1106,6 +1127,7 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                             .iter()
                             .map(|(name, _)| attr(name, FieldType::Integer, false)),
                     );
+                    a.extend(tracking_attrs());
                     a
                 },
                 blocks: vec![targeting_setting_block()],
@@ -3776,6 +3798,34 @@ fn validate_value(
         FieldType::LocationList => {
             validate_code_list(file, expr, span, CodeKind::Location, locals, variables, diags)
         }
+        FieldType::StringMap => match expr {
+            Expression::Object(obj) => {
+                for (key, value) in obj.iter() {
+                    let value_span = span_of(value.expr().span());
+                    if crate::expand::object_key_str(key).is_none() {
+                        diags.push(Diag::new(
+                            file.src.clone(),
+                            value_span.clone(),
+                            "map keys must be identifiers or strings".to_string(),
+                        ));
+                    }
+                    validate_value(
+                        file,
+                        value.expr(),
+                        &FieldType::String,
+                        registry,
+                        locals,
+                        variables,
+                        diags,
+                    );
+                }
+            }
+            other => diags.push(Diag::new(
+                file.src.clone(),
+                span,
+                format!("expected map of name = string, got {}", describe_expr(other)),
+            )),
+        },
         FieldType::Ref(targets) => {
             validate_ref(file, expr, span, targets, registry, diags, false);
         }
@@ -4044,6 +4094,7 @@ fn describe_field_type(ty: &FieldType) -> String {
         FieldType::LocationList => {
             "list of country codes (e.g. \"US\") or geoTargetConstants/NNNN".to_string()
         }
+        FieldType::StringMap => "map of name = string".to_string(),
     }
 }
 
@@ -4235,6 +4286,7 @@ pub enum TypeDoc {
     RsaAssetList,
     LanguageList,
     LocationList,
+    StringMap,
 }
 
 #[derive(Serialize)]
@@ -4317,6 +4369,7 @@ fn ty_to_doc(ty: &FieldType) -> TypeDoc {
         FieldType::RsaAssetList => TypeDoc::RsaAssetList,
         FieldType::LanguageList => TypeDoc::LanguageList,
         FieldType::LocationList => TypeDoc::LocationList,
+        FieldType::StringMap => TypeDoc::StringMap,
     }
 }
 

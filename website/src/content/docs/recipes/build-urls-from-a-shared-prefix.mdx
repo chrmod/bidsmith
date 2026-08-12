@@ -3,6 +3,8 @@ title: Build tracking URLs from a shared prefix
 description: Keep the UTM base in one local and append a per-ad slug with string interpolation — no more copy-pasted URLs drifting apart.
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 Your tracking convention says every ad's final URL ends in its own
 slug — `utm_campaign=GH_Cookies_0708-rsa_a`, `…-rsa_b`, `…-sitelink_help` —
 so no two ads share a URL, but everything *before* the slug is
@@ -69,6 +71,54 @@ Numbers and booleans interpolate too (`"radius-${local.km}km"`).
 Validation runs on the *rendered* string, so a headline that only
 exceeds the 30-character cap once the brand name is spliced in still
 gets flagged before it reaches Google Ads.
+
+## Let Google append the tracking instead
+
+Interpolation keeps the *source* tidy, but every ad still ships a URL
+with the UTM query baked in. Google Ads has a field for exactly this
+job: `final_url_suffix` is a query string Google appends at click time,
+so the campaign can declare the convention once and each ad supply only
+what varies.
+
+```hcl
+resource "google_ads_campaign" "cookies" {
+  name                     = "Search — GH_Cookies_0708"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.cookies.id
+
+  final_url_suffix = "utm_source=search&utm_campaign=GH_Cookies_0708-{_slug}"
+}
+
+resource "google_ads_ad_group_ad" "cookies_rsa_a" {
+  ad_group = google_ads_ad_group.cookies.id
+  template = ad_template.cookies_rsa
+
+  ad {
+    final_urls        = ["https://www.ghostery.com/ghostery-ad-blocker"]
+    custom_parameters = { slug = "rsa_a" }
+  }
+}
+```
+
+`{_slug}` is a **custom parameter**: the `custom_parameters` map fills
+it in, and the leading underscore is Google's, not a typo. Set the pair
+on a campaign, an ad group, or an ad — the most specific one wins, so a
+campaign-wide convention can be overridden for one ad group without
+touching the rest.
+
+<Aside type="caution" title="This changes what Google serves, not just your files">
+  A suffix is **appended by Google at click time**. It does not appear in
+  the ad's displayed URL, and it is not part of `final_urls` — so moving
+  a UTM query out of `final_urls` and into `final_url_suffix` changes the
+  live account even though the landing page ends up the same. Run
+  `bidsmith plan` and read the diff before applying, and check your
+  analytics after the first click-through.
+</Aside>
+
+The payoff beyond brevity: a convention declared in one place is a
+convention you can review. A typo in `utm_campaign` pasted into 60 URLs
+breaks attribution silently and is invisible in a diff; the same typo in
+one `final_url_suffix` is one line in one pull request.
 
 ## See also
 

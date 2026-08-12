@@ -7,7 +7,7 @@ use crate::commands::export::{
     JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCriterion,
     JsonCustomerAsset, JsonAgeRange, JsonAudience, JsonCustomAudience, JsonCustomAudienceMember,
-    JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonGender,
+    JsonCustomParameter, JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonGender,
     JsonGeoTargetTypeSetting, JsonIncomeRange, JsonKeyword, JsonLanguage, JsonLocation,
     JsonManualCpc, JsonNetworkSettings, JsonParentalStatus, JsonPlacement, JsonProximity,
     JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedCriterion, JsonSharedSet, JsonSitelinkAsset,
@@ -347,6 +347,8 @@ fn import_campaign(
     let mut locations: Vec<String> = Vec::new();
     let mut devices: Vec<String> = Vec::new();
     let mut excluded_devices: Vec<String> = Vec::new();
+    let mut final_url_suffix = None;
+    let mut custom_parameters = None;
 
     for s in block.body.iter() {
         match s {
@@ -363,6 +365,8 @@ fn import_campaign(
                 "locations" => locations = expect_string_list(ctx, &a.value),
                 "devices" => devices = expect_string_list(ctx, &a.value),
                 "excluded_devices" => excluded_devices = expect_string_list(ctx, &a.value),
+                "final_url_suffix" => final_url_suffix = expect_string_owned(ctx, a),
+                "custom_parameters" => custom_parameters = import_custom_parameters(ctx, a),
                 _ => {}
             },
             Structure::Block(b) => match b.ident.as_str() {
@@ -412,6 +416,8 @@ fn import_campaign(
             contains_eu_political_advertising: eu_political,
             start_date,
             end_date,
+            final_url_suffix,
+            custom_parameters,
             manual_cpc,
             manual_cpm,
             manual_cpv,
@@ -428,6 +434,27 @@ fn import_campaign(
         },
         criteria,
     ))
+}
+
+/// `custom_parameters = { name = "value" }` as the API's repeated key/value
+/// message, sorted by name so a map — which has no inherent order — produces
+/// the same body on every run and diffs cleanly against live state.
+fn import_custom_parameters(ctx: &Ctx, attr: &Attribute) -> Option<Vec<JsonCustomParameter>> {
+    let Expression::Object(obj) = &attr.value else {
+        return None;
+    };
+    let mut out: Vec<JsonCustomParameter> = Vec::new();
+    for (key, value) in obj.iter() {
+        let (Some(k), Some(v)) = (
+            crate::expand::object_key_str(key),
+            expect_string_expr(ctx, value.expr()),
+        ) else {
+            continue;
+        };
+        out.push(JsonCustomParameter { key: k, value: v });
+    }
+    out.sort_by(|a, b| a.key.cmp(&b.key));
+    Some(out)
 }
 
 /// Expand a campaign's inline `languages` / `locations` into one positive
@@ -755,6 +782,8 @@ fn import_ad_group(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonAdGrou
     let mut status = None;
     let mut ty = None;
     let mut targeting_setting = None;
+    let mut final_url_suffix = None;
+    let mut custom_parameters = None;
     let mut bids: Vec<(&'static str, Option<i64>)> = Vec::new();
 
     for s in block.body.iter() {
@@ -766,6 +795,8 @@ fn import_ad_group(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonAdGrou
                 }
                 "status" => status = expect_string_owned(ctx, a),
                 "type" => ty = expect_string_owned(ctx, a),
+                "final_url_suffix" => final_url_suffix = expect_string_owned(ctx, a),
+                "custom_parameters" => custom_parameters = import_custom_parameters(ctx, a),
                 other => {
                     if let Some((field, _)) = crate::schema::AD_GROUP_BID_FIELDS
                         .iter()
@@ -791,6 +822,8 @@ fn import_ad_group(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonAdGrou
         status,
         ty,
         targeting_setting,
+        final_url_suffix,
+        custom_parameters,
         ..Default::default()
     };
     for (field, value) in bids {
@@ -926,6 +959,8 @@ fn import_ad(ctx: &Ctx, block: &Block) -> JsonAd {
     let mut final_urls: Vec<String> = Vec::new();
     let mut final_mobile_urls: Vec<String> = Vec::new();
     let mut display_url = None;
+    let mut final_url_suffix = None;
+    let mut custom_parameters = None;
     let mut rsa = None;
     let mut video = None;
     let mut plain_video = None;
@@ -938,6 +973,8 @@ fn import_ad(ctx: &Ctx, block: &Block) -> JsonAd {
                 "final_urls" => final_urls = expect_string_list(ctx, &a.value),
                 "final_mobile_urls" => final_mobile_urls = expect_string_list(ctx, &a.value),
                 "display_url" => display_url = expect_string_owned(ctx, a),
+                "final_url_suffix" => final_url_suffix = expect_string_owned(ctx, a),
+                "custom_parameters" => custom_parameters = import_custom_parameters(ctx, a),
                 _ => {}
             },
             Structure::Block(b) => match b.ident.as_str() {
@@ -957,6 +994,8 @@ fn import_ad(ctx: &Ctx, block: &Block) -> JsonAd {
         final_urls,
         final_mobile_urls,
         display_url,
+        final_url_suffix,
+        custom_parameters,
         responsive_search_ad: rsa,
         video_responsive_ad: video,
         video_ad: plain_video,
@@ -2022,7 +2061,11 @@ fn expect_string(ctx: &Ctx, attr: &Attribute, diags: &mut Vec<Diag>) -> Option<S
 }
 
 fn expect_string_owned(ctx: &Ctx, attr: &Attribute) -> Option<String> {
-    if let Expression::String(s) = ctx.resolve_value(&attr.value).as_ref() {
+    expect_string_expr(ctx, &attr.value)
+}
+
+fn expect_string_expr(ctx: &Ctx, expr: &Expression) -> Option<String> {
+    if let Expression::String(s) = ctx.resolve_value(expr).as_ref() {
         Some(s.as_str().to_string())
     } else {
         None

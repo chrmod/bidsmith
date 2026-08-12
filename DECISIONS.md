@@ -189,6 +189,21 @@ resource type, any file layout, modules, schema validation.
   declaration, `input.` expressions are skipped when the template body is
   validated and the *bound* body is validated at each use site instead —
   which is where a wrong value is actually fixable.
+- **`final_url_suffix` / `custom_parameters`** (issue #145): both are
+  native Google Ads fields on campaign, ad group, and ad, and neither
+  was modelled — so a UTM convention lived inline in every `final_urls`
+  string (measured: 63 UTM query strings across the tree, 7 inside one
+  campaign file). Modelled on all three levels; `custom_parameters` is
+  an HCL map rather than the API's repeated key/value message, sorted by
+  name on both sides so a map — which has no inherent order — diffs
+  deterministically. The update mask translates `custom_parameters` to
+  the API's `url_custom_parameters`. On an ad the pair is **updatable**,
+  unlike the creative: the API mutates it in place, and recreating an ad
+  to change a UTM slug would discard its performance history for a
+  string the visitor never sees. Omitted stays unmanaged, as everywhere
+  else; a declared empty map is an explicit clear. Docs flag that this
+  is a live-behaviour change rather than pure syntax — the suffix is
+  appended by Google at click time and never appears in the display URL.
 - **Folding emitter** (issue #57): `refresh` / `export` recognize repeated
   structure and emit the compact constructs instead of re-exploding the
   tree on every pull. Three folds, all computed in `plan_fold` and applied
