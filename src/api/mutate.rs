@@ -951,6 +951,7 @@ fn campaign_update_body(c: &JsonCampaign, resource_name: &str, fields: &[String]
     m.insert("resourceName".into(), Value::String(resource_name.to_string()));
     let mut manual_cpc_sub: Option<Map<String, Value>> = None;
     let mut network_sub: Option<Map<String, Value>> = None;
+    let mut geo_sub: Option<Map<String, Value>> = None;
     for f in fields {
         match f.as_str() {
             "name" => {
@@ -1035,7 +1036,21 @@ fn campaign_update_body(c: &JsonCampaign, resource_name: &str, fields: &[String]
             "frequency_caps" => {
                 m.insert("frequencyCaps".into(), frequency_caps_value(c));
             }
-            _ => {}
+            other => {
+                if let Some((field, json)) = other
+                    .strip_prefix("geo_target_type_setting.")
+                    .and_then(|f| {
+                        crate::schema::GEO_TARGET_TYPE_FIELDS
+                            .iter()
+                            .find(|(field, _)| *field == f)
+                    })
+                {
+                    let sub = geo_sub.get_or_insert_with(Map::new);
+                    if let Some(v) = c.geo_target_type_setting.as_ref().and_then(|g| g.get(field)) {
+                        sub.insert((*json).into(), Value::String(v.to_string()));
+                    }
+                }
+            }
         }
     }
     if let Some(sub) = manual_cpc_sub {
@@ -1043,6 +1058,9 @@ fn campaign_update_body(c: &JsonCampaign, resource_name: &str, fields: &[String]
     }
     if let Some(sub) = network_sub {
         m.insert("networkSettings".into(), Value::Object(sub));
+    }
+    if let Some(sub) = geo_sub {
+        m.insert("geoTargetTypeSetting".into(), Value::Object(sub));
     }
     Value::Object(m)
 }
@@ -1662,6 +1680,17 @@ fn campaign_create(c: &JsonCampaign, resource_name: &str, budget_rn: &str) -> Va
         }
         m.insert("networkSettings".into(), Value::Object(sub));
     }
+    if let Some(g) = &c.geo_target_type_setting {
+        let mut sub = Map::new();
+        for (field, json) in crate::schema::GEO_TARGET_TYPE_FIELDS {
+            if let Some(v) = g.get(field) {
+                sub.insert((*json).into(), Value::String(v.to_string()));
+            }
+        }
+        if !sub.is_empty() {
+            m.insert("geoTargetTypeSetting".into(), Value::Object(sub));
+        }
+    }
     if !c.frequency_caps.is_empty() {
         m.insert("frequencyCaps".into(), frequency_caps_value(c));
     }
@@ -2249,6 +2278,58 @@ mod tests {
             );
             assert_eq!(op["updateMask"], json!(mask), "switch to {field}: {op}");
         }
+    }
+
+    #[test]
+    fn a_declared_geo_target_type_goes_out_as_its_own_leaf_path() {
+        let op = campaign_update_op(
+            &campaign_bidding(
+                "SEARCH",
+                json!({ "geo_target_type_setting": {"positive_geo_target_type": "PRESENCE"} }),
+            ),
+            &strategy_switch("geo_target_type_setting.positive_geo_target_type"),
+        );
+        assert_eq!(
+            op["updateMask"],
+            json!("geo_target_type_setting.positive_geo_target_type")
+        );
+        assert_eq!(
+            op["update"]["geoTargetTypeSetting"],
+            json!({"positiveGeoTargetType": "PRESENCE"})
+        );
+    }
+
+    #[test]
+    fn a_new_campaign_creates_with_the_geo_target_types_it_declares() {
+        let input = campaign_bidding(
+            "SEARCH",
+            json!({
+                "manual_cpc": {},
+                "geo_target_type_setting": {
+                    "positive_geo_target_type": "PRESENCE",
+                    "negative_geo_target_type": "PRESENCE",
+                }
+            }),
+        );
+        let report = DiffReport {
+            diffs: vec![
+                create_diff("m.b", "campaign_budget"),
+                create_diff("m.c", "campaign"),
+            ],
+            create_count: 2,
+            ..DiffReport::default()
+        };
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let campaign = plan.body["mutateOperations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|op| op.get("campaignOperation").and_then(|o| o.get("create")))
+            .expect("campaign create op");
+        assert_eq!(
+            campaign["geoTargetTypeSetting"],
+            json!({"positiveGeoTargetType": "PRESENCE", "negativeGeoTargetType": "PRESENCE"})
+        );
     }
 
     /// The body still carries the whole member — setting it is what clears the

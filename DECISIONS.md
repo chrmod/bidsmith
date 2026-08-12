@@ -837,6 +837,21 @@ resource type, any file layout, modules, schema validation.
   Google accepts and then silently never delivers. **Deferred:** warning
   on an `end_date` already in the past, which needs a clock and so needs
   injectable time before it can be tested.
+- **Which locations a campaign targets and how they are read are two
+  separate declarations** (issue #114): `geo_target_type_setting`
+  models `positive_geo_target_type` / `negative_geo_target_type`, so a
+  campaign can say it means people *in* a market rather than people
+  anywhere who are interested in it. Google's default is the generous
+  `PRESENCE_OR_INTEREST`, which silently confounds any geo-segmented
+  test — the "DE test" and the "FR test" can both be partly serving the
+  same third-country audience — and while the setting was unmodelled a
+  UI flip could never surface in a plan. Each side is managed on its
+  own and an omitted one is unmanaged, matching the rest of the
+  campaign. The live side reports a type it has no value for as
+  `UNKNOWN`, which is a report and not a setting: it maps to `None`, so
+  adoption never renders a value the validator would reject or drift
+  that no file could resolve. The deprecated `SEARCH_INTEREST` is not
+  modelled.
 - **An operation that can never succeed is caught locally, and what
   happens next depends on what the file is asserting** (issue #116): the
   mutate batch is atomic, so one doomed operation rejects every unrelated
@@ -1251,7 +1266,8 @@ Verified locally:
   attributes that already exist in source (an absent attribute is
   reported, never inserted — formatting an insert is guesswork), and
   only 1:1-block scalar kinds (budget, campaign incl. `manual_cpc.*`
-  / `network_settings.*`, ad_group, ad_group_ad, conversion_action,
+  / `network_settings.*` / `geo_target_type_setting.*`, ad_group,
+  ad_group_ad, conversion_action,
   customer_asset, shared_set, campaign_shared_set), plus the campaign's
   `frequency_caps` set, which round-trips as whole blocks (issue #102).
   Structural drift (ad copy, keyword/criterion membership) is
@@ -1297,13 +1313,16 @@ Validator covers (so far):
   `contains_eu_political_advertising` enum — defaults to
   `DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING` at mutate time when the
   attribute is omitted, since Google Ads rejects new campaigns that
-  don't declare it; plus optional inline `languages = [...]` /
-  `start_date` / `end_date` as `YYYY-MM-DD` dates validated as real
-  calendar dates locally; plus optional inline `languages = [...]` /
+  don't declare it; plus optional `start_date` / `end_date` as
+  `YYYY-MM-DD` dates validated as real calendar dates locally; plus
+  optional inline `languages = [...]` /
   `locations = [...]` list attributes that each expand to one positive
   campaign criterion at import time, resolving human-readable codes
   (`"en"`, `"US"`) — or raw `languageConstants/NNNN` /
-  `geoTargetConstants/NNNN` strings — to the API constants, plus a
+  `geoTargetConstants/NNNN` strings — to the API constants, plus an
+  optional `geo_target_type_setting { positive_geo_target_type?,
+  negative_geo_target_type? }` block deciding whether those locations
+  mean presence or presence-or-interest, plus a
   repeatable `frequency_caps { event_type, time_unit, time_length,
   cap, level? }` block managed as a whole set once declared, with a
   validate-time guard against declaring the same axis both inline and as

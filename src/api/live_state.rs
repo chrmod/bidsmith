@@ -65,6 +65,8 @@ pub const QUERIES: &[(&str, &str)] = &[
           campaign.network_settings.target_search_network,
           campaign.network_settings.target_content_network,
           campaign.network_settings.target_partner_search_network,
+          campaign.geo_target_type_setting.positive_geo_target_type,
+          campaign.geo_target_type_setting.negative_geo_target_type,
           campaign.frequency_caps
         FROM campaign
         WHERE campaign.status != 'REMOVED'",

@@ -163,6 +163,8 @@ pub struct JsonCampaign {
     pub target_cpv: Option<JsonBidSelector>,
     #[serde(default)]
     pub network_settings: Option<JsonNetworkSettings>,
+    #[serde(default)]
+    pub geo_target_type_setting: Option<JsonGeoTargetTypeSetting>,
     /// Repeated, and managed as a whole list: an empty list means "this
     /// campaign has no frequency caps", so caps set in the UI on a declared
     /// campaign read as drift rather than staying invisible.
@@ -216,6 +218,37 @@ pub struct JsonNetworkSettings {
     pub target_content_network: Option<bool>,
     #[serde(default)]
     pub target_partner_search_network: Option<bool>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct JsonGeoTargetTypeSetting {
+    #[serde(default)]
+    pub positive_geo_target_type: Option<String>,
+    #[serde(default)]
+    pub negative_geo_target_type: Option<String>,
+}
+
+impl JsonGeoTargetTypeSetting {
+    pub fn get(&self, field: &str) -> Option<&str> {
+        match field {
+            "positive_geo_target_type" => self.positive_geo_target_type.as_deref(),
+            "negative_geo_target_type" => self.negative_geo_target_type.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn set(&mut self, field: &str, value: Option<String>) {
+        let slot = match field {
+            "positive_geo_target_type" => &mut self.positive_geo_target_type,
+            "negative_geo_target_type" => &mut self.negative_geo_target_type,
+            _ => return,
+        };
+        *slot = value;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.positive_geo_target_type.is_none() && self.negative_geo_target_type.is_none()
+    }
 }
 
 #[derive(Deserialize, Clone, PartialEq, Eq)]
@@ -1452,6 +1485,15 @@ fn write_campaign(
         ] {
             if let Some(v) = v {
                 write_attr(out, 2, k, &v.to_string());
+            }
+        }
+        out.push_str("  }\n");
+    }
+    if let Some(g) = c.geo_target_type_setting.as_ref().filter(|g| !g.is_empty()) {
+        out.push_str("\n  geo_target_type_setting {\n");
+        for (field, _) in crate::schema::GEO_TARGET_TYPE_FIELDS {
+            if let Some(v) = g.get(field) {
+                write_attr(out, 2, field, &fmt_string(v));
             }
         }
         out.push_str("  }\n");

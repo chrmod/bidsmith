@@ -28,6 +28,11 @@ resource "google_ads_campaign" "summer_search" {
     target_content_network = false
     target_partner_search_network = false
   }
+
+  geo_target_type_setting {
+    positive_geo_target_type = "PRESENCE"
+    negative_geo_target_type = "PRESENCE"
+  }
 }
 
 resource "google_ads_ad_group" "summer_search_default" {

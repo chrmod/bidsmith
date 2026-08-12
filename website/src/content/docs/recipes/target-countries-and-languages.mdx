@@ -38,14 +38,51 @@ reviews itself:
   locations = ["US", "GB", "CA"]
 ```
 
+## Only people actually there
+
+By default, `locations = ["US"]` does **not** mean "people in the United
+States". Google reads it as people in the US *plus* people anywhere in
+the world showing interest in the US — searching for US destinations,
+watching US content. For a brand campaign that extra reach is often
+welcome. For anything where the market *is* the experiment, it's a
+confound: run a US, a German, and a French version of the same test and
+all three can quietly serve to the same third-country audience, so the
+per-market numbers stop being comparable.
+
+Say which you mean:
+
+```hcl
+resource "google_ads_campaign" "search_brand" {
+  # ...
+  locations = ["US", "GB"]
+
+  geo_target_type_setting {
+    positive_geo_target_type = "PRESENCE"
+    negative_geo_target_type = "PRESENCE"
+  }
+}
+```
+
+- **`PRESENCE`** — people in (or regularly in) those countries.
+- **`PRESENCE_OR_INTEREST`** — those people plus anyone interested in
+  them. Google's default.
+
+The negative side answers the same question for locations you exclude.
+Leave the block out and bidsmith leaves the setting to the account;
+write it and a flip in the Google Ads UI shows up in the next `plan` as
+drift. This is the same setting the UI calls
+[advanced location options](https://support.google.com/google-ads/answer/1722038),
+buried a level down in the locations panel.
+
 ## Plan and apply
 
 ```sh
 bidsmith plan .
 ```
 
-Expected: one `+ create` row per new country/language criterion, and
-nothing else churns. Commit, PR, merge, apply.
+Expected: one `+ create` row per new country/language criterion, a
+`~ update` on the campaign if you changed how those locations are read,
+and nothing else churns. Commit, PR, merge, apply.
 
 ## Cities, regions, and uncommon languages
 

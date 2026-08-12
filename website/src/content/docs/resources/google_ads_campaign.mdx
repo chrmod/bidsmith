@@ -10,6 +10,7 @@ import schema from '~/data/schema.json';
 export const resource = schema.resources['google_ads_campaign'];
 export const manualCpc = resource.blocks.find((b) => b.name === 'manual_cpc');
 export const networkSettings = resource.blocks.find((b) => b.name === 'network_settings');
+export const geoTargetTypeSetting = resource.blocks.find((b) => b.name === 'geo_target_type_setting');
 export const frequencyCaps = resource.blocks.find((b) => b.name === 'frequency_caps');
 
 A **campaign** is the top-level container in Google Ads. It holds one
@@ -128,6 +129,47 @@ criteria to the inline form — or adopting targets that already exist on
 the account — plans as a no-op. `refresh` emits the inline form by
 default for plain positive targeting.
 
+### In a location, or interested in it
+
+`locations` says *which* places a campaign targets.
+`geo_target_type_setting` says *how Google reads them* — and it's the
+difference between showing ads to people in the United States and
+showing them to anyone in the world who searches for or watches content
+about the United States:
+
+```hcl
+resource "google_ads_campaign" "us_instream" {
+  name                     = "YouTube in-stream — US"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.instream.id
+  locations                = ["US"]
+
+  geo_target_type_setting {
+    positive_geo_target_type = "PRESENCE"
+    negative_geo_target_type = "PRESENCE"
+  }
+}
+```
+
+- **`PRESENCE`** — people **in** (or regularly in) the location.
+- **`PRESENCE_OR_INTEREST`** — people in the location *plus* people
+  anywhere else showing interest in it. This is Google's default.
+
+The default is the generous one, which matters most when a campaign's
+whole identity is a market. Run a US, a German, and a French version of
+the same test on `PRESENCE_OR_INTEREST` and all three can serve to the
+same third-country audience — the per-market numbers stop being
+comparable, and the reason isn't visible anywhere in the campaign. Say
+`PRESENCE` in the file and that's settled, reviewed, and re-checked on
+every apply. Google's [advanced location
+options](https://support.google.com/google-ads/answer/1722038) cover the
+same setting from the UI side.
+
+Leave the block out and bidsmith won't touch either side — the campaign
+keeps whatever the account has. Set one and leave the other out and only
+the one you named is managed; the negative side governs the same
+in-versus-interested-in question for locations you *exclude*.
+
 ## Schema
 
 <AttributeTable block={resource} headingLevel={3} />
@@ -219,6 +261,15 @@ The `network_settings` block controls which Google networks ads can
 appear on.
 
 <AttributeTable block={networkSettings} headingLevel={4} />
+
+### geo_target_type_setting
+
+The `geo_target_type_setting` block decides whether the campaign's
+locations mean "people there" or "people there plus people interested in
+there" — see [In a location, or interested in
+it](#in-a-location-or-interested-in-it) above.
+
+<AttributeTable block={geoTargetTypeSetting} headingLevel={4} />
 
 ### frequency_caps
 

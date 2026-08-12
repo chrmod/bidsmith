@@ -95,6 +95,20 @@ pub fn campaign_bidding_mask_paths(field: &str) -> Option<&'static [&'static str
 /// empty field, so it round-trips as an omitted `end_date` (issue #113).
 pub const NO_END_DATE: &str = "2037-12-30";
 
+/// The two fields of `Campaign.geo_target_type_setting`, each paired with its
+/// Google Ads JSON name. They decide whether a targeted location means "people
+/// there" or "people there plus people interested in there" (issue #114).
+pub const GEO_TARGET_TYPE_FIELDS: &[(&str, &str)] = &[
+    ("positive_geo_target_type", "positiveGeoTargetType"),
+    ("negative_geo_target_type", "negativeGeoTargetType"),
+];
+
+/// Whether a live geo target type is one a `.bid` can declare. Google reports
+/// the ones it has no value for as `UNKNOWN`, which is a report, not a setting.
+pub fn is_geo_target_type(value: &str) -> bool {
+    GEO_TARGET_TYPE.contains(&value)
+}
+
 /// The settable bid fields on `AdGroup`, each paired with its Google Ads JSON
 /// name. Which one carries the live bid depends on the campaign's bidding
 /// strategy — a TARGET_CPV video ad group bids through `target_cpv_micros` and
@@ -269,6 +283,10 @@ const CALL_CONVERSION_REPORTING_STATE: &[&str] = &[
     "USE_ACCOUNT_LEVEL_CALL_CONVERSION_ACTION",
     "USE_RESOURCE_LEVEL_CALL_CONVERSION_ACTION",
 ];
+/// `PositiveGeoTargetType` / `NegativeGeoTargetType` share these two members.
+/// The deprecated `SEARCH_INTEREST` is deliberately absent: Google removed it
+/// from the UI and it only ever applied to the positive side.
+const GEO_TARGET_TYPE: &[&str] = &["PRESENCE_OR_INTEREST", "PRESENCE"];
 const FREQUENCY_CAP_EVENT_TYPE: &[&str] = &["IMPRESSION", "VIDEO_VIEW"];
 const FREQUENCY_CAP_TIME_UNIT: &[&str] = &["DAY", "WEEK", "MONTH"];
 const FREQUENCY_CAP_LEVEL: &[&str] = &["CAMPAIGN", "AD_GROUP", "AD_GROUP_AD"];
@@ -589,6 +607,27 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                                 attr(
                                     "target_partner_search_network",
                                     FieldType::Bool,
+                                    false,
+                                ),
+                            ],
+                            blocks: vec![],
+                        },
+                    },
+                    // How the campaign's geo targets are interpreted — whether
+                    // a location means "people there" or "people there plus
+                    // people interested in there" (issue #114).
+                    NestedBlockSchema {
+                        name: "geo_target_type_setting",
+                        schema: BlockSchema {
+                            attributes: vec![
+                                attr(
+                                    "positive_geo_target_type",
+                                    FieldType::Enum(GEO_TARGET_TYPE),
+                                    false,
+                                ),
+                                attr(
+                                    "negative_geo_target_type",
+                                    FieldType::Enum(GEO_TARGET_TYPE),
                                     false,
                                 ),
                             ],
@@ -5313,6 +5352,38 @@ resource "google_ads_campaign" "c" {
             diags.is_empty(),
             "{:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_geo_target_type_outside_the_two_google_offers_errors() {
+        let diags = validate_str(
+            "geo_target_type",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  locations                = ["US"]
+
+  geo_target_type_setting {
+    positive_geo_target_type = "PRESENCE"
+    negative_geo_target_type = "SEARCH_INTEREST"
+  }
+}
+"#,
+        );
+        let messages: Vec<&String> = diags.iter().map(|d| &d.message).collect();
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(
+            messages[0].contains("SEARCH_INTEREST")
+                && messages[0].contains("PRESENCE_OR_INTEREST"),
+            "{messages:?}"
         );
     }
 
