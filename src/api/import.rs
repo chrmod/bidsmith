@@ -921,6 +921,8 @@ fn import_ad_group_ad(
     let mut final_urls_override: Option<Vec<String>> = None;
     let mut path1_override: Option<String> = None;
     let mut path2_override: Option<String> = None;
+    let mut suffix_override: Option<String> = None;
+    let mut params_override: Option<Vec<JsonCustomParameter>> = None;
 
     for s in block.body.iter() {
         match s {
@@ -932,6 +934,8 @@ fn import_ad_group_ad(
                 "final_urls" => final_urls_override = Some(expect_string_list(ctx, &a.value)),
                 "path1" => path1_override = expect_string_owned(ctx, a),
                 "path2" => path2_override = expect_string_owned(ctx, a),
+                "final_url_suffix" => suffix_override = expect_string_owned(ctx, a),
+                "custom_parameters" => params_override = import_custom_parameters(ctx, a),
                 _ => {}
             },
             Structure::Block(b) if b.ident.as_str() == "ad" => {
@@ -946,7 +950,14 @@ fn import_ad_group_ad(
     if ad.is_none() {
         if let Some(a) = template {
             let mut resolved = resolve_ad_template(ctx, a, template_inputs)?;
-            apply_ad_overrides(&mut resolved, final_urls_override, path1_override, path2_override);
+            apply_ad_overrides(
+                &mut resolved,
+                final_urls_override,
+                path1_override,
+                path2_override,
+                suffix_override,
+                params_override,
+            );
             ad = Some(resolved);
         }
     }
@@ -1014,11 +1025,19 @@ fn apply_ad_overrides(
     final_urls: Option<Vec<String>>,
     path1: Option<String>,
     path2: Option<String>,
+    final_url_suffix: Option<String>,
+    custom_parameters: Option<Vec<JsonCustomParameter>>,
 ) {
     if let Some(urls) = final_urls {
         if !urls.is_empty() {
             ad.final_urls = urls;
         }
+    }
+    if final_url_suffix.is_some() {
+        ad.final_url_suffix = final_url_suffix;
+    }
+    if custom_parameters.is_some() {
+        ad.custom_parameters = custom_parameters;
     }
     if let Some(rsa) = ad.responsive_search_ad.as_mut() {
         if path1.is_some() {
@@ -3509,6 +3528,50 @@ resource "google_ads_ad_group_ad" "a" {
             input.ad_group_ads[0].ad.responsive_search_ad.as_ref().unwrap().headlines[0].text,
             "A",
         );
+    }
+
+    #[test]
+    fn tracking_overrides_a_template_the_way_urls_and_paths_do() {
+        // The spelling issue #145 asked for: the campaign owns the suffix, the
+        // ad supplies only the parameter that varies.
+        let input = import_str(
+            "tmpl_tracking_override",
+            r#"
+ad_template "shared" {
+  final_urls = ["https://example.com"]
+  responsive_search_ad {
+    headlines    = ["One Headline", "Two Headline", "Three Headline"]
+    descriptions = ["A description", "Another description"]
+  }
+}
+
+resource "google_ads_ad_group_ad" "a" {
+  ad_group          = google_ads_ad_group.g.id
+  template          = ad_template.shared
+  custom_parameters = { slug = "rsa_a" }
+}
+
+resource "google_ads_ad_group_ad" "b" {
+  ad_group          = google_ads_ad_group.g.id
+  template          = ad_template.shared
+  custom_parameters = { slug = "rsa_b" }
+  final_url_suffix  = "utm_content=b"
+}
+"#,
+        );
+        let params = |i: usize| {
+            input.ad_group_ads[i]
+                .ad
+                .custom_parameters
+                .as_ref()
+                .map(|p| p.iter().map(|x| (x.key.clone(), x.value.clone())).collect::<Vec<_>>())
+        };
+        assert_eq!(params(0), Some(vec![("slug".to_string(), "rsa_a".to_string())]));
+        assert_eq!(params(1), Some(vec![("slug".to_string(), "rsa_b".to_string())]));
+        assert_eq!(input.ad_group_ads[0].ad.final_url_suffix, None);
+        assert_eq!(input.ad_group_ads[1].ad.final_url_suffix.as_deref(), Some("utm_content=b"));
+        // The shared body is still shared.
+        assert_eq!(input.ad_group_ads[0].ad.final_urls, vec!["https://example.com".to_string()]);
     }
 
     #[test]
