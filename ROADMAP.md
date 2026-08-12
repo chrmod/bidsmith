@@ -408,12 +408,21 @@ Smaller follow-ups that can ride along:
   through. A rejected batch now separates operations that drew their own
   error from those that were merely collateral, which is what made a red
   plan on an untouched campaign so hard to diagnose.
-  **Deferred:** #115's declarable `lifecycle { create = false }` — with
-  creates on the video channel now blocked, the remaining value there is
-  making the intent visible in the file and catching a *failed* adopt
-  (name-match miss) before it becomes a create. Also unaddressed:
-  impossible operations outside the video channel, which need a general
-  notion of "the API refuses this here" rather than one channel check.
+  **Deferred:** impossible operations outside the video channel, which
+  need a general notion of "the API refuses this here" rather than one
+  channel check.
+- ✅ Declarable adopt-only (issue #115). A `resource` may carry
+  `lifecycle { create = false }`, so "this campaign is adopted, not
+  created" is a property of the file instead of a warning in PR prose.
+  A miss on the content match now stops the plan with the key it looked
+  for (`by name "…"`) rather than degrading into a create that Google
+  rejects and that sinks the whole atomic batch. Channel-agnostic: any
+  resource except the three criterion types, where the API creates
+  freely and one declaration can fan out into several live members.
+  **Deferred:** `adopt_match` (the match key is label-first-then-name
+  for every type, so the attribute would have one legal value), and the
+  rest of a Terraform-shaped `lifecycle` — `prevent_destroy`,
+  `ignore_changes` — which want a real requirement behind them.
 - ✅ Ad group bid fields (issue #109). `google_ads_ad_group` models all
   eight settable `AdGroup` bid fields, not just `cpc_bid_micros`, so the
   amount a CPV or CPM campaign actually bids is declarable and — more to

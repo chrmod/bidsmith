@@ -113,6 +113,10 @@ pub struct ExportInput {
     /// resource_name, for the same reuse-by-name purpose. Live-only.
     #[serde(default)]
     pub claim_labels: HashMap<String, String>,
+    /// Addresses the file marked `lifecycle { create = false }`. Declared-side
+    /// only: live state has nothing left to adopt.
+    #[serde(default)]
+    pub adopt_only: HashSet<String>,
     /// Live campaign id -> criterion categories a `bidsmith:owns=` label claims
     /// on it. Live-only; empty for declared state.
     #[serde(default)]

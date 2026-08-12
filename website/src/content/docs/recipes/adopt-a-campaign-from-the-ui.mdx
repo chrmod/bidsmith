@@ -1,0 +1,123 @@
+---
+title: Adopt a campaign you built in the Google Ads UI
+description: Bring an existing campaign under bidsmith's management with lifecycle { create = false } — the only workable path for Video campaigns.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Some campaigns can't be created by bidsmith. **Video campaigns are the
+big one**: the Google Ads API is read-only for that channel, so they
+have to be built in the Google Ads UI and then handed over. Others you
+simply built in the UI before you started using bidsmith.
+
+Either way the move is the same — write the `.bid` block, mark it
+adopt-only, and let bidsmith take over the live campaign instead of
+making a second one.
+
+## The block
+
+```hcl
+resource "google_ads_campaign" "gh_video_fr" {
+  name                     = "GH_YouTube_FR Instream 11.08.2026"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.video_fr.id
+
+  lifecycle {
+    create = false
+  }
+}
+```
+
+`create = false` says: *this campaign already exists — find it, don't
+make it.*
+
+## What bidsmith matches on
+
+<Steps>
+
+1. **The bidsmith label**, if the campaign has one. Once a campaign has
+   been adopted it carries a `bidsmith:address` label, and from then on
+   the match is by label — you can rename the campaign freely.
+
+2. **The name**, for a campaign bidsmith has never seen. It has to be
+   *exactly* the live name, spaces and dates included.
+
+</Steps>
+
+So the first adoption is the fragile one, and only the first. Copy the
+name out of the Google Ads UI rather than retyping it.
+
+## When it can't find a match
+
+Without `lifecycle`, a name that doesn't match is silently a **new
+campaign**. For a Video campaign Google then rejects the create — and
+since the batch is all-or-nothing, that rejection takes every unrelated
+change in the same plan down with it.
+
+With `lifecycle { create = false }`, the plan stops and tells you what
+it was looking for:
+
+```
+plan: error: video_fr.google_ads_campaign.gh_video_fr is declared adopt-only
+  (lifecycle { create = false }) but no live campaign matched it, so there is
+  nothing to adopt. bidsmith looks for its bidsmith:address label first, then
+  by name "GH_YouTube_FR Instream 11.08.2026". Create it in the Google Ads UI
+  to match, or drop the lifecycle block to let bidsmith create it
+```
+
+Nothing is sent. Fix the name (in the file or in the UI), re-plan, and
+the campaign adopts.
+
+<Aside type="caution" title="Don't rename the live campaign mid-review">
+  Between opening the pull request and applying it, the live name is
+  the join key. If someone renames the campaign in the Google Ads UI in
+  that window, the adoption misses — you'll get the error above rather
+  than a surprise. After the first apply the label takes over and
+  renaming is safe.
+</Aside>
+
+## Confirming the adoption
+
+A successful adoption shows up as an `adopt` row, not a `create`:
+
+```
+google_ads_campaign.gh_video_fr           ~ adopt (label)
+
+Plan: 0 to create, 0 to update, 0 to destroy, 1 to adopt, 1 unchanged.
+```
+
+`~ adopt (label)` means bidsmith found the live campaign and will write
+its `bidsmith:address` label. After that apply, the campaign is
+bidsmith's to manage — drift in any field you declared shows up as a
+`~ update` row on every plan.
+
+## What it doesn't do
+
+`create = false` only governs creation. It does not stop updates or
+removals — an adopted Video campaign that drifts still reports the
+drift, and the API still refuses to apply it:
+
+```
+plan: error: video_fr.google_ads_campaign.gh_video_fr has drift on status.
+  Nothing in the batch can be sent while it is there, because the Google Ads
+  API cannot create or update VIDEO campaigns
+```
+
+Make that change in the Google Ads UI and let bidsmith read it back.
+
+## Where you can use it
+
+`lifecycle` works on any resource except keywords and targeting
+criteria (`google_ads_ad_group_criterion`,
+`google_ads_campaign_criterion`, `google_ads_shared_criterion`) —
+Google creates those freely, so there is no adopt-only workflow to
+declare and bidsmith rejects the block rather than ignoring it.
+
+## See also
+
+- [The `.bid` file](/bidsmith/concepts/bid-file/) — where `lifecycle`
+  fits among the other block types.
+- [`bidsmith plan`](/bidsmith/commands/plan/) — the other reasons a
+  plan refuses to send a batch.
+- [Rename a resource without recreating it](./rename-without-recreating/) —
+  the label-based identity that takes over after adoption.

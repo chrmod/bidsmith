@@ -1205,6 +1205,7 @@ impl AdapterState {
             campaign_shared_sets: self.campaign_shared_sets.into_values().collect(),
             youtube_video_assets: self.youtube_video_assets.into_values().collect(),
             custom_audiences: self.custom_audiences.into_values().collect(),
+            adopt_only: Default::default(),
             labels: self.labels.into_iter().collect(),
             claim_labels: self.claim_labels.into_iter().collect(),
             campaign_claims: self.campaign_claims.into_iter().collect(),

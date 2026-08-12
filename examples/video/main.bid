@@ -39,6 +39,10 @@ resource "google_ads_campaign" "preroll" {
   languages = ["en"]
   locations = ["IN"]
 
+  lifecycle {
+    create = false
+  }
+
   manual_cpv {}
 
   network_settings {
