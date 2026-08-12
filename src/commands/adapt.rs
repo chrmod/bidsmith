@@ -11,9 +11,10 @@ use crate::commands::export::{
     JsonGeoTargetTypeSetting, JsonIncomeRange, JsonKeyword, JsonLanguage, JsonLocation,
     JsonManualCpc, JsonNetworkSettings, JsonParentalStatus, JsonPlacement, JsonProximity,
     JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedSet, JsonSitelinkAsset,
-    JsonStructuredSnippetAsset, JsonTopic, JsonUserInterest, JsonValueSettings,
-    JsonVideoAd, JsonVideoAdInventoryControl, JsonVideoCampaignSettings,
-    JsonVideoResponsiveAd, JsonYoutubeChannel, JsonYoutubeVideo, JsonYoutubeVideoAsset,
+    JsonStructuredSnippetAsset, JsonTargetImpressionShare, JsonTargetSpend, JsonTopic,
+    JsonUserInterest, JsonValueSettings, JsonVideoAd, JsonVideoAdInventoryControl,
+    JsonVideoCampaignSettings, JsonVideoResponsiveAd, JsonYoutubeChannel, JsonYoutubeVideo,
+    JsonYoutubeVideoAsset,
 };
 
 pub fn from_search_response(raw: &str) -> Result<ExportInput, String> {
@@ -319,6 +320,8 @@ impl AdapterState {
                 manual_cpv: None,
                 target_cpm: None,
                 target_cpv: None,
+                target_impression_share: None,
+                target_spend: None,
                 network_settings: None,
                 geo_target_type_setting: None,
                 video_campaign_settings: None,
@@ -367,14 +370,30 @@ impl AdapterState {
                     .get("enhancedCpcEnabled")
                     .and_then(Value::as_bool),
             });
+        } else if let Some(tis) = v.get("targetImpressionShare") {
+            entry.target_impression_share = Some(JsonTargetImpressionShare {
+                location: tis.get("location").and_then(Value::as_str).map(str::to_string),
+                location_fraction_micros: parse_i64(tis.get("locationFractionMicros")),
+                cpc_bid_ceiling_micros: parse_i64(tis.get("cpcBidCeilingMicros")),
+            });
+        } else if let Some(ts) = v.get("targetSpend") {
+            entry.target_spend = Some(JsonTargetSpend {
+                cpc_bid_ceiling_micros: parse_i64(ts.get("cpcBidCeilingMicros")),
+            });
         } else {
             // The video strategies are empty messages, so GAQL exposes no leaf
-            // field to select — `bidding_strategy_type` is the only tell.
+            // field to select — `bidding_strategy_type` is the only tell. The
+            // last two have leaves, but a live strategy whose every field is
+            // unset comes back with no message object at all.
             match v.get("biddingStrategyType").and_then(Value::as_str) {
                 Some("MANUAL_CPM") => entry.manual_cpm = Some(JsonBidSelector {}),
                 Some("MANUAL_CPV") => entry.manual_cpv = Some(JsonBidSelector {}),
                 Some("TARGET_CPM") => entry.target_cpm = Some(JsonBidSelector {}),
                 Some("TARGET_CPV") => entry.target_cpv = Some(JsonBidSelector {}),
+                Some("TARGET_IMPRESSION_SHARE") => {
+                    entry.target_impression_share = Some(JsonTargetImpressionShare::default())
+                }
+                Some("TARGET_SPEND") => entry.target_spend = Some(JsonTargetSpend::default()),
                 _ => {}
             }
         }
@@ -1425,6 +1444,92 @@ fn extract_rsa_assets(v: Option<&Value>) -> Vec<JsonRsaAsset> {
             Some(JsonRsaAsset { text, pin })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod bidding_tests {
+    use super::*;
+
+    fn adapt(rows: Value) -> ExportInput {
+        from_search_response(&Value::Object(
+            [("results".to_string(), rows)].into_iter().collect(),
+        ).to_string())
+        .expect("adapter should succeed")
+    }
+
+    #[test]
+    fn a_live_impression_share_strategy_reads_its_subfields() {
+        let input = adapt(serde_json::json!([
+            {
+                "campaign": {
+                    "resourceName": "customers/123/campaigns/555",
+                    "id": "555",
+                    "name": "Search_Generic",
+                    "advertisingChannelType": "SEARCH",
+                    "campaignBudget": "customers/123/campaignBudgets/999",
+                    "biddingStrategyType": "TARGET_IMPRESSION_SHARE",
+                    "targetImpressionShare": {
+                        "location": "ANYWHERE_ON_PAGE",
+                        "locationFractionMicros": "800000",
+                        "cpcBidCeilingMicros": "500000"
+                    }
+                }
+            }
+        ]));
+        let c = &input.campaigns[0];
+        assert_eq!(c.bidding_strategy(), Some("target_impression_share"));
+        let tis = c.target_impression_share.as_ref().expect("tis read");
+        assert_eq!(tis.location.as_deref(), Some("ANYWHERE_ON_PAGE"));
+        assert_eq!(tis.location_fraction_micros, Some(800000));
+        assert_eq!(tis.cpc_bid_ceiling_micros, Some(500000));
+    }
+
+    #[test]
+    fn a_live_target_spend_reads_its_ceiling() {
+        let input = adapt(serde_json::json!([
+            {
+                "campaign": {
+                    "resourceName": "customers/123/campaigns/556",
+                    "id": "556",
+                    "name": "Search_uBlock",
+                    "advertisingChannelType": "SEARCH",
+                    "campaignBudget": "customers/123/campaignBudgets/999",
+                    "biddingStrategyType": "TARGET_SPEND",
+                    "targetSpend": { "cpcBidCeilingMicros": "1100000" }
+                }
+            }
+        ]));
+        let c = &input.campaigns[0];
+        assert_eq!(c.bidding_strategy(), Some("target_spend"));
+        assert_eq!(
+            c.target_spend.as_ref().and_then(|t| t.cpc_bid_ceiling_micros),
+            Some(1100000)
+        );
+    }
+
+    /// A strategy whose every field is unset comes back with no message object
+    /// at all, leaving `bidding_strategy_type` as the only tell.
+    #[test]
+    fn an_uncapped_target_spend_still_reads_as_the_strategy() {
+        let input = adapt(serde_json::json!([
+            {
+                "campaign": {
+                    "resourceName": "customers/123/campaigns/557",
+                    "id": "557",
+                    "name": "Search_Uncapped",
+                    "advertisingChannelType": "SEARCH",
+                    "campaignBudget": "customers/123/campaignBudgets/999",
+                    "biddingStrategyType": "TARGET_SPEND"
+                }
+            }
+        ]));
+        let c = &input.campaigns[0];
+        assert_eq!(c.bidding_strategy(), Some("target_spend"));
+        assert_eq!(
+            c.target_spend.as_ref().and_then(|t| t.cpc_bid_ceiling_micros),
+            None
+        );
+    }
 }
 
 #[cfg(test)]

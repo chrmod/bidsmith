@@ -7,6 +7,12 @@
       "name": "Summer 2026",
       "amount_micros": 10000000,
       "delivery_method": "STANDARD"
+    },
+    {
+      "id": "1002",
+      "name": "Summer 2026 — Brand",
+      "amount_micros": 5000000,
+      "delivery_method": "STANDARD"
     }
   ],
   "campaigns": [
@@ -27,6 +33,19 @@
       "geo_target_type_setting": {
         "positive_geo_target_type": "PRESENCE",
         "negative_geo_target_type": "PRESENCE"
+      }
+    },
+    {
+      "id": "2002",
+      "name": "Summer 2026 — Brand",
+      "status": "PAUSED",
+      "advertising_channel_type": "SEARCH",
+      "campaign_budget": "1002",
+      "contains_eu_political_advertising": "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING",
+      "target_impression_share": {
+        "location": "TOP_OF_PAGE",
+        "location_fraction_micros": 650000,
+        "cpc_bid_ceiling_micros": 500000
       }
     }
   ],

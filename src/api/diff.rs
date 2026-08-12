@@ -1768,6 +1768,40 @@ fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign, caps_claimed: bool) -> Vec<
                 c.push(change("manual_cpc.enhanced_cpc_enabled", lm, dm));
             }
         }
+        (Some("target_impression_share"), _) => {
+            let dm = d.target_impression_share.as_ref();
+            let lm = l.target_impression_share.as_ref();
+            let (dl, ll) = (
+                dm.and_then(|t| t.location.as_deref()),
+                lm.and_then(|t| t.location.as_deref()),
+            );
+            if dl != ll {
+                c.push(change("target_impression_share.location", ll, dl));
+            }
+            for (field, desired, live) in [
+                (
+                    "target_impression_share.location_fraction_micros",
+                    dm.and_then(|t| t.location_fraction_micros),
+                    lm.and_then(|t| t.location_fraction_micros),
+                ),
+                (
+                    "target_impression_share.cpc_bid_ceiling_micros",
+                    dm.and_then(|t| t.cpc_bid_ceiling_micros),
+                    lm.and_then(|t| t.cpc_bid_ceiling_micros),
+                ),
+            ] {
+                if desired != live {
+                    c.push(change(field, live, desired));
+                }
+            }
+        }
+        (Some("target_spend"), _) => {
+            let dm = d.target_spend.as_ref().and_then(|t| t.cpc_bid_ceiling_micros);
+            let lm = l.target_spend.as_ref().and_then(|t| t.cpc_bid_ceiling_micros);
+            if dm != lm {
+                c.push(change("target_spend.cpc_bid_ceiling_micros", lm, dm));
+            }
+        }
         _ => {}
     }
     // Omitted means unmanaged, one network at a time: a file that says nothing
@@ -3962,6 +3996,52 @@ mod campaign_bidding_tests {
             false,
         );
         assert!(changed.is_empty(), "{changed:?}");
+    }
+
+    const TIS: &str = r#","target_impression_share":{"location":"ANYWHERE_ON_PAGE",
+        "location_fraction_micros":800000,"cpc_bid_ceiling_micros":500000}"#;
+
+    #[test]
+    fn a_ui_tune_of_the_impression_share_target_is_drift_per_leaf() {
+        let live = r#","target_impression_share":{"location":"TOP_OF_PAGE",
+            "location_fraction_micros":800000,"cpc_bid_ceiling_micros":650000}"#;
+        let changed = diff_campaign(&campaign(TIS), &campaign(live), false);
+        assert_eq!(
+            field_names(&changed),
+            vec![
+                "target_impression_share.location".to_string(),
+                "target_impression_share.cpc_bid_ceiling_micros".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_same_impression_share_target_is_a_noop() {
+        let changed = diff_campaign(&campaign(TIS), &campaign(TIS), false);
+        assert!(changed.is_empty(), "{changed:?}");
+    }
+
+    #[test]
+    fn switching_onto_target_impression_share_reports_the_member() {
+        let changed = diff_campaign(
+            &campaign(TIS),
+            &campaign(r#","manual_cpc":{"enhanced_cpc_enabled":false}"#),
+            false,
+        );
+        assert_eq!(field_names(&changed), vec!["target_impression_share".to_string()]);
+    }
+
+    #[test]
+    fn a_target_spend_ceiling_set_in_the_ui_is_drift() {
+        let changed = diff_campaign(
+            &campaign(r#","target_spend":{}"#),
+            &campaign(r#","target_spend":{"cpc_bid_ceiling_micros":1100000}"#),
+            false,
+        );
+        assert_eq!(
+            field_names(&changed),
+            vec!["target_spend.cpc_bid_ceiling_micros".to_string()]
+        );
     }
 }
 

@@ -993,7 +993,18 @@ fn campaign_update_body(c: &JsonCampaign, resource_name: &str, fields: &[String]
                 }
             }
             // Switching which member of the bidding `oneof` is set.
-            "manual_cpc" | "manual_cpm" | "manual_cpv" | "target_cpm" | "target_cpv" => {
+            "manual_cpc" | "manual_cpm" | "manual_cpv" | "target_cpm" | "target_cpv"
+            | "target_impression_share" | "target_spend" => {
+                if let Some((field, body)) = bidding_strategy_value(c) {
+                    m.insert(field.into(), body);
+                }
+            }
+            // A subfield change within the declared strategy sends the whole
+            // declared message; the mask limits what the API applies, and a
+            // masked field the body omits is how a clear goes out.
+            f2 if f2.starts_with("target_impression_share.")
+                || f2.starts_with("target_spend.") =>
+            {
                 if let Some((field, body)) = bidding_strategy_value(c) {
                     m.insert(field.into(), body);
                 }
@@ -1784,6 +1795,28 @@ fn bidding_strategy_value(c: &JsonCampaign) -> Option<(&'static str, Value)> {
         "manual_cpv" => ("manualCpv", json!({})),
         "target_cpm" => ("targetCpm", json!({})),
         "target_cpv" => ("targetCpv", json!({})),
+        "target_impression_share" => {
+            let mut sub = Map::new();
+            if let Some(t) = &c.target_impression_share {
+                if let Some(l) = &t.location {
+                    sub.insert("location".into(), Value::String(l.clone()));
+                }
+                if let Some(f) = t.location_fraction_micros {
+                    sub.insert("locationFractionMicros".into(), Value::String(f.to_string()));
+                }
+                if let Some(v) = t.cpc_bid_ceiling_micros {
+                    sub.insert("cpcBidCeilingMicros".into(), Value::String(v.to_string()));
+                }
+            }
+            return Some(("targetImpressionShare", Value::Object(sub)));
+        }
+        "target_spend" => {
+            let mut sub = Map::new();
+            if let Some(v) = c.target_spend.as_ref().and_then(|t| t.cpc_bid_ceiling_micros) {
+                sub.insert("cpcBidCeilingMicros".into(), Value::String(v.to_string()));
+            }
+            return Some(("targetSpend", Value::Object(sub)));
+        }
         _ => return None,
     };
     Some(body)
@@ -2581,6 +2614,119 @@ mod tests {
             &strategy_switch("manual_cpc"),
         );
         assert_eq!(op["update"]["manualCpc"], json!({}));
+    }
+
+    #[test]
+    fn switching_to_target_impression_share_masks_and_sends_every_subfield() {
+        let op = campaign_update_op(
+            &campaign_bidding(
+                "SEARCH",
+                json!({ "target_impression_share": {
+                    "location": "ANYWHERE_ON_PAGE",
+                    "location_fraction_micros": 800000,
+                    "cpc_bid_ceiling_micros": 500000
+                } }),
+            ),
+            &strategy_switch("target_impression_share"),
+        );
+        assert_eq!(
+            op["updateMask"],
+            json!(
+                "target_impression_share.location,\
+                 target_impression_share.location_fraction_micros,\
+                 target_impression_share.cpc_bid_ceiling_micros"
+            )
+        );
+        assert_eq!(
+            op["update"]["targetImpressionShare"],
+            json!({
+                "location": "ANYWHERE_ON_PAGE",
+                "locationFractionMicros": "800000",
+                "cpcBidCeilingMicros": "500000"
+            })
+        );
+    }
+
+    /// The masked-but-absent ceiling is what clears whatever the campaign was
+    /// bidding with before, exactly like the empty `manualCpc` body.
+    #[test]
+    fn switching_to_target_spend_masks_its_ceiling_even_when_unset() {
+        let op = campaign_update_op(
+            &campaign_bidding("SEARCH", json!({ "target_spend": {} })),
+            &strategy_switch("target_spend"),
+        );
+        assert_eq!(op["updateMask"], json!("target_spend.cpc_bid_ceiling_micros"));
+        assert_eq!(op["update"]["targetSpend"], json!({}));
+
+        let op = campaign_update_op(
+            &campaign_bidding(
+                "SEARCH",
+                json!({ "target_spend": {"cpc_bid_ceiling_micros": 1100000} }),
+            ),
+            &strategy_switch("target_spend"),
+        );
+        assert_eq!(
+            op["update"]["targetSpend"],
+            json!({"cpcBidCeilingMicros": "1100000"})
+        );
+    }
+
+    #[test]
+    fn a_same_strategy_bid_ceiling_change_masks_the_leaf() {
+        let op = campaign_update_op(
+            &campaign_bidding(
+                "SEARCH",
+                json!({ "target_impression_share": {
+                    "location": "TOP_OF_PAGE",
+                    "location_fraction_micros": 650000,
+                    "cpc_bid_ceiling_micros": 700000
+                } }),
+            ),
+            &strategy_switch("target_impression_share.cpc_bid_ceiling_micros"),
+        );
+        assert_eq!(
+            op["updateMask"],
+            json!("target_impression_share.cpc_bid_ceiling_micros")
+        );
+        assert_eq!(
+            op["update"]["targetImpressionShare"]["cpcBidCeilingMicros"],
+            json!("700000")
+        );
+    }
+
+    #[test]
+    fn a_new_campaign_creates_with_the_impression_share_target_it_declares() {
+        let input = campaign_bidding(
+            "SEARCH",
+            json!({ "target_impression_share": {
+                "location": "ABSOLUTE_TOP_OF_PAGE",
+                "location_fraction_micros": 400000,
+                "cpc_bid_ceiling_micros": 900000
+            } }),
+        );
+        let report = DiffReport {
+            diffs: vec![
+                create_diff("m.b", "campaign_budget"),
+                create_diff("m.c", "campaign"),
+            ],
+            create_count: 2,
+            ..DiffReport::default()
+        };
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let campaign = plan.body["mutateOperations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|op| op.get("campaignOperation").and_then(|o| o.get("create")))
+            .expect("campaign create op");
+        assert_eq!(
+            campaign["targetImpressionShare"],
+            json!({
+                "location": "ABSOLUTE_TOP_OF_PAGE",
+                "locationFractionMicros": "400000",
+                "cpcBidCeilingMicros": "900000"
+            })
+        );
     }
 
     #[test]

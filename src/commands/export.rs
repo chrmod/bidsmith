@@ -191,6 +191,10 @@ pub struct JsonCampaign {
     #[serde(default)]
     pub target_cpv: Option<JsonBidSelector>,
     #[serde(default)]
+    pub target_impression_share: Option<JsonTargetImpressionShare>,
+    #[serde(default)]
+    pub target_spend: Option<JsonTargetSpend>,
+    #[serde(default)]
     pub network_settings: Option<JsonNetworkSettings>,
     #[serde(default)]
     pub geo_target_type_setting: Option<JsonGeoTargetTypeSetting>,
@@ -218,6 +222,22 @@ pub struct JsonManualCpc {
 #[derive(Deserialize)]
 pub struct JsonBidSelector {}
 
+#[derive(Deserialize, Default)]
+pub struct JsonTargetImpressionShare {
+    #[serde(default)]
+    pub location: Option<String>,
+    #[serde(default)]
+    pub location_fraction_micros: Option<i64>,
+    #[serde(default)]
+    pub cpc_bid_ceiling_micros: Option<i64>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct JsonTargetSpend {
+    #[serde(default)]
+    pub cpc_bid_ceiling_micros: Option<i64>,
+}
+
 impl JsonCampaign {
     /// Which `campaign_bidding_strategy` the campaign picks, as the block name
     /// the file uses and the API field the update mask names. `None` means the
@@ -233,6 +253,10 @@ impl JsonCampaign {
             Some("target_cpm")
         } else if self.target_cpv.is_some() {
             Some("target_cpv")
+        } else if self.target_impression_share.is_some() {
+            Some("target_impression_share")
+        } else if self.target_spend.is_some() {
+            Some("target_spend")
         } else {
             None
         }
@@ -1717,6 +1741,29 @@ fn write_campaign(
     ] {
         if set {
             let _ = writeln!(out, "\n  {name} {{}}");
+        }
+    }
+    if let Some(t) = &c.target_impression_share {
+        out.push_str("\n  target_impression_share {\n");
+        if let Some(l) = &t.location {
+            write_attr(out, 2, "location", &fmt_string(l));
+        }
+        if let Some(f) = t.location_fraction_micros {
+            write_attr(out, 2, "location_fraction_micros", &f.to_string());
+        }
+        if let Some(v) = t.cpc_bid_ceiling_micros {
+            write_attr(out, 2, "cpc_bid_ceiling_micros", &v.to_string());
+        }
+        out.push_str("  }\n");
+    }
+    if let Some(t) = &c.target_spend {
+        match t.cpc_bid_ceiling_micros {
+            Some(v) => {
+                out.push_str("\n  target_spend {\n");
+                write_attr(out, 2, "cpc_bid_ceiling_micros", &v.to_string());
+                out.push_str("  }\n");
+            }
+            None => out.push_str("\n  target_spend {}\n"),
         }
     }
     if let Some(n) = &c.network_settings {
