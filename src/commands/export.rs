@@ -1445,6 +1445,9 @@ fn write_campaign_assets(
         write_campaign_asset(out, &name, a, campaign_addr, asset_addr);
     }
     for a in &input.ad_group_assets {
+        if inline_assets.folded_links.contains(&a.id) {
+            continue;
+        }
         let asset_local = asset_addr.get(&a.asset).and_then(|addr| addr.rsplit('.').next());
         let ag_local = ad_group_addr
             .get(&a.ad_group)
@@ -1509,7 +1512,14 @@ fn write_campaign_tree(
     for g in &input.ad_groups {
         let name = names.allocate("google_ads_ad_group", &slugify(&g.name));
         ad_group_addr.insert(g.id.clone(), format!("google_ads_ad_group.{name}"));
-        write_ad_group(out, &name, g, campaign_addr);
+        write_ad_group(
+            out,
+            &name,
+            g,
+            campaign_addr,
+            inline_assets.callouts_for(&g.id),
+            inline_assets.snippets_for(&g.id),
+        );
     }
     for (i, a) in input.ad_group_ads.iter().enumerate() {
         let base = ad_ad_base(a, ad_group_addr);
@@ -1769,6 +1779,24 @@ fn write_budget(out: &mut String, name: &str, b: &JsonBudget) {
     out.push_str("}\n\n");
 }
 
+/// Callouts and structured snippets folded onto their owner. Shared by the
+/// campaign and ad group renderers so the two spellings cannot drift.
+fn write_inline_text_assets(
+    out: &mut String,
+    callouts: &[String],
+    snippets: &[(String, Vec<String>)],
+) {
+    if !callouts.is_empty() {
+        write_attr(out, 1, "callouts", &fmt_string_list(callouts));
+    }
+    for (header, values) in snippets {
+        out.push_str("\n  structured_snippet {\n");
+        write_attr(out, 2, "header", &fmt_string(header));
+        write_attr(out, 2, "values", &fmt_string_list(values));
+        out.push_str("  }\n");
+    }
+}
+
 /// The `final_url_suffix` / `custom_parameters` pair, rendered wherever it
 /// appears (campaign, ad group, ad body).
 fn write_tracking(
@@ -1841,15 +1869,7 @@ fn write_campaign(
         write_attr(out, 1, d.attr, &fmt_string_list(&d.values));
     }
     write_tracking(out, 1, &c.final_url_suffix, &c.custom_parameters);
-    if !callouts.is_empty() {
-        write_attr(out, 1, "callouts", &fmt_string_list(callouts));
-    }
-    for (header, values) in snippets {
-        out.push_str("\n  structured_snippet {\n");
-        write_attr(out, 2, "header", &fmt_string(header));
-        write_attr(out, 2, "values", &fmt_string_list(values));
-        out.push_str("  }\n");
-    }
+    write_inline_text_assets(out, callouts, snippets);
 
     if let Some(m) = &c.manual_cpc {
         match m.enhanced_cpc_enabled {
@@ -1945,6 +1965,8 @@ fn write_ad_group(
     name: &str,
     g: &JsonAdGroup,
     campaign_addr: &HashMap<String, String>,
+    callouts: &[String],
+    snippets: &[(String, Vec<String>)],
 ) {
     let _ = writeln!(out, "resource \"google_ads_ad_group\" \"{name}\" {{");
     write_attr(out, 1, "name", &fmt_string(&g.name));
@@ -1972,6 +1994,7 @@ fn write_ad_group(
         }
     }
     write_tracking(out, 1, &g.final_url_suffix, &g.custom_parameters);
+    write_inline_text_assets(out, callouts, snippets);
     write_targeting_setting(out, g.targeting_setting.as_ref());
     out.push_str("}\n\n");
 }
@@ -2368,12 +2391,12 @@ pub struct InlineAssets {
 }
 
 impl InlineAssets {
-    fn callouts_for(&self, campaign_id: &str) -> &[String] {
-        self.callouts.get(campaign_id).map(Vec::as_slice).unwrap_or(&[])
+    fn callouts_for(&self, owner_id: &str) -> &[String] {
+        self.callouts.get(owner_id).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    fn snippets_for(&self, campaign_id: &str) -> &[(String, Vec<String>)] {
-        self.snippets.get(campaign_id).map(Vec::as_slice).unwrap_or(&[])
+    fn snippets_for(&self, owner_id: &str) -> &[(String, Vec<String>)] {
+        self.snippets.get(owner_id).map(Vec::as_slice).unwrap_or(&[])
     }
 }
 
@@ -2402,32 +2425,53 @@ fn compute_inline_assets(input: &ExportInput) -> InlineAssets {
         .map(|a| (a.id.as_str(), (a.header.as_str(), a.values.as_slice())))
         .collect();
 
+    let ad_group_ids: HashSet<&str> = input.ad_groups.iter().map(|g| g.id.as_str()).collect();
+
     let mut out = InlineAssets::default();
-    for link in &input.campaign_assets {
-        if !campaign_ids.contains(link.campaign.as_str()) {
+    // Owner id, link id, asset id, and whether the owner is still in this tree.
+    let owned = input
+        .campaign_assets
+        .iter()
+        .map(|l| {
+            (
+                &l.campaign,
+                &l.id,
+                &l.asset,
+                &l.status,
+                campaign_ids.contains(l.campaign.as_str()),
+            )
+        })
+        .chain(input.ad_group_assets.iter().map(|l| {
+            (
+                &l.ad_group,
+                &l.id,
+                &l.asset,
+                &l.status,
+                ad_group_ids.contains(l.ad_group.as_str()),
+            )
+        }));
+    for (owner, link_id, asset_id, status, owner_present) in owned {
+        if !owner_present {
             continue;
         }
-        if uses.get(link.asset.as_str()).copied().unwrap_or(0) != 1 {
+        if uses.get(asset_id.as_str()).copied().unwrap_or(0) != 1 {
             continue;
         }
-        if !matches!(link.status.as_deref(), None | Some("ENABLED")) {
+        if !matches!(status.as_deref(), None | Some("ENABLED")) {
             continue;
         }
-        if let Some(text) = callout_text.get(link.asset.as_str()) {
-            out.callouts
-                .entry(link.campaign.clone())
-                .or_default()
-                .push((*text).to_string());
-        } else if let Some((header, values)) = snippet_body.get(link.asset.as_str()) {
+        if let Some(text) = callout_text.get(asset_id.as_str()) {
+            out.callouts.entry(owner.clone()).or_default().push((*text).to_string());
+        } else if let Some((header, values)) = snippet_body.get(asset_id.as_str()) {
             out.snippets
-                .entry(link.campaign.clone())
+                .entry(owner.clone())
                 .or_default()
                 .push(((*header).to_string(), values.to_vec()));
         } else {
             continue;
         }
-        out.folded_assets.insert(link.asset.clone());
-        out.folded_links.insert(link.id.clone());
+        out.folded_assets.insert(asset_id.clone());
+        out.folded_links.insert(link_id.clone());
     }
     out
 }
@@ -4081,6 +4125,37 @@ mod tests {
         }
     ]"#;
 
+    // A callout owned by one ad group (foldable there), and one shared between
+    // an ad group and its campaign (must stay a resource).
+    const AD_GROUP_ASSET_FIXTURE: &str = r#"[
+        {
+            "results": [
+                { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget", "amountMicros": "5000000" } },
+                { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Search", "status": "ENABLED", "advertisingChannelType": "SEARCH", "campaignBudget": "customers/9/campaignBudgets/1001" } },
+                { "adGroup": { "resourceName": "customers/9/adGroups/3001", "id": "3001", "name": "Chrome", "campaign": "customers/9/campaigns/2001", "status": "ENABLED" } },
+                { "asset": { "resourceName": "customers/9/assets/5001", "id": "5001", "calloutAsset": { "calloutText": "Works in Chrome" } } },
+                { "asset": { "resourceName": "customers/9/assets/5002", "id": "5002", "calloutAsset": { "calloutText": "Free forever" } } },
+                { "asset": { "resourceName": "customers/9/assets/5003", "id": "5003", "structuredSnippetAsset": { "header": "Brands", "values": ["Chrome", "Firefox"] } } },
+                { "adGroupAsset": { "resourceName": "customers/9/adGroupAssets/3001~5001~CALLOUT", "adGroup": "customers/9/adGroups/3001", "asset": "customers/9/assets/5001", "fieldType": "CALLOUT", "status": "ENABLED" } },
+                { "adGroupAsset": { "resourceName": "customers/9/adGroupAssets/3001~5003~STRUCTURED_SNIPPET", "adGroup": "customers/9/adGroups/3001", "asset": "customers/9/assets/5003", "fieldType": "STRUCTURED_SNIPPET", "status": "ENABLED" } },
+                { "adGroupAsset": { "resourceName": "customers/9/adGroupAssets/3001~5002~CALLOUT", "adGroup": "customers/9/adGroups/3001", "asset": "customers/9/assets/5002", "fieldType": "CALLOUT", "status": "ENABLED" } },
+                { "campaignAsset": { "resourceName": "customers/9/campaignAssets/2001~5002~CALLOUT", "campaign": "customers/9/campaigns/2001", "asset": "customers/9/assets/5002", "fieldType": "CALLOUT", "status": "ENABLED" } }
+            ]
+        }
+    ]"#;
+
+    #[test]
+    fn an_ad_groups_own_text_assets_fold_onto_it() {
+        let input = from_search_response(AD_GROUP_ASSET_FIXTURE).expect("adapter");
+        let out = render(&input);
+        assert!(out.contains(r#"callouts = ["Works in Chrome"]"#), "{out}");
+        assert!(out.contains(r#"values = ["Chrome", "Firefox"]"#), "{out}");
+        // The one the campaign also uses keeps its resource and both links.
+        assert!(out.contains(r#"text = "Free forever""#), "{out}");
+        assert_eq!(out.matches("google_ads_ad_group_asset").count(), 1, "{out}");
+        assert_eq!(out.matches("google_ads_campaign_asset").count(), 1, "{out}");
+    }
+
     #[test]
     fn a_campaigns_own_text_assets_fold_onto_it() {
         let input = from_search_response(ASSET_FIXTURE).expect("adapter");
@@ -4129,6 +4204,7 @@ mod tests {
         assert_fold_roundtrips(DEVICE_FIXTURE);
         assert_fold_roundtrips(TRACKING_FIXTURE);
         assert_fold_roundtrips(ASSET_FIXTURE);
+        assert_fold_roundtrips(AD_GROUP_ASSET_FIXTURE);
     }
 
     #[test]

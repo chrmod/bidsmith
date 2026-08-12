@@ -137,16 +137,39 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
                         ),
                         "google_ads_campaign" => emit(import_campaign(&ctx, b, &address).map(
                             |(campaign, criteria, assets)| {
+                                let owner = campaign.id.clone();
                                 input.campaigns.push(campaign);
                                 input.campaign_criteria.extend(criteria);
                                 input.callout_assets.extend(assets.callouts);
                                 input.structured_snippet_assets.extend(assets.snippets);
-                                input.campaign_assets.extend(assets.links);
+                                input.campaign_assets.extend(assets.links.into_iter().map(
+                                    |(id, asset, field_type)| JsonCampaignAsset {
+                                        id,
+                                        campaign: owner.clone(),
+                                        asset,
+                                        field_type,
+                                        status: Some("ENABLED".to_string()),
+                                    },
+                                ));
                             },
                         )),
-                        "google_ads_ad_group" => emit(
-                            import_ad_group(&ctx, b, &address).map(|x| input.ad_groups.push(x)),
-                        ),
+                        "google_ads_ad_group" => {
+                            emit(import_ad_group(&ctx, b, &address).map(|(group, assets)| {
+                                let owner = group.id.clone();
+                                input.ad_groups.push(group);
+                                input.callout_assets.extend(assets.callouts);
+                                input.structured_snippet_assets.extend(assets.snippets);
+                                input.ad_group_assets.extend(assets.links.into_iter().map(
+                                    |(id, asset, field_type)| JsonAdGroupAsset {
+                                        id,
+                                        ad_group: owner.clone(),
+                                        asset,
+                                        field_type,
+                                        status: Some("ENABLED".to_string()),
+                                    },
+                                ));
+                            }))
+                        }
                         "google_ads_ad_group_ad" => emit(
                             import_ad_group_ad(&ctx, b, &address).map(|x| input.ad_group_ads.push(x)),
                         ),
@@ -321,19 +344,21 @@ fn import_budget(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonBudget, 
     })
 }
 
-/// Assets a campaign declared inline, plus the attachments that link them.
+/// Text assets a campaign or ad group declared inline, plus the attachments
+/// that link them. `links` is `(link address, asset address, field type)` —
+/// the owner turns those into its own link resource type.
 #[derive(Default)]
-pub struct InlineCampaignAssets {
+pub struct InlineTextAssets {
     pub callouts: Vec<JsonCalloutAsset>,
     pub snippets: Vec<JsonStructuredSnippetAsset>,
-    pub links: Vec<JsonCampaignAsset>,
+    pub links: Vec<(String, String, String)>,
 }
 
 fn import_campaign(
     ctx: &Ctx,
     block: &Block,
     address: &str,
-) -> Result<(JsonCampaign, Vec<JsonCampaignCriterion>, InlineCampaignAssets), Diag> {
+) -> Result<(JsonCampaign, Vec<JsonCampaignCriterion>, InlineTextAssets), Diag> {
     let mut name = None;
     let mut status = None;
     let mut channel = None;
@@ -478,36 +503,24 @@ fn import_inline_snippet(ctx: &Ctx, block: &Block) -> Option<(String, Vec<String
 /// address, so declaring one inline and sharing it as a resource elsewhere are
 /// the same thing to `plan`.
 fn expand_inline_assets(
-    campaign_address: &str,
+    owner_address: &str,
     callouts: &[String],
     snippets: &[(String, Vec<String>)],
-) -> InlineCampaignAssets {
-    let mut out = InlineCampaignAssets::default();
+) -> InlineTextAssets {
+    let mut out = InlineTextAssets::default();
     for (i, text) in callouts.iter().enumerate() {
-        let id = format!("{campaign_address}.callouts[{i}]");
+        let id = format!("{owner_address}.callouts[{i}]");
         out.callouts.push(JsonCalloutAsset { id: id.clone(), text: text.clone() });
-        out.links.push(JsonCampaignAsset {
-            id: format!("{id}.link"),
-            campaign: campaign_address.to_string(),
-            asset: id,
-            field_type: "CALLOUT".to_string(),
-            status: Some("ENABLED".to_string()),
-        });
+        out.links.push((format!("{id}.link"), id, "CALLOUT".to_string()));
     }
     for (i, (header, values)) in snippets.iter().enumerate() {
-        let id = format!("{campaign_address}.structured_snippet[{i}]");
+        let id = format!("{owner_address}.structured_snippet[{i}]");
         out.snippets.push(JsonStructuredSnippetAsset {
             id: id.clone(),
             header: header.clone(),
             values: values.clone(),
         });
-        out.links.push(JsonCampaignAsset {
-            id: format!("{id}.link"),
-            campaign: campaign_address.to_string(),
-            asset: id,
-            field_type: "STRUCTURED_SNIPPET".to_string(),
-            status: Some("ENABLED".to_string()),
-        });
+        out.links.push((format!("{id}.link"), id, "STRUCTURED_SNIPPET".to_string()));
     }
     out
 }
@@ -852,7 +865,11 @@ fn import_frequency_cap(ctx: &Ctx, block: &Block) -> Option<JsonFrequencyCap> {
     })
 }
 
-fn import_ad_group(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonAdGroup, Diag> {
+fn import_ad_group(
+    ctx: &Ctx,
+    block: &Block,
+    address: &str,
+) -> Result<(JsonAdGroup, InlineTextAssets), Diag> {
     let mut name = None;
     let mut campaign_ref = None;
     let mut status = None;
@@ -860,6 +877,8 @@ fn import_ad_group(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonAdGrou
     let mut targeting_setting = None;
     let mut final_url_suffix = None;
     let mut custom_parameters = None;
+    let mut callouts: Vec<String> = Vec::new();
+    let mut snippets: Vec<(String, Vec<String>)> = Vec::new();
     let mut bids: Vec<(&'static str, Option<i64>)> = Vec::new();
 
     for s in block.body.iter() {
@@ -873,6 +892,7 @@ fn import_ad_group(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonAdGrou
                 "type" => ty = expect_string_owned(ctx, a),
                 "final_url_suffix" => final_url_suffix = expect_string_owned(ctx, a),
                 "custom_parameters" => custom_parameters = import_custom_parameters(ctx, a),
+                "callouts" => callouts = expect_string_list(ctx, &a.value),
                 other => {
                     if let Some((field, _)) = crate::schema::AD_GROUP_BID_FIELDS
                         .iter()
@@ -884,6 +904,11 @@ fn import_ad_group(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonAdGrou
             },
             Structure::Block(b) if b.ident.as_str() == "targeting_setting" => {
                 targeting_setting = Some(import_targeting_setting(ctx, b))
+            }
+            Structure::Block(b) if b.ident.as_str() == "structured_snippet" => {
+                if let Some(sn) = import_inline_snippet(ctx, b) {
+                    snippets.push(sn);
+                }
             }
             Structure::Block(_) => {}
         }
@@ -905,7 +930,7 @@ fn import_ad_group(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonAdGrou
     for (field, value) in bids {
         g.set_bid(field, value);
     }
-    Ok(g)
+    Ok((g, expand_inline_assets(address, &callouts, &snippets)))
 }
 
 fn import_ad_group_ad(
@@ -3175,6 +3200,75 @@ resource "google_ads_campaign" "c" {
             input.campaign_assets.iter().all(|l| asset_ids.contains(&l.asset.as_str())),
             "{:?} vs {asset_ids:?}",
             input.campaign_assets.iter().map(|l| &l.asset).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn an_ad_group_declares_its_own_callouts_and_snippets() {
+        let input = import_str(
+            "ag_inline_assets",
+            r#"
+resource "google_ads_ad_group" "g" {
+  name     = "G"
+  campaign = google_ads_campaign.c.id
+
+  callouts = ["Works in Chrome", "Free forever"]
+
+  structured_snippet {
+    header = "Brands"
+    values = ["Chrome", "Firefox"]
+  }
+}
+"#,
+        );
+        let texts: Vec<&str> = input.callout_assets.iter().map(|a| a.text.as_str()).collect();
+        assert_eq!(texts, vec!["Works in Chrome", "Free forever"]);
+        assert_eq!(input.structured_snippet_assets.len(), 1);
+        assert_eq!(input.structured_snippet_assets[0].header, "Brands");
+
+        // Attached to the ad group, not the campaign.
+        assert!(input.campaign_assets.is_empty(), "{:?}", input.campaign_assets.len());
+        assert_eq!(input.ad_group_assets.len(), 3);
+        let group = &input.ad_groups[0].id;
+        assert!(input.ad_group_assets.iter().all(|a| &a.ad_group == group));
+        let mut kinds: Vec<&str> =
+            input.ad_group_assets.iter().map(|a| a.field_type.as_str()).collect();
+        kinds.sort();
+        assert_eq!(kinds, vec!["CALLOUT", "CALLOUT", "STRUCTURED_SNIPPET"]);
+    }
+
+    #[test]
+    fn a_campaign_and_an_ad_group_can_each_own_the_same_callout_text() {
+        // Two assets with the same text is what the account actually gets when
+        // both levels declare it inline — neither is claiming the other's.
+        let input = import_str(
+            "both_levels_inline",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  callouts                 = ["Free forever"]
+}
+
+resource "google_ads_ad_group" "g" {
+  name     = "G"
+  campaign = google_ads_campaign.c.id
+  callouts = ["Free forever"]
+}
+"#,
+        );
+        assert_eq!(input.callout_assets.len(), 2);
+        assert_eq!(input.campaign_assets.len(), 1);
+        assert_eq!(input.ad_group_assets.len(), 1);
+        assert_ne!(
+            input.campaign_assets[0].asset, input.ad_group_assets[0].asset,
+            "each level synthesizes its own asset",
         );
     }
 

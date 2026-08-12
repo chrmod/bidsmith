@@ -489,6 +489,21 @@ fn rsa_asset_block(name: &'static str) -> NestedBlockSchema {
 /// appends the suffix to the landing page at click time — it never appears in
 /// the displayed URL — and `custom_parameters` supplies the `{_name}`
 /// placeholders it can reference.
+/// A structured snippet declared where it is used. The resource form stays
+/// available for a snippet shared between campaigns or ad groups (issue #145).
+fn inline_snippet_block() -> NestedBlockSchema {
+    NestedBlockSchema {
+        name: "structured_snippet",
+        schema: BlockSchema {
+            attributes: vec![
+                attr("header", FieldType::String, true),
+                attr("values", FieldType::list_of(FieldType::String), true),
+            ],
+            blocks: vec![],
+        },
+    }
+}
+
 fn tracking_attrs() -> Vec<AttributeSchema> {
     vec![
         attr("final_url_suffix", FieldType::String, false),
@@ -927,19 +942,7 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                             blocks: vec![],
                         },
                     },
-                    // A structured snippet declared where it is used. The
-                    // resource form stays available for a snippet shared
-                    // between campaigns (issue #145).
-                    NestedBlockSchema {
-                        name: "structured_snippet",
-                        schema: BlockSchema {
-                            attributes: vec![
-                                attr("header", FieldType::String, true),
-                                attr("values", FieldType::list_of(FieldType::String), true),
-                            ],
-                            blocks: vec![],
-                        },
-                    },
+                    inline_snippet_block(),
                     // How the campaign's geo targets are interpreted — whether
                     // a location means "people there" or "people there plus
                     // people interested in there" (issue #114).
@@ -1158,9 +1161,10 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                             .map(|(name, _)| attr(name, FieldType::Integer, false)),
                     );
                     a.extend(tracking_attrs());
+                    a.push(attr("callouts", FieldType::list_of(FieldType::String), false));
                     a
                 },
-                blocks: vec![targeting_setting_block()],
+                blocks: vec![targeting_setting_block(), inline_snippet_block()],
             },
         );
 
