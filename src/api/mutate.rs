@@ -1041,12 +1041,16 @@ fn ad_group_update_body(g: &JsonAdGroup, resource_name: &str, fields: &[String])
                     m.insert("type".into(), Value::String(t.clone()));
                 }
             }
-            "cpc_bid_micros" => {
-                if let Some(c) = g.cpc_bid_micros {
-                    m.insert("cpcBidMicros".into(), Value::String(c.to_string()));
+            other => {
+                if let Some((field, json)) = crate::schema::AD_GROUP_BID_FIELDS
+                    .iter()
+                    .find(|(field, _)| *field == other)
+                {
+                    if let Some(c) = g.bid(field) {
+                        m.insert((*json).into(), Value::String(c.to_string()));
+                    }
                 }
             }
-            _ => {}
         }
     }
     Value::Object(m)
@@ -1685,8 +1689,10 @@ fn ad_group_create(g: &JsonAdGroup, resource_name: &str, campaign_rn: &str) -> V
     if let Some(t) = &g.ty {
         m.insert("type".into(), Value::String(t.clone()));
     }
-    if let Some(c) = g.cpc_bid_micros {
-        m.insert("cpcBidMicros".into(), Value::String(c.to_string()));
+    for (field, json) in crate::schema::AD_GROUP_BID_FIELDS {
+        if let Some(c) = g.bid(field) {
+            m.insert((*json).into(), Value::String(c.to_string()));
+        }
     }
     Value::Object(m)
 }
@@ -2174,6 +2180,67 @@ mod tests {
             .expect("campaign update op");
         assert_eq!(op["updateMask"], json!("target_cpv"));
         assert_eq!(op["update"]["targetCpv"], json!({}));
+    }
+
+    /// The bid amount lives on the ad group, and for a CPV strategy it is
+    /// `target_cpv_micros` — not `cpc_bid_micros`, which stays zero (issue #109).
+    #[test]
+    fn ad_group_target_cpv_bid_update_sends_the_matching_json_field() {
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "campaign_budgets": [{"id": "m.b", "name": "B", "amount_micros": 10000000}],
+            "campaigns": [{
+                "id": "m.c", "name": "V", "advertising_channel_type": "DEMAND_GEN",
+                "campaign_budget": "m.b"
+            }],
+            "ad_groups": [{
+                "id": "m.g", "name": "AG", "campaign": "m.c",
+                "cpc_bid_micros": 0, "target_cpv_micros": 60000
+            }]
+        }))
+        .expect("valid ExportInput");
+        let report = DiffReport {
+            diffs: vec![
+                ResourceDiff {
+                    address: "m.b".to_string(),
+                    kind: "campaign_budget",
+                    action: Action::NoOp { live_id: "41".to_string() },
+                },
+                ResourceDiff {
+                    address: "m.c".to_string(),
+                    kind: "campaign",
+                    action: Action::NoOp { live_id: "42".to_string() },
+                },
+                ResourceDiff {
+                    address: "m.g".to_string(),
+                    kind: "ad_group",
+                    action: Action::Update {
+                        live_id: "43".to_string(),
+                        changed_fields: vec!["target_cpv_micros".to_string()],
+                    },
+                },
+            ],
+            label_plans: Vec::new(),
+            claim_plans: Vec::new(),
+            noop_count: 2,
+            create_count: 0,
+            update_count: 1,
+            delete_count: 0,
+            adopt_count: 0,
+            warnings: Vec::new(),
+        };
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let ops = plan.body["mutateOperations"].as_array().unwrap();
+        let op = ops
+            .iter()
+            .find_map(|op| op.get("adGroupOperation"))
+            .expect("ad group update op");
+        assert_eq!(op["updateMask"], json!("target_cpv_micros"));
+        assert_eq!(op["update"]["targetCpvMicros"], json!("60000"));
+        assert!(
+            op["update"].get("cpcBidMicros").is_none(),
+            "an unchanged bid field must stay out of the update body: {op}"
+        );
     }
 
     #[test]

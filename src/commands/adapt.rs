@@ -353,12 +353,7 @@ impl AdapterState {
         let Some(id) = extract_id(v) else { return };
         let entry = self.ad_groups.entry(id.clone()).or_insert_with(|| JsonAdGroup {
             id,
-            name: String::new(),
-            campaign: String::new(),
-            status: None,
-            ty: None,
-            cpc_bid_micros: None,
-            managed_address: None,
+            ..Default::default()
         });
         if let Some(s) = v.get("name").and_then(Value::as_str) {
             entry.name = s.to_string();
@@ -374,8 +369,10 @@ impl AdapterState {
         if let Some(s) = v.get("type").and_then(Value::as_str) {
             entry.ty = Some(s.to_string());
         }
-        if let Some(n) = parse_i64(v.get("cpcBidMicros")) {
-            entry.cpc_bid_micros = Some(n);
+        for (field, json) in crate::schema::AD_GROUP_BID_FIELDS {
+            if let Some(n) = parse_i64(v.get(json)) {
+                entry.set_bid(field, Some(n));
+            }
         }
     }
 

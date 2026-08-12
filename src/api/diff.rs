@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::commands::export::{
     address_label_payload, ExportInput, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset,
@@ -288,8 +288,10 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
                     (Action::Create, None)
                 }
             };
-            if let Some(w) = video_is_read_only_warning(d, &action) {
-                campaign_warnings.push(w);
+            if d.advertising_channel_type == "VIDEO" {
+                if let Some(w) = video_is_read_only_warning(&d.id, &action) {
+                    campaign_warnings.push(w);
+                }
             }
             if let Some(plan) =
                 make_label_plan("campaign", &d.id, matched, customer_id, &live.labels)
@@ -313,6 +315,12 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
 
     // ---- ad_groups (label-first, content-fallback by campaign + name) -----
     let live_ad_groups: Vec<&JsonAdGroup> = live.ad_groups.iter().collect();
+    let video_campaigns: HashSet<&str> = declared
+        .campaigns
+        .iter()
+        .filter(|c| c.advertising_channel_type == "VIDEO")
+        .map(|c| c.id.as_str())
+        .collect();
     {
         let decl_payloads: Vec<String> =
             declared.ad_groups.iter().map(|g| address_label_payload(&g.id)).collect();
@@ -344,6 +352,11 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
                 }
                 None => (Action::Create, None),
             };
+            if video_campaigns.contains(d.campaign.as_str()) {
+                if let Some(w) = video_is_read_only_warning(&d.id, &action) {
+                    campaign_warnings.push(w);
+                }
+            }
             if let Some(plan) =
                 make_label_plan("ad_group", &d.id, matched, customer_id, &live.labels)
             {
@@ -1308,11 +1321,11 @@ fn missing_bidding_strategy_warning(d: &JsonCampaign) -> Option<String> {
 
 /// Every create or update against the VIDEO channel is rejected, and because
 /// the batch is atomic it takes every unrelated operation with it — so this is
-/// worth saying before the request goes out, not after (issue #104).
-fn video_is_read_only_warning(d: &JsonCampaign, action: &Action) -> Option<String> {
-    if d.advertising_channel_type != "VIDEO" {
-        return None;
-    }
+/// worth saying before the request goes out, not after (issue #104). The
+/// restriction covers the channel, not just the campaign resource: a bid or
+/// status update on a video campaign's ad group is refused the same way
+/// (issue #109). Label writes are allowed, so `~ adopt` stays quiet.
+fn video_is_read_only_warning(address: &str, action: &Action) -> Option<String> {
     let what = match action {
         Action::Create => "would be created".to_string(),
         Action::Update { changed_fields, .. } => {
@@ -1321,8 +1334,7 @@ fn video_is_read_only_warning(d: &JsonCampaign, action: &Action) -> Option<Strin
         _ => return None,
     };
     Some(format!(
-        "{} {what}, but {} — the whole atomic batch is rejected with it",
-        d.id,
+        "{address} {what}, but {} — the whole atomic batch is rejected with it",
         crate::schema::VIDEO_IS_READ_ONLY
     ))
 }
@@ -1421,8 +1433,15 @@ fn diff_ad_group(d: &JsonAdGroup, l: &JsonAdGroup) -> Vec<String> {
     if d.ty != l.ty {
         c.push("type".into());
     }
-    if d.cpc_bid_micros != l.cpc_bid_micros {
-        c.push("cpc_bid_micros".into());
+    // A bid field the file leaves out is unmanaged, not a request to clear
+    // whatever the account is bidding — the same rule the campaign's bidding
+    // `oneof` follows. Which field is live depends on the strategy, so an ad
+    // group names the one it manages and stays quiet about the rest.
+    for (field, _) in crate::schema::AD_GROUP_BID_FIELDS {
+        let desired = d.bid(field);
+        if desired.is_some() && desired != l.bid(field) {
+            c.push((*field).into());
+        }
     }
     c
 }

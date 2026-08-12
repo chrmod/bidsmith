@@ -723,8 +723,14 @@ resource type, any file layout, modules, schema validation.
   against a real account — a `validateOnly` create of a VIDEO campaign
   returns `MUTATE_NOT_ALLOWED` on the operation whatever bidding
   strategy it carries, and so does a no-op rename of a live one, while
-  the identical SEARCH and DISPLAY operations are accepted. No bidsmith
-  change can lift this. Video campaigns are therefore an **adopt-only**
+  the identical SEARCH and DISPLAY operations are accepted. The
+  restriction is the **channel**, not the campaign resource: a bid
+  update on a live TARGET_CPV in-stream ad group comes back
+  `OPERATION_NOT_PERMITTED_FOR_CONTEXT` and a plain `status` update on
+  the same ad group comes back `MUTATE_NOT_ALLOWED`, while the same
+  ad-group bid update against a DEMAND_GEN campaign is accepted (issue
+  #109, verified live). Label writes are allowed, so `~ adopt` is fine.
+  No bidsmith change can lift this. Video campaigns are therefore an **adopt-only**
   resource: built in the UI, adopted by name, held in `.bid` files as the
   record of what's live, and planned as no-ops. Because `apply` sends one
   atomic batch, a single video op would reject every unrelated operation
@@ -760,6 +766,22 @@ resource type, any file layout, modules, schema validation.
   switch to whatever the block list happens to default to. Consequence:
   a campaign adopted without a bidding block no longer reports
   `manual_cpc.enhanced_cpc_enabled` drift against the live account.
+- **The ad group models every settable bid field, and an omitted one is
+  unmanaged** (issue #109): the campaign's block picks the strategy, the
+  ad group carries the amount, and which field holds it follows from the
+  strategy — a TARGET_CPV in-stream ad group bids through
+  `target_cpv_micros` and leaves `cpc_bid_micros` at zero. Modelling
+  only `cpc_bid_micros` therefore made a video bid not merely unwritable
+  but *invisible*: an unmodelled field is an undiffed one, so `plan`
+  reported a clean ad group while the repo's documented bid and the live
+  bid disagreed. Google returns all eight fields with the unused ones
+  zeroed, so the diff follows the bidding-block rule and only compares
+  what the file names — otherwise every Search ad group would plan five
+  spurious bid clears. For the same reason `export` renders a bid field
+  only when it is non-zero (`cpc_bid_micros` excepted, which renders as
+  it always has): a declared zero is a real value the create path would
+  send, and Google rejects a bid that doesn't match the strategy. The
+  read-only `effective_*` variants stay out.
 - **An undeclared `frequency_caps` block means unmanaged, not "clear
   the caps"** (issue #102): the set is the one non-criterion field whose
   "declared as empty" is unwritable — a repeated block has no empty
@@ -1177,8 +1199,12 @@ Validator covers (so far):
   repeatable `frequency_caps { event_type, time_unit, time_length,
   cap, level? }` block managed as a whole set once declared, with a
   validate-time guard against declaring the same axis both inline and as
-  an explicit positive criterion resource), `google_ads_ad_group`,
-  `google_ads_ad_group_ad`
+  an explicit positive criterion resource), `google_ads_ad_group`
+  (with every settable `AdGroup` bid field — `cpc_bid_micros`,
+  `cpv_bid_micros`, `cpm_bid_micros`, `target_cpa_micros`,
+  `target_cpm_micros`, `target_cpv_micros`, `percent_cpc_bid_micros`,
+  `fixed_cpm_micros` — of which the campaign's strategy decides which
+  one carries the bid), `google_ads_ad_group_ad`
   (with `ad` → `responsive_search_ad` → repeating
   `headline { text, pin? }` / `description { text, pin? }` blocks,
   plus an equivalent list-attribute form `headlines = [...]` /
