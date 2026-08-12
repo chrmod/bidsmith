@@ -694,15 +694,21 @@ fn print_markdown_unchanged_note(report: &diff::DiffReport) {
 /// The money question an operation count can't answer: what this changeset
 /// commits per day, and what the account runs on once it lands (issue #117).
 fn print_text_spend(spend: &SpendSummary) {
-    if let Some(line) = spend.line() {
-        println!("Budget: {line}");
+    for (i, line) in spend.lines().iter().enumerate() {
+        match i {
+            0 => println!("Budget: {line}"),
+            _ => println!("        {line}"),
+        }
     }
 }
 
 fn print_markdown_spend(spend: &SpendSummary) {
-    if let Some(line) = spend.line() {
-        println!("\n**Budget:** {line}");
+    let lines = spend.lines();
+    if lines.is_empty() {
+        return;
     }
+    // Two trailing spaces keep the continuation on its own rendered line.
+    println!("\n**Budget:** {}", lines.join("  \n"));
 }
 
 fn print_text_label_only_note(shown: bool) {

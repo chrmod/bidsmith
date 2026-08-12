@@ -683,7 +683,14 @@ fn collect_edits(
             for f in fields {
                 match f.as_str() {
                     "name" => push!(vec!["name"], s(&b.name)),
-                    "amount_micros" => push!(vec!["amount_micros"], Expression::from(b.amount_micros)),
+                    "amount_micros" => {
+                        opt!(f, vec!["amount_micros"], b.amount_micros.map(Expression::from))
+                    }
+                    "total_amount_micros" => opt!(
+                        f,
+                        vec!["total_amount_micros"],
+                        b.total_amount_micros.map(Expression::from)
+                    ),
                     "delivery_method" => {
                         opt!(f, vec!["delivery_method"], b.delivery_method.as_deref().map(s))
                     }

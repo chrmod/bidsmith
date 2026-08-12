@@ -280,6 +280,9 @@ fn import_provider(
 fn import_budget(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonBudget, Diag> {
     let mut name = None;
     let mut amount = None;
+    let mut total_amount = None;
+    let mut period = None;
+    let mut ty = None;
     let mut delivery_method = None;
     let mut explicitly_shared = None;
 
@@ -288,6 +291,9 @@ fn import_budget(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonBudget, 
         match a.key.as_str() {
             "name" => name = expect_string_owned(ctx, a),
             "amount_micros" => amount = expect_i64(ctx, a),
+            "total_amount_micros" => total_amount = expect_i64(ctx, a),
+            "period" => period = expect_string_owned(ctx, a),
+            "type" => ty = expect_string_owned(ctx, a),
             "delivery_method" => delivery_method = expect_string_owned(ctx, a),
             "explicitly_shared" => explicitly_shared = expect_bool(ctx, a),
             _ => {}
@@ -295,11 +301,16 @@ fn import_budget(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonBudget, 
     }
 
     let name = name.ok_or_else(|| missing(ctx.file, block, address, "name"))?;
-    let amount = amount.ok_or_else(|| missing(ctx.file, block, address, "amount_micros"))?;
+    if amount.is_none() && total_amount.is_none() {
+        return Err(missing(ctx.file, block, address, "amount_micros"));
+    }
     Ok(JsonBudget {
         id: address.to_string(),
         name,
         amount_micros: amount,
+        total_amount_micros: total_amount,
+        period,
+        ty,
         delivery_method,
         explicitly_shared,
     })

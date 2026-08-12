@@ -453,10 +453,16 @@ Smaller follow-ups that can ride along:
   folding the count into the plan footer itself, which would make every
   `plan` pay for the catalog fetch; and reconciling `drift` findings back
   into `.bid` files, which is the schema work each field needs anyway.
-  **Unverified live:** the value scan has not been run against a real
-  account — the chunk-bisect path that isolates a field the API refuses
-  in a given `SELECT` combination is exercised by construction, not by
-  observation.
+  **Verified live** on 0.26.0: the value scan found `campaign_budget`'s
+  unmodelled `period` / `type` / `total_amount_micros` set on a real
+  account, which is what issue #131 closed.
+- ✅ Budget period and type (issue #131, found by `drift`).
+  `google_ads_campaign_budget` models `period`, `type`, and
+  `total_amount_micros`, and a budget declares whichever amount its
+  period selects rather than always a daily one. The `Budget:` footer is
+  period-aware: lifetime caps get their own line instead of being summed
+  into a figure labelled `/day`. See DECISIONS.md for the immutability
+  treatment (`period` / `type` warn, never update).
 - ✅ Ad group bid fields (issue #109). `google_ads_ad_group` models all
   eight settable `AdGroup` bid fields, not just `cpc_bid_micros`, so the
   amount a CPV or CPM campaign actually bids is declarable and — more to

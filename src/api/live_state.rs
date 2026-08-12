@@ -43,6 +43,9 @@ pub const QUERIES: &[(&str, &str)] = &[
           campaign_budget.id,
           campaign_budget.name,
           campaign_budget.amount_micros,
+          campaign_budget.total_amount_micros,
+          campaign_budget.period,
+          campaign_budget.type,
           campaign_budget.delivery_method,
           campaign_budget.explicitly_shared
         FROM campaign_budget",

@@ -1,0 +1,86 @@
+---
+title: Budget a campaign that runs for a fixed period
+description: Give a launch, a sale, or a sponsored flight one total to spend instead of a daily amount.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A daily budget is the right shape for an always-on campaign. It's the
+wrong shape for a two-week launch with EUR 150 behind it — you'd have to
+divide by the number of days, watch the campaign end early or late, and
+hope nobody unpauses it in March.
+
+Google Ads calls the other shape a **custom-period budget**: you name the
+total, Google paces it across the campaign's run.
+
+```hcl
+resource "google_ads_campaign_budget" "q3_launch" {
+  name                = "Q3 Launch Flight"
+  period              = "CUSTOM_PERIOD"
+  total_amount_micros = 150000000     # €150 for the whole flight
+}
+
+resource "google_ads_campaign" "q3_launch" {
+  name                     = "Q3 Launch"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.q3_launch.id
+  start_date               = "2026-09-01"
+  end_date                 = "2026-09-14"
+
+  manual_cpc {}
+}
+```
+
+Set `start_date` and `end_date` on the campaign: they're what the total
+is spread over.
+
+## One amount or the other, never both
+
+`amount_micros` is a daily rate. `total_amount_micros` is a lifetime
+cap. A budget uses exactly one of them, decided by `period`:
+
+| `period` | Says | Ignores |
+|---|---|---|
+| `"DAILY"` (the default) | `amount_micros` | `total_amount_micros` |
+| `"CUSTOM_PERIOD"` | `total_amount_micros` | `amount_micros` |
+
+`validate` enforces the pairing, so a budget can't quietly run on a
+figure nobody meant:
+
+```
+× google_ads_campaign_budget.q3_launch sets period = "CUSTOM_PERIOD" but no
+│ 'total_amount_micros' — a custom-period budget spends a lifetime total, not
+│ a daily amount
+```
+
+## The plan keeps the two apart
+
+Lifetime totals aren't summed into the daily figure — a EUR 150 flight
+is not EUR 150/day, and a plan that added them together would be worse
+than useless:
+
+```
+Budget: committed daily spend 320.00 EUR/day across 16 enabled campaigns
+        plus 1 custom-period budget totalling 150.00 EUR over their lifetime
+```
+
+<Aside type="caution" title="A budget's period can't be changed later">
+  Google Ads fixes `period` when the budget is created and refuses to
+  edit it afterwards, so bidsmith won't plan the change. To move a
+  campaign from daily to flight spending, declare a new budget and point
+  the campaign at it.
+
+  The same applies to adoption: if a file says nothing about `period`
+  (so, daily) but the live budget it matches is a custom-period one,
+  `plan` warns instead of reporting a clean run — the `amount_micros` in
+  the file is being ignored by Google.
+</Aside>
+
+## See also
+
+- [`google_ads_campaign_budget`](/bidsmith/resources/google_ads_campaign_budget/) —
+  every attribute a budget takes.
+- [See what a change costs before you merge it](./see-what-a-change-costs/) —
+  the rest of the budget line.
+- [Pause everything for the holidays](./pause-for-holidays/) — the other
+  way to stop spending on a date.

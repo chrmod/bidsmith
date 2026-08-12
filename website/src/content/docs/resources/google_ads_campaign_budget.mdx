@@ -1,6 +1,6 @@
 ---
 title: google_ads_campaign_budget
-description: Daily budget that one or more campaigns can spend against.
+description: Budget that one or more campaigns can spend against, daily or over a fixed flight.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -9,12 +9,14 @@ import schema from '~/data/schema.json';
 
 export const resource = schema.resources['google_ads_campaign_budget'];
 
-A **campaign budget** caps how much one or more campaigns can spend per
-day. Every campaign references exactly one budget.
+A **campaign budget** caps how much one or more campaigns can spend —
+per day by default, or over a fixed flight if you set
+`period = "CUSTOM_PERIOD"`. Every campaign references exactly one budget.
 
 <Aside type="tip" title="Micros, again">
   `amount_micros` is in micros — one millionth of the account currency.
-  €50.00/day = `50_000_000`. The trailing six zeros are the tell.
+  €50.00/day = `50_000_000`. The trailing six zeros are the tell. Same
+  for `total_amount_micros`.
 </Aside>
 
 ## Example
@@ -37,6 +39,36 @@ resource "google_ads_campaign_budget" "brand" {
   explicitly_shared = true
 }
 ```
+
+## Lifetime budgets
+
+Most budgets are daily: `amount_micros` is the average you're willing to
+spend each day, and Google keeps the monthly total under about 30.4 times
+it. A **custom-period** budget works the other way round — you name a
+total for the whole flight and Google paces it:
+
+```hcl
+resource "google_ads_campaign_budget" "q3_flight" {
+  name                = "Q3 Launch Flight"
+  period              = "CUSTOM_PERIOD"
+  total_amount_micros = 150000000     # €150 for the whole run
+}
+```
+
+The two amounts are alternatives, not a pair. A daily budget says
+`amount_micros`; a `CUSTOM_PERIOD` one says `total_amount_micros` and
+Google Ads ignores any daily amount you set beside it. `validate` holds
+you to that, so a budget can never quietly spend on a figure nobody
+meant.
+
+<Aside type="caution" title="A budget's period is fixed at creation">
+  `period` and `type` can't be edited once the budget exists — Google Ads
+  refuses the change, and bidsmith won't plan one. If a file says
+  `period = "DAILY"` (the default) but the budget it adopts is a
+  custom-period one, `plan` says so rather than reporting a clean run:
+  the daily amount in the file is being ignored by Google. To change a
+  budget's period, make a new budget and point the campaign at it.
+</Aside>
 
 <Aside type="caution" title="Sharing a budget takes one extra line">
   `explicitly_shared` defaults to `false`, and pointing a **second**

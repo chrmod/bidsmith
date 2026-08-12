@@ -454,7 +454,7 @@ fn rmf_table() -> Vec<RmfRow> {
         },
         RmfRow {
             requirement: "Adjust budgets",
-            satisfied_by: "<code>google_ads_campaign_budget.amount_micros</code> is a first-class scalar field, mutable via the same plan/apply flow.",
+            satisfied_by: "<code>google_ads_campaign_budget.amount_micros</code> (daily) and <code>total_amount_micros</code> (a <code>CUSTOM_PERIOD</code> lifetime cap) are first-class scalar fields, mutable via the same plan/apply flow.",
         },
         RmfRow {
             requirement: "Respect Google Ads policies",

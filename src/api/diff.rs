@@ -7,6 +7,7 @@ use crate::commands::export::{
     JsonAudience, JsonCriterion, JsonCustomAudience, JsonCustomerAsset, JsonSharedCriterion,
     JsonSharedSet, JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonYoutubeVideoAsset,
 };
+use crate::schema::CUSTOM_PERIOD;
 
 /// Claim category token for `Campaign.frequency_caps` — see `diff_campaign`.
 pub const FREQUENCY_CAPS_CATEGORY: &str = "frequency_caps";
@@ -385,7 +386,10 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         .collect();
     for d in &declared.campaign_budgets {
         let action = match live_budgets.get(d.name.as_str()) {
-            Some(l) => action_for_match(l.id.clone(), diff_budget(d, l)),
+            Some(l) => {
+                campaign_warnings.extend(budget_immutable_warnings(&d.id, d, l));
+                action_for_match(l.id.clone(), diff_budget(d, l))
+            }
             None => Action::Create,
         };
         diffs.push(ResourceDiff {
@@ -1490,6 +1494,35 @@ fn shared_budget_warnings(declared: &ExportInput) -> Vec<String> {
     out
 }
 
+/// A budget's `period` and `type` are fixed at creation, so the diff skips
+/// them — which would let a file describing a daily budget adopt a lifetime one
+/// and still report a clean plan, with the declared `amount_micros` silently
+/// ignored by Google Ads (issue #131).
+fn budget_immutable_warnings(address: &str, d: &JsonBudget, l: &JsonBudget) -> Vec<String> {
+    let mut out = Vec::new();
+    if let (Some(dp), Some(lp)) = (d.period.as_deref(), l.period.as_deref()) {
+        if dp != lp {
+            out.push(format!(
+                "{address} declares period = {dp:?} but the live budget it matched is {lp:?}. A \
+                 budget's period is fixed when it is created, so bidsmith can never reconcile \
+                 that — a {} budget spends 'total_amount_micros' over its lifetime and ignores \
+                 'amount_micros'",
+                CUSTOM_PERIOD,
+            ));
+        }
+    }
+    if let (Some(dt), Some(lt)) = (d.ty.as_deref(), l.ty.as_deref()) {
+        if dt != lt {
+            out.push(format!(
+                "{address} declares type = {dt:?} but the live budget it matched is {lt:?}. A \
+                 budget's type is fixed when it is created, so bidsmith can never reconcile \
+                 that — check the file is pointing at the budget you think it is"
+            ));
+        }
+    }
+    out
+}
+
 /// A campaign's channel is fixed at creation, so the diff skips it — which
 /// means a file naming one channel while matching a live campaign on another
 /// reports as a clean adoption. The plan says so out loud instead: the file is
@@ -1635,7 +1668,17 @@ fn diff_budget(d: &JsonBudget, l: &JsonBudget) -> Vec<FieldChange> {
     if d.name != l.name {
         c.push(change("name", &l.name, &d.name));
     }
-    if d.amount_micros != l.amount_micros {
+    // Only the amount the declared period spends. The other one is whatever the
+    // account happens to carry, and writing it is an API error.
+    if d.is_custom_period() {
+        if d.total_amount_micros != l.total_amount_micros {
+            c.push(change(
+                "total_amount_micros",
+                l.total_amount_micros,
+                d.total_amount_micros,
+            ));
+        }
+    } else if d.amount_micros != l.amount_micros {
         c.push(change("amount_micros", l.amount_micros, d.amount_micros));
     }
     if d.delivery_method != l.delivery_method {
@@ -3871,6 +3914,93 @@ mod shared_budget_tests {
         }"#,
         );
         let report = diff(&declared, &input(EMPTY_LIVE));
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    }
+}
+
+#[cfg(test)]
+mod budget_period_tests {
+    use super::*;
+
+    fn input(json: &str) -> ExportInput {
+        let mut v: ExportInput = serde_json::from_str(json).expect("valid test input");
+        v.apply_schema_defaults();
+        v
+    }
+
+    fn declared(budget: &str) -> ExportInput {
+        input(&format!(
+            r#"{{"customer_id":"1","campaign_budgets":[{budget}]}}"#
+        ))
+    }
+
+    #[test]
+    fn adopting_a_lifetime_budget_with_a_daily_declaration_warns() {
+        let report = diff(
+            &declared(r#"{"id":"m.b","name":"Flight","amount_micros":10000000}"#),
+            &input(
+                r#"{"customer_id":"1","campaign_budgets":[{"id":"900","name":"Flight",
+                  "total_amount_micros":91000000,"period":"CUSTOM_PERIOD"}]}"#,
+            ),
+        );
+        let w = report
+            .warnings
+            .iter()
+            .find(|w| w.contains("period"))
+            .unwrap_or_else(|| panic!("{:?}", report.warnings));
+        assert!(w.contains("\"DAILY\"") && w.contains("\"CUSTOM_PERIOD\""), "{w}");
+    }
+
+    #[test]
+    fn a_matching_lifetime_budget_diffs_the_total_not_the_daily_amount() {
+        let report = diff(
+            &declared(
+                r#"{"id":"m.b","name":"Flight","total_amount_micros":150000000,
+                  "period":"CUSTOM_PERIOD"}"#,
+            ),
+            &input(
+                r#"{"customer_id":"1","campaign_budgets":[{"id":"900","name":"Flight",
+                  "amount_micros":10000000,"total_amount_micros":91000000,
+                  "period":"CUSTOM_PERIOD"}]}"#,
+            ),
+        );
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        let fields: Vec<&str> = match &report.diffs[0].action {
+            Action::Update { changed_fields, .. } => {
+                changed_fields.iter().map(|c| c.field.as_str()).collect()
+            }
+            other => panic!("expected an update, got {other:?}"),
+        };
+        assert_eq!(fields, ["total_amount_micros"]);
+    }
+
+    #[test]
+    fn a_budget_type_the_file_names_wrong_warns() {
+        let report = diff(
+            &declared(
+                r#"{"id":"m.b","name":"B","amount_micros":10000000,"type":"STANDARD"}"#,
+            ),
+            &input(
+                r#"{"customer_id":"1","campaign_budgets":[{"id":"900","name":"B",
+                  "amount_micros":10000000,"type":"SMART_CAMPAIGN"}]}"#,
+            ),
+        );
+        assert!(
+            report.warnings.iter().any(|w| w.contains("type")),
+            "{:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn a_type_the_file_leaves_open_is_not_drift() {
+        let report = diff(
+            &declared(r#"{"id":"m.b","name":"B","amount_micros":10000000}"#),
+            &input(
+                r#"{"customer_id":"1","campaign_budgets":[{"id":"900","name":"B",
+                  "amount_micros":10000000,"type":"SMART_CAMPAIGN"}]}"#,
+            ),
+        );
         assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     }
 }
