@@ -64,6 +64,23 @@ pub const CAMPAIGN_BIDDING_BLOCKS: &[&str] = &[
     "target_cpv",
 ];
 
+/// The settable bid fields on `AdGroup`, each paired with its Google Ads JSON
+/// name. Which one carries the live bid depends on the campaign's bidding
+/// strategy — a TARGET_CPV video ad group bids through `target_cpv_micros` and
+/// leaves `cpc_bid_micros` at zero — so all of them are modelled and the API
+/// rejects any that does not match the strategy. The read-only `effective_*`
+/// variants are deliberately absent.
+pub const AD_GROUP_BID_FIELDS: &[(&str, &str)] = &[
+    ("cpc_bid_micros", "cpcBidMicros"),
+    ("cpv_bid_micros", "cpvBidMicros"),
+    ("cpm_bid_micros", "cpmBidMicros"),
+    ("target_cpa_micros", "targetCpaMicros"),
+    ("target_cpm_micros", "targetCpmMicros"),
+    ("target_cpv_micros", "targetCpvMicros"),
+    ("percent_cpc_bid_micros", "percentCpcBidMicros"),
+    ("fixed_cpm_micros", "fixedCpmMicros"),
+];
+
 /// The Google Ads API is read-only for the VIDEO channel: "You cannot create
 /// new Video campaigns or update existing ones using the Google Ads API"
 /// (developers.google.com/google-ads/api/docs/video/overview). Every mutate op
@@ -756,31 +773,38 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
         m.insert(
             "google_ads_ad_group",
             BlockSchema {
-                attributes: vec![
-                    attr("name", FieldType::String, true),
-                    attr(
-                        "campaign",
-                        FieldType::Ref(&["google_ads_campaign"]),
-                        true,
-                    ),
-                    attr("status", FieldType::Enum(STATUS), false)
-                        .with_default(DefaultValue::Str(DEFAULT_STATUS)),
-                    attr(
-                        "type",
-                        FieldType::Enum(&[
-                            "SEARCH_STANDARD",
-                            "DISPLAY_STANDARD",
-                            "SHOPPING_PRODUCT_ADS",
-                            "VIDEO_BUMPER",
-                            "VIDEO_TRUE_VIEW_IN_STREAM",
-                            "VIDEO_TRUE_VIEW_IN_DISPLAY",
-                            "VIDEO_NON_SKIPPABLE_IN_STREAM",
-                            "VIDEO_RESPONSIVE",
-                        ]),
-                        false,
-                    ),
-                    attr("cpc_bid_micros", FieldType::Integer, false),
-                ],
+                attributes: {
+                    let mut a = vec![
+                        attr("name", FieldType::String, true),
+                        attr(
+                            "campaign",
+                            FieldType::Ref(&["google_ads_campaign"]),
+                            true,
+                        ),
+                        attr("status", FieldType::Enum(STATUS), false)
+                            .with_default(DefaultValue::Str(DEFAULT_STATUS)),
+                        attr(
+                            "type",
+                            FieldType::Enum(&[
+                                "SEARCH_STANDARD",
+                                "DISPLAY_STANDARD",
+                                "SHOPPING_PRODUCT_ADS",
+                                "VIDEO_BUMPER",
+                                "VIDEO_TRUE_VIEW_IN_STREAM",
+                                "VIDEO_TRUE_VIEW_IN_DISPLAY",
+                                "VIDEO_NON_SKIPPABLE_IN_STREAM",
+                                "VIDEO_RESPONSIVE",
+                            ]),
+                            false,
+                        ),
+                    ];
+                    a.extend(
+                        AD_GROUP_BID_FIELDS
+                            .iter()
+                            .map(|(name, _)| attr(name, FieldType::Integer, false)),
+                    );
+                    a
+                },
                 blocks: vec![],
             },
         );

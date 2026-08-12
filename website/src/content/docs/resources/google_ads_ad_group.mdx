@@ -33,6 +33,45 @@ resource "google_ads_ad_group" "summer_default" {
 }
 ```
 
+## Which bid field?
+
+The campaign picks *how* it bids; the ad group says *how much*. Those
+are two different files' worth of settings, and the field that carries
+the amount depends on the strategy the campaign chose:
+
+| Campaign bidding block | Ad group bid field |
+| --- | --- |
+| `manual_cpc {}` | `cpc_bid_micros` |
+| `manual_cpm {}` | `cpm_bid_micros` |
+| `manual_cpv {}` | `cpv_bid_micros` |
+| `target_cpm {}` | `target_cpm_micros` |
+| `target_cpv {}` | `target_cpv_micros` |
+
+`target_cpa_micros`, `percent_cpc_bid_micros` and `fixed_cpm_micros`
+cover strategies set outside those blocks (a portfolio strategy, or one
+picked in the Google Ads UI).
+
+Getting this wrong is quiet rather than loud. A YouTube ad group running
+Target CPV keeps `cpc_bid_micros` at zero and bids through
+`target_cpv_micros` — so a file that sets `cpc_bid_micros` on it looks
+like it set a bid, matches what Google reports back, and changes
+nothing. Set the field that matches the strategy.
+
+<Aside type="caution">
+  A bid field you leave out is left alone, not set to zero — bidsmith
+  only manages the bids your file names. That keeps a Search ad group's
+  file from clearing the five bid fields it doesn't use, but it also
+  means a bid you never declare is a bid nobody reviews.
+</Aside>
+
+<Aside>
+  Bids on **Video** campaigns are readable but not writable: the Google
+  Ads API refuses every create and update on that channel, ad groups
+  included. `plan` shows the drift and warns before sending, but the
+  change itself has to happen in the Google Ads UI. Demand Gen
+  campaigns have no such limit.
+</Aside>
+
 ## Schema
 
 <AttributeTable block={resource} headingLevel={3} />

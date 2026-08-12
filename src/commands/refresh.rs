@@ -762,10 +762,15 @@ fn collect_edits(
                     "name" => push!(vec!["name"], s(&g.name)),
                     "status" => opt!(f, vec!["status"], g.status.as_deref().map(s)),
                     "type" => opt!(f, vec!["type"], g.ty.as_deref().map(s)),
-                    "cpc_bid_micros" => {
-                        opt!(f, vec!["cpc_bid_micros"], g.cpc_bid_micros.map(Expression::from))
-                    }
-                    other => skip.push(other.to_string()),
+                    other => match crate::schema::AD_GROUP_BID_FIELDS
+                        .iter()
+                        .find(|(field, _)| *field == other)
+                    {
+                        Some((field, _)) => {
+                            opt!(f, vec![*field], g.bid(field).map(Expression::from))
+                        }
+                        None => skip.push(other.to_string()),
+                    },
                 }
             }
         }

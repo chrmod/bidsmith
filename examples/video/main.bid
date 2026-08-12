@@ -92,7 +92,7 @@ resource "google_ads_ad_group" "instream" {
   name = "In-stream"
   campaign = google_ads_campaign.preroll.id
   type = "VIDEO_TRUE_VIEW_IN_STREAM"
-  cpc_bid_micros = 0
+  cpv_bid_micros = 30000
 }
 
 resource "google_ads_ad_group_ad" "preroll" {

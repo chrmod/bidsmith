@@ -378,11 +378,45 @@ Smaller follow-ups that can ride along:
   adopt-only; `plan` now warns before sending a batch that contains one.
   **Deferred:** `target_cpm`'s optional
   `target_frequency_goal` (target-frequency reach buying), `fixed_cpm`,
-  a portfolio `google_ads_bidding_strategy` resource, the ad group's
-  `cpv_bid_micros` / `target_cpm_micros` companions to
-  `cpc_bid_micros`, and the conversion-based strategies (`target_cpa`,
-  `maximize_conversions`, …), which want conversion tracking modelled
-  first.
+  a portfolio `google_ads_bidding_strategy` resource, and the
+  conversion-based strategies (`target_cpa`, `maximize_conversions`, …),
+  which want conversion tracking modelled first.
+- ✅ Ad group bid fields (issue #109). `google_ads_ad_group` models all
+  eight settable `AdGroup` bid fields, not just `cpc_bid_micros`, so the
+  amount a CPV or CPM campaign actually bids is declarable and — more to
+  the point — *diffable*. The re-raise corrected #104's premise on the
+  record: an in-stream ad group's max CPV is **not** `cpc_bid_micros`,
+  which sits at zero while `target_cpv_micros` governs the auction, so
+  `plan` had been reporting those ad groups clean against a bid the repo
+  never saw. An omitted bid field is unmanaged (Google returns the
+  unused ones zeroed), and `export` skips zero-valued bids so a Search
+  ad group doesn't render five bids it doesn't use.
+  **Verified live** (`validateOnly` plans against 6571974784): the VIDEO
+  channel refuses ad-group mutates the same way it refuses campaign ones
+  — a bid update on a TARGET_CPV in-stream ad group returns
+  `OPERATION_NOT_PERMITTED_FOR_CONTEXT`, a bare `status` update on it
+  returns `MUTATE_NOT_ALLOWED`, and the same bid update against a
+  DEMAND_GEN ad group is accepted. On a DEMAND_GEN ad group
+  `target_cpv_micros`, `target_cpm_micros`, `cpm_bid_micros` and
+  `target_cpa_micros` are all accepted, so none of them is output-only;
+  `cpv_bid_micros` is refused there with
+  `OPERATION_NOT_PERMITTED_FOR_CONTEXT` — it is the manual-CPV bid and
+  that strategy only exists on the read-only VIDEO channel, so it is
+  modelled for reading and drift, not for writing.
+  `percent_cpc_bid_micros` and `fixed_cpm_micros` remain unprobed: the
+  account's daily API quota ran out first (a full-account `plan` spends
+  one operation per resource, so probes are expensive — probe against a
+  small test account, not this one). So on video these
+  fields buy drift *visibility*, not declarative bidding; Demand Gen is
+  where they are writable. `diff` now warns before the batch goes out on
+  a video **ad group** create or update, not just a video campaign —
+  previously an ad-group-only edit sailed into the atomic batch and took
+  every unrelated operation down with it.
+  **Deferred:** `google_ads_ad_group_criterion`'s `cpv_bid_micros` /
+  `cpm_bid_micros`. bidsmith's criterion resource is KEYWORD-only
+  (`live_state.rs` filters on `type = KEYWORD`) and keywords bid by CPC,
+  so those fields would be unusable where they'd be declarable. Revisit
+  with non-keyword criteria.
 - Repeating-block field-level diff for RSA `headline` / `description`
   blocks and the `final_urls` list. Today these are matched
   all-or-nothing; per-asset add/remove/repin detection would close

@@ -66,7 +66,14 @@ pub const QUERIES: &[(&str, &str)] = &[
           ad_group.campaign,
           ad_group.status,
           ad_group.type,
-          ad_group.cpc_bid_micros
+          ad_group.cpc_bid_micros,
+          ad_group.cpv_bid_micros,
+          ad_group.cpm_bid_micros,
+          ad_group.target_cpa_micros,
+          ad_group.target_cpm_micros,
+          ad_group.target_cpv_micros,
+          ad_group.percent_cpc_bid_micros,
+          ad_group.fixed_cpm_micros
         FROM ad_group
         WHERE ad_group.status != 'REMOVED'",
     ),

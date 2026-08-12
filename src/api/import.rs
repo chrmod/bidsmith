@@ -550,7 +550,7 @@ fn import_ad_group(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonAdGrou
     let mut campaign_ref = None;
     let mut status = None;
     let mut ty = None;
-    let mut cpc = None;
+    let mut bids: Vec<(&'static str, Option<i64>)> = Vec::new();
 
     for s in block.body.iter() {
         let Structure::Attribute(a) = s else { continue };
@@ -559,22 +559,31 @@ fn import_ad_group(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonAdGrou
             "campaign" => campaign_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r)),
             "status" => status = expect_string_owned(ctx, a),
             "type" => ty = expect_string_owned(ctx, a),
-            "cpc_bid_micros" => cpc = expect_i64(ctx, a),
-            _ => {}
+            other => {
+                if let Some((field, _)) = crate::schema::AD_GROUP_BID_FIELDS
+                    .iter()
+                    .find(|(field, _)| *field == other)
+                {
+                    bids.push((field, expect_i64(ctx, a)));
+                }
+            }
         }
     }
 
     let name = name.ok_or_else(|| missing(ctx.file, block, address, "name"))?;
     let campaign = campaign_ref.ok_or_else(|| missing(ctx.file, block, address, "campaign"))?;
-    Ok(JsonAdGroup {
+    let mut g = JsonAdGroup {
         id: address.to_string(),
         name,
         campaign,
         status,
         ty,
-        cpc_bid_micros: cpc,
-        managed_address: None,
-    })
+        ..Default::default()
+    };
+    for (field, value) in bids {
+        g.set_bid(field, value);
+    }
+    Ok(g)
 }
 
 fn import_ad_group_ad(
@@ -2518,6 +2527,20 @@ resource "google_ads_ad_group_ad" "custom" {
         crate::api::diff::diff(&declared, &live)
     }
 
+    fn changed_fields(report: &crate::api::diff::DiffReport) -> Vec<String> {
+        report
+            .diffs
+            .iter()
+            .filter_map(|d| match &d.action {
+                crate::api::diff::Action::Update { changed_fields, .. } => {
+                    Some(changed_fields.clone())
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
     fn delete_live_ids(report: &crate::api::diff::DiffReport) -> Vec<String> {
         report
             .diffs
@@ -2595,6 +2618,133 @@ resource "google_ads_ad_group_criterion" "neg" {
         assert!(
             !addrs.iter().any(|a| a.contains("shoes")),
             "a live positive nobody declared was pruned: {addrs:?}"
+        );
+    }
+
+    /// A CPV ad group bids through `target_cpv_micros`; `cpc_bid_micros` sits at
+    /// zero on both sides and must not be what the diff looks at (issue #109).
+    #[test]
+    fn ad_group_target_cpv_bid_drift_is_diffed() {
+        let declared = import_str(
+            "ad_group_target_cpv",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "DEMAND_GEN"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+
+resource "google_ads_ad_group" "ag" {
+  name              = "AG"
+  campaign          = google_ads_campaign.c.id
+  cpc_bid_micros    = 0
+  target_cpv_micros = 60000
+}
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"DEMAND_GEN","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"}},
+              {"adGroup":{"resourceName":"customers/9/adGroups/3","id":"3","name":"AG","status":"ENABLED","campaign":"customers/9/campaigns/2","cpcBidMicros":"0","targetCpvMicros":"50000"}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(report.update_count, 1, "diffs: {:?}", report.diffs);
+        assert_eq!(changed_fields(&report), vec!["target_cpv_micros"]);
+    }
+
+    /// Google returns every bid field, most of them zero. A file that names one
+    /// bid is not asking to clear the rest.
+    #[test]
+    fn ad_group_bid_the_file_omits_stays_unmanaged() {
+        let declared = import_str(
+            "ad_group_bid_omitted",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "DEMAND_GEN"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+
+resource "google_ads_ad_group" "ag" {
+  name           = "AG"
+  campaign       = google_ads_campaign.c.id
+  cpc_bid_micros = 10000
+}
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"DEMAND_GEN","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"}},
+              {"adGroup":{"resourceName":"customers/9/adGroups/3","id":"3","name":"AG","status":"ENABLED","campaign":"customers/9/campaigns/2","cpcBidMicros":"10000","cpvBidMicros":"0","cpmBidMicros":"10000","targetCpaMicros":"0","targetCpmMicros":"10000","targetCpvMicros":"10000"}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(report.update_count, 0, "diffs: {:?}", report.diffs);
+    }
+
+    /// The VIDEO channel refuses ad-group mutates the same way it refuses
+    /// campaign ones, and the atomic batch takes everything else down with it —
+    /// verified live against a TARGET_CPV in-stream ad group (issue #109).
+    #[test]
+    fn video_ad_group_bid_drift_warns_before_the_batch() {
+        let declared = import_str(
+            "video_ad_group_drift",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  target_cpv {}
+}
+
+resource "google_ads_ad_group" "ag" {
+  name              = "AG"
+  campaign          = google_ads_campaign.c.id
+  target_cpv_micros = 60000
+}
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"VIDEO","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","biddingStrategyType":"TARGET_CPV"}},
+              {"adGroup":{"resourceName":"customers/9/adGroups/3","id":"3","name":"AG","status":"ENABLED","campaign":"customers/9/campaigns/2","targetCpvMicros":"50000"}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(report.update_count, 1, "diffs: {:?}", report.diffs);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("ag") && w.contains("target_cpv_micros")),
+            "no warning for the video ad group: {:?}",
+            report.warnings
         );
     }
 

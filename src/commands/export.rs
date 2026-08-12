@@ -236,7 +236,7 @@ impl JsonFrequencyCap {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 pub struct JsonAdGroup {
     pub id: String,
     pub name: String,
@@ -248,7 +248,52 @@ pub struct JsonAdGroup {
     #[serde(default)]
     pub cpc_bid_micros: Option<i64>,
     #[serde(default)]
+    pub cpv_bid_micros: Option<i64>,
+    #[serde(default)]
+    pub cpm_bid_micros: Option<i64>,
+    #[serde(default)]
+    pub target_cpa_micros: Option<i64>,
+    #[serde(default)]
+    pub target_cpm_micros: Option<i64>,
+    #[serde(default)]
+    pub target_cpv_micros: Option<i64>,
+    #[serde(default)]
+    pub percent_cpc_bid_micros: Option<i64>,
+    #[serde(default)]
+    pub fixed_cpm_micros: Option<i64>,
+    #[serde(default)]
     pub managed_address: Option<String>,
+}
+
+impl JsonAdGroup {
+    pub fn bid(&self, field: &str) -> Option<i64> {
+        match field {
+            "cpc_bid_micros" => self.cpc_bid_micros,
+            "cpv_bid_micros" => self.cpv_bid_micros,
+            "cpm_bid_micros" => self.cpm_bid_micros,
+            "target_cpa_micros" => self.target_cpa_micros,
+            "target_cpm_micros" => self.target_cpm_micros,
+            "target_cpv_micros" => self.target_cpv_micros,
+            "percent_cpc_bid_micros" => self.percent_cpc_bid_micros,
+            "fixed_cpm_micros" => self.fixed_cpm_micros,
+            _ => None,
+        }
+    }
+
+    pub fn set_bid(&mut self, field: &str, value: Option<i64>) {
+        let slot = match field {
+            "cpc_bid_micros" => &mut self.cpc_bid_micros,
+            "cpv_bid_micros" => &mut self.cpv_bid_micros,
+            "cpm_bid_micros" => &mut self.cpm_bid_micros,
+            "target_cpa_micros" => &mut self.target_cpa_micros,
+            "target_cpm_micros" => &mut self.target_cpm_micros,
+            "target_cpv_micros" => &mut self.target_cpv_micros,
+            "percent_cpc_bid_micros" => &mut self.percent_cpc_bid_micros,
+            "fixed_cpm_micros" => &mut self.fixed_cpm_micros,
+            _ => return,
+        };
+        *slot = value;
+    }
 }
 
 #[derive(Deserialize)]
@@ -1426,8 +1471,17 @@ fn write_ad_group(
     if let Some(t) = &g.ty {
         write_attr(out, 1, "type", &fmt_string(t));
     }
-    if let Some(c) = g.cpc_bid_micros {
-        write_attr(out, 1, "cpc_bid_micros", &c.to_string());
+    // Google returns 0 for every bid field the ad group's strategy doesn't use,
+    // so rendering them all would bury the one live bid under five zeroes — and
+    // a declared zero is a real value the create path would send, which the API
+    // rejects when it doesn't match the strategy. `cpc_bid_micros` is emitted
+    // even at zero, as it always has been.
+    for (field, _) in crate::schema::AD_GROUP_BID_FIELDS {
+        if let Some(c) = g.bid(field) {
+            if c != 0 || *field == "cpc_bid_micros" {
+                write_attr(out, 1, field, &c.to_string());
+            }
+        }
     }
     out.push_str("}\n\n");
 }
