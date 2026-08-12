@@ -625,6 +625,36 @@ resource type, any file layout, modules, schema validation.
     *is* the identity, not just an ownership flag) and over label-first
     matching for *all* types (which would mask ad copy edits and bloat
     keyword label volume).
+- **`lifecycle { create = false }` — declarable adopt-only** (issue
+  #115): a `resource` may carry a `lifecycle` meta-block whose one
+  attribute, `create`, defaults to `true`. `create = false` says the
+  resource must be adopted, never created; if the content match finds
+  nothing live, `plan` raises a **blocker** naming the key it matched on
+  (`by name "GH_YouTube_FR Instream 11.08.2026"`) and sends nothing,
+  instead of degrading into a create. That degradation is the failure
+  this closes: for a VIDEO campaign the create is refused by Google, and
+  the atomic batch takes every unrelated operation down with it.
+  - **A meta-block, not a resource attribute.** It says what bidsmith
+    may do, not what the resource *is*, so it lives in no type's schema
+    and is validated separately — which also keeps it off the
+    auto-generated resource reference pages, where it would read as a
+    Google Ads field.
+  - **Rejected on criterion types** (`ad_group_criterion`,
+    `campaign_criterion`, `shared_criterion`) rather than ignored:
+    Google creates criteria freely, and one criterion resource can fan
+    out into several live members, so `create = false` would have
+    nothing single to point at.
+  - **Only creation.** Drift on an adopted VIDEO campaign still raises
+    the read-only-channel blocker; `create = false` is not a mute
+    button. The two never double-report — the sharper adopt-only message
+    replaces the channel one for the create case.
+  - Declared-side only: `export` / `refresh` render from live state,
+    where everything already exists, so they emit no `lifecycle` block.
+    `fmt` (including `--minimal`) preserves a hand-written one.
+  - `adopt_match = "name"` from the issue was **not** implemented — the
+    match key is already label-first-then-name for every type, so the
+    attribute would have exactly one legal value. The blocker message
+    names the key instead, which is what the knob was for.
 - **GitOps CI scaffold (`init`)**: the `.bid` files are meant to live in
   a user-controlled GitHub repo, and `bidsmith init` writes the skeleton
   for that — a starter `campaigns.bid`, a `bidsmith.toml` routing file,
@@ -1400,6 +1430,9 @@ Validator covers (so far):
   `bidsmith.toml` / env / global credentials when omitted, so `.bid`
   files can be account-agnostic; `login_customer_id` optional —
   overridable via `--login-customer-id` / `--customer-id` on `export`)
+- `lifecycle { create }` on any `resource` except the three criterion
+  types — a meta-block belonging to no resource schema, validated
+  separately; see the locked decision above
 - Type system: `string`, `integer`, `number`, `bool`, `enum<…>`,
   `ref<targets>`, `list<T>` (recurses into each element)
 - Two-pass validation: collect addresses, then walk each block.

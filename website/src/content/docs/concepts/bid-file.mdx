@@ -53,6 +53,35 @@ on. Each resource block has:
 - Sometimes **nested blocks** for sub-configuration
   (`manual_cpc { … }`, `network_settings { … }`).
 
+## The `lifecycle` block
+
+Every resource can carry a `lifecycle` block. It isn't a Google Ads
+field — it tells bidsmith what it's allowed to do with the resource:
+
+```hcl
+resource "google_ads_campaign" "gh_video_fr" {
+  name                     = "GH_YouTube_FR Instream 11.08.2026"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.video_fr.id
+
+  lifecycle {
+    create = false
+  }
+}
+```
+
+`create = false` means **adopt this, never create it**. bidsmith will
+match the block to a campaign that already exists in the account and
+take over managing it; if it can't find one, the plan stops and says
+so instead of quietly trying to create it.
+
+That matters most for Video campaigns, which the Google Ads API refuses
+to create at all — see [Adopt a campaign you built in the Google Ads
+UI](/bidsmith/recipes/adopt-a-campaign-from-the-ui/).
+
+`lifecycle` isn't accepted on keyword or targeting resources: Google
+creates those freely, so there'd be nothing for it to protect.
+
 ## Project layout
 
 The simplest project is one file:

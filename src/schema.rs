@@ -1110,6 +1110,47 @@ pub fn resource_schema(ty: &str) -> Option<&'static BlockSchema> {
     resource_schemas().get(ty)
 }
 
+/// Meta-block any `resource` may carry. It says how bidsmith is allowed to act
+/// on the resource rather than what the resource *is*, so it belongs to no
+/// resource type's schema and is validated separately (issue #115).
+pub const LIFECYCLE_BLOCK: &str = "lifecycle";
+
+/// Criterion resources are excluded: the Google Ads API creates criteria
+/// freely, so there is no adopt-only workflow to declare, and one criterion
+/// resource can fan out into several live members — leaving nothing single for
+/// `create = false` to point at. Silently doing nothing would be worse than
+/// saying so.
+const LIFECYCLE_UNSUPPORTED_TYPES: &[&str] = &[
+    "google_ads_ad_group_criterion",
+    "google_ads_campaign_criterion",
+    "google_ads_shared_criterion",
+];
+
+fn lifecycle_schema() -> &'static BlockSchema {
+    static SCHEMA: OnceLock<BlockSchema> = OnceLock::new();
+    SCHEMA.get_or_init(|| BlockSchema {
+        attributes: vec![attr("create", FieldType::Bool, false)
+            .with_default(DefaultValue::Bool(true))],
+        blocks: vec![],
+    })
+}
+
+/// True when `block` declares `lifecycle { create = false }` — the resource is
+/// adopt-only and `plan` must never propose creating it.
+pub fn declares_adopt_only(block: &Block) -> bool {
+    block.body.iter().any(|s| match s {
+        Structure::Block(b) if b.ident.as_str() == LIFECYCLE_BLOCK => {
+            b.body.iter().any(|inner| match inner {
+                Structure::Attribute(a) if a.key.as_str() == "create" => {
+                    matches!(&a.value, Expression::Bool(v) if !*v.as_ref())
+                }
+                _ => false,
+            })
+        }
+        _ => false,
+    })
+}
+
 fn provider_schemas() -> &'static HashMap<&'static str, BlockSchema> {
     static SCHEMAS: OnceLock<HashMap<&'static str, BlockSchema>> = OnceLock::new();
     SCHEMAS.get_or_init(|| {
@@ -2439,10 +2480,11 @@ fn validate_resource(
     };
     let provided = defaults.provided_attrs(ty);
     let address = format!("{ty}.{name}");
+    let without_lifecycle = validate_lifecycle(file, block, ty, &address, registry, locals, variables, diags);
     validate_body(
         file,
         block,
-        &block.body,
+        without_lifecycle.as_ref().unwrap_or(&block.body),
         schema,
         &address,
         registry,
@@ -2454,6 +2496,70 @@ fn validate_resource(
     if ty == "google_ads_campaign" {
         validate_single_bidding_strategy(file, &block.body, &address, diags);
     }
+}
+
+/// Check the resource's `lifecycle` meta-block and return the rest of its body
+/// for the type schema to validate. `None` means there was no `lifecycle` block
+/// and the caller should use the body as-is.
+#[allow(clippy::too_many_arguments)]
+fn validate_lifecycle(
+    file: &ParsedFile,
+    block: &Block,
+    ty: &str,
+    address: &str,
+    registry: &ResourceRegistry,
+    locals: &LocalsRegistry,
+    variables: &VariablesRegistry,
+    diags: &mut Vec<Diag>,
+) -> Option<Body> {
+    let mut found: Vec<&Block> = Vec::new();
+    let mut rest = Body::new();
+    for s in block.body.iter() {
+        match s {
+            Structure::Block(b) if b.ident.as_str() == LIFECYCLE_BLOCK => found.push(b),
+            other => rest.push(other.clone()),
+        }
+    }
+    let first = found.first()?;
+
+    if LIFECYCLE_UNSUPPORTED_TYPES.contains(&ty) {
+        diags.push(Diag::new(
+            file.src.clone(),
+            span_of(first.ident.span()),
+            format!(
+                "'lifecycle' is not supported on {ty} — the Google Ads API creates criteria \
+                 freely, so there is nothing an adopt-only declaration would protect"
+            ),
+        ));
+        return Some(rest);
+    }
+    for extra in found.iter().skip(1) {
+        diags.push(Diag::new(
+            file.src.clone(),
+            span_of(extra.ident.span()),
+            format!("duplicate 'lifecycle' block in {address}"),
+        ));
+    }
+    if !first.labels.is_empty() {
+        diags.push(Diag::new(
+            file.src.clone(),
+            span_of(first.labels[0].span()),
+            "nested block 'lifecycle' does not take labels".to_string(),
+        ));
+    }
+    validate_body(
+        file,
+        first,
+        &first.body,
+        lifecycle_schema(),
+        &format!("{address}.{LIFECYCLE_BLOCK}"),
+        registry,
+        locals,
+        variables,
+        RequiredCheck::Enforce,
+        diags,
+    );
+    Some(rest)
 }
 
 /// The campaign's bidding blocks map to one protobuf `oneof`, which the block
@@ -5260,6 +5366,120 @@ resource "google_ads_campaign" "c" {
         );
         assert!(
             diags.iter().any(|d| d.message.contains("invalid value \"ENABLED_X\"")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    const ADOPT_ONLY_VIDEO: &str = r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "v" {
+  name                     = "GH_YouTube_FR Instream"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  lifecycle {
+    create = false
+  }
+}
+"#;
+
+    #[test]
+    fn lifecycle_block_validates_clean() {
+        let diags = validate_str("lifecycle_ok", ADOPT_ONLY_VIDEO);
+        assert!(
+            diags.is_empty(),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn lifecycle_rejects_an_unknown_attribute() {
+        let diags = validate_str(
+            "lifecycle_unknown",
+            &ADOPT_ONLY_VIDEO.replace("create = false", "adopt_match = \"name\""),
+        );
+        assert!(
+            diags.iter().any(|d| d
+                .message
+                .contains("unknown attribute 'adopt_match' in google_ads_campaign.v.lifecycle")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn lifecycle_rejects_a_non_bool_create() {
+        let diags = validate_str(
+            "lifecycle_type",
+            &ADOPT_ONLY_VIDEO.replace("create = false", "create = \"no\""),
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("expected bool")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn duplicate_lifecycle_blocks_error() {
+        let diags = validate_str(
+            "lifecycle_dup",
+            &ADOPT_ONLY_VIDEO.replace(
+                "  lifecycle {\n    create = false\n  }",
+                "  lifecycle {\n    create = false\n  }\n\n  lifecycle {\n    create = true\n  }",
+            ),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("duplicate 'lifecycle' block in google_ads_campaign.v")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn lifecycle_on_a_criterion_is_rejected() {
+        let diags = validate_str(
+            "lifecycle_criterion",
+            r#"
+resource "google_ads_ad_group_criterion" "kw" {
+  ad_group = google_ads_ad_group.ag.id
+
+  keyword {
+    text       = "shoes"
+    match_type = "EXACT"
+  }
+
+  lifecycle {
+    create = false
+  }
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d
+                .message
+                .contains("'lifecycle' is not supported on google_ads_ad_group_criterion")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn lifecycle_does_not_hide_a_sibling_error() {
+        let diags = validate_str(
+            "lifecycle_sibling",
+            &ADOPT_ONLY_VIDEO.replace("  lifecycle {", "  budget_typo = 1\n\n  lifecycle {"),
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("unknown attribute 'budget_typo'")),
             "{:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );

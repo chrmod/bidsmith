@@ -88,6 +88,7 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
         custom_audiences: Vec::new(),
         labels: Default::default(),
         claim_labels: Default::default(),
+        adopt_only: Default::default(),
         campaign_claims: Default::default(),
         ad_group_claims: Default::default(),
     };
@@ -119,6 +120,9 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
                         }
                         None => b,
                     };
+                    if crate::schema::declares_adopt_only(b) {
+                        input.adopt_only.insert(address.clone());
+                    }
                     let mut emit = |result: Result<(), Diag>| {
                         if let Err(d) = result {
                             diags.push(d);
@@ -1872,6 +1876,7 @@ pub fn import_program(program: &Program) -> Result<ImportResult, Vec<Diag>> {
         custom_audiences: Vec::new(),
         labels: Default::default(),
         claim_labels: Default::default(),
+        adopt_only: Default::default(),
         campaign_claims: Default::default(),
         ad_group_claims: Default::default(),
     };
@@ -1907,6 +1912,7 @@ pub fn import_program(program: &Program) -> Result<ImportResult, Vec<Diag>> {
                 combined.campaign_shared_sets.extend(r.input.campaign_shared_sets);
                 combined.youtube_video_assets.extend(r.input.youtube_video_assets);
                 combined.custom_audiences.extend(r.input.custom_audiences);
+                combined.adopt_only.extend(r.input.adopt_only);
                 skipped.extend(r.skipped);
             }
             Err(ds) => diags.extend(ds),
@@ -3431,6 +3437,79 @@ resource "google_ads_campaign" "display" {
             c.manual_cpc.as_ref().and_then(|m| m.enhanced_cpc_enabled),
             Some(true)
         );
+    }
+
+    #[test]
+    fn lifecycle_create_false_marks_only_that_resource_adopt_only() {
+        let input = import_str(
+            "adopt_only",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "v" {
+  name                     = "GH_YouTube_FR Instream"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  lifecycle {
+    create = false
+  }
+}
+"#,
+        );
+        let marked: Vec<&String> = input.adopt_only.iter().collect();
+        assert_eq!(marked.len(), 1, "{marked:?}");
+        assert!(marked[0].ends_with("google_ads_campaign.v"), "{marked:?}");
+    }
+
+    #[test]
+    fn lifecycle_create_true_is_the_default_and_marks_nothing() {
+        let input = import_str(
+            "adopt_only_off",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+
+  lifecycle {
+    create = true
+  }
+}
+"#,
+        );
+        assert!(input.adopt_only.is_empty(), "{:?}", input.adopt_only);
+    }
+
+    #[test]
+    fn every_for_each_instance_inherits_the_lifecycle_block() {
+        let input = import_str(
+            "adopt_only_for_each",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "video" {
+  for_each = ["FR", "DE"]
+
+  name                     = "GH_YouTube_${each.value} Instream"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  lifecycle {
+    create = false
+  }
+}
+"#,
+        );
+        let mut marked: Vec<&String> = input.adopt_only.iter().collect();
+        marked.sort();
+        assert_eq!(marked.len(), 2, "{marked:?}");
+        assert!(marked.iter().all(|a| a.contains("google_ads_campaign.video[")), "{marked:?}");
     }
 
     #[test]

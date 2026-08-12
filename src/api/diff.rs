@@ -314,7 +314,12 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
                     (Action::Create, None)
                 }
             };
-            if d.advertising_channel_type == "VIDEO" {
+            // A create the file already forbade gets the sharper "expected to
+            // adopt, found nothing" blocker below; drift on one still needs
+            // the channel warning.
+            let adopt_only_create =
+                matches!(action, Action::Create) && declared.adopt_only.contains(&d.id);
+            if d.advertising_channel_type == "VIDEO" && !adopt_only_create {
                 if let Some(b) = video_is_read_only_blocker(&d.id, &action) {
                     blockers.push(b);
                 }
@@ -830,6 +835,7 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     diffs.extend(deletes);
     warnings.extend(campaign_warnings);
     warnings.extend(shared_budget_warnings(declared));
+    blockers.extend(adopt_only_blockers(declared, &diffs));
 
     let mut noop_count = 0;
     let mut create_count = 0;
@@ -1386,6 +1392,66 @@ fn video_is_read_only_blocker(address: &str, action: &Action) -> Option<String> 
         "{address} {what}. Nothing in the batch can be sent while it is there, because {}",
         crate::schema::VIDEO_IS_READ_ONLY
     ))
+}
+
+/// Resources the file declared adopt-only (`lifecycle { create = false }`)
+/// that matched nothing live. Without this the plan silently degrades into a
+/// create — which for a VIDEO campaign Google then rejects, taking every
+/// unrelated operation in the atomic batch with it. Saying "expected to adopt,
+/// found nothing" names the real problem, and names the key the match is on so
+/// the fix is obvious (issue #115).
+fn adopt_only_blockers(declared: &ExportInput, diffs: &[ResourceDiff]) -> Vec<String> {
+    if declared.adopt_only.is_empty() {
+        return Vec::new();
+    }
+    diffs
+        .iter()
+        .filter(|d| matches!(d.action, Action::Create))
+        .filter(|d| declared.adopt_only.contains(&d.address))
+        .map(|d| {
+            let by = match adopt_match_key(declared, d.kind, &d.address) {
+                Some(name) => format!("by name {name:?}"),
+                None => "by content".to_string(),
+            };
+            format!(
+                "{} is declared adopt-only (lifecycle {{ create = false }}) but no live {} \
+                 matched it, so there is nothing to adopt. bidsmith looks for its \
+                 bidsmith:address label first, then {by}. Create it in the Google Ads UI to \
+                 match, or drop the lifecycle block to let bidsmith create it",
+                d.address,
+                d.kind.replace('_', " "),
+            )
+        })
+        .collect()
+}
+
+/// The content key a declared resource falls back to when no `bidsmith:address`
+/// label matches — the thing a reviewer has to keep in sync by hand, and so the
+/// thing the adopt-only error has to name. `None` for kinds matched on their
+/// whole body rather than a name.
+fn adopt_match_key<'a>(
+    declared: &'a ExportInput,
+    kind: &str,
+    address: &str,
+) -> Option<&'a str> {
+    let find = |name: Option<&'a String>| name.map(String::as_str);
+    match kind {
+        "campaign_budget" => find(
+            declared.campaign_budgets.iter().find(|b| b.id == address).map(|b| &b.name),
+        ),
+        "campaign" => find(declared.campaigns.iter().find(|c| c.id == address).map(|c| &c.name)),
+        "ad_group" => find(declared.ad_groups.iter().find(|g| g.id == address).map(|g| &g.name)),
+        "conversion_action" => find(
+            declared.conversion_actions.iter().find(|c| c.id == address).map(|c| &c.name),
+        ),
+        "shared_set" => {
+            find(declared.shared_sets.iter().find(|s| s.id == address).map(|s| &s.name))
+        }
+        "custom_audience" => {
+            find(declared.custom_audiences.iter().find(|a| a.id == address).map(|a| &a.name))
+        }
+        _ => None,
+    }
 }
 
 /// A labeled live resource the file no longer declares, on a channel whose
@@ -3325,5 +3391,132 @@ mod shared_budget_tests {
         );
         let report = diff(&declared, &input(EMPTY_LIVE));
         assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    }
+}
+
+#[cfg(test)]
+mod adopt_only_tests {
+    use super::*;
+
+    fn input(json: &str) -> ExportInput {
+        let mut v: ExportInput = serde_json::from_str(json).expect("valid test input");
+        v.apply_schema_defaults();
+        v
+    }
+
+    const NAME: &str = "GH_YouTube_FR Instream";
+
+    fn declared_video(adopt_only: bool) -> ExportInput {
+        let lifecycle = if adopt_only { r#""adopt_only": ["m.c"],"# } else { "" };
+        input(&format!(
+            r#"{{
+            "customer_id": "1",
+            {lifecycle}
+            "campaign_budgets": [{{"id":"m.b","name":"B","amount_micros":1000000}}],
+            "campaigns": [{{"id":"m.c","name":"{NAME}","advertising_channel_type":"VIDEO",
+              "campaign_budget":"m.b"}}]
+        }}"#
+        ))
+    }
+
+    fn live_video(name: &str, status: &str) -> ExportInput {
+        input(&format!(
+            r#"{{
+            "customer_id": "1",
+            "campaign_budgets": [{{"id":"900","name":"B","amount_micros":1000000}}],
+            "campaigns": [{{"id":"500","name":"{name}","status":"{status}",
+              "advertising_channel_type":"VIDEO","campaign_budget":"900"}}]
+        }}"#
+        ))
+    }
+
+    const EMPTY_LIVE: &str = r#"{"customer_id": "1"}"#;
+
+    #[test]
+    fn an_unmatched_adopt_only_resource_blocks_the_plan() {
+        let report = diff(&declared_video(true), &input(EMPTY_LIVE));
+        let b = report
+            .blockers
+            .iter()
+            .find(|b| b.contains("adopt-only"))
+            .unwrap_or_else(|| panic!("{:?}", report.blockers));
+        assert!(b.contains("m.c is declared adopt-only"), "{b}");
+        assert!(b.contains(&format!("by name {NAME:?}")), "{b}");
+    }
+
+    #[test]
+    fn an_unmatched_adopt_only_resource_raises_one_blocker_not_two() {
+        // Without the suppression a VIDEO campaign draws the channel blocker
+        // too, and the vaguer message wins the reader's attention.
+        let report = diff(&declared_video(true), &input(EMPTY_LIVE));
+        assert_eq!(report.blockers.len(), 1, "{:?}", report.blockers);
+    }
+
+    #[test]
+    fn without_the_lifecycle_block_the_same_file_only_reports_the_channel() {
+        let report = diff(&declared_video(false), &input(EMPTY_LIVE));
+        assert_eq!(report.blockers.len(), 1, "{:?}", report.blockers);
+        assert!(report.blockers[0].contains("would be created"), "{:?}", report.blockers);
+    }
+
+    #[test]
+    fn an_adopt_only_resource_that_matches_live_is_quiet() {
+        let report = diff(&declared_video(true), &live_video(NAME, "ENABLED"));
+        assert!(report.blockers.is_empty(), "{:?}", report.blockers);
+        assert_eq!(report.create_count, 0);
+    }
+
+    #[test]
+    fn drift_on_a_matched_adopt_only_video_campaign_still_blocks() {
+        // create = false says nothing about updates, and the API still refuses
+        // them on this channel.
+        let report = diff(&declared_video(true), &live_video(NAME, "PAUSED"));
+        let b = report
+            .blockers
+            .iter()
+            .find(|b| b.contains("has drift on status"))
+            .unwrap_or_else(|| panic!("{:?}", report.blockers));
+        assert!(b.contains("m.c"), "{b}");
+    }
+
+    #[test]
+    fn a_renamed_live_campaign_is_reported_as_a_failed_adoption() {
+        let report = diff(&declared_video(true), &live_video("Renamed In The UI", "ENABLED"));
+        assert!(
+            report.blockers.iter().any(|b| b.contains("adopt-only")),
+            "{:?}",
+            report.blockers
+        );
+    }
+
+    #[test]
+    fn adopt_only_works_on_kinds_other_than_campaigns() {
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "adopt_only": ["m.b"],
+            "campaign_budgets": [{"id":"m.b","name":"Always On","amount_micros":1000000}]
+        }"#,
+        );
+        let report = diff(&declared, &input(EMPTY_LIVE));
+        let b = report
+            .blockers
+            .first()
+            .unwrap_or_else(|| panic!("{:?}", report.blockers));
+        assert!(b.contains("no live campaign budget matched it"), "{b}");
+        assert!(b.contains(r#"by name "Always On""#), "{b}");
+    }
+
+    #[test]
+    fn an_undeclared_address_in_adopt_only_changes_nothing() {
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "adopt_only": ["m.gone"],
+            "campaign_budgets": [{"id":"m.b","name":"B","amount_micros":1000000}]
+        }"#,
+        );
+        let report = diff(&declared, &input(EMPTY_LIVE));
+        assert!(report.blockers.is_empty(), "{:?}", report.blockers);
     }
 }

@@ -22,6 +22,19 @@ then let bidsmith adopt it by name and keep it here as the record of
 what's live — where it plans as a no-op and any UI drift shows up in
 review.
 
+The campaign says so in the file:
+
+```hcl
+lifecycle {
+  create = false
+}
+```
+
+Without it, a live campaign whose name doesn't match the `.bid` plans as
+a **create**, which Google then rejects — taking every unrelated
+operation in the batch with it. With it, `plan` stops and names the
+campaign it was looking for.
+
 `manual_cpv {}` (and `target_cpv` / `target_cpm` / `manual_cpm`) records
 which strategy the live campaign bids with. The max-CPV bid itself lives
 on the ad group.
