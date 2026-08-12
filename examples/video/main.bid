@@ -118,3 +118,57 @@ resource "google_ads_ad_group_ad" "preroll" {
     }
   }
 }
+
+# The 35+ cohort: same budget, same creative, a narrower audience. Targeting
+# the cohort on the ad group keeps it a second ad group here rather than a
+# second campaign.
+resource "google_ads_ad_group" "instream_35_up" {
+  name = "In-stream — 35+"
+  campaign = google_ads_campaign.preroll.id
+  type = "VIDEO_TRUE_VIEW_IN_STREAM"
+  cpv_bid_micros = 35000
+}
+
+resource "google_ads_ad_group_criterion" "cohort_35_44" {
+  ad_group = google_ads_ad_group.instream_35_up.id
+
+  age_range {
+    type = "AGE_RANGE_35_44"
+  }
+}
+
+resource "google_ads_ad_group_criterion" "cohort_45_54" {
+  ad_group = google_ads_ad_group.instream_35_up.id
+
+  age_range {
+    type = "AGE_RANGE_45_54"
+  }
+}
+
+resource "google_ads_ad_group_criterion" "cohort_tech_channel" {
+  ad_group = google_ads_ad_group.instream_35_up.id
+
+  youtube_channel {
+    channel_id = "UCXuqSBlHAE6Xw-yeJA0Tunw"
+  }
+}
+
+resource "google_ads_ad_group_ad" "preroll_35_up" {
+  ad_group = google_ads_ad_group.instream_35_up.id
+  status = "PAUSED"
+
+  ad {
+    name = "Preroll 12s — 35+"
+    final_urls = [
+      "https://www.ghostery.com/ghostery-ad-blocker?utm_source=youtube&utm_campaign=12sec_india_35up",
+    ]
+
+    video_responsive_ad {
+      video = google_ads_youtube_video_asset.brand_12s.id
+      headlines = ["Block Ads & Trackers"]
+      long_headlines = ["Ghostery blocks ads and trackers on every site"]
+      descriptions = ["Install the free privacy extension in one click."]
+      call_to_actions = ["Install"]
+    }
+  }
+}

@@ -128,10 +128,29 @@ pub const QUERIES: &[(&str, &str)] = &[
           ad_group_criterion.status,
           ad_group_criterion.negative,
           ad_group_criterion.cpc_bid_micros,
+          ad_group_criterion.bid_modifier,
           ad_group_criterion.keyword.text,
-          ad_group_criterion.keyword.match_type
+          ad_group_criterion.keyword.match_type,
+          ad_group_criterion.location.geo_target_constant,
+          ad_group_criterion.language.language_constant,
+          ad_group_criterion.youtube_channel.channel_id,
+          ad_group_criterion.youtube_video.video_id,
+          ad_group_criterion.topic.topic_constant,
+          ad_group_criterion.placement.url,
+          ad_group_criterion.user_interest.user_interest_category,
+          ad_group_criterion.age_range.type,
+          ad_group_criterion.gender.type,
+          ad_group_criterion.parental_status.type,
+          ad_group_criterion.income_range.type,
+          ad_group_criterion.custom_audience.custom_audience,
+          ad_group_criterion.user_list.user_list,
+          ad_group_criterion.combined_audience.combined_audience
         FROM ad_group_criterion
-        WHERE ad_group_criterion.type = KEYWORD
+        WHERE ad_group_criterion.type IN (
+            KEYWORD, LOCATION, LANGUAGE, YOUTUBE_CHANNEL, YOUTUBE_VIDEO, TOPIC,
+            PLACEMENT, USER_INTEREST, AGE_RANGE, GENDER, PARENTAL_STATUS,
+            INCOME_RANGE, CUSTOM_AUDIENCE, USER_LIST, COMBINED_AUDIENCE
+          )
           AND ad_group_criterion.status != 'REMOVED'",
     ),
     (

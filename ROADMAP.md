@@ -489,10 +489,11 @@ Smaller follow-ups that can ride along:
   previously an ad-group-only edit sailed into the atomic batch and took
   every unrelated operation down with it.
   **Deferred:** `google_ads_ad_group_criterion`'s `cpv_bid_micros` /
-  `cpm_bid_micros`. bidsmith's criterion resource is KEYWORD-only
-  (`live_state.rs` filters on `type = KEYWORD`) and keywords bid by CPC,
-  so those fields would be unusable where they'd be declarable. Revisit
-  with non-keyword criteria.
+  `cpm_bid_micros`. The KEYWORD-only limit is gone (issue #110: the
+  resource now carries audiences, placements, demographics, geo and
+  language, and bids adjust via `bid_modifier`), so these are now
+  declarable where they'd be usable — they wait only on a live probe of
+  which criterion types accept them.
 - Repeating-block field-level diff for RSA `headline` / `description`
   blocks and the `final_urls` list. Today these are matched
   all-or-nothing; per-asset add/remove/repin detection would close

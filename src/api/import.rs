@@ -5,13 +5,13 @@ use hcl_edit::structure::{Attribute, Block, Structure};
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
     JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
-    JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCustomerAsset,
-    JsonAgeRange, JsonAudience, JsonCustomAudience, JsonCustomAudienceMember,
+    JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCriterion,
+    JsonCustomerAsset, JsonAgeRange, JsonAudience, JsonCustomAudience, JsonCustomAudienceMember,
     JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonGender,
-    JsonGeoTargetTypeSetting, JsonKeyword,
-    JsonLanguage, JsonLocation, JsonManualCpc, JsonNetworkSettings,
-    JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedCriterion, JsonSharedSet,
-    JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonTopic, JsonUserInterest, JsonValueSettings,
+    JsonGeoTargetTypeSetting, JsonIncomeRange, JsonKeyword, JsonLanguage, JsonLocation,
+    JsonManualCpc, JsonNetworkSettings, JsonParentalStatus, JsonPlacement, JsonProximity,
+    JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedCriterion, JsonSharedSet, JsonSitelinkAsset,
+    JsonStructuredSnippetAsset, JsonTopic, JsonUserInterest, JsonValueSettings,
     JsonVideoResponsiveAd, JsonYoutubeChannel, JsonYoutubeVideo, JsonYoutubeVideoAsset,
 };
 use crate::diagnostics::Diag;
@@ -417,18 +417,10 @@ fn expand_inline_targeting(
             status: Some("ENABLED".to_string()),
             negative: Some(false),
             bid_modifier: None,
-            keyword: None,
-            location: None,
-            language: Some(JsonLanguage { language_constant: constant }),
-            proximity: None,
-            device: None,
-            youtube_channel: None,
-            youtube_video: None,
-            topic: None,
-            user_interest: None,
-            age_range: None,
-            gender: None,
-            audience: None,
+            target: JsonCriterion {
+                language: Some(JsonLanguage { language_constant: constant }),
+                ..JsonCriterion::default()
+            },
         });
     }
     let mut seen_loc: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -448,18 +440,10 @@ fn expand_inline_targeting(
             status: Some("ENABLED".to_string()),
             negative: Some(false),
             bid_modifier: None,
-            keyword: None,
-            location: Some(JsonLocation { geo_target_constant: constant }),
-            language: None,
-            proximity: None,
-            device: None,
-            youtube_channel: None,
-            youtube_video: None,
-            topic: None,
-            user_interest: None,
-            age_range: None,
-            gender: None,
-            audience: None,
+            target: JsonCriterion {
+                location: Some(JsonLocation { geo_target_constant: constant }),
+                ..JsonCriterion::default()
+            },
         });
     }
     out
@@ -936,6 +920,7 @@ fn import_ad_group_criterion(
     let mut status = None;
     let mut negative = None;
     let mut cpc = None;
+    let mut bid_modifier = None;
     let mut keywords: Vec<JsonKeyword> = Vec::new();
     let mut negative_keywords: Vec<JsonKeyword> = Vec::new();
 
@@ -946,6 +931,7 @@ fn import_ad_group_criterion(
                 "status" => status = expect_string_owned(ctx, a),
                 "negative" => negative = expect_bool(ctx, a),
                 "cpc_bid_micros" => cpc = expect_i64(ctx, a),
+                "bid_modifier" => bid_modifier = expect_f64(ctx, a),
                 _ => {}
             },
             Structure::Block(b) => match b.ident.as_str() {
@@ -967,6 +953,23 @@ fn import_ad_group_criterion(
     }
 
     let ad_group = ad_group_ref.ok_or_else(|| missing(ctx.file, block, address, "ad_group"))?;
+    let target = import_criterion_blocks(ctx, block);
+
+    if !target.is_unset() {
+        if !keywords.is_empty() || !negative_keywords.is_empty() {
+            return Err(mixed_criterion_forms(ctx, block, address));
+        }
+        return Ok(vec![JsonAdGroupCriterion {
+            id: address.to_string(),
+            ad_group,
+            status,
+            negative: negative.or(Some(false)),
+            cpc_bid_micros: cpc,
+            bid_modifier,
+            target,
+            managed_address: None,
+        }]);
+    }
 
     let bulk = negative_keywords.len() + keywords.len() > 1 || !negative_keywords.is_empty();
 
@@ -988,7 +991,8 @@ fn import_ad_group_criterion(
                 status: status.clone(),
                 negative: negative.or(Some(false)),
                 cpc_bid_micros: cpc,
-                keyword: kw,
+                bid_modifier,
+                target: keyword_target(kw),
                 managed_address: None,
             });
         }
@@ -999,7 +1003,8 @@ fn import_ad_group_criterion(
                 status: status.clone(),
                 negative: Some(true),
                 cpc_bid_micros: None,
-                keyword: kw,
+                bid_modifier: None,
+                target: keyword_target(kw),
                 managed_address: None,
             });
         }
@@ -1019,9 +1024,74 @@ fn import_ad_group_criterion(
         status,
         negative: negative.or(Some(false)),
         cpc_bid_micros: cpc,
-        keyword,
+        bid_modifier,
+        target: keyword_target(keyword),
         managed_address: None,
     }])
+}
+
+fn keyword_target(keyword: JsonKeyword) -> JsonCriterion {
+    JsonCriterion {
+        keyword: Some(keyword),
+        ..JsonCriterion::default()
+    }
+}
+
+fn mixed_criterion_forms(ctx: &Ctx, block: &Block, address: &str) -> Diag {
+    Diag::new(
+        ctx.file.src.clone(),
+        span_of(block.ident.span()),
+        format!(
+            "{address} mixes keyword blocks with another targeting block; pick one (a criterion resource targets one thing)"
+        ),
+    )
+}
+
+/// The criterion `oneof` blocks a resource carries, minus the keyword forms —
+/// those fan one resource out into several criteria, so each caller expands
+/// them itself.
+fn import_criterion_blocks(ctx: &Ctx, block: &Block) -> JsonCriterion {
+    let mut t = JsonCriterion::default();
+    for s in block.body.iter() {
+        let Structure::Block(b) = s else { continue };
+        match b.ident.as_str() {
+            "location" => t.location = import_location(ctx, b),
+            "language" => t.language = import_language(ctx, b),
+            "proximity" => t.proximity = import_proximity(ctx, b),
+            "device" => t.device = import_device(ctx, b),
+            "youtube_channel" => {
+                t.youtube_channel = one_string(ctx, b, "channel_id")
+                    .map(|channel_id| JsonYoutubeChannel { channel_id })
+            }
+            "youtube_video" => {
+                t.youtube_video =
+                    one_string(ctx, b, "video_id").map(|video_id| JsonYoutubeVideo { video_id })
+            }
+            "topic" => {
+                t.topic = one_string(ctx, b, "topic_constant")
+                    .map(|topic_constant| JsonTopic { topic_constant })
+            }
+            "placement" => t.placement = one_string(ctx, b, "url").map(|url| JsonPlacement { url }),
+            "user_interest" => {
+                t.user_interest = one_string(ctx, b, "user_interest_category").map(
+                    |user_interest_category| JsonUserInterest {
+                        user_interest_category,
+                    },
+                )
+            }
+            "age_range" => t.age_range = one_string(ctx, b, "type").map(|ty| JsonAgeRange { ty }),
+            "gender" => t.gender = one_string(ctx, b, "type").map(|ty| JsonGender { ty }),
+            "parental_status" => {
+                t.parental_status = one_string(ctx, b, "type").map(|ty| JsonParentalStatus { ty })
+            }
+            "income_range" => {
+                t.income_range = one_string(ctx, b, "type").map(|ty| JsonIncomeRange { ty })
+            }
+            "audience" => t.audience = import_audience(ctx, b),
+            _ => {}
+        }
+    }
+    t
 }
 
 fn import_campaign_criterion(
@@ -1034,17 +1104,6 @@ fn import_campaign_criterion(
     let mut negative = None;
     let mut bid_modifier = None;
     let mut keyword = None;
-    let mut location = None;
-    let mut language = None;
-    let mut proximity = None;
-    let mut device = None;
-    let mut youtube_channel = None;
-    let mut youtube_video = None;
-    let mut topic = None;
-    let mut user_interest = None;
-    let mut age_range = None;
-    let mut gender = None;
-    let mut audience = None;
     let mut bulk_negatives: Vec<JsonKeyword> = Vec::new();
 
     for s in block.body.iter() {
@@ -1064,45 +1123,16 @@ fn import_campaign_criterion(
                     }
                 }
                 "negative_keywords" => bulk_negatives.extend(import_compact_keywords(ctx, b)),
-                "location" => location = import_location(ctx, b),
-                "language" => language = import_language(ctx, b),
-                "proximity" => proximity = import_proximity(ctx, b),
-                "device" => device = import_device(ctx, b),
-                "youtube_channel" => {
-                    youtube_channel = one_string(ctx, b, "channel_id")
-                        .map(|channel_id| JsonYoutubeChannel { channel_id })
-                }
-                "youtube_video" => {
-                    youtube_video =
-                        one_string(ctx, b, "video_id").map(|video_id| JsonYoutubeVideo { video_id })
-                }
-                "topic" => {
-                    topic = one_string(ctx, b, "topic_constant")
-                        .map(|topic_constant| JsonTopic { topic_constant })
-                }
-                "user_interest" => {
-                    user_interest = one_string(ctx, b, "user_interest_category")
-                        .map(|user_interest_category| JsonUserInterest {
-                            user_interest_category,
-                        })
-                }
-                "age_range" => age_range = one_string(ctx, b, "type").map(|ty| JsonAgeRange { ty }),
-                "gender" => gender = one_string(ctx, b, "type").map(|ty| JsonGender { ty }),
-                "audience" => audience = import_audience(ctx, b),
                 _ => {}
             },
         }
     }
 
     let campaign = campaign_ref.ok_or_else(|| missing(ctx.file, block, address, "campaign"))?;
+    let mut target = import_criterion_blocks(ctx, block);
 
     if !bulk_negatives.is_empty() {
-        if keyword.is_some()
-            || location.is_some()
-            || language.is_some()
-            || proximity.is_some()
-            || device.is_some()
-        {
+        if keyword.is_some() || !target.is_unset() {
             return Err(Diag::new(
                 ctx.file.src.clone(),
                 span_of(block.ident.span()),
@@ -1119,53 +1149,21 @@ fn import_campaign_criterion(
                 status: status.clone(),
                 negative: Some(true),
                 bid_modifier: None,
-                keyword: Some(kw),
-                location: None,
-                language: None,
-                proximity: None,
-                device: None,
-                youtube_channel: None,
-                youtube_video: None,
-                topic: None,
-                user_interest: None,
-                age_range: None,
-                gender: None,
-                audience: None,
+                target: keyword_target(kw),
             });
         }
         return Ok(out);
     }
 
-    let has_positive_shape = keyword.is_some()
-        || location.is_some()
-        || language.is_some()
-        || proximity.is_some()
-        || device.is_some()
-        || youtube_channel.is_some()
-        || youtube_video.is_some()
-        || topic.is_some()
-        || user_interest.is_some()
-        || age_range.is_some()
-        || gender.is_some()
-        || audience.is_some();
+    target.keyword = keyword;
+    let has_positive_shape = !target.is_unset();
     Ok(vec![JsonCampaignCriterion {
         id: address.to_string(),
         campaign,
         status,
         negative: if has_positive_shape { negative.or(Some(false)) } else { negative },
         bid_modifier,
-        keyword,
-        location,
-        language,
-        proximity,
-        device,
-        youtube_channel,
-        youtube_video,
-        topic,
-        user_interest,
-        age_range,
-        gender,
-        audience,
+        target,
     }])
 }
 
@@ -1972,15 +1970,112 @@ mod tests {
         let mut v: Vec<(String, String, bool)> = criteria
             .iter()
             .map(|c| {
+                let kw = c.target.keyword.as_ref().expect("keyword criterion");
                 (
-                    c.keyword.text.clone(),
-                    c.keyword.match_type.clone(),
+                    kw.text.clone(),
+                    kw.match_type.clone(),
                     c.negative.unwrap_or(false),
                 )
             })
             .collect();
         v.sort();
         v
+    }
+
+    fn import_err(name: &str, content: &str) -> String {
+        let mut tmp = std::env::temp_dir();
+        tmp.push(format!("bidsmith-import-test-{name}.bid"));
+        {
+            let mut f = std::fs::File::create(&tmp).expect("create tmp");
+            f.write_all(content.as_bytes()).expect("write tmp");
+        }
+        let pf = parse_file(&tmp).expect("parse");
+        let Err(diags) = import_files(std::slice::from_ref(&pf), &InputBindings::default()) else {
+            panic!("import should fail");
+        };
+        diags
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn ad_group_targeting_blocks_import_as_one_criterion_each() {
+        // Issue #110: cohort, inventory, and demographic narrowing at the ad
+        // group, so one video campaign can hold a cohort per ad group.
+        let input = import_str(
+            "ag_targeting",
+            r#"
+resource "google_ads_ad_group_criterion" "cohort" {
+  ad_group     = google_ads_ad_group.ag.id
+  bid_modifier = 1.2
+
+  audience {
+    user_list = "customers/1/userLists/987"
+  }
+}
+
+resource "google_ads_ad_group_criterion" "no_kids" {
+  ad_group = google_ads_ad_group.ag.id
+  negative = true
+
+  parental_status {
+    type = "PARENT"
+  }
+}
+
+resource "google_ads_ad_group_criterion" "market" {
+  ad_group = google_ads_ad_group.ag.id
+
+  location {
+    geo_target_constant = "geoTargetConstants/2702"
+  }
+}
+"#,
+        );
+        assert_eq!(input.ad_group_criteria.len(), 3);
+        let cohort = &input.ad_group_criteria[0];
+        assert_eq!(
+            cohort.target.audience.as_ref().and_then(|a| a.user_list.as_deref()),
+            Some("customers/1/userLists/987")
+        );
+        assert_eq!(cohort.bid_modifier, Some(1.2));
+        assert_eq!(cohort.negative, Some(false));
+        assert_eq!(input.ad_group_criteria[1].negative, Some(true));
+        assert_eq!(
+            input.ad_group_criteria[2]
+                .target
+                .location
+                .as_ref()
+                .map(|l| l.geo_target_constant.as_str()),
+            Some("geoTargetConstants/2702")
+        );
+    }
+
+    #[test]
+    fn an_ad_group_criterion_cannot_target_a_keyword_and_a_cohort_at_once() {
+        let err = import_err(
+            "ag_mixed",
+            r#"
+resource "google_ads_ad_group_criterion" "mixed" {
+  ad_group = google_ads_ad_group.ag.id
+
+  keyword {
+    text       = "shoes"
+    match_type = "EXACT"
+  }
+
+  age_range {
+    type = "AGE_RANGE_35_44"
+  }
+}
+"#,
+        );
+        assert!(
+            err.contains("mixes keyword blocks with another targeting block"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -2192,7 +2287,7 @@ resource "google_ads_campaign_criterion" "neg" {
         );
         assert_eq!(input.campaign_criteria.len(), 4);
         assert!(input.campaign_criteria.iter().all(|c| c.negative == Some(true)));
-        assert!(input.campaign_criteria.iter().all(|c| c.keyword.is_some()));
+        assert!(input.campaign_criteria.iter().all(|c| c.target.keyword.is_some()));
     }
 
     #[test]
@@ -2221,9 +2316,9 @@ resource "google_ads_campaign" "c" {
             .map(|c| {
                 assert_eq!(c.negative, Some(false));
                 assert_eq!(c.status.as_deref(), Some("ENABLED"));
-                if let Some(l) = &c.location {
+                if let Some(l) = &c.target.location {
                     l.geo_target_constant.clone()
-                } else if let Some(l) = &c.language {
+                } else if let Some(l) = &c.target.language {
                     l.language_constant.clone()
                 } else {
                     panic!("expected a location or language criterion")
@@ -3057,6 +3152,7 @@ resource "google_ads_campaign" "shell" {
         assert_eq!(input.campaign_criteria.len(), 1);
         assert_eq!(
             input.campaign_criteria[0]
+                .target
                 .language
                 .as_ref()
                 .map(|l| l.language_constant.as_str()),
@@ -3361,7 +3457,7 @@ resource "google_ads_campaign_criterion" "no_kids" {
         let audience = declared
             .campaign_criteria
             .iter()
-            .find_map(|c| c.audience.as_ref())
+            .find_map(|c| c.target.audience.as_ref())
             .expect("audience criterion");
         assert!(
             audience
@@ -3568,7 +3664,7 @@ resource "google_ads_campaign_criterion" "gh_cookies_device_exclusions" {
             .map(|c| {
                 (
                     c.id.clone(),
-                    c.device.as_ref().expect("device").ty.clone(),
+                    c.target.device.as_ref().expect("device").ty.clone(),
                     c.bid_modifier,
                 )
             })

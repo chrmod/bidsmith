@@ -437,10 +437,10 @@ resource type, any file layout, modules, schema validation.
   removes orphaned members of an `ad_group_criterion` /
   `campaign_criterion` / `shared_set` whose parent is still declared,
   and only inside a `(parent, category)` bidsmith owns. Category
-  partitions keyword polarity (positive/negative) and
-  campaign-criterion shape (keyword/location/language/proximity), so
-  declaring negatives never deletes positives a user manages in the UI,
-  and declaring one axis never prunes another. Ownership of a category
+  partitions keyword polarity (positive/negative) and criterion shape
+  (location / language / proximity / audience / demographic / …) on both
+  criterion resources, so declaring negatives never deletes positives a
+  user manages in the UI, and declaring one axis never prunes another. Ownership of a category
   is claimed two ways: the file declares ≥1 member of it, or the live
   parent carries a `bidsmith:owns=<category>` label written by a
   previous apply (issue #88: without the persisted claim, removing the
@@ -1417,7 +1417,17 @@ Validator covers (so far):
   compact and per-keyword forms are equivalent at import time (each
   (text, match_type) pair is one criterion, matched by that key in the
   diff), so the choice is purely authoring ergonomics and the two can
-  coexist in one resource. `fmt` does not fold between the forms),
+  coexist in one resource. `fmt` does not fold between the forms; plus
+  the non-keyword targeting axes from issue #110 — `audience`,
+  `user_interest`, `youtube_channel`, `youtube_video`, `topic`,
+  `placement { url }`, `age_range`, `gender`, `parental_status`,
+  `income_range`, `location`, `language` — each usable as an exclusion
+  via `negative = true` and bid-adjustable via `bid_modifier`. A
+  criterion resource targets one thing, so mixing a keyword block with
+  another axis is rejected at import. Ad-group `location` / `language`
+  *intersect* with the campaign's own targeting rather than overriding
+  it, which is what lets one campaign hold a cohort or a market per ad
+  group instead of fanning out into one campaign each),
   `google_ads_campaign_criterion` (single negative keyword, location,
   language, proximity with flat `latitude` / `longitude` in decimal
   degrees plus `radius` + `radius_units`; the adapter rounds to the

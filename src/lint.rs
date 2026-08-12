@@ -73,7 +73,10 @@ fn lint_resource(file: &ParsedFile, block: &Block, bindings: &Bindings, diags: &
         lint_flight_window(file, block, &address, bindings, diags);
     }
 
-    if ty == "google_ads_campaign_criterion" {
+    if matches!(
+        ty,
+        "google_ads_campaign_criterion" | "google_ads_ad_group_criterion"
+    ) {
         if let Some(lang_block) = find_block(&block.body, "language") {
             lint_language(file, lang_block, &address, bindings, diags);
         }
@@ -132,6 +135,8 @@ fn lint_undetermined_demographic(
     for (name, noun, undetermined) in [
         ("age_range", "age", "AGE_RANGE_UNDETERMINED"),
         ("gender", "gender", "UNDETERMINED"),
+        ("parental_status", "parental status", "UNDETERMINED"),
+        ("income_range", "household income", "INCOME_RANGE_UNDETERMINED"),
     ] {
         let Some(inner) = find_block(&block.body, name) else {
             continue;
@@ -146,7 +151,7 @@ fn lint_undetermined_demographic(
             file.src.clone(),
             span_of(attr.value.span()),
             format!(
-                "{address} excludes {undetermined}: Google Ads cannot determine {noun} for a large share of viewers, so this removes most of the campaign's reach rather than a small slice"
+                "{address} excludes {undetermined}: Google Ads cannot determine {noun} for a large share of viewers, so this removes most of your reach rather than a small slice"
             ),
         ));
     }
@@ -681,7 +686,26 @@ resource "google_ads_campaign_criterion" "no_unknown" {
 "#,
         );
         assert!(
-            msgs.iter().any(|m| m.contains("removes most of the campaign's reach")),
+            msgs.iter().any(|m| m.contains("removes most of your reach")),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn the_undetermined_warning_covers_ad_group_targeting_too() {
+        let msgs = lint_str(
+            "undetermined_ad_group",
+            r#"
+resource "google_ads_ad_group_criterion" "no_unknown_income" {
+  ad_group = google_ads_ad_group.g.id
+  negative = true
+
+  income_range { type = "INCOME_RANGE_UNDETERMINED" }
+}
+"#,
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("removes most of your reach")),
             "{msgs:?}"
         );
     }

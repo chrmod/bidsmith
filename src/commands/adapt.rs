@@ -5,15 +5,14 @@ use serde_json::Value;
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
     JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
-    JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCustomerAsset,
-    JsonAgeRange, JsonAudience, JsonCustomAudience, JsonCustomAudienceMember,
+    JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCriterion,
+    JsonCustomerAsset, JsonAgeRange, JsonAudience, JsonCustomAudience, JsonCustomAudienceMember,
     JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonGender,
-    JsonGeoTargetTypeSetting, JsonKeyword,
-    JsonLanguage, JsonLocation, JsonManualCpc, JsonNetworkSettings, JsonProximity,
-    JsonResponsiveSearchAd, JsonRsaAsset,
-    JsonSharedSet, JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonTopic, JsonUserInterest,
-    JsonValueSettings, JsonVideoResponsiveAd, JsonYoutubeChannel, JsonYoutubeVideo,
-    JsonYoutubeVideoAsset,
+    JsonGeoTargetTypeSetting, JsonIncomeRange, JsonKeyword, JsonLanguage, JsonLocation,
+    JsonManualCpc, JsonNetworkSettings, JsonParentalStatus, JsonPlacement, JsonProximity,
+    JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedSet, JsonSitelinkAsset,
+    JsonStructuredSnippetAsset, JsonTopic, JsonUserInterest, JsonValueSettings,
+    JsonVideoResponsiveAd, JsonYoutubeChannel, JsonYoutubeVideo, JsonYoutubeVideoAsset,
 };
 
 pub fn from_search_response(raw: &str) -> Result<ExportInput, String> {
@@ -524,9 +523,14 @@ impl AdapterState {
         else {
             return;
         };
-        let Some(kw_value) = v.get("keyword") else {
+        let mut target = JsonCriterion::default();
+        merge_criterion(v, &mut target);
+        // A criterion of a type bidsmith does not model has nothing to render;
+        // dropping it here keeps it out of the diff rather than exporting an
+        // empty resource.
+        if target.is_unset() {
             return;
-        };
+        }
         let ad_group_id = v
             .get("adGroup")
             .and_then(Value::as_str)
@@ -542,27 +546,14 @@ impl AdapterState {
                 status: None,
                 negative: None,
                 cpc_bid_micros: None,
-                keyword: JsonKeyword {
-                    text: String::new(),
-                    match_type: String::new(),
-                },
+                bid_modifier: None,
+                target: JsonCriterion::default(),
                 managed_address: None,
             });
         if !ad_group_id.is_empty() {
             entry.ad_group = ad_group_id;
         }
-        entry.keyword = JsonKeyword {
-            text: kw_value
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-            match_type: kw_value
-                .get("matchType")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-        };
+        entry.target = target;
         if let Some(s) = v.get("status").and_then(Value::as_str) {
             entry.status = Some(s.to_string());
         }
@@ -571,6 +562,9 @@ impl AdapterState {
         }
         if let Some(n) = parse_i64(v.get("cpcBidMicros")) {
             entry.cpc_bid_micros = Some(n);
+        }
+        if let Some(bm) = v.get("bidModifier").and_then(parse_f64_value) {
+            entry.bid_modifier = Some(bm);
         }
     }
 
@@ -601,18 +595,7 @@ impl AdapterState {
                 status: None,
                 negative: None,
                 bid_modifier: None,
-                keyword: None,
-                location: None,
-                language: None,
-                proximity: None,
-                device: None,
-                youtube_channel: None,
-                youtube_video: None,
-                topic: None,
-                user_interest: None,
-                age_range: None,
-                gender: None,
-                audience: None,
+                target: JsonCriterion::default(),
             });
         if !campaign_id.is_empty() {
             entry.campaign = campaign_id;
@@ -626,109 +609,7 @@ impl AdapterState {
         if let Some(bm) = v.get("bidModifier").and_then(parse_f64_value) {
             entry.bid_modifier = Some(bm);
         }
-        if let Some(dev) = v.get("device") {
-            if let Some(t) = dev
-                .get("type")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty() && *s != "UNSPECIFIED" && *s != "UNKNOWN")
-            {
-                entry.device = Some(JsonDevice { ty: t.to_string() });
-            }
-        }
-        if let Some(kw) = v.get("keyword") {
-            entry.keyword = Some(JsonKeyword {
-                text: kw.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
-                match_type: kw
-                    .get("matchType")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string(),
-            });
-        }
-        if let Some(loc) = v.get("location") {
-            if let Some(s) = loc.get("geoTargetConstant").and_then(Value::as_str) {
-                entry.location = Some(JsonLocation {
-                    geo_target_constant: s.to_string(),
-                });
-            }
-        }
-        if let Some(lang) = v.get("language") {
-            if let Some(s) = lang.get("languageConstant").and_then(Value::as_str) {
-                entry.language = Some(JsonLanguage {
-                    language_constant: s.to_string(),
-                });
-            }
-        }
-        if let Some(prox) = v.get("proximity") {
-            let geo = prox.get("geoPoint");
-            let lat = geo
-                .and_then(|g| g.get("latitudeInMicroDegrees"))
-                .and_then(parse_i64_value);
-            let lng = geo
-                .and_then(|g| g.get("longitudeInMicroDegrees"))
-                .and_then(parse_i64_value);
-            let radius = prox.get("radius").and_then(parse_f64_value);
-            let units = prox
-                .get("radiusUnits")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty() && *s != "UNSPECIFIED" && *s != "UNKNOWN");
-            if let (Some(lat), Some(lng), Some(radius), Some(units)) =
-                (lat, lng, radius, units)
-            {
-                entry.proximity = Some(JsonProximity {
-                    latitude: lat as f64 / 1_000_000.0,
-                    longitude: lng as f64 / 1_000_000.0,
-                    radius,
-                    radius_units: units.to_string(),
-                });
-            }
-        }
-        if let Some(id) = nested_str(v, "youtubeChannel", "channelId") {
-            entry.youtube_channel = Some(JsonYoutubeChannel { channel_id: id });
-        }
-        if let Some(id) = nested_str(v, "youtubeVideo", "videoId") {
-            entry.youtube_video = Some(JsonYoutubeVideo { video_id: id });
-        }
-        if let Some(c) = nested_str(v, "topic", "topicConstant") {
-            entry.topic = Some(JsonTopic { topic_constant: c });
-        }
-        if let Some(c) = nested_str(v, "userInterest", "userInterestCategory") {
-            entry.user_interest = Some(JsonUserInterest {
-                user_interest_category: c,
-            });
-        }
-        if let Some(t) = nested_enum(v, "ageRange", "type") {
-            entry.age_range = Some(JsonAgeRange { ty: t });
-        }
-        if let Some(t) = nested_enum(v, "gender", "type") {
-            entry.gender = Some(JsonGender { ty: t });
-        }
-        for (message, field) in [
-            ("customAudience", "customAudience"),
-            ("userList", "userList"),
-            ("combinedAudience", "combinedAudience"),
-        ] {
-            let Some(rn) = nested_str(v, message, field) else {
-                continue;
-            };
-            entry.audience = Some(match message {
-                "customAudience" => JsonAudience {
-                    custom_audience: Some(rn),
-                    user_list: None,
-                    combined_audience: None,
-                },
-                "userList" => JsonAudience {
-                    custom_audience: None,
-                    user_list: Some(rn),
-                    combined_audience: None,
-                },
-                _ => JsonAudience {
-                    custom_audience: None,
-                    user_list: None,
-                    combined_audience: Some(rn),
-                },
-            });
-        }
+        merge_criterion(v, &mut entry.target);
     }
 
     fn merge_custom_audience(&mut self, v: &Value) {
@@ -1278,6 +1159,112 @@ fn parse_frequency_cap(v: &Value) -> Option<JsonFrequencyCap> {
     })
 }
 
+/// Read whichever criterion `oneof` a live row carries. One reader for both
+/// criterion resources: the sub-messages are the same on the wire, only the set
+/// each resource may carry differs.
+fn merge_criterion(v: &Value, target: &mut JsonCriterion) {
+    if let Some(kw) = v.get("keyword") {
+        target.keyword = Some(JsonKeyword {
+            text: kw.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
+            match_type: kw
+                .get("matchType")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        });
+    }
+    if let Some(s) = nested_str(v, "location", "geoTargetConstant") {
+        target.location = Some(JsonLocation {
+            geo_target_constant: s,
+        });
+    }
+    if let Some(s) = nested_str(v, "language", "languageConstant") {
+        target.language = Some(JsonLanguage {
+            language_constant: s,
+        });
+    }
+    if let Some(prox) = v.get("proximity") {
+        let geo = prox.get("geoPoint");
+        let lat = geo
+            .and_then(|g| g.get("latitudeInMicroDegrees"))
+            .and_then(parse_i64_value);
+        let lng = geo
+            .and_then(|g| g.get("longitudeInMicroDegrees"))
+            .and_then(parse_i64_value);
+        let radius = prox.get("radius").and_then(parse_f64_value);
+        let units = prox
+            .get("radiusUnits")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty() && *s != "UNSPECIFIED" && *s != "UNKNOWN");
+        if let (Some(lat), Some(lng), Some(radius), Some(units)) = (lat, lng, radius, units) {
+            target.proximity = Some(JsonProximity {
+                latitude: lat as f64 / 1_000_000.0,
+                longitude: lng as f64 / 1_000_000.0,
+                radius,
+                radius_units: units.to_string(),
+            });
+        }
+    }
+    if let Some(t) = nested_enum(v, "device", "type") {
+        target.device = Some(JsonDevice { ty: t });
+    }
+    if let Some(id) = nested_str(v, "youtubeChannel", "channelId") {
+        target.youtube_channel = Some(JsonYoutubeChannel { channel_id: id });
+    }
+    if let Some(id) = nested_str(v, "youtubeVideo", "videoId") {
+        target.youtube_video = Some(JsonYoutubeVideo { video_id: id });
+    }
+    if let Some(c) = nested_str(v, "topic", "topicConstant") {
+        target.topic = Some(JsonTopic { topic_constant: c });
+    }
+    if let Some(url) = nested_str(v, "placement", "url") {
+        target.placement = Some(JsonPlacement { url });
+    }
+    if let Some(c) = nested_str(v, "userInterest", "userInterestCategory") {
+        target.user_interest = Some(JsonUserInterest {
+            user_interest_category: c,
+        });
+    }
+    if let Some(t) = nested_enum(v, "ageRange", "type") {
+        target.age_range = Some(JsonAgeRange { ty: t });
+    }
+    if let Some(t) = nested_enum(v, "gender", "type") {
+        target.gender = Some(JsonGender { ty: t });
+    }
+    if let Some(t) = nested_enum(v, "parentalStatus", "type") {
+        target.parental_status = Some(JsonParentalStatus { ty: t });
+    }
+    if let Some(t) = nested_enum(v, "incomeRange", "type") {
+        target.income_range = Some(JsonIncomeRange { ty: t });
+    }
+    for (message, field) in [
+        ("customAudience", "customAudience"),
+        ("userList", "userList"),
+        ("combinedAudience", "combinedAudience"),
+    ] {
+        let Some(rn) = nested_str(v, message, field) else {
+            continue;
+        };
+        target.audience = Some(match message {
+            "customAudience" => JsonAudience {
+                custom_audience: Some(rn),
+                user_list: None,
+                combined_audience: None,
+            },
+            "userList" => JsonAudience {
+                custom_audience: None,
+                user_list: Some(rn),
+                combined_audience: None,
+            },
+            _ => JsonAudience {
+                custom_audience: None,
+                user_list: None,
+                combined_audience: Some(rn),
+            },
+        });
+    }
+}
+
 fn nested_str(v: &Value, message: &str, field: &str) -> Option<String> {
     v.get(message)?
         .get(field)
@@ -1605,5 +1592,72 @@ mod video_tests {
             .expect("demand gen creative");
         assert_eq!(dg.business_name.as_deref(), Some("Ghostery"));
         assert_eq!(dg.videos, vec!["42"]);
+    }
+
+    #[test]
+    fn ad_group_targeting_reads_back_off_the_criterion_row() {
+        let input = adapt(serde_json::json!([
+            {
+                "adGroupCriterion": {
+                    "resourceName": "customers/123/adGroupCriteria/55~1",
+                    "adGroup": "customers/123/adGroups/55",
+                    "status": "ENABLED",
+                    "bidModifier": 1.2,
+                    "ageRange": {"type": "AGE_RANGE_35_44"}
+                }
+            },
+            {
+                "adGroupCriterion": {
+                    "resourceName": "customers/123/adGroupCriteria/55~2",
+                    "adGroup": "customers/123/adGroups/55",
+                    "negative": true,
+                    "placement": {"url": "https://example.com/x"}
+                }
+            },
+            {
+                "adGroupCriterion": {
+                    "resourceName": "customers/123/adGroupCriteria/55~3",
+                    "adGroup": "customers/123/adGroups/55",
+                    "userList": {"userList": "customers/123/userLists/987"}
+                }
+            },
+            {
+                "adGroupCriterion": {
+                    "resourceName": "customers/123/adGroupCriteria/55~4",
+                    "adGroup": "customers/123/adGroups/55",
+                    "mobileApplication": {"appId": "1-com.example"}
+                }
+            }
+        ]));
+
+        let by_id = |id: &str| {
+            input
+                .ad_group_criteria
+                .iter()
+                .find(|c| c.id == id)
+                .unwrap_or_else(|| panic!("criterion {id}"))
+        };
+        let age = by_id("55~1");
+        assert_eq!(
+            age.target.age_range.as_ref().map(|a| a.ty.as_str()),
+            Some("AGE_RANGE_35_44")
+        );
+        assert_eq!(age.bid_modifier, Some(1.2));
+        assert_eq!(
+            by_id("55~2").target.placement.as_ref().map(|p| p.url.as_str()),
+            Some("https://example.com/x")
+        );
+        assert_eq!(
+            by_id("55~3")
+                .target
+                .audience
+                .as_ref()
+                .and_then(|a| a.user_list.as_deref()),
+            Some("customers/123/userLists/987")
+        );
+        assert!(
+            !input.ad_group_criteria.iter().any(|c| c.id == "55~4"),
+            "a criterion type bidsmith cannot render must not adapt into an empty resource"
+        );
     }
 }
