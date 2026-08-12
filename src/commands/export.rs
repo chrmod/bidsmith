@@ -61,6 +61,10 @@ pub struct ExportInput {
     pub customer_id: String,
     #[serde(default)]
     pub login_customer_id: Option<String>,
+    /// ISO-4217 code the account bills in, read off the `customer` query.
+    /// Live-only; None for declared state and for pre-currency cache entries.
+    #[serde(default)]
+    pub currency_code: Option<String>,
     #[serde(default)]
     pub campaign_budgets: Vec<JsonBudget>,
     #[serde(default)]

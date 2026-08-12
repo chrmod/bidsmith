@@ -7,3 +7,4 @@ pub mod import;
 pub mod live_state;
 pub mod mutate;
 pub mod oauth;
+pub mod spend;

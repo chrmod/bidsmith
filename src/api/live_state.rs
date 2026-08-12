@@ -27,6 +27,16 @@ pub enum LiveStateError {
 
 pub const QUERIES: &[(&str, &str)] = &[
     (
+        // The currency every `amount_micros` in the account is denominated in,
+        // so plan can report committed daily spend as money rather than micros.
+        "customer",
+        "SELECT
+          customer.resource_name,
+          customer.id,
+          customer.currency_code
+        FROM customer",
+    ),
+    (
         "campaign_budget",
         "SELECT
           campaign_budget.resource_name,

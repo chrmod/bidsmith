@@ -63,6 +63,7 @@ struct SharedSetBuilder {
 #[derive(Default)]
 struct AdapterState {
     customer_id: Option<String>,
+    currency_code: Option<String>,
     budgets: BTreeMap<String, JsonBudget>,
     campaigns: BTreeMap<String, JsonCampaign>,
     ad_groups: BTreeMap<String, JsonAdGroup>,
@@ -99,6 +100,9 @@ struct AdapterState {
 
 impl AdapterState {
     fn absorb_row(&mut self, row: &Value) {
+        if let Some(v) = row.get("customer") {
+            self.merge_customer(v);
+        }
         if let Some(v) = row.get("campaignBudget") {
             self.merge_budget(v);
         }
@@ -230,6 +234,15 @@ impl AdapterState {
         let claims = select(self).entry(id.to_string()).or_default();
         if !claims.contains(&category) {
             claims.push(category);
+        }
+    }
+
+    fn merge_customer(&mut self, v: &Value) {
+        if let Some(id) = extract_id(v) {
+            self.customer_id.get_or_insert(id);
+        }
+        if let Some(code) = v.get("currencyCode").and_then(Value::as_str) {
+            self.currency_code = Some(code.to_string());
         }
     }
 
@@ -1172,6 +1185,7 @@ impl AdapterState {
         Ok(ExportInput {
             customer_id,
             login_customer_id: None,
+            currency_code: self.currency_code,
             campaign_budgets: self.budgets.into_values().collect(),
             campaigns: self.campaigns.into_values().collect(),
             ad_groups: self.ad_groups.into_values().collect(),

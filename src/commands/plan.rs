@@ -5,7 +5,8 @@ use std::process::ExitCode;
 use serde_json::Value;
 
 use crate::api::live_state::CacheMode;
-use crate::api::{auth, client, diff, import, live_state, mutate};
+use crate::api::spend::SpendSummary;
+use crate::api::{auth, client, diff, import, live_state, mutate, spend};
 use crate::commands::export::ExportInput;
 use crate::commands::vars;
 use crate::diagnostics::Diag;
@@ -84,6 +85,7 @@ pub struct Prepared {
     pub token: Option<auth::AccessToken>,
     pub imported: import::ImportResult,
     pub report: diff::DiffReport,
+    pub spend: SpendSummary,
     pub width: usize,
     pub strip_module: bool,
 }
@@ -145,6 +147,10 @@ fn run_read_live(refresh_state: bool, verbose: bool) -> ExitCode {
     let state = outcome.state;
 
     println!("live state (customer {}):", state.customer_id);
+    println!(
+        "  currency            : {}",
+        state.currency_code.as_deref().unwrap_or("(unknown)"),
+    );
     println!("  campaign_budgets    : {}", state.campaign_budgets.len());
     println!("  campaigns           : {}", state.campaigns.len());
     println!("  ad_groups           : {}", state.ad_groups.len());
@@ -257,6 +263,7 @@ fn build_prepared(
     imported.input.apply_schema_defaults();
     live.apply_schema_defaults();
     let report = diff::diff(&imported.input, &live);
+    let spend = spend::summarize(&imported.input, &live, &report);
     for w in &report.warnings {
         eprintln!("{label}: warning: {w}");
     }
@@ -276,6 +283,7 @@ fn build_prepared(
         token,
         imported,
         report,
+        spend,
         width,
         strip_module,
     }
@@ -352,6 +360,7 @@ pub fn execute(
         if format == Format::Markdown {
             println!("## bidsmith {}\n", summary_title(validate_only).to_lowercase());
             println!("**No changes.** Your `.bid` files match the live Google Ads account.");
+            print_markdown_spend(&prepared.spend);
             return ExitCode::SUCCESS;
         }
         if show_unchanged && matches!(display, DisplayMode::PerResource) {
@@ -369,6 +378,7 @@ pub fn execute(
             "{title}: 0 to create, 0 to update, 0 to destroy, {} unchanged. (no API call needed)",
             report.noop_count,
         );
+        print_text_spend(&prepared.spend);
         return ExitCode::SUCCESS;
     }
 
@@ -568,6 +578,12 @@ pub fn execute(
         })
         .collect();
 
+    let all_ok = rejected == 0 && success && pre.handled.values().all(|ok| *ok);
+    // A plan's spend figures are a forecast either way, but a *failed* apply
+    // changed nothing — reporting what the account would now run would read as
+    // an accomplished fact.
+    let spend = (validate_only || all_ok).then_some(&prepared.spend);
+
     match format {
         Format::Text => {
             if matches!(display, DisplayMode::PerResource) {
@@ -576,6 +592,9 @@ pub fn execute(
             print_text_summary(
                 report, validate_only, accepted, rejected, collateral, deferred_count,
             );
+            if let Some(spend) = spend {
+                print_text_spend(spend);
+            }
             if !success && !unattributed.is_empty() {
                 eprintln!();
                 eprintln!("Other errors:");
@@ -600,11 +619,12 @@ pub fn execute(
                 deferred_count,
                 &md_rows,
                 &unattributed,
+                spend,
             );
         }
     }
 
-    if rejected > 0 || !success || pre.handled.values().any(|ok| !ok) {
+    if !all_ok {
         ExitCode::from(1)
     } else if detailed_exitcode {
         ExitCode::from(2)
@@ -637,6 +657,20 @@ fn print_text_summary(
             skipped_clause(report),
             adopt_clause(report, true), report.noop_count - report.adopt_count, accepted, rejected,
         );
+    }
+}
+
+/// The money question an operation count can't answer: what this changeset
+/// commits per day, and what the account runs on once it lands (issue #117).
+fn print_text_spend(spend: &SpendSummary) {
+    if let Some(line) = spend.line() {
+        println!("Budget: {line}");
+    }
+}
+
+fn print_markdown_spend(spend: &SpendSummary) {
+    if let Some(line) = spend.line() {
+        println!("\n**Budget:** {line}");
     }
 }
 
@@ -682,6 +716,7 @@ fn print_markdown(
     deferred: usize,
     rows: &[(String, String, String)],
     unattributed: &[&GoogleAdsErrorEntry],
+    spend: Option<&SpendSummary>,
 ) {
     println!("## bidsmith {}\n", summary_title(validate_only).to_lowercase());
     if !rows.is_empty() {
@@ -700,6 +735,9 @@ fn print_markdown(
         collateral_clause(collateral),
         deferred_clause(deferred),
     );
+    if let Some(spend) = spend {
+        print_markdown_spend(spend);
+    }
     if !unattributed.is_empty() {
         println!("\n### Other errors\n");
         for err in unattributed {
@@ -870,6 +908,7 @@ fn display_offline_diff(
                 skipped_clause(report),
                 adopt_clause(report, false), report.noop_count - report.adopt_count,
             );
+            print_text_spend(&prepared.spend);
         }
         Format::Markdown => {
             println!("## bidsmith {}\n", summary_title(validate_only).to_lowercase());
@@ -887,6 +926,7 @@ fn display_offline_diff(
                 skipped_clause(report),
                 adopt_clause(report, false), report.noop_count - report.adopt_count,
             );
+            print_markdown_spend(&prepared.spend);
         }
     }
     if detailed_exitcode {

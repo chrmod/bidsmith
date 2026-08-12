@@ -66,6 +66,7 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
     let mut input = ExportInput {
         customer_id: String::new(),
         login_customer_id: None,
+        currency_code: None,
         campaign_budgets: Vec::new(),
         campaigns: Vec::new(),
         ad_groups: Vec::new(),
@@ -1849,6 +1850,7 @@ pub fn import_program(program: &Program) -> Result<ImportResult, Vec<Diag>> {
     let mut combined = ExportInput {
         customer_id: String::new(),
         login_customer_id: None,
+        currency_code: None,
         campaign_budgets: Vec::new(),
         campaigns: Vec::new(),
         ad_groups: Vec::new(),

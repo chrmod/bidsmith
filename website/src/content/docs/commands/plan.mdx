@@ -12,8 +12,9 @@ times.
 
 By default `plan` lists only the resources that would be created,
 updated, or destroyed, and ends with a one-line summary that counts the
-unchanged ones. If there are no changes you'll see just that summary —
-no per-resource rows. Pass `--show-unchanged` to list every resource,
+unchanged ones, plus a `Budget:` line that says what the change costs
+per day. If there are no changes you'll see just those two lines — no
+per-resource rows. Pass `--show-unchanged` to list every resource,
 including `no-op` rows.
 
 If `plan` reports no changes, your `.bid` files and the live account
@@ -151,6 +152,41 @@ operations to Google's `googleAds:mutate` endpoint with
 Google checks them without committing. Any rejection
 ("headline too long," "bid below minimum") shows up inline in the
 plan output.
+
+## What the change costs
+
+Under the operation counts, every plan prints one line about money:
+
+```
+Plan: 0 to create, 0 to update, 0 to destroy, 2 to adopt, 1447 unchanged. (2 accepted, 0 rejected)
+Budget: committed daily spend 320.00 EUR -> 340.00 EUR (+20.00 EUR/day) across 17 enabled campaigns
+```
+
+Read it as: the account commits EUR 320/day today, EUR 340/day once
+this change lands, and the difference is EUR 20/day. The figures are in
+your account's currency — no dividing `amount_micros` by a million in
+your head.
+
+Three things the line is careful about:
+
+- **Only campaigns that will be enabled** after the change count. A
+  budget attached to a paused campaign commits nothing, so it's left
+  out — and pausing a campaign shows up as a *drop* in committed spend.
+- **A shared budget counts once**, however many campaigns draw on it.
+- **The whole account is counted**, not just the campaigns your files
+  touch. That's the number that answers "what are we running?" — and
+  the one that catches three separate pull requests each adding
+  EUR 20/day.
+
+If nothing about the money changes, the line collapses to the total:
+
+```
+Budget: committed daily spend 320.00 EUR/day across 17 enabled campaigns
+```
+
+Since the CI workflow `bidsmith init` scaffolds posts the plan as a
+pull-request comment, the number lands in the review without anyone
+having to work it out.
 
 ## When plan won't send the batch
 
