@@ -1116,7 +1116,10 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                     attr("final_urls", FieldType::list_of(FieldType::String), false),
                     attr("path1", FieldType::String, false),
                     attr("path2", FieldType::String, false),
-                ],
+                ]
+                .into_iter()
+                .chain(tracking_attrs())
+                .collect(),
                 blocks: vec![ad_block(true)],
             },
         );
@@ -2586,7 +2589,9 @@ fn validate_ad_group_ad_template(
                         has_final_urls_override = true;
                     }
                 }
-                "path1" | "path2" => overrides.push((a.key.as_str(), span_of(a.key.span()))),
+                "path1" | "path2" | "final_url_suffix" | "custom_parameters" => {
+                    overrides.push((a.key.as_str(), span_of(a.key.span())))
+                }
                 _ => {}
             },
             _ => {}

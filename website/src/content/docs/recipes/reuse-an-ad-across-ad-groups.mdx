@@ -127,8 +127,9 @@ resource "google_ads_ad_group_ad" "safari_rsa" {
 }
 ```
 
-Anything you set on the resource (`final_urls`, `path1`, `path2`) wins
-over the template; anything you leave out is inherited. The headlines and
+Anything you set on the resource (`final_urls`, `path1`, `path2`,
+`final_url_suffix`, `custom_parameters`) wins over the template;
+anything you leave out is inherited. The headlines and
 descriptions still live in one place. If a template omits `final_urls`,
 every reference has to provide one — `validate` catches any that forget.
 
