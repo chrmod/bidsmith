@@ -285,6 +285,8 @@ impl AdapterState {
                 advertising_channel_type: String::new(),
                 campaign_budget: String::new(),
                 contains_eu_political_advertising: None,
+                start_date: None,
+                end_date: None,
                 manual_cpc: None,
                 manual_cpm: None,
                 manual_cpv: None,
@@ -302,6 +304,15 @@ impl AdapterState {
         }
         if let Some(s) = v.get("advertisingChannelType").and_then(Value::as_str) {
             entry.advertising_channel_type = s.to_string();
+        }
+        if let Some(s) = v.get("startDate").and_then(Value::as_str) {
+            entry.start_date = Some(s.to_string());
+        }
+        // Google writes a far-future sentinel rather than clearing the field, so
+        // an open-ended campaign reads as unset instead of baking a fake date
+        // into every adopted `.bid` (issue #113).
+        if let Some(s) = v.get("endDate").and_then(Value::as_str) {
+            entry.end_date = Some(s.to_string()).filter(|d| d != crate::schema::NO_END_DATE);
         }
         if let Some(rn) = v.get("campaignBudget").and_then(Value::as_str) {
             if let Some(id) = last_segment(rn) {

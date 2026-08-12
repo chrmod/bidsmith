@@ -1434,6 +1434,16 @@ fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign, caps_claimed: bool) -> Vec<
     {
         c.push("contains_eu_political_advertising".into());
     }
+    // Omitted means unmanaged, as everywhere else: a file that names no flight
+    // window is not asking to clear the one the account has.
+    for (field, desired, live) in [
+        ("start_date", &d.start_date, &l.start_date),
+        ("end_date", &d.end_date, &l.end_date),
+    ] {
+        if desired.is_some() && desired != live {
+            c.push(field.into());
+        }
+    }
     // advertising_channel_type is creation-only; skip.
     // The bidding strategy is a `oneof`, so a file that declares none leaves it
     // unmanaged rather than asking to clear whatever the account is bidding on.

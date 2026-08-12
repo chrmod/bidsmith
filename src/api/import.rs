@@ -309,6 +309,8 @@ fn import_campaign(
     let mut channel = None;
     let mut budget_ref = None;
     let mut eu_political = None;
+    let mut start_date = None;
+    let mut end_date = None;
     let mut manual_cpc = None;
     let mut manual_cpm = None;
     let mut manual_cpv = None;
@@ -327,6 +329,8 @@ fn import_campaign(
                 "advertising_channel_type" => channel = expect_string_owned(ctx, a),
                 "campaign_budget" => budget_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r)),
                 "contains_eu_political_advertising" => eu_political = expect_string_owned(ctx, a),
+                "start_date" => start_date = expect_string_owned(ctx, a),
+                "end_date" => end_date = expect_string_owned(ctx, a),
                 "languages" => languages = expect_string_list(ctx, &a.value),
                 "locations" => locations = expect_string_list(ctx, &a.value),
                 _ => {}
@@ -358,6 +362,8 @@ fn import_campaign(
             advertising_channel_type: channel,
             campaign_budget: budget,
             contains_eu_political_advertising: eu_political,
+            start_date,
+            end_date,
             manual_cpc,
             manual_cpm,
             manual_cpv,
@@ -2619,6 +2625,78 @@ resource "google_ads_ad_group_criterion" "neg" {
             !addrs.iter().any(|a| a.contains("shoes")),
             "a live positive nobody declared was pruned: {addrs:?}"
         );
+    }
+
+    /// Google stores "no end date" as a far-future sentinel rather than an empty
+    /// field. A file that declares no flight window must therefore stay quiet
+    /// against it, not plan an update to a date nobody wrote (issue #113).
+    #[test]
+    fn the_no_end_date_sentinel_reads_as_unset() {
+        let declared = import_str(
+            "flight_sentinel",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  start_date               = "2026-08-11"
+}
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","startDate":"2026-08-11","endDate":"2037-12-30"}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+        assert!(
+            live.campaigns[0].end_date.is_none(),
+            "sentinel leaked into live state: {:?}",
+            live.campaigns[0].end_date
+        );
+
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(report.update_count, 0, "diffs: {:?}", report.diffs);
+    }
+
+    /// Closing an open-ended campaign is the whole point: declaring an end date
+    /// against the sentinel has to read as drift.
+    #[test]
+    fn declaring_an_end_date_on_an_open_ended_campaign_is_drift() {
+        let declared = import_str(
+            "flight_close",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  start_date               = "2026-08-11"
+  end_date                 = "2026-08-25"
+}
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","startDate":"2026-08-11","endDate":"2037-12-30"}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(report.update_count, 1, "diffs: {:?}", report.diffs);
+        assert_eq!(changed_fields(&report), vec!["end_date"]);
     }
 
     /// A CPV ad group bids through `target_cpv_micros`; `cpc_bid_micros` sits at

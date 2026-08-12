@@ -45,6 +45,8 @@ pub const QUERIES: &[(&str, &str)] = &[
           campaign.name,
           campaign.status,
           campaign.advertising_channel_type,
+          campaign.start_date,
+          campaign.end_date,
           campaign.campaign_budget,
           campaign.contains_eu_political_advertising,
           campaign.bidding_strategy_type,

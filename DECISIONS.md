@@ -766,6 +766,21 @@ resource type, any file layout, modules, schema validation.
   switch to whatever the block list happens to default to. Consequence:
   a campaign adopted without a bidding block no longer reports
   `manual_cpc.enhanced_cpc_enabled` drift against the live account.
+- **A flight window is a committed fact, and "no end date" is an
+  omitted attribute** (issue #113): `start_date` / `end_date` are
+  modelled so a time-boxed campaign carries its own stop, rather than
+  the end of a flight living in a README as prose. Google records "runs
+  until further notice" as the sentinel date `2037-12-30` instead of
+  clearing the field, so the live side maps that sentinel to `None` —
+  otherwise every adopted campaign would render a fake end date that
+  someone then has to maintain. An omitted date is unmanaged, as
+  everywhere else. Dates get their own `FieldType::Date` rather than
+  passing as strings, because `2026-02-30` and `11.08.2026` are exactly
+  the kind of typo a validator should catch before the API does, and
+  `lint` warns when a campaign would end before it starts — which
+  Google accepts and then silently never delivers. **Deferred:** warning
+  on an `end_date` already in the past, which needs a clock and so needs
+  injectable time before it can be tested.
 - **An operation that can never succeed is caught locally, and what
   happens next depends on what the file is asserting** (issue #116): the
   mutate batch is atomic, so one doomed operation rejects every unrelated
@@ -1208,6 +1223,8 @@ Validator covers (so far):
   `DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING` at mutate time when the
   attribute is omitted, since Google Ads rejects new campaigns that
   don't declare it; plus optional inline `languages = [...]` /
+  `start_date` / `end_date` as `YYYY-MM-DD` dates validated as real
+  calendar dates locally; plus optional inline `languages = [...]` /
   `locations = [...]` list attributes that each expand to one positive
   campaign criterion at import time, resolving human-readable codes
   (`"en"`, `"US"`) — or raw `languageConstants/NNNN` /
