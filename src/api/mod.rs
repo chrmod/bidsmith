@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod cache;
+pub mod catalog;
 pub mod client;
 pub mod creds;
 pub mod diff;

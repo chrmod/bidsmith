@@ -356,6 +356,26 @@ pub const QUERIES: &[(&str, &str)] = &[
     ),
 ];
 
+/// Every field path the live-state fetch names in a `SELECT`. This is the exact
+/// set `plan` can compare, so it is also the set an `unchanged` row makes a
+/// claim about — everything else on the resource is undiffed (issue #111).
+pub fn selected_fields() -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for (_, query) in QUERIES {
+        let Some(rest) = query.trim_start().strip_prefix("SELECT") else {
+            continue;
+        };
+        let select_list = rest.split("FROM").next().unwrap_or_default();
+        for field in select_list.split(',') {
+            let field = field.trim();
+            if !field.is_empty() {
+                out.insert(field.to_string());
+            }
+        }
+    }
+    out
+}
+
 pub fn queries_fingerprint() -> String {
     let mut joined = String::new();
     for (label, query) in QUERIES {
@@ -471,6 +491,22 @@ pub fn invalidate_cache() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_fields_parses_every_select_list() {
+        let fields = selected_fields();
+        assert!(fields.contains("campaign.name"));
+        assert!(fields.contains("ad_group.target_cpv_micros"));
+        assert!(fields.contains("campaign.geo_target_type_setting.positive_geo_target_type"));
+        assert!(
+            !fields.iter().any(|f| f.contains("WHERE") || f.contains("FROM")),
+            "the parse must stop at FROM: {fields:?}",
+        );
+        assert!(
+            !fields.iter().any(|f| f.contains('\n')),
+            "field paths are trimmed of the query's indentation",
+        );
+    }
 
     #[test]
     fn label_query_skips_removed_labels() {

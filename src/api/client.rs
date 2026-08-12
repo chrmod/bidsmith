@@ -9,6 +9,7 @@ const USER_AGENT: &str = concat!("bidsmith/", env!("CARGO_PKG_VERSION"));
 const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_RETRIES: u32 = 3;
+const PAGE_SIZE: u32 = 10_000;
 
 pub fn api_version() -> String {
     std::env::var("BIDSMITH_API_VERSION")
@@ -125,6 +126,25 @@ impl Client {
         self.send_with_retry(access_token, &url, body, true)
     }
 
+    /// `GoogleAdsFieldService.SearchGoogleAdsFields` — the API's own metadata:
+    /// which fields exist on a resource and which of them a GAQL `SELECT` may
+    /// name. Account-independent, so the URL carries no customer segment.
+    /// Read-only, so it retries.
+    pub fn search_google_ads_fields(
+        &self,
+        access_token: &str,
+        query: &str,
+        page_token: Option<&str>,
+    ) -> Result<MutateResponse, ApiError> {
+        let mut body = serde_json::json!({ "query": query, "pageSize": PAGE_SIZE });
+        if let Some(token) = page_token {
+            body["pageToken"] = Value::String(token.to_string());
+        }
+        let version = api_version();
+        let url = format!("https://googleads.googleapis.com/{version}/googleAdsFields:search");
+        self.send_with_retry(access_token, &url, &body, true)
+    }
+
     fn post_json(
         &self,
         access_token: &str,
@@ -193,6 +213,24 @@ fn is_retryable_status(status: u16) -> bool {
 
 fn backoff(attempt: u32) -> Duration {
     Duration::from_millis(250 * 2u64.pow(attempt - 1))
+}
+
+/// The Google API discovery document for the API version in use. It is the
+/// only published source that says which fields are **settable** — every
+/// output-only one is flagged `readOnly`, where `GoogleAdsFieldService` only
+/// answers what is *selectable*. Public and unauthenticated, so this needs
+/// neither a developer token nor an access token.
+pub fn fetch_discovery_document() -> Result<Value, ApiError> {
+    let version = api_version();
+    let url =
+        format!("https://googleads.googleapis.com/$discovery/rest?version={version}");
+    let http = reqwest::blocking::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(HTTP_TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()?;
+    let raw = http.get(&url).send()?.text()?;
+    Ok(serde_json::from_str(&raw).unwrap_or(Value::Null))
 }
 
 /// `customers:listAccessibleCustomers` — the accounts the signed-in user can

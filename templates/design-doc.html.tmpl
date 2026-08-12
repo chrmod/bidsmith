@@ -86,10 +86,15 @@ between read and write:
 
 <ul>
   <li><strong>Read / dry-run</strong> — <code>validate</code> (local only), <code>plan</code>,
-      <code>query</code>, <code>pull</code>, and <code>refresh</code> never mutate the account.
+      <code>query</code>, <code>pull</code>, <code>refresh</code>, and <code>drift</code> never mutate
+      the account.
       <code>plan</code> fetches live state, diffs it against the <code>.bid</code> files, and runs the
       resulting mutate with <code>validateOnly=true</code>, so Google validates references, enums,
-      policy strings, and field limits without writing anything.</li>
+      policy strings, and field limits without writing anything. <code>drift</code> is read-only
+      metadata plus reporting: it asks <code>GoogleAdsFieldService</code> which fields a resource
+      exposes, reads the public discovery document to tell settable fields from output-only ones,
+      and then selects the fields <code>plan</code> does not — so the operator can see what the
+      diff is silent about rather than assuming an <code>unchanged</code> row covers everything.</li>
   <li><strong>Write</strong> — only <code>apply</code> writes, and only after it prints the same diff
       and the operator confirms by typing literally <code>yes</code>. If the
       <code>validateOnly</code> pass rejected anything, the real mutate is skipped — partial

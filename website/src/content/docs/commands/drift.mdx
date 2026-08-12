@@ -1,0 +1,116 @@
+---
+title: bidsmith drift
+description: Report the Google Ads settings plan never looks at, and which of them are set on your account. Read-only.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`plan` compares the settings bidsmith models. Everything else on a
+campaign or ad group isn't merely left alone — it's never fetched and
+never compared. So when a plan says `1447 unchanged`, the honest reading
+is "unchanged on the fields bidsmith knows about," not "your repo matches
+Google Ads."
+
+`drift` reports the difference. It asks Google which settings each
+resource has, subtracts the ones `plan` reads, and then looks at your
+account to see which of the remainder are actually set. Read-only — it
+never changes anything.
+
+<Aside type="tip" title="Why this exists">
+A max CPV of EUR 0.05 once ran for weeks on a campaign whose own notes
+said EUR 0.10. Every plan was green, because the field holding that bid
+wasn't one bidsmith read. `drift` is how you find that class of problem
+without hand-writing GAQL queries and comparing by eye.
+</Aside>
+
+## Synopsis
+
+```sh
+bidsmith drift [PATH] [--all] [--format text|markdown] [--detailed-exitcode] [--refresh-state] [--refresh-catalog] [--verbose]
+```
+
+## Arguments
+
+| Argument | Default | Description |
+|---|---|---|
+| `PATH` | `.` | File or directory containing `.bid` files. Names the account to audit, and scopes the audit to the resources those files manage. |
+
+## Flags
+
+| Flag | Description |
+|---|---|
+| `--all` | Also list unmodelled settings that are unset everywhere. Off by default: most of them belong to campaign types you don't run, and they bury the ones that matter. |
+| `--format <text\|markdown>` | Output format. `markdown` renders a table suited to posting as a pull-request comment. |
+| `--detailed-exitcode` | Exit `2` (instead of `0`) when an unmodelled setting carries a value, keeping `1` for errors. Lets CI surface the gap without treating it as a failure. |
+| `--refresh-state` | Ignore any cached live state and refetch from the API. |
+| `--refresh-catalog` | Refetch the list of settings Google Ads exposes instead of using the cached copy. The cache lasts a week. |
+| `--verbose` | Print each outgoing query. |
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | The audit ran. Without `--detailed-exitcode`, this covers both "nothing set outside the modelled fields" and "some settings are." |
+| `1` | Local validation failed, authentication failed, or the field catalog could not be read. |
+| `2` | **Only with `--detailed-exitcode`:** an unmodelled setting carries a value. |
+
+## Reading the report
+
+```
+campaign — 16 of 106 settable field(s) modelled
+  set on managed resources, never compared:
+    campaign.tracking_url_template  11 resource(s)  e.g. google_ads_campaign.brand = "{lpurl}?src=g"
+    campaign.ad_serving_optimization_status   3 resource(s)  e.g. google_ads_campaign.gh_yt = "OPTIMIZE"
+
+ad_group — 13 of 36 settable field(s) modelled
+  nothing set outside the modelled fields.
+
+`unchanged` in a plan means unchanged on the 88 field(s) bidsmith models, out of 541 the API would let a .bid set.
+2 unmodelled field(s) carry a value bidsmith never compares — a plan calling these resources unchanged is not speaking about them.
+```
+
+Rows are grouped by **setting**, not by campaign, because the question
+`drift` answers is which settings fall outside the guarantee. Each row
+gives the setting's Google Ads name, how many of your resources have it
+set, and one example so you can go look.
+
+A setting appearing here doesn't mean anything is wrong. It means
+bidsmith isn't watching it: if someone changes it in the Google Ads UI,
+no plan will tell you. Whether that matters depends on the setting —
+`campaign.tracking_url_template` probably does, a hotel-campaign field on
+a Search account doesn't.
+
+### What "settable" means
+
+The count on each heading excludes fields you couldn't declare anyway —
+report-only values like `primary_status`, `effective_cpc_bid_micros`, or
+performance metrics. bidsmith doesn't guess at these from their names; it
+reads Google's own published API description, which marks every
+output-only field as such.
+
+## What to do about a finding
+
+1. **Ignore it** if the setting is irrelevant to how you run the account.
+2. **Set it in the Google Ads UI** and treat it as out of scope for the
+   repo — but know that nothing will catch a change to it.
+3. **[Open an issue](https://github.com/chrmod/bidsmith/issues)** asking
+   for the field to be modelled. That's the point of the report: schema
+   gaps used to be findable only by accident.
+
+## Cost
+
+`drift` is a heavier read than `plan`: it makes one pass over your
+account per batch of unmodelled settings, on top of the live state
+`plan` already fetches. It's a command you run deliberately — before a
+quarterly review, when adopting an account you didn't build, or when a
+number doesn't match what you expected — not one you put on every pull
+request.
+
+The list of settings Google Ads exposes is cached for a week, so
+repeated runs only pay for reading your account.
+
+## See also
+
+- [`bidsmith plan`](/bidsmith/commands/plan/) — the diff `drift` describes the edges of
+- [`bidsmith query`](/bidsmith/commands/query/) — read any Google Ads field directly with GAQL
+- [`bidsmith refresh`](/bidsmith/commands/refresh/) — pull live values of modelled fields back into `.bid` files

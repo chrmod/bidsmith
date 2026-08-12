@@ -199,6 +199,53 @@ plan never modifies the account: its mutate is sent with validateOnly.")]
         #[arg(long = "var", value_name = "NAME=VALUE", action = clap::ArgAction::Append)]
         var: Vec<String>,
     },
+    /// Report the fields plan is not looking at, and which of them are set
+    #[command(after_help = "\
+plan compares the fields bidsmith models. Everything else on a resource is
+not merely unmanaged but undiffed, so an `unchanged` row is a statement about
+those fields only. drift makes the rest visible: it asks the API which fields
+each resource has, subtracts the ones plan fetches, then reads the remainder
+off your account so a gap that is merely possible reads differently from one
+that is set on a campaign you are running.
+
+Output-only fields (primary_status, effective_*, metrics) are excluded — the
+API's own discovery document says which fields a mutate could write.
+
+This is a heavier read than plan: one pass per batch of unmodelled fields.
+The field catalog is cached for a week (--refresh-catalog to refetch).
+
+Examples:
+  bidsmith drift .                      # audit the account behind these .bid files
+  bidsmith drift --all .                # also list unmodelled fields nothing has set
+  bidsmith drift --format markdown .    # a table for a pull-request comment
+  bidsmith drift --detailed-exitcode .  # exit 2 when an unmodelled field is set")]
+    Drift {
+        /// .bid file or directory naming the account to audit
+        #[arg(default_value = ".")]
+        path: String,
+        /// Ignore any cached live state for this customer and refetch
+        #[arg(long = "refresh-state")]
+        refresh_state: bool,
+        /// Refetch the API field catalog instead of using the cached copy
+        #[arg(long = "refresh-catalog")]
+        refresh_catalog: bool,
+        /// Also list unmodelled fields that are unset everywhere
+        #[arg(long)]
+        all: bool,
+        /// Render as `text` (default) or `markdown` (for PR comments)
+        #[arg(long, value_enum, default_value_t = PlanFormat::Text)]
+        format: PlanFormat,
+        /// Exit 2 (not 0) when an unmodelled field carries a value, keeping 1
+        /// for errors — lets CI gate on the gap without failing on it
+        #[arg(long = "detailed-exitcode")]
+        detailed_exitcode: bool,
+        /// Print each outgoing GAQL query
+        #[arg(long)]
+        verbose: bool,
+        /// Set a variable value (repeatable). Example: `--var city_radius_km=20`.
+        #[arg(long = "var", value_name = "NAME=VALUE", action = clap::ArgAction::Append)]
+        var: Vec<String>,
+    },
     /// Reconcile the live account with the .bid files
     #[command(after_help = "\
 apply always shows the validateOnly plan first, then asks for a literal
@@ -484,6 +531,22 @@ fn main() -> ExitCode {
                 show_unchanged,
                 fmt,
                 detailed_exitcode,
+                &var,
+            )
+        }
+        Cmd::Drift { path, refresh_state, refresh_catalog, all, format, detailed_exitcode, verbose, var } => {
+            let fmt = match format {
+                PlanFormat::Text => commands::drift::Format::Text,
+                PlanFormat::Markdown => commands::drift::Format::Markdown,
+            };
+            commands::drift::run(
+                &path,
+                refresh_state,
+                refresh_catalog,
+                all,
+                fmt,
+                detailed_exitcode,
+                verbose,
                 &var,
             )
         }

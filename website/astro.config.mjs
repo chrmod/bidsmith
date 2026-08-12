@@ -113,6 +113,7 @@ export default defineConfig({
                 { label: 'bidsmith auth', slug: 'commands/auth' },
                 { label: 'bidsmith plan', slug: 'commands/plan' },
                 { label: 'bidsmith apply', slug: 'commands/apply' },
+                { label: 'bidsmith drift', slug: 'commands/drift' },
                 { label: 'bidsmith refresh', slug: 'commands/refresh' },
                 { label: 'bidsmith pull', slug: 'commands/pull' },
                 { label: 'bidsmith query', slug: 'commands/query' },

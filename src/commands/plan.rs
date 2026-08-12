@@ -361,6 +361,7 @@ pub fn execute(
             println!("## bidsmith {}\n", summary_title(validate_only).to_lowercase());
             println!("**No changes.** Your `.bid` files match the live Google Ads account.");
             print_markdown_spend(&prepared.spend);
+            print_markdown_unchanged_note(report);
             return ExitCode::SUCCESS;
         }
         if show_unchanged && matches!(display, DisplayMode::PerResource) {
@@ -379,6 +380,7 @@ pub fn execute(
             report.noop_count,
         );
         print_text_spend(&prepared.spend);
+        print_text_unchanged_note(report);
         return ExitCode::SUCCESS;
     }
 
@@ -598,6 +600,7 @@ pub fn execute(
             if let Some(spend) = spend {
                 print_text_spend(spend);
             }
+            print_text_unchanged_note(report);
             if !success && !unattributed.is_empty() {
                 eprintln!();
                 eprintln!("Other errors:");
@@ -661,6 +664,30 @@ fn print_text_summary(
             skipped_clause(report),
             adopt_clause(report, true), report.noop_count - report.adopt_count, accepted, rejected,
         );
+    }
+}
+
+/// What an `unchanged` count is actually a statement about. bidsmith diffs the
+/// fields it models; everything else on the resource is not fetched, not
+/// compared, and — until this line existed — not mentioned, so a green plan
+/// read as a stronger guarantee than it is (issue #111).
+const UNCHANGED_SCOPE_NOTE: &str = "`unchanged` compares the fields bidsmith models. \
+     Run `bidsmith drift` for the live fields it does not.";
+
+/// Only worth saying when the plan actually leans on the word.
+fn unchanged_note(report: &diff::DiffReport) -> Option<&'static str> {
+    (report.noop_count > 0).then_some(UNCHANGED_SCOPE_NOTE)
+}
+
+fn print_text_unchanged_note(report: &diff::DiffReport) {
+    if let Some(note) = unchanged_note(report) {
+        println!("Note: {note}");
+    }
+}
+
+fn print_markdown_unchanged_note(report: &diff::DiffReport) {
+    if let Some(note) = unchanged_note(report) {
+        println!("\n_{note}_");
     }
 }
 
@@ -757,6 +784,7 @@ fn print_markdown(
     if let Some(spend) = spend {
         print_markdown_spend(spend);
     }
+    print_markdown_unchanged_note(report);
     if !unattributed.is_empty() {
         println!("\n### Other errors\n");
         for err in unattributed {
@@ -965,6 +993,7 @@ fn display_offline_diff(
                 adopt_clause(report, false), report.noop_count - report.adopt_count,
             );
             print_text_spend(&prepared.spend);
+            print_text_unchanged_note(report);
         }
         Format::Markdown => {
             println!("## bidsmith {}\n", summary_title(validate_only).to_lowercase());
@@ -984,6 +1013,7 @@ fn display_offline_diff(
                 adopt_clause(report, false), report.noop_count - report.adopt_count,
             );
             print_markdown_spend(&prepared.spend);
+            print_markdown_unchanged_note(report);
         }
     }
     if detailed_exitcode {
@@ -1314,6 +1344,16 @@ mod tests {
         split_module, verb_detail, DisplayMode,
     };
     use crate::api::diff::{Action, ClaimPlanEntry, DiffReport, FieldChange};
+
+    #[test]
+    fn a_plan_with_unchanged_rows_says_what_unchanged_covers() {
+        // A schema gap is invisible unless the summary admits its own scope
+        // (issue #111).
+        let report = DiffReport { noop_count: 3, ..Default::default() };
+        let note = super::unchanged_note(&report).expect("a plan leaning on the word explains it");
+        assert!(note.contains("bidsmith drift"));
+        assert!(super::unchanged_note(&DiffReport::default()).is_none());
+    }
 
     #[test]
     fn md_cell_escapes_table_breakers() {

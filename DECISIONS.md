@@ -890,6 +890,38 @@ resource type, any file layout, modules, schema validation.
   a first-run adoption can carry hundreds of rows, and the answer a
   reviewer needs ("does merging this change what is serving?") fits on
   the row itself.
+- **A schema gap is a reportable fact, not a silent one** (issue #111).
+  An unmodelled field is not merely unmanaged, it is **undiffed**: `plan`
+  never fetches it, never compares it, and counts the resource as
+  `unchanged` — which reads to a reviewer as "the repo matches live" when
+  the true statement is "the repo matches live on the fields bidsmith
+  models". The failure is quiet and directional; it always reports *more*
+  agreement than exists. Two changes make the gap visible, and they are
+  deliberately different in kind. `plan` now prints one line under any
+  summary that leans on the word (`` `unchanged` compares the fields
+  bidsmith models. Run `bidsmith drift` … ``) — no API call, no count that
+  could be wrong, just the scope of the claim it already made. And
+  `bidsmith drift` answers the question that line raises, by asking the
+  API rather than a table someone has to maintain: `GoogleAdsFieldService`
+  for what each resource exposes, the public discovery document for which
+  of those a mutate could write, `live_state::QUERIES` for what bidsmith
+  reads. A bundled catalog was rejected outright — a stale one
+  under-reports in exactly the direction this issue is about.
+  The report is grouped **by field, not by resource**, and only names a
+  field once it is actually set on something bidsmith manages: `campaign`
+  alone carries ~90 unmodelled fields, most of them settings for channels
+  the account doesn't run, so a per-resource dump would bury the two that
+  govern a live auction under hundreds that govern nothing (`--all` for
+  the full list). Output-only fields are excluded because the discovery
+  document flags them, not because their names look derived — the
+  `effective_*` / `primary_status` / `*_source` heuristic the issue
+  suggested is wrong in both directions, and `campaign.bidding_strategy_type`
+  (output-only, no such prefix) is the counterexample bidsmith already
+  reads. A field the catalog offers but a `SELECT` refuses is *reported*
+  rather than dropped, so the coverage ratio never quietly flatters
+  itself. The verb is read-only and heavier than `plan` — one pass per
+  batch of unmodelled fields — so it is a verb you run, not a flag on the
+  hot path; the catalog caches for a week.
 - **The ad group models every settable bid field, and an omitted one is
   unmanaged** (issue #109): the campaign's block picks the strategy, the
   ad group carries the amount, and which field holds it follows from the
@@ -1501,6 +1533,7 @@ Validator covers (so far):
 | `export`   | partial | Render a fmt-canonical `.bid` file from flat bidsmith JSON (`--from-json`) or raw Google Ads SearchStream JSON (`--from-gads-search-response`); always emits the compact form (one `google_ads_ad_group_criterion` per `(ad_group, match_type)` group with N `keyword {}` sub-blocks, one negatives resource per ad-group / campaign with N `negative_keyword {}` sub-blocks, RSAs as `headlines = [...]` / `descriptions = [...]` lists). Also **folds repeated structure** (issue #57): ad bodies shared across ≥ 2 ads become a top-level `ad_template` (URL-variant bodies collapse onto one URL-agnostic template + per-instance `final_urls` / `path1` / `path2` overrides), RSA arrays used by ≥ 2 sites and campaign negative lists shared by ≥ 2 campaigns become `locals`. Folding is source-only — the tree round-trips through `validate` / `plan` identically to the verbose form. Drops REMOVED resources unless `--include-removed`; `--login-customer-id` / `--customer-id` (or env vars `GOOGLE_ADS_LOGIN_CUSTOMER_ID` / `GOOGLE_ADS_CUSTOMER_ID`) override the provider block |
 | `plan`     | partial | Diff `.bid` vs live, validateOnly batch via googleAds:mutate; emits `+ create` / `~ update` / `~ adopt` / `- destroy` / `no-op` per resource. An `~ update` row names each changed field with the value live holds and the value the file asserts (`status: "PAUSED" -> "ENABLED"`); `~ adopt` / `~ claim` rows are marked `label only` and followed by a note saying every field they declare already matches live (issue #112). Campaigns and ad groups match by their `bidsmith:address` label first, then by content (name) to adopt an unlabeled live resource; ads match by body; keywords by text. `- destroy` rows are orphaned criteria members **and** whole labeled resources (campaign / ad_group / ad_group_ad) dropped from the `.bid`; an unlabeled UI-created resource is never destroyed. `~ adopt` rows are first-run label writes onto an already-matching resource. Operations the account can never accept are caught locally, before anything is sent (issue #116): a create or update on the read-only VIDEO channel **blocks** the plan (exit `1`, nothing submitted), while a removal of a labeled VIDEO resource the file no longer declares is **skipped** with a warning and counted as `N to destroy (M skipped)`. A rejected batch separates operations that drew their own error (`rejected`) from those that only went down with the atomic batch (`blocked by those failures`). Reuses cached SearchStream batches from `.bidsmith/cache/` when fresh (15-min TTL); `--refresh-state` forces a re-pull; `--offline` skips OAuth and the validateOnly mutate, diffing against the cache only (errors if no fresh cache). `--var NAME=VALUE` (repeatable) and `BIDSMITH_VAR_<name>` env vars supply values for `variable` blocks. `--format markdown` renders the diff as a PR-comment table (`Resource \| Action \| Result`) instead of the default aligned `text` listing; `--detailed-exitcode` makes a non-empty diff exit `2` (terraform-style) while keeping `1` for errors, so CI can distinguish "changes pending" from "plan failed" |
 | `apply`    | partial | Shows the validateOnly diff first, then prompts for `yes` (or skips the prompt with `--auto-approve`) before mutating. Refuses to prompt when stdin is not a TTY. Reuses the same cached live state as `plan`; invalidates the cache after a successful real mutate. Executes `- destroy` removes (orphaned criteria members and whole labeled resources) through the same prompt — no separate `--allow-destroy` flag. Writes `bidsmith:address=…` identity labels on created / adopted campaigns, ad groups, and ads (reusing an existing label by name) and reconciles stale associations on rename. Same `--var` / `BIDSMITH_VAR_<name>` plumbing as `plan` |
+| `drift`    | working | Report the surface `plan` is silent about (issue #111). Asks `GoogleAdsFieldService` which fields each audited resource exposes, reads the public discovery document to keep only the ones a mutate could **write** (output-only fields carry `readOnly` there), subtracts every path `live_state::QUERIES` names in a `SELECT`, then reads the remainder off the account so an unmodelled field that is merely possible reads differently from one that is set on a campaign you are running. Audits exactly the resources `plan` makes a claim about — a row it would create has nothing live to audit. Rows are grouped by field (`campaign.tracking_url_template  3 resource(s)  e.g. …`), not by resource, because the question is which *settings* fall outside the guarantee. `--all` also lists unmodelled fields nothing has set; `--format markdown` renders a PR-comment table; `--detailed-exitcode` exits `2` when an unmodelled field carries a value. The field catalog caches for 7 days (`--refresh-catalog`) |
 | `pull`     | partial | Dump live state as raw SearchStream JSON (`-o PATH` or stdout). Reuses the same query list `plan --read-live` issues; output is the exact shape `export --from-gads-search-response` consumes, so the pair round-trips an account into a `.bid` |
 | `refresh`  | partial | Bootstrap-mode import of live state into `.bid` (no `-o`/`-d` → stdout, `-o PATH` → single file, `-d DIR` → split into `<DIR>/account.bid` for conversion actions / call assets / customer assets / shared sets and `<DIR>/campaigns.bid` for everything campaign-scoped). Shares the `export` renderer, so it emits the same **folded** form (issue #57): repeated ad bodies → `ad_template`, repeated RSA arrays and shared campaign negative lists → `locals`. Folding is source-only and round-trips identically, so a re-`refresh` no longer re-explodes a hand-folded tree. `--in-place` is reconcile mode: label-first matching writes drifted scalars back into the files you maintain (`--check` previews), loading the tree through the same `Program` path `validate` / `plan` use so `module` templates resolve as instance scopes, with the same `--var` / `BIDSMITH_VAR_<name>` plumbing |
 | `query`    | partial | Read-only GAQL passthrough; `--format table` (default), `json`, or `tsv`; uses the same OAuth + customer envelope as `plan` / `apply` |

@@ -436,6 +436,27 @@ Smaller follow-ups that can ride along:
   for every type, so the attribute would have one legal value), and the
   rest of a Terraform-shaped `lifecycle` — `prevent_destroy`,
   `ignore_changes` — which want a real requirement behind them.
+- ✅ Visible schema gaps (issue #111). `bidsmith drift` reports the
+  surface `plan` is silent about: for every resource the plan makes a
+  claim about, which settable fields bidsmith models, which it does not,
+  and — the part that matters — which of the unmodelled ones actually
+  carry a value on the account. `plan` gained a one-line footer saying
+  what `unchanged` covers, so the gap is visible even to someone who
+  never runs `drift`. This is the general form of #109 / #110: both were
+  found by accident, and the whole point is that the next one shouldn't
+  have to be. Sources are all live — `GoogleAdsFieldService` for what
+  exists, the public discovery document for what a mutate could write,
+  `live_state::QUERIES` for what bidsmith reads — because a bundled
+  catalog would go stale in the under-reporting direction.
+  **Deferred:** a `--type` scope flag (the whole audit is one command
+  today, and the per-resource sections already read independently);
+  folding the count into the plan footer itself, which would make every
+  `plan` pay for the catalog fetch; and reconciling `drift` findings back
+  into `.bid` files, which is the schema work each field needs anyway.
+  **Unverified live:** the value scan has not been run against a real
+  account — the chunk-bisect path that isolates a field the API refuses
+  in a given `SELECT` combination is exercised by construction, not by
+  observation.
 - ✅ Ad group bid fields (issue #109). `google_ads_ad_group` models all
   eight settable `AdGroup` bid fields, not just `cpc_bid_micros`, so the
   amount a CPV or CPM campaign actually bids is declarable and — more to
