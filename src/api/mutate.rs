@@ -316,7 +316,7 @@ pub fn build_mutate_with_diff(
             mutate_ops.push(json!({
                 "campaignOperation": {
                     "update": campaign_update_body(c, rn, fields),
-                    "updateMask": fields.join(","),
+                    "updateMask": campaign_update_mask(fields),
                 }
             }));
             operations.push(PlanOperation { address: c.id.clone(), kind: "campaign" });
@@ -930,6 +930,20 @@ fn budget_update_body(b: &JsonBudget, resource_name: &str, fields: &[String]) ->
         }
     }
     Value::Object(m)
+}
+
+/// A changed field is its own mask path, except a bidding-strategy switch —
+/// which the API only accepts spelled out as the strategy's subfields, see
+/// [`crate::schema::CAMPAIGN_BIDDING_MASK_PATHS`].
+fn campaign_update_mask(fields: &[String]) -> String {
+    let mut paths: Vec<&str> = Vec::new();
+    for f in fields {
+        match crate::schema::campaign_bidding_mask_paths(f) {
+            Some(strategy) => paths.extend_from_slice(strategy),
+            None => paths.push(f.as_str()),
+        }
+    }
+    paths.join(",")
 }
 
 fn campaign_update_body(c: &JsonCampaign, resource_name: &str, fields: &[String]) -> Value {
@@ -1656,7 +1670,8 @@ fn campaign_create(c: &JsonCampaign, resource_name: &str, budget_rn: &str) -> Va
 
 /// The campaign's chosen `campaign_bidding_strategy` member as a
 /// (camelCase field, message body) pair. Setting one member of the `oneof`
-/// clears the rest, so this is also all an update needs to switch strategies.
+/// clears the rest, so this is also the whole body of a strategy switch — the
+/// mask it rides with comes from [`campaign_update_mask`].
 fn bidding_strategy_value(c: &JsonCampaign) -> Option<(&'static str, Value)> {
     let body = match c.bidding_strategy()? {
         "manual_cpc" => {
@@ -2110,9 +2125,9 @@ mod tests {
         .expect("valid ExportInput")
     }
 
-    fn video_campaign_bidding(bidding: Value) -> ExportInput {
+    fn campaign_bidding(channel: &str, bidding: Value) -> ExportInput {
         let mut campaign = json!({
-            "id": "m.c", "name": "V", "advertising_channel_type": "VIDEO",
+            "id": "m.c", "name": "V", "advertising_channel_type": channel,
             "campaign_budget": "m.b"
         });
         for (k, v) in bidding.as_object().unwrap() {
@@ -2124,6 +2139,49 @@ mod tests {
             "campaigns": [campaign]
         }))
         .expect("valid ExportInput")
+    }
+
+    fn video_campaign_bidding(bidding: Value) -> ExportInput {
+        campaign_bidding("VIDEO", bidding)
+    }
+
+    /// A campaign whose only drift is the bidding block it declares.
+    fn strategy_switch(changed_field: &str) -> DiffReport {
+        DiffReport {
+            diffs: vec![
+                ResourceDiff {
+                    address: "m.b".to_string(),
+                    kind: "campaign_budget",
+                    action: Action::NoOp { live_id: "41".to_string() },
+                },
+                ResourceDiff {
+                    address: "m.c".to_string(),
+                    kind: "campaign",
+                    action: Action::Update {
+                        live_id: "42".to_string(),
+                        changed_fields: vec![changed_field.to_string()],
+                    },
+                },
+            ],
+            label_plans: Vec::new(),
+            claim_plans: Vec::new(),
+            noop_count: 1,
+            create_count: 0,
+            update_count: 1,
+            delete_count: 0,
+            adopt_count: 0,
+            ..DiffReport::default()
+        }
+    }
+
+    fn campaign_update_op(input: &ExportInput, report: &DiffReport) -> Value {
+        let plan = expect_plan(build_mutate_with_diff(input, report, true));
+        plan.body["mutateOperations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|op| op.get("campaignOperation").cloned())
+            .expect("campaign update op")
     }
 
     #[test]
@@ -2160,42 +2218,69 @@ mod tests {
         }
     }
 
+    /// A strategy the API models as a field-less message is the one case where
+    /// the mask can name the `oneof` member itself.
     #[test]
-    fn switching_bidding_strategy_masks_the_whole_oneof_member() {
-        let input = video_campaign_bidding(json!({ "target_cpv": {} }));
-        let report = DiffReport {
-            diffs: vec![
-                ResourceDiff {
-                    address: "m.b".to_string(),
-                    kind: "campaign_budget",
-                    action: Action::NoOp { live_id: "41".to_string() },
-                },
-                ResourceDiff {
-                    address: "m.c".to_string(),
-                    kind: "campaign",
-                    action: Action::Update {
-                        live_id: "42".to_string(),
-                        changed_fields: vec!["target_cpv".to_string()],
-                    },
-                },
-            ],
-            label_plans: Vec::new(),
-            claim_plans: Vec::new(),
-            noop_count: 1,
-            create_count: 0,
-            update_count: 1,
-            delete_count: 0,
-            adopt_count: 0,
-            ..DiffReport::default()
-        };
-        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
-        let ops = plan.body["mutateOperations"].as_array().unwrap();
-        let op = ops
-            .iter()
-            .find_map(|op| op.get("campaignOperation"))
-            .expect("campaign update op");
+    fn switching_to_a_field_less_strategy_masks_the_oneof_member() {
+        let op = campaign_update_op(
+            &video_campaign_bidding(json!({ "target_cpv": {} })),
+            &strategy_switch("target_cpv"),
+        );
         assert_eq!(op["updateMask"], json!("target_cpv"));
         assert_eq!(op["update"]["targetCpv"], json!({}));
+    }
+
+    /// Google Ads rejects a mask naming a message field that has subfields, so
+    /// a switch onto one has to name the subfields instead (issue #120).
+    #[test]
+    fn switching_to_a_strategy_with_subfields_masks_those_subfields() {
+        for (bidding, mask) in [
+            (json!({ "manual_cpc": {} }), "manual_cpc.enhanced_cpc_enabled"),
+            (
+                json!({ "manual_cpc": {"enhanced_cpc_enabled": false} }),
+                "manual_cpc.enhanced_cpc_enabled",
+            ),
+            (json!({ "target_cpm": {} }), "target_cpm.target_frequency_goal"),
+        ] {
+            let field = bidding.as_object().unwrap().keys().next().unwrap().clone();
+            let op = campaign_update_op(
+                &campaign_bidding("SEARCH", bidding),
+                &strategy_switch(&field),
+            );
+            assert_eq!(op["updateMask"], json!(mask), "switch to {field}: {op}");
+        }
+    }
+
+    /// The body still carries the whole member — setting it is what clears the
+    /// strategy the campaign was live on.
+    #[test]
+    fn switching_to_manual_cpc_still_sends_the_member_body() {
+        let op = campaign_update_op(
+            &campaign_bidding("SEARCH", json!({ "manual_cpc": {"enhanced_cpc_enabled": false} })),
+            &strategy_switch("manual_cpc"),
+        );
+        assert_eq!(op["update"]["manualCpc"], json!({"enhancedCpcEnabled": false}));
+
+        let op = campaign_update_op(
+            &campaign_bidding("SEARCH", json!({ "manual_cpc": {} })),
+            &strategy_switch("manual_cpc"),
+        );
+        assert_eq!(op["update"]["manualCpc"], json!({}));
+    }
+
+    #[test]
+    fn a_strategy_switch_expands_alongside_the_other_changed_fields() {
+        let input = campaign_bidding("SEARCH", json!({ "manual_cpc": {} }));
+        let mut report = strategy_switch("manual_cpc");
+        report.diffs[1].action = Action::Update {
+            live_id: "42".to_string(),
+            changed_fields: vec!["name".to_string(), "manual_cpc".to_string()],
+        };
+        let op = campaign_update_op(&input, &report);
+        assert_eq!(
+            op["updateMask"],
+            json!("name,manual_cpc.enhanced_cpc_enabled")
+        );
     }
 
     /// The bid amount lives on the ad group, and for a CPV strategy it is
