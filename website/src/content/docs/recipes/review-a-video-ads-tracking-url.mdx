@@ -1,0 +1,134 @@
+---
+title: Put a video ad's tracking URL under review
+description: Adopt a YouTube video ad you built in the Google Ads UI so its UTM parameters live in the repo and show up in a diff.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+A YouTube video test is measured on the UTM parameters hanging off its
+landing page URL — something like
+`?utm_campaign=GH_YouTubeUS_v1_0811-instream`. Get that slug wrong and
+the campaign still runs, still spends, and reports its results into the
+wrong bucket, or into no bucket at all.
+
+If the ad was built in the Google Ads UI and left there, that slug is a
+text field in a web form. Nobody reviews it, nothing diffs it, and the
+only way to check it is to click into the ad. This recipe brings the ad
+itself into your `.bid` files so the URL is a line someone approves.
+
+## Pull the ad you already have
+
+You don't write the block by hand. `refresh` reads the account and
+renders the live creative into a `.bid` file:
+
+```sh
+bidsmith refresh -o campaigns/youtube-us.bid
+```
+
+The video ad comes out looking like this:
+
+```hcl
+resource "google_ads_youtube_video_asset" "ghostery_12s" {
+  youtube_video_id = "dQw4w9WgXcQ"
+}
+
+resource "google_ads_ad_group_ad" "us_instream" {
+  ad_group = google_ads_ad_group.us_instream.id
+  status   = "ENABLED"
+
+  ad {
+    final_urls        = ["https://www.ghostery.com/?utm_campaign=GH_YouTubeUS_v1_0811-instream"]
+    final_mobile_urls = ["https://m.ghostery.com/?utm_campaign=GH_YouTubeUS_v1_0811-instream"]
+    display_url       = "www.ghostery.com"
+
+    video_ad {
+      video = google_ads_youtube_video_asset.ghostery_12s.id
+    }
+  }
+}
+```
+
+`video_ad` is the creative a UI-built video campaign carries. `refresh`
+renders it along with the two other URL fields — `final_mobile_urls`,
+which overrides the landing page on phones, and `display_url`, the
+shortened address the ad shows rather than navigates to.
+
+## Commit it, then plan
+
+<Steps>
+
+1. Commit the file. The tracking URL is now in version control, and the
+   next person to change it has to open a pull request to do it.
+
+2. Run `bidsmith plan`. The ad reports as an adoption — bidsmith found
+   the live ad and will label it, changing nothing else:
+
+   ```
+   google_ads_ad_group_ad.us_instream        ~ adopt (label only)
+   ```
+
+3. Apply. From here on the file and the ad are joined, and a plan that
+   says `unchanged` is speaking about that URL.
+
+</Steps>
+
+## Mark it adopt-only
+
+The ad exists; bidsmith should find it, not make a second one. Say so:
+
+```hcl
+resource "google_ads_ad_group_ad" "us_instream" {
+  ad_group = google_ads_ad_group.us_instream.id
+
+  lifecycle {
+    create = false
+  }
+
+  ad { /* … */ }
+}
+```
+
+Now a block that matches nothing live stops the plan with an
+explanation, rather than quietly turning into a create.
+
+<Aside type="caution" title="Video ads are adopted, never created">
+  The Google Ads API cannot create or update anything on the `VIDEO`
+  channel — campaigns, ad groups, or creatives. A `video_ad` bidsmith
+  would have to *create* stops the plan before the request goes out,
+  because the batch is all-or-nothing and one refused operation takes
+  every unrelated change down with it.
+
+  So the workflow is: build the ad in the Google Ads UI, `refresh` it
+  into a file, commit it. Changes to the creative go the same way round
+  — make them in the UI, then `refresh` to bring the file back in step.
+  Only Demand Gen video ads (`demand_gen_video_responsive_ad`) can be
+  created from a `.bid`.
+</Aside>
+
+## What you get
+
+- The UTM slug every video test is measured on is reviewable, and a
+  change to it shows up as a diff with a name attached.
+- `unchanged` on that ad now means something. An ad body is compared
+  whole, so if someone edits the URL in the Google Ads UI the file stops
+  matching the live ad and the next `plan` says so — where before the
+  field was invisible to bidsmith and every plan reported agreement.
+- `bidsmith drift` stops listing these fields as gaps, because they are
+  now compared rather than merely present.
+
+<Aside type="note" title="Editing the copy is a UI job">
+  An ad body is create-only for every ad type, and on the `VIDEO`
+  channel bidsmith cannot create one — so a URL change belongs in the
+  Google Ads UI, followed by a `refresh` to bring the file back in step.
+  What the file buys you is that the disagreement is *visible* in the
+  meantime, not that bidsmith can resolve it.
+</Aside>
+
+## See also
+
+- [Adopt a campaign you built in the Google Ads UI](./adopt-a-campaign-from-the-ui/) —
+  the same move for the campaign the ad sits in.
+- [`google_ads_ad_group_ad`](/bidsmith/resources/google_ads_ad_group_ad/) —
+  every field an `ad {}` block takes.
+- [Build tracking URLs from a shared prefix](./build-urls-from-a-shared-prefix/) —
+  keeping UTM parameters consistent once they're in the repo.

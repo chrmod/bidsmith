@@ -12,8 +12,8 @@ use crate::commands::export::{
     JsonManualCpc, JsonNetworkSettings, JsonParentalStatus, JsonPlacement, JsonProximity,
     JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedSet, JsonSitelinkAsset,
     JsonStructuredSnippetAsset, JsonTopic, JsonUserInterest, JsonValueSettings,
-    JsonVideoAdInventoryControl, JsonVideoCampaignSettings, JsonVideoResponsiveAd,
-    JsonYoutubeChannel, JsonYoutubeVideo, JsonYoutubeVideoAsset,
+    JsonVideoAd, JsonVideoAdInventoryControl, JsonVideoCampaignSettings,
+    JsonVideoResponsiveAd, JsonYoutubeChannel, JsonYoutubeVideo, JsonYoutubeVideoAsset,
 };
 
 pub fn from_search_response(raw: &str) -> Result<ExportInput, String> {
@@ -478,8 +478,11 @@ impl AdapterState {
                 ad: JsonAd {
                     name: None,
                     final_urls: Vec::new(),
+                    final_mobile_urls: Vec::new(),
+                    display_url: None,
                     responsive_search_ad: None,
                     video_responsive_ad: None,
+                    video_ad: None,
                     demand_gen_video_responsive_ad: None,
                 },
                 managed_address: None,
@@ -503,6 +506,18 @@ impl AdapterState {
                     entry.ad.final_urls = urls;
                 }
             }
+            if let Some(urls) = ad.get("finalMobileUrls").and_then(Value::as_array) {
+                let urls: Vec<String> = urls
+                    .iter()
+                    .filter_map(|u| u.as_str().map(String::from))
+                    .collect();
+                if !urls.is_empty() {
+                    entry.ad.final_mobile_urls = urls;
+                }
+            }
+            if let Some(u) = ad.get("displayUrl").and_then(Value::as_str) {
+                entry.ad.display_url = Some(u.to_string());
+            }
             if let Some(rsa) = ad.get("responsiveSearchAd") {
                 entry.ad.responsive_search_ad = Some(JsonResponsiveSearchAd {
                     headlines: extract_rsa_assets(rsa.get("headlines")),
@@ -521,6 +536,19 @@ impl AdapterState {
                     long_headlines: extract_ad_text_list(video.get("longHeadlines")),
                     descriptions: extract_ad_text_list(video.get("descriptions")),
                     call_to_actions: extract_ad_text_list(video.get("callToActions")),
+                    breadcrumb1: video.get("breadcrumb1").and_then(Value::as_str).map(String::from),
+                    breadcrumb2: video.get("breadcrumb2").and_then(Value::as_str).map(String::from),
+                });
+            }
+            if let Some(video) = ad
+                .get("videoAd")
+                .and_then(|v| v.get("video"))
+                .and_then(|v| v.get("asset"))
+                .and_then(Value::as_str)
+                .and_then(last_segment)
+            {
+                entry.ad.video_ad = Some(JsonVideoAd {
+                    video: video.to_string(),
                 });
             }
             if let Some(dg) = ad.get("demandGenVideoResponsiveAd") {
@@ -1594,6 +1622,63 @@ mod video_tests {
         assert_eq!(video.long_headlines, vec!["Block ads and trackers"]);
         assert_eq!(video.descriptions, vec!["Free extension"]);
         assert_eq!(video.call_to_actions, vec!["Install"]);
+    }
+
+    #[test]
+    fn a_ui_built_video_ad_reads_back_whole() {
+        // The shape a live in-stream creative actually has: `Ad.video_ad` with
+        // one asset, and the tracking URL the campaign is measured on beside it.
+        let input = adapt(serde_json::json!([
+            {
+                "adGroupAd": {
+                    "resourceName": "customers/123/adGroupAds/55~9",
+                    "adGroup": "customers/123/adGroups/55",
+                    "status": "ENABLED",
+                    "ad": {
+                        "finalUrls": ["https://ghostery.com/?utm_campaign=GH_YouTubeUS_v1"],
+                        "finalMobileUrls": ["https://m.ghostery.com/?utm_campaign=GH_YouTubeUS_v1"],
+                        "displayUrl": "www.ghostery.com",
+                        "videoAd": {
+                            "video": {"asset": "customers/123/assets/75804823141"}
+                        }
+                    }
+                }
+            }
+        ]));
+
+        let ad = input.ad_group_ads.first().expect("the ad is adapted");
+        assert_eq!(ad.ad.display_url.as_deref(), Some("www.ghostery.com"));
+        assert_eq!(
+            ad.ad.final_mobile_urls,
+            vec!["https://m.ghostery.com/?utm_campaign=GH_YouTubeUS_v1"]
+        );
+        let video = ad.ad.video_ad.as_ref().expect("video_ad creative");
+        assert_eq!(video.video, "75804823141");
+    }
+
+    #[test]
+    fn video_responsive_breadcrumbs_read_back() {
+        let input = adapt(serde_json::json!([
+            {
+                "adGroupAd": {
+                    "resourceName": "customers/123/adGroupAds/55~9",
+                    "adGroup": "customers/123/adGroups/55",
+                    "ad": {
+                        "finalUrls": ["https://ghostery.com/get"],
+                        "videoResponsiveAd": {
+                            "headlines": [{"text": "Block ads"}],
+                            "videos": [{"asset": "customers/123/assets/42"}],
+                            "breadcrumb1": "AdBlocker",
+                            "breadcrumb2": "Browser"
+                        }
+                    }
+                }
+            }
+        ]));
+
+        let video = input.ad_group_ads[0].ad.video_responsive_ad.as_ref().expect("creative");
+        assert_eq!(video.breadcrumb1.as_deref(), Some("AdBlocker"));
+        assert_eq!(video.breadcrumb2.as_deref(), Some("Browser"));
     }
 
     #[test]

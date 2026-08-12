@@ -263,6 +263,14 @@ fn walk(
         if spec.get("readOnly").and_then(Value::as_bool) == Some(true) {
             continue;
         }
+        // A `resource_name` names the thing, it does not configure it. The
+        // discovery document leaves it writable because that is how a mutate
+        // addresses an existing resource, so nothing but this rules it out —
+        // and left in, it is the single most-set "unmodelled field" on the
+        // account, burying the gaps that are real ones (issue #136).
+        if property == "resourceName" {
+            continue;
+        }
         let path = format!("{prefix}.{}", snake_case(property));
         out.insert(path.clone());
         let Some(child) = spec.get("$ref").and_then(Value::as_str) else {
@@ -334,6 +342,7 @@ mod tests {
                     "properties": {
                         "name": { "type": "string" },
                         "id": { "type": "string", "readOnly": true },
+                        "resourceName": { "type": "string" },
                         "primaryStatus": { "type": "string", "readOnly": true },
                         "networkSettings": {
                             "$ref": "GoogleAdsGoogleadsV22Common__NetworkSettings"
@@ -388,6 +397,16 @@ mod tests {
         let paths = settable_paths(&discovery_fixture(), &["campaign"], "v22").unwrap();
         assert!(paths.contains("campaign.network_settings"));
         assert!(paths.contains("campaign.network_settings.target_youtube"));
+    }
+
+    #[test]
+    fn a_resource_name_is_an_identity_not_a_setting() {
+        // Writable per the discovery document, because that is how a mutate
+        // addresses an existing resource — but nothing in a `.bid` chooses it,
+        // and left in it is the loudest "unmodelled field" on the account.
+        let paths = settable_paths(&discovery_fixture(), &["campaign"], "v22").unwrap();
+        assert!(!paths.contains("campaign.resource_name"));
+        assert!(paths.contains("campaign.name"));
     }
 
     #[test]

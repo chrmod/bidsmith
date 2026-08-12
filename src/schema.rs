@@ -438,6 +438,12 @@ fn ad_block(final_urls_required: bool) -> NestedBlockSchema {
                     FieldType::list_of(FieldType::String),
                     final_urls_required,
                 ),
+                attr(
+                    "final_mobile_urls",
+                    FieldType::list_of(FieldType::String),
+                    false,
+                ),
+                attr("display_url", FieldType::String, false),
             ],
             blocks: vec![
                 NestedBlockSchema {
@@ -477,7 +483,25 @@ fn ad_block(final_urls_required: bool) -> NestedBlockSchema {
                                 FieldType::list_of(FieldType::String),
                                 false,
                             ),
+                            attr("breadcrumb1", FieldType::String, false),
+                            attr("breadcrumb2", FieldType::String, false),
                         ],
+                        blocks: vec![],
+                    },
+                },
+                // The creative a UI-built VIDEO campaign actually carries:
+                // `Ad.video_ad`, a single YouTube video in one of the in-stream /
+                // bumper / in-feed formats. Adopt-only — the VIDEO channel refuses
+                // every create and update — so the block models the one field that
+                // identifies the creative and leaves the format alone.
+                NestedBlockSchema {
+                    name: "video_ad",
+                    schema: BlockSchema {
+                        attributes: vec![attr(
+                            "video",
+                            FieldType::Ref(&["google_ads_youtube_video_asset"]),
+                            true,
+                        )],
                         blocks: vec![],
                     },
                 },
@@ -2278,7 +2302,7 @@ fn find_child_block<'a>(body: &'a Body, name: &str) -> Option<&'a Block> {
 }
 
 /// An `ad {}` body (inline or in an `ad_template`) may carry at most one creative:
-/// a `responsive_search_ad`, a `video_responsive_ad`, or a
+/// a `responsive_search_ad`, a `video_responsive_ad`, a `video_ad`, or a
 /// `demand_gen_video_responsive_ad` — never more than one.
 fn validate_ad_creative_exclusivity(
     file: &ParsedFile,
@@ -2289,6 +2313,7 @@ fn validate_ad_creative_exclusivity(
     let creatives = [
         "responsive_search_ad",
         "video_responsive_ad",
+        "video_ad",
         "demand_gen_video_responsive_ad",
     ];
     let present: Vec<&Block> = creatives
@@ -4937,6 +4962,86 @@ resource "google_ads_ad_group_ad" "rsa" {
         );
         assert!(
             diags.iter().any(|d| d.message.contains("sets both an 'ad' block and 'template'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_video_ad_is_a_creative_of_its_own() {
+        let diags = validate_str(
+            "video_ad_alone",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "YouTube US"
+  amount_micros = 50000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "GH_YouTubeUS_v1"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+
+resource "google_ads_ad_group" "g" {
+  name     = "US in-stream"
+  campaign = google_ads_campaign.c.id
+}
+
+resource "google_ads_youtube_video_asset" "brand" {
+  youtube_video_id = "dQw4w9WgXcQ"
+}
+
+resource "google_ads_ad_group_ad" "preroll" {
+  ad_group = google_ads_ad_group.g.id
+
+  ad {
+    final_urls        = ["https://ghostery.com/?utm_campaign=GH_YouTubeUS_v1"]
+    final_mobile_urls = ["https://m.ghostery.com/?utm_campaign=GH_YouTubeUS_v1"]
+    display_url       = "www.ghostery.com"
+
+    video_ad {
+      video = google_ads_youtube_video_asset.brand.id
+    }
+  }
+}
+"#,
+        );
+        assert!(
+            diags.iter().all(|d| !d.is_error()),
+            "{:?}",
+            diags.iter().filter(|d| d.is_error()).map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_video_ad_beside_another_creative_errors() {
+        let diags = validate_str(
+            "video_ad_plus_rsa",
+            r#"
+resource "google_ads_youtube_video_asset" "brand" {
+  youtube_video_id = "dQw4w9WgXcQ"
+}
+
+resource "google_ads_ad_group_ad" "preroll" {
+  ad_group = google_ads_ad_group.g.id
+
+  ad {
+    final_urls = ["https://ghostery.com/get"]
+
+    video_ad {
+      video = google_ads_youtube_video_asset.brand.id
+    }
+
+    video_responsive_ad {
+      video = google_ads_youtube_video_asset.brand.id
+    }
+  }
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("more than one creative")),
             "{:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );

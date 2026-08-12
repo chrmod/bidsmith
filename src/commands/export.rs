@@ -490,9 +490,15 @@ pub struct JsonAd {
     pub name: Option<String>,
     pub final_urls: Vec<String>,
     #[serde(default)]
+    pub final_mobile_urls: Vec<String>,
+    #[serde(default)]
+    pub display_url: Option<String>,
+    #[serde(default)]
     pub responsive_search_ad: Option<JsonResponsiveSearchAd>,
     #[serde(default)]
     pub video_responsive_ad: Option<JsonVideoResponsiveAd>,
+    #[serde(default)]
+    pub video_ad: Option<JsonVideoAd>,
     #[serde(default)]
     pub demand_gen_video_responsive_ad: Option<JsonDemandGenVideoResponsiveAd>,
 }
@@ -511,6 +517,18 @@ pub struct JsonVideoResponsiveAd {
     pub descriptions: Vec<String>,
     #[serde(default)]
     pub call_to_actions: Vec<String>,
+    #[serde(default)]
+    pub breadcrumb1: Option<String>,
+    #[serde(default)]
+    pub breadcrumb2: Option<String>,
+}
+
+/// A plain `Ad.video_ad` creative — the shape a UI-built VIDEO campaign
+/// carries. Adopt-only, so the only thing worth holding is which video it
+/// plays; the format oneof (in-stream / bumper / in-feed) is not writable.
+#[derive(Deserialize)]
+pub struct JsonVideoAd {
+    pub video: String,
 }
 
 /// A Demand Gen video responsive ad body (the ad type a DEMAND_GEN campaign
@@ -1191,7 +1209,9 @@ pub fn video_upload_notice(input: &ExportInput) -> Option<String> {
         .ad_group_ads
         .iter()
         .filter(|a| {
-            a.ad.video_responsive_ad.is_some() || a.ad.demand_gen_video_responsive_ad.is_some()
+            a.ad.video_responsive_ad.is_some()
+                || a.ad.video_ad.is_some()
+                || a.ad.demand_gen_video_responsive_ad.is_some()
         })
         .count();
     let video_assets = input.youtube_video_assets.len();
@@ -1817,6 +1837,12 @@ fn write_ad_group_ad(
         write_attr(out, 2, "name", &fmt_string(n));
     }
     write_attr(out, 2, "final_urls", &fmt_string_list(&a.ad.final_urls));
+    if !a.ad.final_mobile_urls.is_empty() {
+        write_attr(out, 2, "final_mobile_urls", &fmt_string_list(&a.ad.final_mobile_urls));
+    }
+    if let Some(u) = &a.ad.display_url {
+        write_attr(out, 2, "display_url", &fmt_string(u));
+    }
     if let Some(rsa) = &a.ad.responsive_search_ad {
         out.push_str("\n    responsive_search_ad {\n");
         write_rsa_list_attr(out, 3, "headlines", &rsa.headlines, plan.map(|p| &p.headline_local_by_key));
@@ -1846,6 +1872,21 @@ fn write_ad_group_ad(
                 write_attr(out, 3, attr, &fmt_string_list(items));
             }
         }
+        if let Some(b) = &video.breadcrumb1 {
+            write_attr(out, 3, "breadcrumb1", &fmt_string(b));
+        }
+        if let Some(b) = &video.breadcrumb2 {
+            write_attr(out, 3, "breadcrumb2", &fmt_string(b));
+        }
+        out.push_str("    }\n");
+    }
+    if let Some(video) = &a.ad.video_ad {
+        out.push_str("\n    video_ad {\n");
+        let video_ref = match youtube_asset_addr.get(&video.video) {
+            Some(addr) => format!("{addr}.id"),
+            None => format!("\"<unresolved video {}>\"", video.video),
+        };
+        write_attr(out, 3, "video", &video_ref);
         out.push_str("    }\n");
     }
     if let Some(dg) = &a.ad.demand_gen_video_responsive_ad {
@@ -3479,6 +3520,70 @@ mod tests {
             diags.iter().all(|d| !d.is_error()),
             "validate errors: {:?}",
             diags.iter().filter(|d| d.is_error()).map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    // Issue #136: a UI-built in-stream ad, exactly as `pull` reads it. The point
+    // is the tracking URL — until `video_ad` and `display_url` were modelled the
+    // creative could not be declared at all, so the UTM slug the whole video
+    // test is measured on existed only in the Google Ads UI.
+    const VIDEO_AD_FIXTURE: &str = r#"[
+        {
+            "results": [
+                { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "YouTube US", "amountMicros": "50000000" } },
+                { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "GH_YouTubeUS_v1", "status": "ENABLED", "advertisingChannelType": "VIDEO", "campaignBudget": "customers/9/campaignBudgets/1001" } },
+                { "adGroup": { "resourceName": "customers/9/adGroups/3001", "id": "3001", "name": "US in-stream", "campaign": "customers/9/campaigns/2001", "status": "ENABLED" } },
+                { "asset": { "resourceName": "customers/9/assets/75804823141", "id": "75804823141", "youtubeVideoAsset": { "youtubeVideoId": "dQw4w9WgXcQ", "youtubeVideoTitle": "Ghostery 12s" } } },
+                { "adGroupAd": { "resourceName": "customers/9/adGroupAds/3001~4001", "adGroup": "customers/9/adGroups/3001", "status": "ENABLED", "ad": {
+                    "finalUrls": ["https://www.ghostery.com/?utm_campaign=GH_YouTubeUS_v1_0811-instream"],
+                    "finalMobileUrls": ["https://m.ghostery.com/?utm_campaign=GH_YouTubeUS_v1_0811-instream"],
+                    "displayUrl": "www.ghostery.com",
+                    "videoAd": { "video": { "asset": "customers/9/assets/75804823141" } }
+                } } }
+            ]
+        }
+    ]"#;
+
+    #[test]
+    fn a_ui_built_video_ad_pulls_into_a_reviewable_file() {
+        let input = from_search_response(VIDEO_AD_FIXTURE).expect("adapter");
+
+        let ad = &input.ad_group_ads[0].ad;
+        assert_eq!(ad.display_url.as_deref(), Some("www.ghostery.com"));
+        assert_eq!(ad.video_ad.as_ref().expect("video_ad body").video, "75804823141");
+
+        let rendered = canonicalize(&render(&input));
+        assert!(rendered.contains("video_ad {"), "{rendered}");
+        assert!(rendered.contains("display_url = \"www.ghostery.com\""), "{rendered}");
+        assert!(
+            rendered.contains("utm_campaign=GH_YouTubeUS_v1_0811-instream"),
+            "the measurement key has to be in the file: {rendered}"
+        );
+        assert!(!rendered.contains("<unresolved video"), "{rendered}");
+
+        let pf = crate::parser::parse_str(std::path::Path::new("video.bid"), &rendered)
+            .expect("rendered video ad parses");
+        let diags = crate::schema::validate_files(
+            std::slice::from_ref(&pf),
+            &crate::schema::InputBindings::default(),
+        );
+        assert!(
+            diags.iter().all(|d| !d.is_error()),
+            "validate errors: {:?}",
+            diags.iter().filter(|d| d.is_error()).map(|d| &d.message).collect::<Vec<_>>()
+        );
+
+        let mut input2 = crate::api::import::import_files(
+            std::slice::from_ref(&pf),
+            &crate::schema::InputBindings::default(),
+        )
+        .expect("rendered video ad imports")
+        .input;
+        input2.customer_id = input.customer_id.clone();
+        input2.login_customer_id = input.login_customer_id.clone();
+        assert_eq!(
+            canonicalize(&render_inner(&input, false)),
+            canonicalize(&render_inner(&input2, false)),
         );
     }
 

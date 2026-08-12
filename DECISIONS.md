@@ -839,6 +839,42 @@ resource type, any file layout, modules, schema validation.
   adopted (fine), and an offline rule fired on all 21 adopted campaigns
   in the first real-account run. Demand Gen is the API-manageable
   channel for YouTube inventory.
+- **A video creative is adopted, never created — and the tracking URL is
+  the reason to model it at all** (issue #136). `Ad.video_ad` is what a
+  UI-built VIDEO campaign actually carries (`video_responsive_ad` is the
+  responsive format, and the account's 21 in-stream ads use neither), so
+  until it was modelled those ads could not be *declared* — which meant
+  the `final_urls` they are measured on, UTM slug and all, existed only
+  as a Google Ads UI setting: unversioned, unreviewed, and absent from
+  every diff. `ad {}` therefore gained `display_url` and
+  `final_mobile_urls`, `video_responsive_ad` gained `breadcrumb1` /
+  `breadcrumb2`, and `video_ad { video }` became a fourth creative
+  block. It models the video and nothing else: the format oneof
+  (in-stream / bumper / in-feed) is not writable, so a block offering it
+  would be the partially-modelled failure #132 is about.
+  **Adoption works, creation does not**, and both halves are now
+  enforced rather than rediscovered per campaign: `plan` blocks a
+  creative it would have to create under a declared VIDEO campaign — the
+  same check the campaign and ad group already had, extended to the ad,
+  since an ad carries no channel of its own — and the mutate builder
+  refuses a `video_ad` create outright with a message naming adoption as
+  the path. Without those, the create reached Google, was refused, and
+  took every unrelated operation in the atomic batch with it.
+  The two URL fields join `ad_body_key` but deliberately *not* the
+  creative-less carve-out, which still matches on `final_urls` alone
+  unless the file names them: a `.bid` that declares no creative is not
+  asserting anything about a `display_url` it never mentions, and
+  tightening that would have re-planned every already-adopted UI-built
+  ad as a create the channel refuses anyway.
+- **A `resource_name` is an identity, not a setting** (issue #136). The
+  discovery document leaves it writable, because that is how a mutate
+  addresses an existing resource, so the `readOnly` filter alone did not
+  catch it — and `ad_group_ad.ad.resource_name` came back as the
+  single most-set "unmodelled field" on the account, burying the gaps
+  that were real ones. `api::catalog` now drops it at any depth, which
+  removes it from both sides of the coverage ratio rather than only from
+  the sightings list: no `.bid` chooses a resource name, so counting it
+  as a field bidsmith fails to model was never honest.
 - **Bidding is one block, chosen from a fixed set** (issue #104):
   `Campaign.campaign_bidding_strategy` is a protobuf `oneof`, so the
   campaign takes at most one of `manual_cpc`, `manual_cpm`,
@@ -1454,7 +1490,11 @@ Validator covers (so far):
   plus an equivalent list-attribute form `headlines = [...]` /
   `descriptions = [...]` whose items are either bare strings or
   `{ text, pin? }` object literals — both forms can coexist, and
-  `final_urls` still uses `list<string>`; in place of an inline `ad {}`
+  `final_urls` still uses `list<string>`; alongside it the `ad {}` body
+  takes `final_mobile_urls` and `display_url`, and the creative may be a
+  `video_responsive_ad` (with `breadcrumb1` / `breadcrumb2`), a
+  `video_ad { video }`, or a `demand_gen_video_responsive_ad`; in place
+  of an inline `ad {}`
   block the resource may carry `template = ad_template.<name>`, attaching
   a reusable body declared in a top-level `ad_template "name" { … }` block
   — exactly one of `ad {}` / `template` is required, and the template is

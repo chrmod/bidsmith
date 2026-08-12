@@ -1851,6 +1851,21 @@ fn resolve_ad_videos(
     a: &JsonAdGroupAd,
     errors: &mut Vec<PlanBuildError>,
 ) -> Option<Vec<String>> {
+    if a.ad.video_ad.is_some() {
+        // Not a model gap: `Ad.video_ad` is what a UI-built VIDEO creative is,
+        // and the channel refuses every create. Saying so here beats letting
+        // Google reject the op and take the whole atomic batch with it.
+        errors.push(PlanBuildError {
+            address: a.id.clone(),
+            message: format!(
+                "a video_ad creative cannot be created — {}. Declare it to adopt the ad that \
+                 is already live (bidsmith claims it by bidsmith:address label, else by body); \
+                 use demand_gen_video_responsive_ad for a creative bidsmith can create",
+                crate::schema::VIDEO_IS_READ_ONLY,
+            ),
+        });
+        return None;
+    }
     if let Some(v) = &a.ad.video_responsive_ad {
         return resolve(refs, &v.video, &a.id, "video", errors).map(|rn| vec![rn]);
     }
@@ -1895,6 +1910,13 @@ fn ad_value(ad: &JsonAd, video_rns: &[String]) -> Value {
     }
     let urls: Vec<Value> = ad.final_urls.iter().cloned().map(Value::String).collect();
     m.insert("finalUrls".into(), Value::Array(urls));
+    if !ad.final_mobile_urls.is_empty() {
+        let urls: Vec<Value> = ad.final_mobile_urls.iter().cloned().map(Value::String).collect();
+        m.insert("finalMobileUrls".into(), Value::Array(urls));
+    }
+    if let Some(u) = &ad.display_url {
+        m.insert("displayUrl".into(), Value::String(u.clone()));
+    }
     if let Some(rsa) = &ad.responsive_search_ad {
         m.insert("responsiveSearchAd".into(), rsa_value(rsa));
     }
@@ -1917,6 +1939,12 @@ fn video_ad_value(v: &JsonVideoResponsiveAd, video_rns: &[String]) -> Value {
     insert_ad_text_list(&mut m, "descriptions", &v.descriptions);
     insert_ad_text_list(&mut m, "callToActions", &v.call_to_actions);
     m.insert("videos".into(), ad_video_assets(video_rns));
+    if let Some(b) = &v.breadcrumb1 {
+        m.insert("breadcrumb1".into(), Value::String(b.clone()));
+    }
+    if let Some(b) = &v.breadcrumb2 {
+        m.insert("breadcrumb2".into(), Value::String(b.clone()));
+    }
     Value::Object(m)
 }
 
@@ -3853,6 +3881,121 @@ mod tests {
         assert_eq!(dg["headlines"][0]["text"].as_str().unwrap(), "Block ads");
         assert_eq!(dg["breadcrumb1"].as_str().unwrap(), "Privacy");
         assert!(dg["videos"][0]["asset"].as_str().unwrap().starts_with("customers/100/assets/-"));
+    }
+
+    #[test]
+    fn a_video_ad_creative_cannot_be_created_and_the_error_names_adoption() {
+        let declared: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "campaign_budgets": [{ "id": "m.b", "name": "Preroll", "amount_micros": 10000000 }],
+            "campaigns": [{
+                "id": "m.c", "name": "Preroll", "advertising_channel_type": "VIDEO",
+                "campaign_budget": "m.b"
+            }],
+            "ad_groups": [{ "id": "m.ag", "name": "In-stream", "campaign": "m.c" }],
+            "youtube_video_assets": [{ "id": "m.brand", "youtube_video_id": "dQw4w9WgXcQ" }],
+            "ad_group_ads": [{
+                "id": "m.preroll",
+                "ad_group": "m.ag",
+                "ad": {
+                    "final_urls": ["https://ghostery.com/get"],
+                    "video_ad": { "video": "m.brand" }
+                }
+            }]
+        }))
+        .expect("valid ExportInput");
+        let live: ExportInput =
+            serde_json::from_value(json!({ "customer_id": "100" })).expect("valid live");
+
+        let report = crate::api::diff::diff(&declared, &live);
+        let Err(errs) = build_mutate_with_diff(&declared, &report, true) else {
+            panic!("the VIDEO channel refuses this creative; the plan must say so");
+        };
+        let messages =
+            errs.iter().map(|e| e.message.as_str()).collect::<Vec<_>>().join("\n");
+        assert!(messages.contains("video_ad"), "{messages}");
+        assert!(messages.contains("adopt"), "the fix is the point: {messages}");
+    }
+
+    #[test]
+    fn an_ads_display_url_and_mobile_urls_reach_the_wire() {
+        let declared: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "campaign_budgets": [{ "id": "m.b", "name": "Brand", "amount_micros": 10000000 }],
+            "campaigns": [{
+                "id": "m.c", "name": "Brand", "advertising_channel_type": "SEARCH",
+                "campaign_budget": "m.b"
+            }],
+            "ad_groups": [{ "id": "m.ag", "name": "Core", "campaign": "m.c" }],
+            "ad_group_ads": [{
+                "id": "m.rsa",
+                "ad_group": "m.ag",
+                "ad": {
+                    "final_urls": ["https://ghostery.com/get"],
+                    "final_mobile_urls": ["https://m.ghostery.com/get"],
+                    "display_url": "www.ghostery.com",
+                    "responsive_search_ad": {
+                        "headlines": [{ "text": "Block ads" }],
+                        "descriptions": [{ "text": "Free and open source" }]
+                    }
+                }
+            }]
+        }))
+        .expect("valid ExportInput");
+        let live: ExportInput =
+            serde_json::from_value(json!({ "customer_id": "100" })).expect("valid live");
+
+        let report = crate::api::diff::diff(&declared, &live);
+        let plan = expect_plan(build_mutate_with_diff(&declared, &report, true));
+        let ops = plan.body["mutateOperations"].as_array().unwrap();
+        let ad = ops
+            .iter()
+            .find_map(|o| o.get("adGroupAdOperation").and_then(|o| o.get("create")))
+            .expect("ad group ad create op")["ad"]
+            .clone();
+        assert_eq!(ad["displayUrl"].as_str().unwrap(), "www.ghostery.com");
+        assert_eq!(ad["finalMobileUrls"][0].as_str().unwrap(), "https://m.ghostery.com/get");
+    }
+
+    #[test]
+    fn video_responsive_breadcrumbs_reach_the_wire() {
+        let declared: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "campaign_budgets": [{ "id": "m.b", "name": "Preroll", "amount_micros": 10000000 }],
+            "campaigns": [{
+                "id": "m.c", "name": "Preroll", "advertising_channel_type": "DEMAND_GEN",
+                "campaign_budget": "m.b"
+            }],
+            "ad_groups": [{ "id": "m.ag", "name": "In-stream", "campaign": "m.c" }],
+            "youtube_video_assets": [{ "id": "m.brand", "youtube_video_id": "dQw4w9WgXcQ" }],
+            "ad_group_ads": [{
+                "id": "m.preroll",
+                "ad_group": "m.ag",
+                "ad": {
+                    "final_urls": ["https://ghostery.com/get"],
+                    "video_responsive_ad": {
+                        "video": "m.brand",
+                        "headlines": ["Block ads"],
+                        "breadcrumb1": "AdBlocker",
+                        "breadcrumb2": "Browser"
+                    }
+                }
+            }]
+        }))
+        .expect("valid ExportInput");
+        let live: ExportInput =
+            serde_json::from_value(json!({ "customer_id": "100" })).expect("valid live");
+
+        let report = crate::api::diff::diff(&declared, &live);
+        let plan = expect_plan(build_mutate_with_diff(&declared, &report, true));
+        let ops = plan.body["mutateOperations"].as_array().unwrap();
+        let vra = ops
+            .iter()
+            .find_map(|o| o.get("adGroupAdOperation").and_then(|o| o.get("create")))
+            .expect("ad group ad create op")["ad"]["videoResponsiveAd"]
+            .clone();
+        assert_eq!(vra["breadcrumb1"].as_str().unwrap(), "AdBlocker");
+        assert_eq!(vra["breadcrumb2"].as_str().unwrap(), "Browser");
     }
 
     #[test]
