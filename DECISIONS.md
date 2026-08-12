@@ -204,6 +204,29 @@ resource type, any file layout, modules, schema validation.
   else; a declared empty map is an explicit clear. Docs flag that this
   is a live-behaviour change rather than pure syntax — the suffix is
   appended by Google at click time and never appears in the display URL.
+- **Asset attachment sugar** (issue #145): attaching an asset took three
+  layers of ceremony — a `field_type` that is 1:1 derivable from the
+  asset's resource type, one attachment resource per asset, and a
+  one-attribute `callout_asset` whose whole content is its text
+  (measured: ~130 lines in one campaign file, 33 `campaign_asset`
+  resources across the tree). Three changes, cheapest first.
+  `field_type` is now **optional and inferred** from the referenced
+  asset (sitelink → SITELINK, callout → CALLOUT, structured_snippet →
+  STRUCTURED_SNIPPET, call → CALL); a declared value still wins, and one
+  that contradicts the asset is a validate-time error rather than an API
+  rejection that sinks the batch. An attachment takes **`assets = [...]`**
+  and fans out one attachment per entry, the precedent
+  `keywords { texts = [...] }` set; a single `asset` keeps the
+  resource's own address, so only adopting the list form re-addresses
+  anything. A campaign declares **`callouts = [...]`** and
+  **`structured_snippet { header, values }`** inline, and bidsmith
+  synthesizes the asset plus its attachment. Shared assets keep the
+  resource form — it is the one thing the inline spelling cannot say —
+  and `export` / `refresh` fold only assets a single campaign is the
+  sole user of, leaving anything attached twice, to an ad group, or to
+  the account alone. All of this is address-level only: assets are
+  matched by content, so adopting an account that already has them
+  plans as a no-op.
 - **Folding emitter** (issue #57): `refresh` / `export` recognize repeated
   structure and emit the compact constructs instead of re-exploding the
   tree on every pull. Three folds, all computed in `plan_fold` and applied

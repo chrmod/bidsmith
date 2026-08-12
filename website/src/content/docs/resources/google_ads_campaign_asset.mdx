@@ -14,15 +14,44 @@ asset is eligible to show with that campaign's ads. This is how a
 sitelink, callout, or structured snippet actually reaches the page — the
 asset holds the content, the campaign asset attaches it.
 
-The `field_type` says *what kind* of extension the asset is used as
-(`SITELINK`, `CALLOUT`, `STRUCTURED_SNIPPET`, …) and must match the
-asset's type.
+`field_type` says *what kind* of extension the asset is used as
+(`SITELINK`, `CALLOUT`, `STRUCTURED_SNIPPET`, …). **Leave it out** — the
+pairing is 1:1, so bidsmith reads it off the asset you pointed at. Write
+one that contradicts the asset and `validate` says so, instead of the
+API rejecting the whole batch later.
 
 <Aside type="tip">
   To attach the same asset to a single ad group instead of a whole
   campaign, use [`google_ads_ad_group_asset`](./google_ads_ad_group_asset/).
   To attach it to every campaign in the account, use
   [`google_ads_customer_asset`](./google_ads_customer_asset/).
+</Aside>
+
+## Attaching a whole set
+
+`assets` takes a list and fans out to one attachment per entry, so a set
+of sitelinks is one block rather than one block each:
+
+```hcl
+resource "google_ads_campaign_asset" "gh_cookies_sitelinks" {
+  campaign = google_ads_campaign.gh_cookies.id
+  assets = [
+    google_ads_sitelink_asset.add_to_chrome.id,
+    google_ads_sitelink_asset.how_it_works.id,
+    google_ads_sitelink_asset.pricing.id,
+  ]
+}
+```
+
+Every attachment in the list gets the same `campaign` and `status`, and
+each one's `field_type` comes from its own asset — so a list may mix
+sitelinks and callouts.
+
+<Aside type="tip">
+  For callouts and structured snippets used by **one** campaign, skip
+  this resource entirely and declare them
+  [on the campaign](./google_ads_campaign/). Keep the resource form for
+  assets shared across campaigns, ad groups, or the whole account.
 </Aside>
 
 ## Example

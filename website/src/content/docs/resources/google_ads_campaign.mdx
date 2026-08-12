@@ -229,6 +229,44 @@ Three notes:
 Converting an existing device trio to the inline form plans as a no-op:
 bidsmith matches live criteria by device type, not by address.
 
+## Callouts and snippets, declared where they're used
+
+A callout asset *is* its text. Saying so used to take three resources —
+the asset, the attachment, and the `field_type` naming what the
+attachment already implied. Declare them on the campaign instead:
+
+```hcl
+resource "google_ads_campaign" "fbads" {
+  name                     = "GH_FacebookAds"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.fbads.id
+
+  callouts = [
+    "Blocks feed & sidebar ads",
+    "Open source & private",
+    "Free forever",
+  ]
+
+  structured_snippet {
+    header = "Types"
+    values = ["Ad blocker", "Tracker blocker", "Pop-up blocker"]
+  }
+}
+```
+
+bidsmith creates the assets and attaches them — the account ends up in
+exactly the state the long form produced, and adopting an account that
+already has them plans as a no-op, because assets are matched by
+content rather than by address.
+
+Reach for
+[`google_ads_callout_asset`](./google_ads_callout_asset/) and
+[`google_ads_campaign_asset`](./google_ads_campaign_asset/) when an
+asset is **shared** — attached to more than one campaign, to an ad
+group, or to the account. That is the one thing the inline form cannot
+express, so `refresh` leaves shared assets in the resource form and
+folds only the ones a single campaign owns.
+
 ## Tracking the click, not the landing page
 
 `final_url_suffix` is a query string Google appends to the landing page

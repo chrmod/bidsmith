@@ -459,6 +459,19 @@ const ASSET_TYPES: &[&str] = &[
     "google_ads_structured_snippet_asset",
 ];
 
+/// Which `field_type` an asset of each resource type can be attached as. The
+/// mapping is 1:1 — a sitelink asset is only ever a SITELINK — so declaring it
+/// is ceremony that can only ever be wrong (issue #145).
+pub fn field_type_for_asset(resource_type: &str) -> Option<&'static str> {
+    match resource_type {
+        "google_ads_sitelink_asset" => Some("SITELINK"),
+        "google_ads_callout_asset" => Some("CALLOUT"),
+        "google_ads_structured_snippet_asset" => Some("STRUCTURED_SNIPPET"),
+        "google_ads_call_asset" => Some("CALL"),
+        _ => None,
+    }
+}
+
 fn rsa_asset_block(name: &'static str) -> NestedBlockSchema {
     NestedBlockSchema {
         name,
@@ -855,6 +868,7 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         FieldType::list_of(FieldType::Enum(DEVICE_TYPE)),
                         false,
                     ),
+                    attr("callouts", FieldType::list_of(FieldType::String), false),
                 ]
                 .into_iter()
                 .chain(tracking_attrs())
@@ -910,6 +924,19 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                                 .iter()
                                 .map(|(field, _)| attr(field, FieldType::Bool, false))
                                 .collect(),
+                            blocks: vec![],
+                        },
+                    },
+                    // A structured snippet declared where it is used. The
+                    // resource form stays available for a snippet shared
+                    // between campaigns (issue #145).
+                    NestedBlockSchema {
+                        name: "structured_snippet",
+                        schema: BlockSchema {
+                            attributes: vec![
+                                attr("header", FieldType::String, true),
+                                attr("values", FieldType::list_of(FieldType::String), true),
+                            ],
                             blocks: vec![],
                         },
                     },
@@ -1343,12 +1370,9 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
             "google_ads_customer_asset",
             BlockSchema {
                 attributes: vec![
-                    attr("asset", FieldType::Ref(ASSET_TYPES), true),
-                    attr(
-                        "field_type",
-                        FieldType::Enum(ASSET_FIELD_TYPE),
-                        true,
-                    ),
+                    attr("asset", FieldType::Ref(ASSET_TYPES), false),
+                    attr("assets", FieldType::list_of(FieldType::Ref(ASSET_TYPES)), false),
+                    attr("field_type", FieldType::Enum(ASSET_FIELD_TYPE), false),
                     attr("status", FieldType::Enum(STATUS), false)
                         .with_default(DefaultValue::Str(DEFAULT_STATUS)),
                 ],
@@ -1365,8 +1389,9 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         FieldType::RefOrResourceName(&["google_ads_campaign"]),
                         true,
                     ),
-                    attr("asset", FieldType::Ref(ASSET_TYPES), true),
-                    attr("field_type", FieldType::Enum(ASSET_FIELD_TYPE), true),
+                    attr("asset", FieldType::Ref(ASSET_TYPES), false),
+                    attr("assets", FieldType::list_of(FieldType::Ref(ASSET_TYPES)), false),
+                    attr("field_type", FieldType::Enum(ASSET_FIELD_TYPE), false),
                     attr("status", FieldType::Enum(STATUS), false)
                         .with_default(DefaultValue::Str(DEFAULT_STATUS)),
                 ],
@@ -1383,8 +1408,9 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         FieldType::RefOrResourceName(&["google_ads_ad_group"]),
                         true,
                     ),
-                    attr("asset", FieldType::Ref(ASSET_TYPES), true),
-                    attr("field_type", FieldType::Enum(ASSET_FIELD_TYPE), true),
+                    attr("asset", FieldType::Ref(ASSET_TYPES), false),
+                    attr("assets", FieldType::list_of(FieldType::Ref(ASSET_TYPES)), false),
+                    attr("field_type", FieldType::Enum(ASSET_FIELD_TYPE), false),
                     attr("status", FieldType::Enum(STATUS), false)
                         .with_default(DefaultValue::Str(DEFAULT_STATUS)),
                 ],
@@ -3182,6 +3208,58 @@ fn validate_resource(
         let merged = defaults.merge(ty, block);
         let body = merged.as_ref().map_or(&block.body, |b| &b.body);
         validate_budget_amount(file, block, body, &address, locals, variables, diags);
+    }
+    if ASSET_LINK_TYPES.contains(&ty) {
+        validate_asset_field_type(file, block, &address, diags);
+    }
+}
+
+/// The three resources that attach an asset to something.
+const ASSET_LINK_TYPES: &[&str] = &[
+    "google_ads_customer_asset",
+    "google_ads_campaign_asset",
+    "google_ads_ad_group_asset",
+];
+
+/// A declared `field_type` that contradicts the asset it points at. The pairing
+/// is 1:1, so this is always a mistake — and one the API only reports after the
+/// whole atomic batch has been rejected.
+fn validate_asset_field_type(
+    file: &ParsedFile,
+    block: &Block,
+    address: &str,
+    diags: &mut Vec<Diag>,
+) {
+    let mut asset_type: Option<String> = None;
+    let mut declared: Option<(String, std::ops::Range<usize>)> = None;
+    for s in block.body.iter() {
+        let Structure::Attribute(a) = s else { continue };
+        match a.key.as_str() {
+            "asset" => {
+                asset_type = ref_type_name(&a.value).map(|(ty, _)| ty);
+            }
+            "field_type" => {
+                if let Expression::String(v) = &a.value {
+                    declared = Some((v.value().to_string(), span_of(a.value.span())));
+                }
+            }
+            _ => {}
+        }
+    }
+    let (Some(asset_type), Some((declared, span))) = (asset_type, declared) else {
+        return;
+    };
+    let Some(expected) = field_type_for_asset(&asset_type) else {
+        return;
+    };
+    if declared != expected {
+        diags.push(Diag::new(
+            file.src.clone(),
+            span,
+            format!(
+                "{address} attaches a {asset_type} as '{declared}', but that asset type is                  always '{expected}' — drop the attribute and bidsmith infers it"
+            ),
+        ));
     }
 }
 
