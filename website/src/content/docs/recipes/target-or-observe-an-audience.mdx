@@ -1,0 +1,105 @@
+---
+title: Make an audience observe instead of target
+description: The one-word switch that decides whether an audience narrows who sees your ad or only changes what you bid for them.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+An audience attached to an ad group can mean two completely different
+things, and the audience itself doesn't say which:
+
+- **Targeting** — only people in the audience are eligible to see the ad.
+- **Observation** — everyone stays eligible; being in the audience only
+  changes what you bid.
+
+Same three lines of `.bid`, and reach that differs by orders of
+magnitude. `targeting_setting` is where you settle it.
+
+## Observe an audience
+
+```hcl
+resource "google_ads_ad_group" "remarketing" {
+  name           = "Remarketing — cart abandoners"
+  campaign       = google_ads_campaign.summer_search.id
+  cpc_bid_micros = 2000000
+
+  targeting_setting {
+    target_restriction {
+      targeting_dimension = "AUDIENCE"
+      bid_only            = true
+    }
+  }
+}
+```
+
+`bid_only = true` is observation. The ad group still shows to everyone
+who matches its keywords; the audience is there so you can bid up for
+people who already have something in their cart.
+
+## Target it instead
+
+```hcl
+  targeting_setting {
+    target_restriction {
+      targeting_dimension = "AUDIENCE"
+      bid_only            = false
+    }
+  }
+```
+
+`false` is targeting: now the audience is a gate, and nobody outside it
+sees the ad. That's a one-word diff, which is the point — the change is
+reviewable instead of buried in a settings screen.
+
+## Pin down more than one dimension
+
+Repeat the inner block. Each dimension is decided on its own:
+
+```hcl
+  targeting_setting {
+    target_restriction {
+      targeting_dimension = "AUDIENCE"
+      bid_only            = false
+    }
+
+    target_restriction {
+      targeting_dimension = "AGE_RANGE"
+      bid_only            = true
+    }
+  }
+```
+
+*"Only this audience sees the ad, and within it, bid differently by age."*
+The dimensions you can name are `AUDIENCE`, `TOPIC`, `GENDER`,
+`AGE_RANGE`, `PLACEMENT`, `PARENTAL_STATUS` and `INCOME_RANGE`.
+Keywords are always targeting — Google Ads has no observation mode for
+them.
+
+## What bidsmith owns
+
+Write the block and the whole set becomes yours: Google Ads only lets an
+update replace the list wholesale, so a dimension you drop from the file
+goes back to targeting, and one somebody switches in the Google Ads
+website comes back as drift in `plan`. Leave the block out entirely and
+bidsmith won't touch the setting at all.
+
+You won't see `bid_only = false` entries appear in your files on their
+own — that's what Google assumes for a dimension nobody mentions, so
+`refresh` and `pull` write out only the dimensions that say something
+else.
+
+<Aside type="caution" title="One level, not both">
+  A campaign can carry the same block, and Google Ads refuses to write an
+  ad group's setting while its campaign has one. `validate` warns if a
+  file declares both — and because `apply` sends one atomic batch, a
+  refused operation takes every unrelated change with it. Pick the level
+  the decision belongs to: the campaign if it's an account-wide policy,
+  the ad group if you're comparing cohorts.
+</Aside>
+
+## See also
+
+- [`google_ads_ad_group`](/bidsmith/resources/google_ads_ad_group/#targeting-or-just-watching) — the block's reference.
+- [Narrow a video campaign to a specific audience](./narrow-a-video-audience/) — declaring the audiences this setting governs.
+- [Google Ads: "Targeting" vs "Observation"](https://support.google.com/google-ads/answer/7365594) — the same switch in the Google Ads website.
+- [Drift](/bidsmith/concepts/drift/) — why a website change shows up in `plan`.

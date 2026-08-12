@@ -153,6 +153,30 @@ pub fn is_advertising_channel_sub_type(value: &str) -> bool {
     ADVERTISING_CHANNEL_SUB_TYPE.contains(&value)
 }
 
+/// The targeting dimensions a `target_restriction` can name. `KEYWORD` is a
+/// dimension of the API's enum but not of this one: keywords always restrict, so
+/// the API rejects `bid_only = true` on them and `false` says nothing.
+pub const TARGETING_DIMENSION: &[&str] = &[
+    "AUDIENCE",
+    "TOPIC",
+    "GENDER",
+    "AGE_RANGE",
+    "PLACEMENT",
+    "PARENTAL_STATUS",
+    "INCOME_RANGE",
+];
+
+/// Whether a live target restriction names a dimension a `.bid` can declare.
+pub fn is_targeting_dimension(value: &str) -> bool {
+    TARGETING_DIMENSION.contains(&value)
+}
+
+/// The API's reading of a dimension no `target_restriction` names: it targets,
+/// i.e. its criteria restrict who is eligible to see the ad. So an entry that
+/// says `bid_only = false` and no entry at all are the same statement, and
+/// bidsmith keeps the shorter one (issue #135).
+pub const DEFAULT_BID_ONLY: bool = false;
+
 /// The settable bid fields on `AdGroup`, each paired with its Google Ads JSON
 /// name. Which one carries the live bid depends on the campaign's bidding
 /// strategy — a TARGET_CPV video ad group bids through `target_cpv_micros` and
@@ -667,6 +691,32 @@ fn compact_keywords_block(name: &'static str) -> NestedBlockSchema {
     }
 }
 
+/// Whether each targeting dimension restricts who is eligible to see the ad, or
+/// merely informs bidding. Shared by campaigns and ad groups — the API carries
+/// the same `TargetingSetting` message on both (issue #135).
+fn targeting_setting_block() -> NestedBlockSchema {
+    NestedBlockSchema {
+        name: "targeting_setting",
+        schema: BlockSchema {
+            attributes: vec![],
+            blocks: vec![NestedBlockSchema {
+                name: "target_restriction",
+                schema: BlockSchema {
+                    attributes: vec![
+                        attr(
+                            "targeting_dimension",
+                            FieldType::Enum(TARGETING_DIMENSION),
+                            true,
+                        ),
+                        attr("bid_only", FieldType::Bool, true),
+                    ],
+                    blocks: vec![],
+                },
+            }],
+        },
+    }
+}
+
 /// A bidding strategy the Google Ads API models as an empty message: the
 /// block's presence is the whole setting, the bid amount lives on the ad group.
 fn bidding_selector_block(name: &'static str) -> NestedBlockSchema {
@@ -866,6 +916,7 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                             }],
                         },
                     },
+                    targeting_setting_block(),
                     // Repeatable: one block per cap, mapping to a single
                     // `FrequencyCapEntry` in `Campaign.frequency_caps`.
                     NestedBlockSchema {
@@ -1041,7 +1092,7 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                     );
                     a
                 },
-                blocks: vec![],
+                blocks: vec![targeting_setting_block()],
             },
         );
 
@@ -1698,6 +1749,20 @@ impl DefaultsRegistry {
             .collect()
     }
 
+    pub fn provided_blocks(&self, ty: &str) -> HashSet<String> {
+        let Some(decl) = self.by_type.get(ty) else {
+            return HashSet::new();
+        };
+        decl.block
+            .body
+            .iter()
+            .filter_map(|s| match s {
+                Structure::Block(b) => Some(b.ident.as_str().to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The resource block with missing attributes / nested blocks filled in
     /// from its type's defaults; `None` when nothing applies.
     pub fn merge(&self, ty: &str, block: &Block) -> Option<Block> {
@@ -2175,6 +2240,7 @@ pub fn validate_files(files: &[ParsedFile], inputs: &InputBindings) -> Vec<Diag>
 
     validate_ad_templates(files, &templates, &registry, &locals, &variables, &mut diags);
     validate_targeting_conflicts(files, &registry, &defaults, &mut diags);
+    validate_targeting_setting_conflicts(files, &registry, &defaults, &mut diags);
 
     diags.sort_by(|a, b| {
         (a.src.name(), a.span.offset()).cmp(&(b.src.name(), b.span.offset()))
@@ -2485,6 +2551,109 @@ fn validate_targeting_conflicts(
             }
         }
     }
+}
+
+/// The Google Ads API refuses to *write* a `targeting_setting` on an ad group
+/// whose campaign has one: "If the targeting_setting is set on the parent
+/// Campaign, you must first remove the targeting_setting on the parent Campaign"
+/// (developers.google.com/google-ads/api/docs/targeting/targeting-settings).
+/// A warning, not an error: an account can carry both — Google fills them in —
+/// so `export` has to be able to render what it read, and only an `apply` that
+/// changes the ad group's side is refused. It takes the whole atomic batch with
+/// it, which is why this is worth saying before the request goes out.
+fn validate_targeting_setting_conflicts(
+    files: &[ParsedFile],
+    registry: &ResourceRegistry,
+    defaults: &DefaultsRegistry,
+    diags: &mut Vec<Diag>,
+) {
+    let campaign_default = defaults
+        .provided_blocks("google_ads_campaign")
+        .contains("targeting_setting");
+    let mut campaigns: HashSet<String> = HashSet::new();
+    for f in files {
+        for b in resource_blocks(f, "google_ads_campaign") {
+            if campaign_default || nested_block(&b.body, "targeting_setting").is_some() {
+                campaigns.insert(ResourceRegistry::qualified(
+                    &f.module,
+                    "google_ads_campaign",
+                    b.labels[1].as_str(),
+                ));
+            }
+        }
+    }
+    if campaigns.is_empty() {
+        return;
+    }
+
+    let ad_group_default = defaults
+        .provided_blocks("google_ads_ad_group")
+        .contains("targeting_setting");
+    for f in files {
+        for b in resource_blocks(f, "google_ads_ad_group") {
+            // A defaults-provided block has no span in this file to point at,
+            // so the ad group's own header carries the diagnostic.
+            let at = match nested_block(&b.body, "targeting_setting") {
+                Some(setting) => span_of(setting.ident.span()),
+                None if ad_group_default => span_of(b.ident.span()),
+                None => continue,
+            };
+            report_targeting_setting_conflict(f, b, at, registry, &campaigns, diags);
+        }
+    }
+}
+
+fn report_targeting_setting_conflict(
+    file: &ParsedFile,
+    ad_group: &Block,
+    at: std::ops::Range<usize>,
+    registry: &ResourceRegistry,
+    campaigns: &HashSet<String>,
+    diags: &mut Vec<Diag>,
+) {
+    let Some(value) = ad_group.body.iter().find_map(|s| match s {
+        Structure::Attribute(a) if a.key.as_str() == "campaign" => Some(&a.value),
+        _ => None,
+    }) else {
+        return;
+    };
+    let Some((ty, name)) = ref_type_name(value) else {
+        return;
+    };
+    if ty != "google_ads_campaign" {
+        return;
+    }
+    let Resolution::Found(target) = registry.resolve(&file.module, &ty, &name) else {
+        return;
+    };
+    if !campaigns.contains(&target) {
+        return;
+    }
+    diags.push(Diag::warning(
+        file.src.clone(),
+        at,
+        format!(
+            "campaign '{name}' also declares 'targeting_setting': Google Ads refuses to write one \
+             on an ad group whose campaign has it, and a refused operation takes the whole apply \
+             with it — declare the restrictions at one level, not both"
+        ),
+    ));
+}
+
+/// The `resource "<ty>" "<name>"` blocks in one file.
+fn resource_blocks<'a>(file: &'a ParsedFile, ty: &'a str) -> impl Iterator<Item = &'a Block> {
+    file.body.iter().filter_map(move |s| {
+        let Structure::Block(b) = s else { return None };
+        (b.ident.as_str() == "resource" && b.labels.len() == 2 && b.labels[0].as_str() == ty)
+            .then_some(b)
+    })
+}
+
+fn nested_block<'a>(body: &'a Body, name: &str) -> Option<&'a Block> {
+    body.iter().find_map(|s| match s {
+        Structure::Block(b) if b.ident.as_str() == name => Some(b),
+        _ => None,
+    })
 }
 
 fn conflict_diag(
@@ -4205,6 +4374,127 @@ resource "google_ads_campaign" "v" {
             msgs.iter().any(|m| m.contains("missing required attribute 'cap'")),
             "{msgs:?}"
         );
+    }
+
+    fn targeting_setting_project(campaign_block: &str, ad_group_block: &str) -> String {
+        format!(
+            r#"
+resource "google_ads_campaign_budget" "b" {{
+  name          = "B"
+  amount_micros = 1000000
+}}
+
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+{campaign_block}
+}}
+
+resource "google_ads_ad_group" "g" {{
+  name     = "G"
+  campaign = google_ads_campaign.c.id
+{ad_group_block}
+}}
+"#
+        )
+    }
+
+    const OBSERVE_AUDIENCE: &str = r#"
+  targeting_setting {
+    target_restriction {
+      targeting_dimension = "AUDIENCE"
+      bid_only            = true
+    }
+  }
+"#;
+
+    #[test]
+    fn repeated_target_restrictions_validate_on_either_level() {
+        let diags = validate_str(
+            "targeting_setting_ok",
+            &targeting_setting_project(
+                "",
+                r#"
+  targeting_setting {
+    target_restriction {
+      targeting_dimension = "AGE_RANGE"
+      bid_only            = true
+    }
+
+    target_restriction {
+      targeting_dimension = "GENDER"
+      bid_only            = false
+    }
+  }
+"#,
+            ),
+        );
+        assert!(
+            diags.is_empty(),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// Keywords always restrict, so the API has no reading of a KEYWORD
+    /// restriction — and `bid_only` is the whole point of the block, never a
+    /// thing to leave to a default.
+    #[test]
+    fn a_target_restriction_rejects_keyword_and_a_missing_bid_only() {
+        let diags = validate_str(
+            "targeting_setting_bad",
+            &targeting_setting_project(
+                r#"
+  targeting_setting {
+    target_restriction {
+      targeting_dimension = "KEYWORD"
+    }
+  }
+"#,
+                "",
+            ),
+        );
+        let msgs: Vec<&String> = diags.iter().map(|d| &d.message).collect();
+        assert!(msgs.iter().any(|m| m.contains("KEYWORD")), "{msgs:?}");
+        assert!(
+            msgs.iter().any(|m| m.contains("missing required attribute 'bid_only'")),
+            "{msgs:?}"
+        );
+    }
+
+    /// Google Ads refuses to write an ad group's targeting setting while its
+    /// campaign has one, and one refusal sinks the whole atomic batch. A
+    /// warning, not an error: an account can carry both, so `export` has to be
+    /// able to render what it read.
+    #[test]
+    fn declaring_a_targeting_setting_at_both_levels_warns() {
+        let diags = validate_str(
+            "targeting_setting_both",
+            &targeting_setting_project(OBSERVE_AUDIENCE, OBSERVE_AUDIENCE),
+        );
+        assert_eq!(diags.len(), 1, "{:?}", diags.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(!diags[0].is_error(), "{}", diags[0].message);
+        assert!(
+            diags[0].message.contains("campaign 'c' also declares 'targeting_setting'"),
+            "{}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn one_level_at_a_time_is_quiet() {
+        for (campaign, ad_group) in [(OBSERVE_AUDIENCE, ""), ("", OBSERVE_AUDIENCE)] {
+            let diags = validate_str(
+                "targeting_setting_one_level",
+                &targeting_setting_project(campaign, ad_group),
+            );
+            assert!(
+                diags.is_empty(),
+                "{:?}",
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]

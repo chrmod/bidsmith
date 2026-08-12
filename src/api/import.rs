@@ -11,10 +11,10 @@ use crate::commands::export::{
     JsonGeoTargetTypeSetting, JsonIncomeRange, JsonKeyword, JsonLanguage, JsonLocation,
     JsonManualCpc, JsonNetworkSettings, JsonParentalStatus, JsonPlacement, JsonProximity,
     JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedCriterion, JsonSharedSet, JsonSitelinkAsset,
-    JsonStructuredSnippetAsset, JsonTargetImpressionShare, JsonTargetSpend, JsonTopic,
-    JsonUserInterest, JsonValueSettings, JsonVideoAd, JsonVideoAdInventoryControl,
-    JsonVideoCampaignSettings, JsonVideoResponsiveAd, JsonYoutubeChannel, JsonYoutubeVideo,
-    JsonYoutubeVideoAsset,
+    JsonStructuredSnippetAsset, JsonTargetImpressionShare, JsonTargetRestriction,
+    JsonTargetSpend, JsonTargetingSetting, JsonTopic, JsonUserInterest, JsonValueSettings,
+    JsonVideoAd, JsonVideoAdInventoryControl, JsonVideoCampaignSettings, JsonVideoResponsiveAd,
+    JsonYoutubeChannel, JsonYoutubeVideo, JsonYoutubeVideoAsset,
 };
 use crate::diagnostics::Diag;
 use crate::parser::ParsedFile;
@@ -341,6 +341,7 @@ fn import_campaign(
     let mut network_settings = None;
     let mut geo_target_type_setting = None;
     let mut video_campaign_settings = None;
+    let mut targeting_setting = None;
     let mut frequency_caps: Vec<JsonFrequencyCap> = Vec::new();
     let mut languages: Vec<String> = Vec::new();
     let mut locations: Vec<String> = Vec::new();
@@ -377,6 +378,7 @@ fn import_campaign(
                 "video_campaign_settings" => {
                     video_campaign_settings = Some(import_video_campaign_settings(ctx, b))
                 }
+                "targeting_setting" => targeting_setting = Some(import_targeting_setting(ctx, b)),
                 "frequency_caps" => frequency_caps.extend(import_frequency_cap(ctx, b)),
                 _ => {}
             },
@@ -410,6 +412,7 @@ fn import_campaign(
             network_settings,
             geo_target_type_setting,
             video_campaign_settings,
+            targeting_setting,
             frequency_caps,
             managed_address: None,
         },
@@ -609,6 +612,38 @@ fn import_video_ad_inventory_control(ctx: &Ctx, block: &Block) -> JsonVideoAdInv
     i
 }
 
+/// The block's presence is the claim, so an empty one imports as an empty list
+/// — "nothing here merely observes" is a statement, not an omission.
+fn import_targeting_setting(ctx: &Ctx, block: &Block) -> JsonTargetingSetting {
+    let mut target_restrictions = Vec::new();
+    for st in block.body.iter() {
+        let Structure::Block(b) = st else { continue };
+        if b.ident.as_str() != "target_restriction" {
+            continue;
+        }
+        let mut dimension = None;
+        let mut bid_only = None;
+        for inner in b.body.iter() {
+            if let Structure::Attribute(a) = inner {
+                match a.key.as_str() {
+                    "targeting_dimension" => dimension = expect_string_owned(ctx, a),
+                    "bid_only" => bid_only = expect_bool(ctx, a),
+                    _ => {}
+                }
+            }
+        }
+        // A half-specified restriction is already a validate error, and
+        // guessing the missing half would change who sees the ad.
+        if let Some((targeting_dimension, bid_only)) = dimension.zip(bid_only) {
+            target_restrictions.push(JsonTargetRestriction {
+                targeting_dimension,
+                bid_only,
+            });
+        }
+    }
+    JsonTargetingSetting { target_restrictions }
+}
+
 /// `None` when a required attribute is missing or non-literal — `validate`
 /// already reported it, and a half-specified cap must not reach the API.
 fn import_frequency_cap(ctx: &Ctx, block: &Block) -> Option<JsonFrequencyCap> {
@@ -643,23 +678,31 @@ fn import_ad_group(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonAdGrou
     let mut campaign_ref = None;
     let mut status = None;
     let mut ty = None;
+    let mut targeting_setting = None;
     let mut bids: Vec<(&'static str, Option<i64>)> = Vec::new();
 
     for s in block.body.iter() {
-        let Structure::Attribute(a) = s else { continue };
-        match a.key.as_str() {
-            "name" => name = expect_string_owned(ctx, a),
-            "campaign" => campaign_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r)),
-            "status" => status = expect_string_owned(ctx, a),
-            "type" => ty = expect_string_owned(ctx, a),
-            other => {
-                if let Some((field, _)) = crate::schema::AD_GROUP_BID_FIELDS
-                    .iter()
-                    .find(|(field, _)| *field == other)
-                {
-                    bids.push((field, expect_i64(ctx, a)));
+        match s {
+            Structure::Attribute(a) => match a.key.as_str() {
+                "name" => name = expect_string_owned(ctx, a),
+                "campaign" => {
+                    campaign_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r))
                 }
+                "status" => status = expect_string_owned(ctx, a),
+                "type" => ty = expect_string_owned(ctx, a),
+                other => {
+                    if let Some((field, _)) = crate::schema::AD_GROUP_BID_FIELDS
+                        .iter()
+                        .find(|(field, _)| *field == other)
+                    {
+                        bids.push((field, expect_i64(ctx, a)));
+                    }
+                }
+            },
+            Structure::Block(b) if b.ident.as_str() == "targeting_setting" => {
+                targeting_setting = Some(import_targeting_setting(ctx, b))
             }
+            Structure::Block(_) => {}
         }
     }
 
@@ -671,6 +714,7 @@ fn import_ad_group(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonAdGrou
         campaign,
         status,
         ty,
+        targeting_setting,
         ..Default::default()
     };
     for (field, value) in bids {
@@ -3584,6 +3628,70 @@ resource "google_ads_campaign" "search_ublock" {
             ublock.target_spend.as_ref().and_then(|t| t.cpc_bid_ceiling_micros),
             Some(1100000)
         );
+    }
+
+    /// The point of the block: a file can now say whether an ad group's
+    /// demographics restrict who sees the ad or only inform bidding, and a live
+    /// account that says the same thing plans as a no-op (issue #135).
+    #[test]
+    fn an_observed_dimension_matches_a_live_account_that_observes_it() {
+        let declared = import_str(
+            "targeting_setting_noop",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  manual_cpc {}
+}
+
+resource "google_ads_ad_group" "g" {
+  name           = "G"
+  campaign       = google_ads_campaign.c.id
+  cpc_bid_micros = 500000
+
+  targeting_setting {
+    target_restriction {
+      targeting_dimension = "AGE_RANGE"
+      bid_only            = true
+    }
+
+    target_restriction {
+      targeting_dimension = "GENDER"
+      bid_only            = false
+    }
+  }
+}
+"#,
+        );
+        let setting = declared.ad_groups[0]
+            .targeting_setting
+            .as_ref()
+            .expect("declared targeting setting");
+        assert_eq!(setting.target_restrictions.len(), 2);
+        assert_eq!(setting.effective(), vec![("AGE_RANGE", true)]);
+
+        // Live carries the same two, plus the defaults Google filled in.
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","manualCpc":{}}},
+              {"adGroup":{"resourceName":"customers/9/adGroups/3","id":"3","name":"G","campaign":"customers/9/campaigns/2","status":"ENABLED","cpcBidMicros":"500000","targetingSetting":{"targetRestrictions":[
+                {"targetingDimension":"GENDER","bidOnly":false},
+                {"targetingDimension":"AGE_RANGE","bidOnly":true},
+                {"targetingDimension":"INCOME_RANGE","bidOnly":false}
+              ]}}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(report.update_count, 0, "diffs: {:?}", report.diffs);
     }
 
     fn video_campaign_with_caps(name: &str, caps: &str) -> ExportInput {

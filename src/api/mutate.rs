@@ -9,7 +9,8 @@ use crate::commands::export::{
     JsonAudience, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
     JsonCriterion, JsonCustomAudience, JsonCustomerAsset,
     JsonDemandGenVideoResponsiveAd, JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedSet,
-    JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonVideoResponsiveAd, JsonYoutubeVideoAsset,
+    JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonTargetingSetting, JsonVideoResponsiveAd,
+    JsonYoutubeVideoAsset,
 };
 
 pub struct PlanOperation {
@@ -1013,6 +1014,12 @@ fn campaign_update_body(c: &JsonCampaign, resource_name: &str, fields: &[String]
             "frequency_caps" => {
                 m.insert("frequencyCaps".into(), frequency_caps_value(c));
             }
+            "targeting_setting.target_restrictions" => {
+                m.insert(
+                    "targetingSetting".into(),
+                    targeting_setting_value(c.targeting_setting.as_ref()),
+                );
+            }
             other => {
                 if let Some((field, json)) = other
                     .strip_prefix("network_settings.")
@@ -1091,6 +1098,12 @@ fn ad_group_update_body(g: &JsonAdGroup, resource_name: &str, fields: &[String])
                 if let Some(t) = &g.ty {
                     m.insert("type".into(), Value::String(t.clone()));
                 }
+            }
+            "targeting_setting.target_restrictions" => {
+                m.insert(
+                    "targetingSetting".into(),
+                    targeting_setting_value(g.targeting_setting.as_ref()),
+                );
             }
             other => {
                 if let Some((field, json)) = crate::schema::AD_GROUP_BID_FIELDS
@@ -1775,6 +1788,9 @@ fn campaign_create(c: &JsonCampaign, resource_name: &str, budget_rn: &str) -> Va
     if !c.frequency_caps.is_empty() {
         m.insert("frequencyCaps".into(), frequency_caps_value(c));
     }
+    if let Some(t) = &c.targeting_setting {
+        m.insert("targetingSetting".into(), targeting_setting_value(Some(t)));
+    }
     Value::Object(m)
 }
 
@@ -1822,6 +1838,23 @@ fn bidding_strategy_value(c: &JsonCampaign) -> Option<(&'static str, Value)> {
     Some(body)
 }
 
+/// The whole `TargetingSetting` message: the API removes any restriction the
+/// body leaves out, so there is no such thing as sending part of it. Only the
+/// entries that say something a missing one would not are sent — the rest are
+/// what the API assumes anyway.
+fn targeting_setting_value(setting: Option<&JsonTargetingSetting>) -> Value {
+    let restrictions = setting.map(JsonTargetingSetting::effective).unwrap_or_default();
+    json!({
+        "targetRestrictions": restrictions
+            .iter()
+            .map(|(dimension, bid_only)| json!({
+                "targetingDimension": dimension,
+                "bidOnly": bid_only,
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
 fn frequency_caps_value(c: &JsonCampaign) -> Value {
     Value::Array(
         c.frequency_caps
@@ -1856,6 +1889,9 @@ fn ad_group_create(g: &JsonAdGroup, resource_name: &str, campaign_rn: &str) -> V
         if let Some(c) = g.bid(field) {
             m.insert((*json).into(), Value::String(c.to_string()));
         }
+    }
+    if let Some(t) = &g.targeting_setting {
+        m.insert("targetingSetting".into(), targeting_setting_value(Some(t)));
     }
     Value::Object(m)
 }
@@ -2532,6 +2568,55 @@ mod tests {
         );
     }
 
+    /// The mask names the repeated field, and the body carries the whole
+    /// message: Google removes every restriction the body leaves out, so there
+    /// is no such thing as updating one dimension (issue #135).
+    #[test]
+    fn a_target_restriction_update_sends_the_whole_setting() {
+        let op = campaign_update_op(
+            &campaign_bidding(
+                "SEARCH",
+                json!({
+                    "targeting_setting": {"target_restrictions": [
+                        {"targeting_dimension": "AUDIENCE", "bid_only": true},
+                        {"targeting_dimension": "AGE_RANGE", "bid_only": true},
+                    ]}
+                }),
+            ),
+            &strategy_switch("targeting_setting.target_restrictions"),
+        );
+        assert_eq!(op["updateMask"], json!("targeting_setting.target_restrictions"));
+        assert_eq!(
+            op["update"]["targetingSetting"],
+            json!({"targetRestrictions": [
+                {"targetingDimension": "AGE_RANGE", "bidOnly": true},
+                {"targetingDimension": "AUDIENCE", "bidOnly": true},
+            ]})
+        );
+    }
+
+    /// A declared block whose entries all say what the API assumes anyway is a
+    /// request to clear the list, not to leave it alone — the block's presence
+    /// is what claims the field.
+    #[test]
+    fn an_all_default_setting_clears_the_live_restrictions() {
+        let op = campaign_update_op(
+            &campaign_bidding(
+                "SEARCH",
+                json!({
+                    "targeting_setting": {"target_restrictions": [
+                        {"targeting_dimension": "AUDIENCE", "bid_only": false},
+                    ]}
+                }),
+            ),
+            &strategy_switch("targeting_setting.target_restrictions"),
+        );
+        assert_eq!(
+            op["update"]["targetingSetting"],
+            json!({"targetRestrictions": []})
+        );
+    }
+
     #[test]
     fn a_new_campaign_creates_with_the_video_inventory_it_declares() {
         let input = campaign_bidding(
@@ -2596,6 +2681,45 @@ mod tests {
         assert_eq!(
             campaign["advertisingChannelSubType"],
             json!("SEARCH_MOBILE_APP")
+        );
+    }
+
+    #[test]
+    fn a_new_ad_group_creates_with_the_restrictions_it_declares() {
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "campaign_budgets": [{"id": "m.b", "name": "B", "amount_micros": 10000000}],
+            "campaigns": [{
+                "id": "m.c", "name": "C", "advertising_channel_type": "SEARCH",
+                "campaign_budget": "m.b", "manual_cpc": {}
+            }],
+            "ad_groups": [{
+                "id": "m.g", "name": "G", "campaign": "m.c",
+                "targeting_setting": {"target_restrictions": [
+                    {"targeting_dimension": "AGE_RANGE", "bid_only": true},
+                ]}
+            }]
+        }))
+        .expect("valid ExportInput");
+        let report = DiffReport {
+            diffs: vec![
+                create_diff("m.b", "campaign_budget"),
+                create_diff("m.c", "campaign"),
+                create_diff("m.g", "ad_group"),
+            ],
+            create_count: 3,
+            ..DiffReport::default()
+        };
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let ad_group = plan.body["mutateOperations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|op| op.get("adGroupOperation").and_then(|o| o.get("create")))
+            .expect("ad group create op");
+        assert_eq!(
+            ad_group["targetingSetting"],
+            json!({"targetRestrictions": [{"targetingDimension": "AGE_RANGE", "bidOnly": true}]})
         );
     }
 

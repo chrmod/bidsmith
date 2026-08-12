@@ -11,7 +11,7 @@ use crate::api::live_state::CacheMode;
 use crate::api::{auth, client, diff, live_state};
 use crate::commands::export::{
     canonicalize, filter_removed, fmt_string, prune_orphans, render_split, report_orphans,
-    ExportInput, JsonFrequencyCap,
+    ExportInput, JsonFrequencyCap, JsonTargetingSetting,
 };
 use crate::commands::vars;
 use crate::diagnostics::Diag;
@@ -573,22 +573,30 @@ fn apply_edit(body: &mut Body, path: &[&str], value: &EditValue) -> SetOutcome {
 /// field, so it round-trips whole: the replacements land where the first old
 /// block was, or at the end of the body when the file declared none — unlike a
 /// scalar, a repeated block has a canonical rendering, so materializing one
-/// isn't guesswork.
+/// isn't guesswork. A longer path descends one block per leading segment, which
+/// is how `targeting_setting`'s restrictions are reached; the container itself
+/// is never created, since its absence is what leaves the field unmanaged.
 fn set_repeated_blocks(body: &mut Body, path: &[&str], blocks: &[Block]) -> SetOutcome {
-    let [ident] = path else {
-        return SetOutcome::Missing;
-    };
-    let at = body
-        .iter()
-        .position(|s| s.as_block().is_some_and(|b| b.ident.as_str() == *ident));
-    body.remove_blocks(ident);
-    for (n, block) in blocks.iter().enumerate() {
-        match at {
-            Some(i) => body.insert(i + n, Structure::Block(block.clone())),
-            None => body.push(Structure::Block(block.clone())),
+    match path {
+        [ident] => {
+            let at = body
+                .iter()
+                .position(|s| s.as_block().is_some_and(|b| b.ident.as_str() == *ident));
+            body.remove_blocks(ident);
+            for (n, block) in blocks.iter().enumerate() {
+                match at {
+                    Some(i) => body.insert(i + n, Structure::Block(block.clone())),
+                    None => body.push(Structure::Block(block.clone())),
+                }
+            }
+            SetOutcome::Applied
         }
+        [head, rest @ ..] => match body.get_blocks_mut(head).next() {
+            Some(block) => set_repeated_blocks(&mut block.body, rest, blocks),
+            None => SetOutcome::Missing,
+        },
+        [] => SetOutcome::Missing,
     }
-    SetOutcome::Applied
 }
 
 /// Set a scalar at `path` within `body`, descending one block per non-terminal
@@ -647,6 +655,31 @@ fn frequency_cap_blocks(caps: &[JsonFrequencyCap]) -> Option<Vec<Block>> {
     }
     let blocks: Vec<Block> = src.parse::<Body>().ok()?.into_blocks().collect();
     (blocks.len() == caps.len()).then_some(blocks)
+}
+
+const TARGET_RESTRICTIONS_UNWRITABLE: &str =
+    "targeting_setting.target_restrictions (live restrictions did not render as valid blocks — \
+     edit them by hand)";
+
+/// Render the live target restrictions as source blocks in `export`'s shape,
+/// indented for a `targeting_setting` body. `None` when the round-trip doesn't
+/// yield one block per restriction — better to report the drift than to write a
+/// half-rendered set. An empty live set renders as no blocks at all, which
+/// leaves the container behind as the claim that bidsmith still owns the field.
+fn target_restriction_blocks(setting: Option<&JsonTargetingSetting>) -> Option<Vec<Block>> {
+    let restrictions = setting.map(JsonTargetingSetting::effective).unwrap_or_default();
+    let mut src = String::new();
+    for (dimension, bid_only) in &restrictions {
+        src.push_str("\n    target_restriction {\n");
+        src.push_str(&format!(
+            "      targeting_dimension = {}\n",
+            fmt_string(dimension)
+        ));
+        src.push_str(&format!("      bid_only = {bid_only}\n"));
+        src.push_str("    }\n");
+    }
+    let blocks: Vec<Block> = src.parse::<Body>().ok()?.into_blocks().collect();
+    (blocks.len() == restrictions.len()).then_some(blocks)
 }
 
 /// The entry in `fields` a dotted drift path names, or `None` when the path
@@ -783,6 +816,14 @@ fn collect_edits(
                                 .to_string(),
                         ),
                     },
+                    "targeting_setting.target_restrictions" => {
+                        match target_restriction_blocks(c.targeting_setting.as_ref()) {
+                            Some(blocks) => {
+                                push!(vec!["targeting_setting", "target_restriction"], blocks)
+                            }
+                            None => skip.push(TARGET_RESTRICTIONS_UNWRITABLE.to_string()),
+                        }
+                    }
                     other => {
                         if let Some((field, _)) = block_field(
                             other,
@@ -840,6 +881,14 @@ fn collect_edits(
                     "name" => push!(vec!["name"], s(&g.name)),
                     "status" => opt!(f, vec!["status"], g.status.as_deref().map(s)),
                     "type" => opt!(f, vec!["type"], g.ty.as_deref().map(s)),
+                    "targeting_setting.target_restrictions" => {
+                        match target_restriction_blocks(g.targeting_setting.as_ref()) {
+                            Some(blocks) => {
+                                push!(vec!["targeting_setting", "target_restriction"], blocks)
+                            }
+                            None => skip.push(TARGET_RESTRICTIONS_UNWRITABLE.to_string()),
+                        }
+                    }
                     other => match crate::schema::AD_GROUP_BID_FIELDS
                         .iter()
                         .find(|(field, _)| *field == other)
@@ -1397,6 +1446,97 @@ resource "google_ads_campaign" "brand_video" {
         // reconcile has nothing to write back either.
         let src = caps_src_without_blocks();
         let live = caps_live(r#"{"event_type":"IMPRESSION","time_unit":"DAY","time_length":1,"cap":3}"#);
+        let (out, outcome) = run(&src, &live);
+        assert_eq!(out, src, "an unmanaged field must not be materialized");
+        assert!(outcome.applied.is_empty());
+        assert!(outcome.skipped.is_empty(), "{:?}", outcome.skipped);
+    }
+
+    const RESTRICTIONS_SRC: &str = r#"provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+resource "google_ads_campaign_budget" "budget" {
+  name          = "Budget"
+  amount_micros = 10000000
+}
+
+resource "google_ads_campaign" "brand_search" {
+  name                     = "Brand search"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.budget.id
+
+  # keep this comment
+  targeting_setting {
+    target_restriction {
+      targeting_dimension = "AUDIENCE"
+      bid_only            = true
+    }
+  }
+}
+"#;
+
+    fn restrictions_live(restrictions: &str) -> String {
+        format!(
+            r#"{{
+              "customer_id": "1234567890",
+              "campaign_budgets": [
+                {{"id":"111","name":"Budget","amount_micros":10000000,"delivery_method":"STANDARD"}}
+              ],
+              "campaigns": [
+                {{"id":"555","name":"Brand search","status":"ENABLED",
+                 "advertising_channel_type":"SEARCH","campaign_budget":"111",
+                 "managed_address":"main.google_ads_campaign.brand_search",
+                 "targeting_setting":{{"target_restrictions":[{restrictions}]}}}}
+              ]
+            }}"#
+        )
+    }
+
+    #[test]
+    fn a_dimension_flipped_in_the_ui_round_trips_into_the_blocks() {
+        let live = restrictions_live(
+            r#"{"targeting_dimension":"AUDIENCE","bid_only":true},
+               {"targeting_dimension":"AGE_RANGE","bid_only":true}"#,
+        );
+        let (out, outcome) = run(RESTRICTIONS_SRC, &live);
+
+        assert!(
+            out.contains(
+                "\n    target_restriction {\n      targeting_dimension = \"AGE_RANGE\"\n      \
+                 bid_only = true\n    }\n"
+            ),
+            "{out}"
+        );
+        assert_eq!(out.matches("target_restriction {").count(), 2, "{out}");
+        assert_eq!(out.matches("targeting_setting {").count(), 1, "{out}");
+        assert!(out.contains("# keep this comment"), "{out}");
+        let (_, fields) = &outcome.applied[0];
+        assert_eq!(
+            fields,
+            &vec!["targeting_setting.target_restriction".to_string()]
+        );
+        assert!(outcome.skipped.is_empty(), "{:?}", outcome.skipped);
+    }
+
+    /// The container stays: it is the claim that bidsmith owns the field, and
+    /// removing it would quietly hand the setting back to the Google Ads UI.
+    #[test]
+    fn restrictions_cleared_upstream_leave_an_empty_container() {
+        let (out, outcome) = run(RESTRICTIONS_SRC, &restrictions_live(""));
+        assert_eq!(out.matches("target_restriction {").count(), 0, "{out}");
+        assert!(out.contains("targeting_setting {"), "{out}");
+        assert_eq!(outcome.changed_files, vec![0]);
+    }
+
+    #[test]
+    fn undeclared_restrictions_are_left_alone() {
+        let src = RESTRICTIONS_SRC
+            .split("\n  # keep this comment")
+            .next()
+            .map(|head| format!("{head}\n}}\n"))
+            .expect("split source");
+        let live = restrictions_live(r#"{"targeting_dimension":"AUDIENCE","bid_only":true}"#);
         let (out, outcome) = run(&src, &live);
         assert_eq!(out, src, "an unmanaged field must not be materialized");
         assert!(outcome.applied.is_empty());

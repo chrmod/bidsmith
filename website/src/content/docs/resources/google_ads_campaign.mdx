@@ -16,6 +16,8 @@ export const geoTargetTypeSetting = resource.blocks.find((b) => b.name === 'geo_
 export const videoCampaignSettings = resource.blocks.find((b) => b.name === 'video_campaign_settings');
 export const videoAdInventoryControl = videoCampaignSettings.blocks.find((b) => b.name === 'video_ad_inventory_control');
 export const frequencyCaps = resource.blocks.find((b) => b.name === 'frequency_caps');
+export const targetingSetting = resource.blocks.find((b) => b.name === 'targeting_setting');
+export const targetRestriction = targetingSetting.blocks.find((b) => b.name === 'target_restriction');
 
 A **campaign** is the top-level container in Google Ads. It holds one
 or more ad groups, points at a single budget, picks a channel (search,
@@ -191,6 +193,37 @@ file is describing a different campaign from the one it's pointing at.
 An omitted `advertising_channel_sub_type` means "not managed", not "this
 campaign has none", so adopting a campaign that has one is quiet until
 you declare it.
+
+## Targeting, or just watching
+
+An audience or a demographic attached to a campaign either **restricts**
+who is eligible to see the ads or merely **observes** — informing bids
+while everyone stays eligible. `targeting_setting` is where a campaign
+says which, one dimension at a time:
+
+```hcl
+resource "google_ads_campaign" "summer_search" {
+  name                     = "Summer 2026 — Search"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.summer.id
+
+  targeting_setting {
+    target_restriction {
+      targeting_dimension = "AUDIENCE"
+      bid_only            = true
+    }
+  }
+}
+```
+
+`bid_only = true` is observation, `false` is targeting. It's a one-word
+edit that can change a campaign's reach substantially, which is exactly
+the kind of thing worth having in review. Declare it on the campaign
+**or** on its ad groups, never both — Google Ads refuses to write an ad
+group's setting while its campaign has one, and `validate` warns when a
+file does that. The [ad group
+page](./google_ads_ad_group/#targeting-or-just-watching) covers the same
+block in more detail.
 
 ## Schema
 
@@ -421,6 +454,29 @@ and silence is exactly what this block exists to end.
   changed shape. On a `DEMAND_GEN` campaign the same block is writable
   like any other setting.
 </Aside>
+
+### targeting_setting
+
+The `targeting_setting` block says whether the campaign's audiences and
+demographics restrict who is eligible or only inform bidding — see
+[Targeting, or just watching](#targeting-or-just-watching) above. It
+carries one repeated `target_restriction` block per dimension and no
+attributes of its own.
+
+The set is managed **as a whole**, and only once you declare the block: a
+campaign with no `targeting_setting` leaves the setting to whoever set it
+in the Google Ads UI, and replacing the list wholesale is the only update
+the Google Ads API offers, so a dimension dropped from the file goes back
+to targeting. Entries that say `bid_only = false` are what Google assumes
+anyway, so bidsmith leaves them out rather than writing boilerplate into
+every file.
+
+#### target_restriction
+
+<AttributeTable block={targetRestriction} headingLevel={5} />
+
+`KEYWORD` is deliberately absent from `targeting_dimension`: keywords
+always restrict, so Google Ads has no observation mode for them.
 
 ### frequency_caps
 

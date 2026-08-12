@@ -815,6 +815,36 @@ resource type, any file layout, modules, schema validation.
   modelled as a container holding only `video_ad_inventory_control`;
   `video_ad_sequence` and `video_ad_format_control` remain unread, and
   `drift` reports them as the ordinary unmodelled fields they are.
+- **`targeting_setting` is managed as a whole list, and its defaults are
+  never written down** (issue #135). A campaign or ad group declares
+  `targeting_setting { target_restriction { targeting_dimension,
+  bid_only } … }` to say, per dimension, whether its criteria restrict
+  who is eligible (`bid_only = false`, "Targeting") or only inform
+  bidding (`true`, "Observation"). Three choices worth keeping:
+  - **The block owns the whole list**, unlike `network_settings`' field
+    at a time, because that is the only update the API offers: "you must
+    reconstruct and pass the entire `TargetingSetting` object back to
+    Google Ads. Google assumes that any `target_restrictions` missing
+    from the `TargetingSetting` should be removed"
+    (developers.google.com/google-ads/api/docs/targeting/targeting-settings).
+    Managing one dimension while claiming to leave the others alone would
+    be a promise the wire format cannot keep. Omitting the block is still
+    how a file leaves the field unmanaged.
+  - **A restriction that says `bid_only = false` is dropped on both
+    sides**, since the API reads a dimension nobody names as targeting
+    anyway (`DEFAULT_BID_ONLY`). Google fills in entries nobody asked
+    for, so without this every ad group would read back a block of
+    boilerplate, and every plan would propose a write that changes
+    nothing. An all-defaults live setting reads as *absent*.
+  - **`KEYWORD` is not a declarable dimension.** Keywords always
+    restrict, so the API rejects `bid_only = true` on them and `false`
+    says nothing; live entries naming it (or any dimension this schema
+    doesn't model) are dropped on read, like the geo `UNKNOWN` sentinel.
+
+  Declaring the block at both levels is a **warning, not an error**:
+  Google Ads refuses to *write* an ad group's setting while its campaign
+  has one, but an account can carry both, so `export` has to be able to
+  render what it read.
 - **The VIDEO channel is read-only through the Google Ads API** (issue
   #104, verified live): "You cannot create new Video campaigns or update
   existing ones using the Google Ads API"
@@ -1492,12 +1522,16 @@ Validator covers (so far):
   repeatable `frequency_caps { event_type, time_unit, time_length,
   cap, level? }` block managed as a whole set once declared, with a
   validate-time guard against declaring the same axis both inline and as
-  an explicit positive criterion resource), `google_ads_ad_group`
+  an explicit positive criterion resource; plus a
+  `targeting_setting { target_restriction { targeting_dimension,
+  bid_only } … }` block saying whether each dimension restricts
+  eligibility or only informs bidding), `google_ads_ad_group`
   (with every settable `AdGroup` bid field — `cpc_bid_micros`,
   `cpv_bid_micros`, `cpm_bid_micros`, `target_cpa_micros`,
   `target_cpm_micros`, `target_cpv_micros`, `percent_cpc_bid_micros`,
   `fixed_cpm_micros` — of which the campaign's strategy decides which
-  one carries the bid), `google_ads_ad_group_ad`
+  one carries the bid, plus the same `targeting_setting` block the
+  campaign carries), `google_ads_ad_group_ad`
   (with `ad` → `responsive_search_ad` → repeating
   `headline { text, pin? }` / `description { text, pin? }` blocks,
   plus an equivalent list-attribute form `headlines = [...]` /

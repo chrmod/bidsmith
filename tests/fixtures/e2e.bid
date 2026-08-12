@@ -33,6 +33,18 @@ resource "google_ads_ad_group" "default" {
   status = "ENABLED"
   type = "SEARCH_STANDARD"
   cpc_bid_micros = 1000000
+
+  targeting_setting {
+    target_restriction {
+      targeting_dimension = "AUDIENCE"
+      bid_only = true
+    }
+
+    target_restriction {
+      targeting_dimension = "AGE_RANGE"
+      bid_only = true
+    }
+  }
 }
 
 resource "google_ads_ad_group_criterion" "kw_widgets" {
