@@ -1346,6 +1346,7 @@ fn load_gads_search_response(path: &str) -> Result<ExportInput, ExitCode> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_account_assets(
     out: &mut String,
     input: &ExportInput,
@@ -1353,6 +1354,7 @@ fn write_account_assets(
     conversion_action_addr: &mut HashMap<String, String>,
     asset_addr: &mut HashMap<String, String>,
     youtube_asset_addr: &mut HashMap<String, String>,
+    inline_assets: &InlineAssets,
 ) {
     for v in &input.youtube_video_assets {
         let base = v
@@ -1386,12 +1388,18 @@ fn write_account_assets(
         write_sitelink_asset(out, &name, a);
     }
     for a in &input.callout_assets {
+        if inline_assets.folded_assets.contains(&a.id) {
+            continue;
+        }
         let base = format!("callout_{}", slugify(&a.text));
         let name = names.allocate("google_ads_callout_asset", &base);
         asset_addr.insert(a.id.clone(), format!("google_ads_callout_asset.{name}"));
         write_callout_asset(out, &name, a);
     }
     for a in &input.structured_snippet_assets {
+        if inline_assets.folded_assets.contains(&a.id) {
+            continue;
+        }
         let base = format!("snippet_{}", slugify(&a.header));
         let name = names.allocate("google_ads_structured_snippet_asset", &base);
         asset_addr.insert(
@@ -1411,6 +1419,7 @@ fn write_account_assets(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_campaign_assets(
     out: &mut String,
     input: &ExportInput,
@@ -1418,8 +1427,12 @@ fn write_campaign_assets(
     campaign_addr: &HashMap<String, String>,
     ad_group_addr: &HashMap<String, String>,
     asset_addr: &HashMap<String, String>,
+    inline_assets: &InlineAssets,
 ) {
     for a in &input.campaign_assets {
+        if inline_assets.folded_links.contains(&a.id) {
+            continue;
+        }
         let asset_local = asset_addr.get(&a.asset).and_then(|addr| addr.rsplit('.').next());
         let camp_local = campaign_addr
             .get(&a.campaign)
@@ -1465,6 +1478,7 @@ fn write_campaign_tree(
     input: &ExportInput,
     names: &mut NameAllocator,
     inline: &InlineTargeting,
+    inline_assets: &InlineAssets,
     plan: Option<&FoldPlan>,
     budget_addr: &mut HashMap<String, String>,
     campaign_addr: &mut HashMap<String, String>,
@@ -1488,6 +1502,8 @@ fn write_campaign_tree(
             inline.languages_for(&c.id),
             inline.locations_for(&c.id),
             inline.devices_for(&c.id),
+            inline_assets.callouts_for(&c.id),
+            inline_assets.snippets_for(&c.id),
         );
     }
     for g in &input.ad_groups {
@@ -1569,6 +1585,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
     let mut shared_set_addr: HashMap<String, String> = HashMap::new();
     let mut custom_audience_addr: HashMap<String, String> = HashMap::new();
 
+    let inline_assets = compute_inline_assets(input);
     write_provider(&mut account, input);
     write_account_assets(
         &mut account,
@@ -1577,6 +1594,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
         &mut conversion_action_addr,
         &mut asset_addr,
         &mut youtube_asset_addr,
+        &inline_assets,
     );
     write_custom_audiences(&mut account, input, &mut names, &mut custom_audience_addr);
     write_shared_sets_and_criteria(&mut account, input, &mut names, &mut shared_set_addr);
@@ -1601,6 +1619,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
             input,
             &mut names,
             &inline,
+            &inline_assets,
             Some(&plan),
             &mut budget_addr,
             &mut campaign_addr,
@@ -1622,6 +1641,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
             &campaign_addr,
             &ad_group_addr,
             &asset_addr,
+            &inline_assets,
         );
     }
 
@@ -1643,6 +1663,7 @@ fn render_inner(input: &ExportInput, fold: bool) -> String {
     let mut out = String::new();
     let mut names = NameAllocator::default();
     let inline = compute_inline_targeting(input);
+    let inline_assets = compute_inline_assets(input);
     let plan = fold.then(|| plan_fold(input));
 
     let mut budget_addr: HashMap<String, String> = HashMap::new();
@@ -1662,6 +1683,7 @@ fn render_inner(input: &ExportInput, fold: bool) -> String {
         &mut conversion_action_addr,
         &mut asset_addr,
         &mut youtube_asset_addr,
+        &inline_assets,
     );
     write_custom_audiences(&mut out, input, &mut names, &mut custom_audience_addr);
     if let Some(p) = &plan {
@@ -1674,6 +1696,7 @@ fn render_inner(input: &ExportInput, fold: bool) -> String {
         input,
         &mut names,
         &inline,
+        &inline_assets,
         plan.as_ref(),
         &mut budget_addr,
         &mut campaign_addr,
@@ -1690,6 +1713,7 @@ fn render_inner(input: &ExportInput, fold: bool) -> String {
         &campaign_addr,
         &ad_group_addr,
         &asset_addr,
+        &inline_assets,
     );
 
     while out.ends_with("\n\n\n") {
@@ -1776,6 +1800,8 @@ fn write_campaign(
     languages: &[String],
     locations: &[String],
     devices: Option<&InlineDevices>,
+    callouts: &[String],
+    snippets: &[(String, Vec<String>)],
 ) {
     let _ = writeln!(out, "resource \"google_ads_campaign\" \"{name}\" {{");
     write_attr(out, 1, "name", &fmt_string(&c.name));
@@ -1815,6 +1841,15 @@ fn write_campaign(
         write_attr(out, 1, d.attr, &fmt_string_list(&d.values));
     }
     write_tracking(out, 1, &c.final_url_suffix, &c.custom_parameters);
+    if !callouts.is_empty() {
+        write_attr(out, 1, "callouts", &fmt_string_list(callouts));
+    }
+    for (header, values) in snippets {
+        out.push_str("\n  structured_snippet {\n");
+        write_attr(out, 2, "header", &fmt_string(header));
+        write_attr(out, 2, "values", &fmt_string_list(values));
+        out.push_str("  }\n");
+    }
 
     if let Some(m) = &c.manual_cpc {
         match m.enhanced_cpc_enabled {
@@ -2318,6 +2353,83 @@ fn write_ad_group_criterion(
     }
     write_criterion_blocks(out, &c.target, custom_audience_addr);
     out.push_str("}\n\n");
+}
+
+/// Text assets a campaign is the only user of, folded back onto it as
+/// `callouts` / `structured_snippet`. A shared asset — attached to a second
+/// campaign, an ad group, or the account — keeps its resource form, because
+/// that is the thing the inline spelling cannot express (issue #145).
+#[derive(Default)]
+pub struct InlineAssets {
+    callouts: HashMap<String, Vec<String>>,
+    snippets: HashMap<String, Vec<(String, Vec<String>)>>,
+    folded_assets: HashSet<String>,
+    folded_links: HashSet<String>,
+}
+
+impl InlineAssets {
+    fn callouts_for(&self, campaign_id: &str) -> &[String] {
+        self.callouts.get(campaign_id).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    fn snippets_for(&self, campaign_id: &str) -> &[(String, Vec<String>)] {
+        self.snippets.get(campaign_id).map(Vec::as_slice).unwrap_or(&[])
+    }
+}
+
+fn compute_inline_assets(input: &ExportInput) -> InlineAssets {
+    let campaign_ids: HashSet<&str> = input.campaigns.iter().map(|c| c.id.as_str()).collect();
+    // How many links of any kind point at each asset.
+    let mut uses: HashMap<&str, usize> = HashMap::new();
+    for a in &input.campaign_assets {
+        *uses.entry(a.asset.as_str()).or_default() += 1;
+    }
+    for a in &input.ad_group_assets {
+        *uses.entry(a.asset.as_str()).or_default() += 1;
+    }
+    for a in &input.customer_assets {
+        *uses.entry(a.asset.as_str()).or_default() += 1;
+    }
+
+    let callout_text: HashMap<&str, &str> = input
+        .callout_assets
+        .iter()
+        .map(|a| (a.id.as_str(), a.text.as_str()))
+        .collect();
+    let snippet_body: HashMap<&str, (&str, &[String])> = input
+        .structured_snippet_assets
+        .iter()
+        .map(|a| (a.id.as_str(), (a.header.as_str(), a.values.as_slice())))
+        .collect();
+
+    let mut out = InlineAssets::default();
+    for link in &input.campaign_assets {
+        if !campaign_ids.contains(link.campaign.as_str()) {
+            continue;
+        }
+        if uses.get(link.asset.as_str()).copied().unwrap_or(0) != 1 {
+            continue;
+        }
+        if !matches!(link.status.as_deref(), None | Some("ENABLED")) {
+            continue;
+        }
+        if let Some(text) = callout_text.get(link.asset.as_str()) {
+            out.callouts
+                .entry(link.campaign.clone())
+                .or_default()
+                .push((*text).to_string());
+        } else if let Some((header, values)) = snippet_body.get(link.asset.as_str()) {
+            out.snippets
+                .entry(link.campaign.clone())
+                .or_default()
+                .push(((*header).to_string(), values.to_vec()));
+        } else {
+            continue;
+        }
+        out.folded_assets.insert(link.asset.clone());
+        out.folded_links.insert(link.id.clone());
+    }
+    out
 }
 
 /// Positive, ENABLED language / location criteria fold onto their campaign as
@@ -3092,8 +3204,9 @@ fn write_customer_asset(
     asset_addr: &HashMap<String, String>,
 ) {
     let _ = writeln!(out, "resource \"google_ads_customer_asset\" \"{name}\" {{");
-    write_attr(out, 1, "asset", &asset_reference(asset_addr, &a.asset));
-    write_attr(out, 1, "field_type", &fmt_string(&a.field_type));
+    let asset_ref = asset_reference(asset_addr, &a.asset);
+    write_attr(out, 1, "asset", &asset_ref);
+    write_inferable_field_type(out, &asset_ref, &a.field_type);
     if let Some(s) = &a.status {
         write_attr(out, 1, "status", &fmt_string(s));
     }
@@ -3113,12 +3226,24 @@ fn write_campaign_asset(
         None => fmt_string(&a.campaign),
     };
     write_attr(out, 1, "campaign", &campaign_ref);
-    write_attr(out, 1, "asset", &asset_reference(asset_addr, &a.asset));
-    write_attr(out, 1, "field_type", &fmt_string(&a.field_type));
+    let asset_ref = asset_reference(asset_addr, &a.asset);
+    write_attr(out, 1, "asset", &asset_ref);
+    write_inferable_field_type(out, &asset_ref, &a.field_type);
     if let Some(s) = &a.status {
         write_attr(out, 1, "status", &fmt_string(s));
     }
     out.push_str("}\n\n");
+}
+
+/// `field_type` is 1:1 with the asset's resource type, so emitting it adds a
+/// line that can only ever repeat what the reference already says. Anything
+/// unusual (or an unresolved reference) still renders it.
+fn write_inferable_field_type(out: &mut String, asset_ref: &str, field_type: &str) {
+    let ty = asset_ref.split('.').next().unwrap_or("");
+    if crate::schema::field_type_for_asset(ty) == Some(field_type) {
+        return;
+    }
+    write_attr(out, 1, "field_type", &fmt_string(field_type));
 }
 
 fn write_ad_group_asset(
@@ -3134,8 +3259,9 @@ fn write_ad_group_asset(
         None => fmt_string(&a.ad_group),
     };
     write_attr(out, 1, "ad_group", &ad_group_ref);
-    write_attr(out, 1, "asset", &asset_reference(asset_addr, &a.asset));
-    write_attr(out, 1, "field_type", &fmt_string(&a.field_type));
+    let asset_ref = asset_reference(asset_addr, &a.asset);
+    write_attr(out, 1, "asset", &asset_ref);
+    write_inferable_field_type(out, &asset_ref, &a.field_type);
     if let Some(s) = &a.status {
         write_attr(out, 1, "status", &fmt_string(s));
     }
@@ -3934,6 +4060,66 @@ mod tests {
         );
     }
 
+    // Three callouts and a snippet used by one campaign (2001, foldable), plus
+    // a callout shared with a second campaign (2002, must stay a resource).
+    const ASSET_FIXTURE: &str = r#"[
+        {
+            "results": [
+                { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget", "amountMicros": "5000000" } },
+                { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Facebook Ads", "status": "ENABLED", "advertisingChannelType": "SEARCH", "campaignBudget": "customers/9/campaignBudgets/1001" } },
+                { "campaign": { "resourceName": "customers/9/campaigns/2002", "id": "2002", "name": "Cookies", "status": "ENABLED", "advertisingChannelType": "SEARCH", "campaignBudget": "customers/9/campaignBudgets/1001" } },
+                { "asset": { "resourceName": "customers/9/assets/5001", "id": "5001", "calloutAsset": { "calloutText": "Blocks feed ads" } } },
+                { "asset": { "resourceName": "customers/9/assets/5002", "id": "5002", "calloutAsset": { "calloutText": "Open source" } } },
+                { "asset": { "resourceName": "customers/9/assets/5003", "id": "5003", "calloutAsset": { "calloutText": "Free forever" } } },
+                { "asset": { "resourceName": "customers/9/assets/5004", "id": "5004", "structuredSnippetAsset": { "header": "Types", "values": ["Ad blocker", "Tracker blocker"] } } },
+                { "campaignAsset": { "resourceName": "customers/9/campaignAssets/2001~5001~CALLOUT", "campaign": "customers/9/campaigns/2001", "asset": "customers/9/assets/5001", "fieldType": "CALLOUT", "status": "ENABLED" } },
+                { "campaignAsset": { "resourceName": "customers/9/campaignAssets/2001~5002~CALLOUT", "campaign": "customers/9/campaigns/2001", "asset": "customers/9/assets/5002", "fieldType": "CALLOUT", "status": "ENABLED" } },
+                { "campaignAsset": { "resourceName": "customers/9/campaignAssets/2001~5004~STRUCTURED_SNIPPET", "campaign": "customers/9/campaigns/2001", "asset": "customers/9/assets/5004", "fieldType": "STRUCTURED_SNIPPET", "status": "ENABLED" } },
+                { "campaignAsset": { "resourceName": "customers/9/campaignAssets/2001~5003~CALLOUT", "campaign": "customers/9/campaigns/2001", "asset": "customers/9/assets/5003", "fieldType": "CALLOUT", "status": "ENABLED" } },
+                { "campaignAsset": { "resourceName": "customers/9/campaignAssets/2002~5003~CALLOUT", "campaign": "customers/9/campaigns/2002", "asset": "customers/9/assets/5003", "fieldType": "CALLOUT", "status": "ENABLED" } }
+            ]
+        }
+    ]"#;
+
+    #[test]
+    fn a_campaigns_own_text_assets_fold_onto_it() {
+        let input = from_search_response(ASSET_FIXTURE).expect("adapter");
+        let out = render(&input);
+        assert!(
+            out.contains(r#"callouts = ["Blocks feed ads", "Open source"]"#),
+            "{out}"
+        );
+        assert!(out.contains("structured_snippet {"), "{out}");
+        assert!(out.contains(r#"values = ["Ad blocker", "Tracker blocker"]"#), "{out}");
+    }
+
+    #[test]
+    fn an_asset_two_campaigns_share_keeps_its_resource() {
+        // The inline form has no way to say "this one is shared", so folding it
+        // would silently split one asset into two.
+        let input = from_search_response(ASSET_FIXTURE).expect("adapter");
+        let out = render(&input);
+        assert!(
+            out.contains(r#"text = "Free forever""#),
+            "the shared callout keeps its resource:\n{out}"
+        );
+        assert_eq!(
+            out.matches("google_ads_campaign_asset").count(),
+            2,
+            "one attachment per campaign for the shared asset only:\n{out}"
+        );
+    }
+
+    #[test]
+    fn an_attachment_does_not_repeat_the_field_type_its_asset_implies() {
+        let input = from_search_response(ASSET_FIXTURE).expect("adapter");
+        let out = render(&input);
+        assert!(
+            !out.contains(r#"field_type = "CALLOUT""#),
+            "inferable field_type is noise:\n{out}"
+        );
+    }
+
     #[test]
     fn fold_roundtrips_to_verbose() {
         assert_fold_roundtrips(FULL_FIXTURE);
@@ -3942,6 +4128,7 @@ mod tests {
         assert_fold_roundtrips(MIXED_FIXTURE);
         assert_fold_roundtrips(DEVICE_FIXTURE);
         assert_fold_roundtrips(TRACKING_FIXTURE);
+        assert_fold_roundtrips(ASSET_FIXTURE);
     }
 
     #[test]

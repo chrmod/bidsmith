@@ -136,9 +136,12 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
                             import_budget(&ctx, b, &address).map(|x| input.campaign_budgets.push(x)),
                         ),
                         "google_ads_campaign" => emit(import_campaign(&ctx, b, &address).map(
-                            |(campaign, criteria)| {
+                            |(campaign, criteria, assets)| {
                                 input.campaigns.push(campaign);
                                 input.campaign_criteria.extend(criteria);
+                                input.callout_assets.extend(assets.callouts);
+                                input.structured_snippet_assets.extend(assets.snippets);
+                                input.campaign_assets.extend(assets.links);
                             },
                         )),
                         "google_ads_ad_group" => emit(
@@ -183,15 +186,15 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
                         ),
                         "google_ads_customer_asset" => emit(
                             import_customer_asset(&ctx, b, &address)
-                                .map(|x| input.customer_assets.push(x)),
+                                .map(|xs| input.customer_assets.extend(xs)),
                         ),
                         "google_ads_campaign_asset" => emit(
                             import_campaign_asset(&ctx, b, &address)
-                                .map(|x| input.campaign_assets.push(x)),
+                                .map(|xs| input.campaign_assets.extend(xs)),
                         ),
                         "google_ads_ad_group_asset" => emit(
                             import_ad_group_asset(&ctx, b, &address)
-                                .map(|x| input.ad_group_assets.push(x)),
+                                .map(|xs| input.ad_group_assets.extend(xs)),
                         ),
                         "google_ads_youtube_video_asset" => emit(
                             import_youtube_video_asset(&ctx, b, &address)
@@ -318,11 +321,19 @@ fn import_budget(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonBudget, 
     })
 }
 
+/// Assets a campaign declared inline, plus the attachments that link them.
+#[derive(Default)]
+pub struct InlineCampaignAssets {
+    pub callouts: Vec<JsonCalloutAsset>,
+    pub snippets: Vec<JsonStructuredSnippetAsset>,
+    pub links: Vec<JsonCampaignAsset>,
+}
+
 fn import_campaign(
     ctx: &Ctx,
     block: &Block,
     address: &str,
-) -> Result<(JsonCampaign, Vec<JsonCampaignCriterion>), Diag> {
+) -> Result<(JsonCampaign, Vec<JsonCampaignCriterion>, InlineCampaignAssets), Diag> {
     let mut name = None;
     let mut status = None;
     let mut channel = None;
@@ -349,6 +360,8 @@ fn import_campaign(
     let mut excluded_devices: Vec<String> = Vec::new();
     let mut final_url_suffix = None;
     let mut custom_parameters = None;
+    let mut callouts: Vec<String> = Vec::new();
+    let mut snippets: Vec<(String, Vec<String>)> = Vec::new();
 
     for s in block.body.iter() {
         match s {
@@ -367,6 +380,7 @@ fn import_campaign(
                 "excluded_devices" => excluded_devices = expect_string_list(ctx, &a.value),
                 "final_url_suffix" => final_url_suffix = expect_string_owned(ctx, a),
                 "custom_parameters" => custom_parameters = import_custom_parameters(ctx, a),
+                "callouts" => callouts = expect_string_list(ctx, &a.value),
                 _ => {}
             },
             Structure::Block(b) => match b.ident.as_str() {
@@ -388,6 +402,11 @@ fn import_campaign(
                 }
                 "targeting_setting" => targeting_setting = Some(import_targeting_setting(ctx, b)),
                 "frequency_caps" => frequency_caps.extend(import_frequency_cap(ctx, b)),
+                "structured_snippet" => {
+                    if let Some(sn) = import_inline_snippet(ctx, b) {
+                        snippets.push(sn);
+                    }
+                }
                 _ => {}
             },
         }
@@ -404,6 +423,7 @@ fn import_campaign(
         &devices,
         &excluded_devices,
     );
+    let assets = expand_inline_assets(address, &callouts, &snippets);
 
     Ok((
         JsonCampaign {
@@ -433,7 +453,63 @@ fn import_campaign(
             managed_address: None,
         },
         criteria,
+        assets,
     ))
+}
+
+fn import_inline_snippet(ctx: &Ctx, block: &Block) -> Option<(String, Vec<String>)> {
+    let mut header = None;
+    let mut values: Vec<String> = Vec::new();
+    for s in block.body.iter() {
+        let Structure::Attribute(a) = s else { continue };
+        match a.key.as_str() {
+            "header" => header = expect_string_owned(ctx, a),
+            "values" => values = expect_string_list(ctx, &a.value),
+            _ => {}
+        }
+    }
+    Some((header?, values))
+}
+
+/// Turn a campaign's inline `callouts` / `structured_snippet` into the asset
+/// and attachment resources they stand for. A callout asset *is* its text, so
+/// the resource-plus-attachment pair carried no information the campaign did
+/// not already have (issue #145). Assets are matched by content, not by
+/// address, so declaring one inline and sharing it as a resource elsewhere are
+/// the same thing to `plan`.
+fn expand_inline_assets(
+    campaign_address: &str,
+    callouts: &[String],
+    snippets: &[(String, Vec<String>)],
+) -> InlineCampaignAssets {
+    let mut out = InlineCampaignAssets::default();
+    for (i, text) in callouts.iter().enumerate() {
+        let id = format!("{campaign_address}.callouts[{i}]");
+        out.callouts.push(JsonCalloutAsset { id: id.clone(), text: text.clone() });
+        out.links.push(JsonCampaignAsset {
+            id: format!("{id}.link"),
+            campaign: campaign_address.to_string(),
+            asset: id,
+            field_type: "CALLOUT".to_string(),
+            status: Some("ENABLED".to_string()),
+        });
+    }
+    for (i, (header, values)) in snippets.iter().enumerate() {
+        let id = format!("{campaign_address}.structured_snippet[{i}]");
+        out.snippets.push(JsonStructuredSnippetAsset {
+            id: id.clone(),
+            header: header.clone(),
+            values: values.clone(),
+        });
+        out.links.push(JsonCampaignAsset {
+            id: format!("{id}.link"),
+            campaign: campaign_address.to_string(),
+            asset: id,
+            field_type: "STRUCTURED_SNIPPET".to_string(),
+            status: Some("ENABLED".to_string()),
+        });
+    }
+    out
 }
 
 /// `custom_parameters = { name = "value" }` as the API's repeated key/value
@@ -1730,28 +1806,27 @@ fn import_customer_asset(
     ctx: &Ctx,
     block: &Block,
     address: &str,
-) -> Result<JsonCustomerAsset, Diag> {
-    let mut asset_ref = None;
-    let mut field_type = None;
+) -> Result<Vec<JsonCustomerAsset>, Diag> {
     let mut status = None;
+    let mut links = AssetLinks::default();
     for s in block.body.iter() {
         if let Structure::Attribute(a) = s {
             match a.key.as_str() {
-                "asset" => asset_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r)),
-                "field_type" => field_type = expect_string_owned(ctx, a),
                 "status" => status = expect_string_owned(ctx, a),
-                _ => {}
+                _ => links.absorb(ctx, a),
             }
         }
     }
-    let asset = asset_ref.ok_or_else(|| missing(ctx.file, block, address, "asset"))?;
-    let field_type = field_type.ok_or_else(|| missing(ctx.file, block, address, "field_type"))?;
-    Ok(JsonCustomerAsset {
-        id: address.to_string(),
-        asset,
-        field_type,
-        status,
-    })
+    Ok(links
+        .resolve(ctx, block, address)?
+        .into_iter()
+        .map(|(id, asset, field_type)| JsonCustomerAsset {
+            id,
+            asset,
+            field_type,
+            status: status.clone(),
+        })
+        .collect())
 }
 
 fn import_sitelink_asset(
@@ -1832,11 +1907,10 @@ fn import_campaign_asset(
     ctx: &Ctx,
     block: &Block,
     address: &str,
-) -> Result<JsonCampaignAsset, Diag> {
+) -> Result<Vec<JsonCampaignAsset>, Diag> {
     let mut campaign_ref = None;
-    let mut asset_ref = None;
-    let mut field_type = None;
     let mut status = None;
+    let mut links = AssetLinks::default();
     for s in block.body.iter() {
         if let Structure::Attribute(a) = s {
             match a.key.as_str() {
@@ -1845,36 +1919,104 @@ fn import_campaign_asset(
                         .map(|r| ctx.resolve_ref(&r))
                         .or_else(|| expect_string_owned(ctx, a));
                 }
-                "asset" => {
-                    asset_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r))
-                }
-                "field_type" => field_type = expect_string_owned(ctx, a),
                 "status" => status = expect_string_owned(ctx, a),
-                _ => {}
+                _ => links.absorb(ctx, a),
             }
         }
     }
     let campaign = campaign_ref.ok_or_else(|| missing(ctx.file, block, address, "campaign"))?;
-    let asset = asset_ref.ok_or_else(|| missing(ctx.file, block, address, "asset"))?;
-    let field_type = field_type.ok_or_else(|| missing(ctx.file, block, address, "field_type"))?;
-    Ok(JsonCampaignAsset {
-        id: address.to_string(),
-        campaign,
-        asset,
-        field_type,
-        status,
-    })
+    Ok(links
+        .resolve(ctx, block, address)?
+        .into_iter()
+        .map(|(id, asset, field_type)| JsonCampaignAsset {
+            id,
+            campaign: campaign.clone(),
+            asset,
+            field_type,
+            status: status.clone(),
+        })
+        .collect())
+}
+
+/// The `asset` / `assets` pair on an asset-link resource. One attachment per
+/// entry, mirroring `keywords { texts = [...] }`: the ceremony an attachment
+/// carries is identical for every asset in a set, so writing it once is the
+/// whole point (issue #145).
+#[derive(Default)]
+struct AssetLinks {
+    /// (resolved reference, field type implied by the asset's resource type)
+    single: Option<(String, Option<&'static str>)>,
+    list: Vec<(String, Option<&'static str>)>,
+    declared_field_type: Option<String>,
+}
+
+impl AssetLinks {
+    fn absorb(&mut self, ctx: &Ctx, a: &Attribute) {
+        match a.key.as_str() {
+            "asset" => {
+                if let Some(r) = extract_resource_ref(ctx, &a.value) {
+                    self.single = Some((ctx.resolve_ref(&r), asset_field_type_of(&r)));
+                }
+            }
+            "assets" => {
+                for r in extract_resource_ref_list(ctx, &a.value) {
+                    self.list.push((ctx.resolve_ref(&r), asset_field_type_of(&r)));
+                }
+            }
+            "field_type" => self.declared_field_type = expect_string_owned(ctx, a),
+            _ => {}
+        }
+    }
+
+    /// `(address, asset reference, field type)` per attachment. A single
+    /// `asset` keeps the resource's own address so adopting the list form later
+    /// is the only thing that re-addresses anything.
+    fn resolve(
+        self,
+        ctx: &Ctx,
+        block: &Block,
+        address: &str,
+    ) -> Result<Vec<(String, String, String)>, Diag> {
+        let field_type_of = |implied: Option<&'static str>| {
+            self.declared_field_type
+                .clone()
+                .or_else(|| implied.map(str::to_string))
+        };
+        if let Some((asset, implied)) = self.single {
+            if !self.list.is_empty() {
+                return Err(Diag::new(
+                    ctx.file.src.clone(),
+                    span_of(block.ident.span()),
+                    format!(
+                        "{address} sets both 'asset' and 'assets'; use 'assets' for the whole set"
+                    ),
+                ));
+            }
+            let field_type = field_type_of(implied)
+                .ok_or_else(|| missing(ctx.file, block, address, "field_type"))?;
+            return Ok(vec![(address.to_string(), asset, field_type)]);
+        }
+        if self.list.is_empty() {
+            return Err(missing(ctx.file, block, address, "asset"));
+        }
+        let mut out = Vec::with_capacity(self.list.len());
+        for (i, (asset, implied)) in self.list.into_iter().enumerate() {
+            let field_type = field_type_of(implied)
+                .ok_or_else(|| missing(ctx.file, block, address, "field_type"))?;
+            out.push((format!("{address}.assets[{i}]"), asset, field_type));
+        }
+        Ok(out)
+    }
 }
 
 fn import_ad_group_asset(
     ctx: &Ctx,
     block: &Block,
     address: &str,
-) -> Result<JsonAdGroupAsset, Diag> {
+) -> Result<Vec<JsonAdGroupAsset>, Diag> {
     let mut ad_group_ref = None;
-    let mut asset_ref = None;
-    let mut field_type = None;
     let mut status = None;
+    let mut links = AssetLinks::default();
     for s in block.body.iter() {
         if let Structure::Attribute(a) = s {
             match a.key.as_str() {
@@ -1883,25 +2025,23 @@ fn import_ad_group_asset(
                         .map(|r| ctx.resolve_ref(&r))
                         .or_else(|| expect_string_owned(ctx, a));
                 }
-                "asset" => {
-                    asset_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r))
-                }
-                "field_type" => field_type = expect_string_owned(ctx, a),
                 "status" => status = expect_string_owned(ctx, a),
-                _ => {}
+                _ => links.absorb(ctx, a),
             }
         }
     }
     let ad_group = ad_group_ref.ok_or_else(|| missing(ctx.file, block, address, "ad_group"))?;
-    let asset = asset_ref.ok_or_else(|| missing(ctx.file, block, address, "asset"))?;
-    let field_type = field_type.ok_or_else(|| missing(ctx.file, block, address, "field_type"))?;
-    Ok(JsonAdGroupAsset {
-        id: address.to_string(),
-        ad_group,
-        asset,
-        field_type,
-        status,
-    })
+    Ok(links
+        .resolve(ctx, block, address)?
+        .into_iter()
+        .map(|(id, asset, field_type)| JsonAdGroupAsset {
+            id,
+            ad_group: ad_group.clone(),
+            asset,
+            field_type,
+            status: status.clone(),
+        })
+        .collect())
 }
 
 fn import_shared_set(
@@ -2113,6 +2253,11 @@ fn expect_string_list(ctx: &Ctx, value: &Expression) -> Vec<String> {
             }
         })
         .collect()
+}
+
+/// The `field_type` implied by a `<type>.<name>` asset reference.
+fn asset_field_type_of(reference: &str) -> Option<&'static str> {
+    crate::schema::field_type_for_asset(reference.split('.').next().unwrap_or(""))
 }
 
 fn extract_resource_ref(ctx: &Ctx, value: &Expression) -> Option<String> {
@@ -2876,6 +3021,142 @@ resource "google_ads_campaign_criterion" "c_device_tablet" {
 "#,
         );
         assert_eq!(device_criteria(&mut inline), device_criteria(&mut explicit));
+    }
+
+    #[test]
+    fn an_attachment_infers_its_field_type_from_the_asset() {
+        let input = import_str(
+            "asset_infer",
+            r#"
+resource "google_ads_callout_asset" "fast" {
+  text = "Fast"
+}
+
+resource "google_ads_campaign_asset" "link" {
+  campaign = google_ads_campaign.c.id
+  asset    = google_ads_callout_asset.fast.id
+}
+"#,
+        );
+        assert_eq!(input.campaign_assets.len(), 1);
+        assert_eq!(input.campaign_assets[0].field_type, "CALLOUT");
+    }
+
+    #[test]
+    fn an_assets_list_fans_out_one_attachment_per_entry() {
+        let input = import_str(
+            "asset_list",
+            r#"
+resource "google_ads_sitelink_asset" "howto" {
+  link_text  = "How it works"
+  final_urls = ["https://example.com/how"]
+}
+
+resource "google_ads_sitelink_asset" "chrome" {
+  link_text  = "For Chrome"
+  final_urls = ["https://example.com/chrome"]
+}
+
+resource "google_ads_campaign_asset" "sitelinks" {
+  campaign = google_ads_campaign.c.id
+  assets = [
+    google_ads_sitelink_asset.howto.id,
+    google_ads_sitelink_asset.chrome.id,
+  ]
+}
+"#,
+        );
+        assert_eq!(input.campaign_assets.len(), 2);
+        assert!(input.campaign_assets.iter().all(|a| a.field_type == "SITELINK"));
+        let ids: Vec<&str> = input.campaign_assets.iter().map(|a| a.id.as_str()).collect();
+        assert!(ids[0].ends_with(".assets[0]"), "{ids:?}");
+        assert!(ids[1].ends_with(".assets[1]"), "{ids:?}");
+        assert!(
+            input.campaign_assets[0].asset.ends_with("google_ads_sitelink_asset.howto"),
+            "{:?}",
+            input.campaign_assets[0].asset
+        );
+    }
+
+    #[test]
+    fn a_single_asset_keeps_the_resources_own_address() {
+        // So moving one attachment to the list form later is the only thing
+        // that re-addresses anything.
+        let input = import_str(
+            "asset_single_addr",
+            r#"
+resource "google_ads_callout_asset" "fast" {
+  text = "Fast"
+}
+
+resource "google_ads_campaign_asset" "link" {
+  campaign = google_ads_campaign.c.id
+  asset    = google_ads_callout_asset.fast.id
+}
+"#,
+        );
+        assert!(
+            input.campaign_assets[0].id.ends_with("google_ads_campaign_asset.link"),
+            "{:?}",
+            input.campaign_assets[0].id
+        );
+    }
+
+    #[test]
+    fn inline_callouts_and_snippets_become_assets_and_attachments() {
+        // Eleven assets plus eleven links for one campaign was the measured
+        // shape; this is the same account state in six lines (issue #145).
+        let input = import_str(
+            "inline_assets",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  callouts = ["Blocks feed ads", "Open source"]
+
+  structured_snippet {
+    header = "Types"
+    values = ["Ad blocker", "Tracker blocker"]
+  }
+}
+"#,
+        );
+        let texts: Vec<&str> = input.callout_assets.iter().map(|a| a.text.as_str()).collect();
+        assert_eq!(texts, vec!["Blocks feed ads", "Open source"]);
+        assert_eq!(input.structured_snippet_assets.len(), 1);
+        assert_eq!(input.structured_snippet_assets[0].header, "Types");
+        assert_eq!(
+            input.structured_snippet_assets[0].values,
+            vec!["Ad blocker".to_string(), "Tracker blocker".to_string()]
+        );
+
+        // Every synthesized asset is attached to the campaign that declared it.
+        assert_eq!(input.campaign_assets.len(), 3);
+        let campaign = &input.campaigns[0].id;
+        assert!(input.campaign_assets.iter().all(|a| &a.campaign == campaign));
+        let mut kinds: Vec<&str> =
+            input.campaign_assets.iter().map(|a| a.field_type.as_str()).collect();
+        kinds.sort();
+        assert_eq!(kinds, vec!["CALLOUT", "CALLOUT", "STRUCTURED_SNIPPET"]);
+        // Each link points at the asset the same campaign synthesized.
+        let asset_ids: Vec<&str> = input
+            .callout_assets
+            .iter()
+            .map(|a| a.id.as_str())
+            .chain(input.structured_snippet_assets.iter().map(|a| a.id.as_str()))
+            .collect();
+        assert!(
+            input.campaign_assets.iter().all(|l| asset_ids.contains(&l.asset.as_str())),
+            "{:?} vs {asset_ids:?}",
+            input.campaign_assets.iter().map(|l| &l.asset).collect::<Vec<_>>()
+        );
     }
 
     #[test]
