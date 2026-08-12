@@ -66,6 +66,31 @@ pub const CAMPAIGN_BIDDING_BLOCKS: &[&str] = &[
     "target_cpv",
 ];
 
+/// The update-mask paths that switch a live campaign onto each bidding block.
+/// Google Ads refuses a mask that names a message field carrying subfields —
+/// even when the operation leaves every one of them unset — so a strategy that
+/// has any is masked by those subfields instead, which reaches the same `oneof`
+/// member and clears whatever the campaign was bidding with before (issue #120).
+/// Only the strategies the API models as field-less messages can be named
+/// outright. `ManualCpc.enhanced_cpc_enabled` and `TargetCpm.target_frequency_goal`
+/// are the two subfields as of v22.
+pub const CAMPAIGN_BIDDING_MASK_PATHS: &[(&str, &[&str])] = &[
+    ("manual_cpc", &["manual_cpc.enhanced_cpc_enabled"]),
+    ("manual_cpm", &["manual_cpm"]),
+    ("manual_cpv", &["manual_cpv"]),
+    ("target_cpm", &["target_cpm.target_frequency_goal"]),
+    ("target_cpv", &["target_cpv"]),
+];
+
+/// The mask paths that switch a campaign onto `field`, or `None` when `field`
+/// names something other than a bidding block.
+pub fn campaign_bidding_mask_paths(field: &str) -> Option<&'static [&'static str]> {
+    CAMPAIGN_BIDDING_MASK_PATHS
+        .iter()
+        .find(|(block, _)| *block == field)
+        .map(|(_, paths)| *paths)
+}
+
 /// Google Ads stores "runs until further notice" as this date rather than an
 /// empty field, so it round-trips as an omitted `end_date` (issue #113).
 pub const NO_END_DATE: &str = "2037-12-30";
@@ -3399,6 +3424,24 @@ mod tests {
         let (b, diags) = Bindings::build(std::slice::from_ref(pf), &InputBindings::default());
         assert!(diags.is_empty(), "build diags: {:?}", diags.len());
         b
+    }
+
+    /// A block with no mask paths would go out as a bare `oneof` member and be
+    /// rejected at apply-time, which only a live account would notice.
+    #[test]
+    fn every_bidding_block_knows_how_to_mask_itself() {
+        for block in CAMPAIGN_BIDDING_BLOCKS {
+            let paths = campaign_bidding_mask_paths(block)
+                .unwrap_or_else(|| panic!("{block} has no update-mask paths"));
+            assert!(!paths.is_empty(), "{block} has an empty mask");
+            for p in paths {
+                assert!(
+                    *p == *block || p.starts_with(&format!("{block}.")),
+                    "{block} masks an unrelated field: {p}"
+                );
+            }
+        }
+        assert_eq!(CAMPAIGN_BIDDING_BLOCKS.len(), CAMPAIGN_BIDDING_MASK_PATHS.len());
     }
 
     #[test]

@@ -3028,7 +3028,7 @@ mod campaign_bidding_tests {
     }
 
     #[test]
-    fn switching_strategy_masks_the_desired_member() {
+    fn switching_strategy_reports_the_desired_member() {
         let changed = diff_campaign(
             &campaign(r#","target_cpv":{}"#),
             &campaign(r#","manual_cpv":{}"#),

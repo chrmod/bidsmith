@@ -747,19 +747,27 @@ resource type, any file layout, modules, schema validation.
   validate error, and a `defaults "google_ads_campaign"` bidding block
   is suppressed wholesale (not per-name) once the resource picks its
   own, so a video campaign can opt out of a shared `manual_cpc`. Every
-  strategy but `manual_cpc` is an empty message in the API, so its
-  block carries no attributes: picking it is the whole declaration and
-  the bid amount lives on the ad group. For the four video strategies
+  strategy but `manual_cpc` models nothing bidsmith writes — three are
+  empty messages in the API and `target_cpm`'s one field
+  (`target_frequency_goal`) is deferred — so its block carries no
+  attributes: picking it is the whole declaration and the bid amount
+  lives on the ad group. For the four video strategies
   that makes the block a *read* surface (see the VIDEO entry above) —
   `manual_cpc` is the one bidsmith genuinely writes. The empty ones are
   also unreadable through GAQL — there is no leaf field to select — so the
   live side derives them from `campaign.bidding_strategy_type`
   (`manual_cpc` still comes off `manual_cpc.enhanced_cpc_enabled`,
   because enhanced CPC reports as `ENHANCED_CPC` rather than
-  `MANUAL_CPC`). A strategy switch masks the desired member alone;
-  setting one member of a `oneof` clears the others. Conversion-based
-  strategies (`target_cpa`, `maximize_conversions`, …) stay out until
-  bidsmith models conversion tracking.
+  `MANUAL_CPC`). A strategy switch sends the desired member alone —
+  setting one member of a `oneof` clears the others — but **masks it by
+  its subfields, not by name** (issue #120): Google Ads refuses an
+  update mask that names a message field carrying subfields, even when
+  the operation leaves every one of them unset, so `manual_cpc` goes out
+  as `manual_cpc.enhanced_cpc_enabled` and `target_cpm` as
+  `target_cpm.target_frequency_goal`. Only the field-less messages can be
+  masked by name. Conversion-based strategies (`target_cpa`,
+  `maximize_conversions`, …) stay out until bidsmith models conversion
+  tracking.
 - **An undeclared bidding block means unmanaged**: the same rule the
   frequency caps follow, for the same reason — a file that never names
   a strategy diffs as if the field didn't exist rather than planning a
