@@ -69,6 +69,7 @@ export default defineConfig({
             { label: 'Organize a big account into folders', slug: 'recipes/organize-account-into-folders' },
             { label: 'Turn many cloned campaigns into one template', slug: 'recipes/collapse-cloned-campaigns' },
             { label: 'Rename a resource without recreating it', slug: 'recipes/rename-without-recreating' },
+            { label: 'Leave a note explaining a number', slug: 'recipes/leave-a-note-explaining-a-number' },
           ],
         },
         {

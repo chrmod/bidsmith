@@ -30,7 +30,7 @@ bidsmith fmt [PATH] [--check] [--minimal]
 | Flag | Description |
 |---|---|
 | `--check` | Don't write any files. Exit `1` if any file would change. Use in CI. |
-| `--minimal` | Also drop optional attributes whose value equals the schema default (e.g. `status = "ENABLED"`, `delivery_method = "STANDARD"`). This is the form `refresh` and `export` already emit. Omitting an attribute keeps it managed at the default — `plan` still enforces it — so the only thing lost is the noise. Compliance declarations such as `contains_eu_political_advertising` stay even at their default. |
+| `--minimal` | Also drop optional attributes whose value equals the schema default (e.g. `status = "ENABLED"`, `delivery_method = "STANDARD"`). This is the form `refresh` and `export` already emit. Omitting an attribute keeps it managed at the default — `plan` still enforces it — so the only thing lost is the noise. Compliance declarations such as `contains_eu_political_advertising` stay even at their default, and so does any attribute you've written a comment about. |
 
 ## Environment variables
 
@@ -105,6 +105,38 @@ the UI. A `status = "PAUSED"` would stay, because it carries
 information. The EU-political line stays because it's a compliance
 declaration. This is the same output `bidsmith refresh` produces.
 
+## Comments survive
+
+`fmt` never deletes a comment. Write the *why* right next to the
+number it explains and it stays there, however many times you format:
+
+```hcl
+# Signed off by finance, March 2026.
+resource "google_ads_campaign_budget" "summer" {
+  name = "Summer sale"
+
+  # EUR 20/day. Modelled on last summer's spend, +15% for the
+  # extended sale window.
+  amount_micros = 20000000 # 20 EUR
+
+  keywords = [
+    "running shoes",
+    "trail shoes", # our best converter, don't drop it
+  ]
+}
+```
+
+Comments stay attached to whatever they were written against — above a
+block or an attribute, or at the end of its line. `fmt` tidies the
+indentation to match, and keeps one blank line where you left one.
+
+<Aside type="tip">
+  A comment beside a value is worth more than the same sentence in a
+  README, because the next person to change the value has to look
+  straight at it. See [Leave a note explaining a
+  number](/bidsmith/recipes/leave-a-note-explaining-a-number/).
+</Aside>
+
 ## What "canonical" means
 
 bidsmith's canonical form is deterministic, not pretty-print. Given
@@ -120,6 +152,8 @@ the same input it always produces the same output. Specifics:
   `keyword {}` sub-blocks in a single criterion resource; RSA
   `headlines = [...]` list attributes when more concise than
   per-headline blocks).
+- **Comments kept**, re-indented to the depth of whatever they're
+  written against.
 
 The exact canonical form is whatever `bidsmith fmt` produces — it's
 not specified independently. If `fmt --check` passes, you're

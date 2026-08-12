@@ -37,9 +37,12 @@ jobs:
           cargo run --quiet -- validate examples/multi
           ! cargo run --quiet -- validate examples/broken
           cargo run --quiet -- validate examples/lint
+          cargo run --quiet -- validate examples/comments
           cargo run --quiet -- fmt --check examples/basic
           cargo run --quiet -- fmt --check examples/multi
           cargo run --quiet -- fmt --check examples/lint
+          cargo run --quiet -- fmt --check examples/comments
+          cargo run --quiet -- fmt --minimal --check examples/comments
           cargo run --quiet -- fmt --check tests/fixtures/e2e.bid
           cargo run --quiet -- export --from-json examples/exports/basic.json -o /tmp/basic.bid
           cargo run --quiet -- validate /tmp/basic.bid

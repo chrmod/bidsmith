@@ -94,8 +94,7 @@ ergonomics; bidsmith doesn't care.
 
 ## Comments
 
-HCL accepts three comment styles. Use them sparingly — the file
-itself should be self-documenting:
+HCL accepts three comment styles:
 
 ```hcl
 # This is a comment.
@@ -104,6 +103,13 @@ itself should be self-documenting:
   And multi-line comments look like this.
 */
 ```
+
+Most of the file should be self-documenting, so keep comments for the
+things the code genuinely can't say — why a budget is the number it
+is, who signed off, what an odd-looking setting is working around.
+Those survive [`bidsmith fmt`](/bidsmith/commands/fmt/) untouched, so
+a note you leave beside a value stays beside it. See [Leave a note
+explaining a number](/bidsmith/recipes/leave-a-note-explaining-a-number/).
 
 ## Formatting
 

@@ -553,6 +553,24 @@ resource type, any file layout, modules, schema validation.
   refresh output is minimal by default. The old "missing `status` —
   defaults to ENABLED; set it explicitly" lint is **retired** — it
   encouraged exactly the per-line noise this closes.
+- **`fmt` preserves comments** (issue #118): the canonical re-emitter
+  carries every comment through, attached to the node the parser
+  attached it to — leading comments stay above their block / attribute,
+  end-of-line comments stay on their line, and a comment with nothing
+  after it (before a closing brace, at end of file, inside a list) is
+  re-emitted at that position. This matches `terraform fmt`, which is
+  what anyone reading HCL expects. Before this, `fmt` silently deleted
+  every comment, which pushed the *why* behind a number — a budget's
+  `amount_micros`, a bid's rationale — out into a sibling `README.md`
+  or a commit message, where it drifted out of sync with the value it
+  explained. Placement is normalized, not byte-preserved: comments are
+  re-indented to their node's depth, blank-line separation around a
+  comment group is kept (one blank line max), and a multi-line
+  `/* … */` keeps its internal shape via a dedent-and-reindent. Blank
+  lines between comment-free attributes are still collapsed — that rule
+  is unchanged. `fmt --minimal` **keeps** a default-valued attribute
+  that carries a comment: dropping the line would delete the
+  explanation with it, which is the same silent loss this closes.
 - **Identity labels (Phase 3 v2)**: bidsmith writes a Google Ads label
   named `bidsmith:address=<address>` on every resource it creates or
   adopts, for the labelable types — **campaign, ad_group, ad_group_ad**.
@@ -1115,6 +1133,14 @@ Verified locally:
   suspicious `languageConstants/1045` (Afar) entry, a headline over 30
   chars, a description over 90 chars, and a path1 with uppercase /
   underscore outside the `[a-z0-9-]` charset).
+- `cargo run -- validate examples/comments` → `OK: 1 file(s) valid.` —
+  a campaign annotated the way the docs recommend (leading comments,
+  end-of-line comments, a `/* … */` block, a `//` line, comments inside
+  a `texts = [...]` list, and one dangling before a closing brace).
+  Both `fmt --check examples/comments` and `fmt --minimal --check
+  examples/comments` are no-ops, which is the regression guard for
+  issue #118 — a formatter that dropped or moved a comment would fail
+  the offline checklist.
 - `cargo run -- export --from-json examples/exports/basic.json`
   round-trips through `validate` cleanly (`-o out.bid` then
   `validate out.bid` → OK).
@@ -1128,7 +1154,8 @@ Verified locally:
   `fmt: N file(s) already canonical.` (idempotent; canonical = 2-space
   indent, single space around `=`, blank line between blocks but not
   within attribute runs, arrays wrap onto multiple lines when the
-  single-line form exceeds 80 chars).
+  single-line form exceeds 80 chars or carry a comment, comments kept
+  and re-indented to their node's depth).
 - `cargo test` (offline) runs three `render_split` checks in
   `src/commands/export.rs` that lock in the account-vs-campaign
   bucket split.
@@ -1382,7 +1409,7 @@ Validator covers (so far):
 
 | Verb       | Status  | Purpose                                              |
 |------------|---------|------------------------------------------------------|
-| `fmt`      | partial | Canonicalize `.bid` files (in-place; `--check` for CI). `--minimal` also strips optional attributes left at their schema default — the form `refresh` / `export` emit — while `always_emit` compliance fields stay |
+| `fmt`      | partial | Canonicalize `.bid` files (in-place; `--check` for CI). Comments survive: leading ones stay above their node, end-of-line ones stay on their line, dangling ones (before a closing brace, at end of file, inside a list) keep their position (issue #118). `--minimal` also strips optional attributes left at their schema default — the form `refresh` / `export` emit — while `always_emit` compliance fields and any attribute carrying a comment stay |
 | `mv`       | working | Rename a resource address in source: rewrites the `resource` block label and every reference that resolves to it, across all `.bid` files under `--path` (default `.`). Addresses are `<type>.<name>`, or `<module>.<type>.<name>` to disambiguate a name shared across files. **Bulk mode** `--from-file <path>` (or `-` for stdin) renames a whole batch from a `<from> <to>`-per-line file (arrow optional, `#` comments) applied atomically against one snapshot — rejects missing sources, occupied targets, duplicate sources/targets, and rename chains (`a→b`,`b→c`); any bad rule writes nothing. Format-preserving (only the renamed identifiers change; comments and layout are byte-preserved). Refuses when the rename would raise the project's validation-error count above its pre-rename baseline (so it can still tidy a not-yet-fully-valid tree). **Source-only by design**: because the planner matches live resources by content (name / keyword / geo / …), not by address or label, an address rename is invisible to the account — no delete+create, no lost history or ad review. Once labels become identity (Phase 3 v2), a move will additionally rewrite the live `bidsmith:address` label; until then `mv` is the complete mechanism and `moved` blocks are deferred |
 | `validate` | partial | Syntax + schema + references + lint warnings (local only). `--var NAME=VALUE` (repeatable) supplies values for `variable` blocks; `BIDSMITH_VAR_<name>` env vars are the fallback |
 | `export`   | partial | Render a fmt-canonical `.bid` file from flat bidsmith JSON (`--from-json`) or raw Google Ads SearchStream JSON (`--from-gads-search-response`); always emits the compact form (one `google_ads_ad_group_criterion` per `(ad_group, match_type)` group with N `keyword {}` sub-blocks, one negatives resource per ad-group / campaign with N `negative_keyword {}` sub-blocks, RSAs as `headlines = [...]` / `descriptions = [...]` lists). Also **folds repeated structure** (issue #57): ad bodies shared across ≥ 2 ads become a top-level `ad_template` (URL-variant bodies collapse onto one URL-agnostic template + per-instance `final_urls` / `path1` / `path2` overrides), RSA arrays used by ≥ 2 sites and campaign negative lists shared by ≥ 2 campaigns become `locals`. Folding is source-only — the tree round-trips through `validate` / `plan` identically to the verbose form. Drops REMOVED resources unless `--include-removed`; `--login-customer-id` / `--customer-id` (or env vars `GOOGLE_ADS_LOGIN_CUSTOMER_ID` / `GOOGLE_ADS_CUSTOMER_ID`) override the provider block |
