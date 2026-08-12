@@ -57,7 +57,7 @@ bidsmith plan [PATH] [--refresh-state] [--offline] [--show-unchanged] [--format 
 
 | Flag | Description |
 |---|---|
-| `--refresh-state` | Ignore any cached live state and refetch from the API. The fresh fetch is then written back to the cache. Use when you suspect the cache is out of date. |
+| `--refresh-state` | Ignore any cached live state and refetch from the API — a cache hit can never satisfy this flag, however fresh the entry looks. The fresh fetch is then written back to the cache. Use when you suspect the cache is out of date, or when [a plan came back red and you want to rule that out](/bidsmith/recipes/plan-errors-that-are-not-real/). |
 | `--offline` | Diff against the cached live state without contacting Google Ads at all — no OAuth, no SearchStream, no validateOnly mutate. Errors if no fresh cache exists. See [Cut Google Ads API quota usage](/bidsmith/recipes/reduce-api-calls/). |
 | `--show-unchanged` | List every resource, including unchanged `no-op` rows. By default plan prints only resources that would change. Useful for auditing exactly what bidsmith is tracking. |
 | `--format <text\|markdown>` | Output format. `text` (default) is the aligned per-resource listing. `markdown` renders the diff as a table suited to posting as a pull-request comment — this is what the workflow [`bidsmith init`](/bidsmith/commands/init/) scaffolds uses. |
@@ -202,6 +202,31 @@ operations to Google's `googleAds:mutate` endpoint with
 Google checks them without committing. Any rejection
 ("headline too long," "bid below minimum") shows up inline in the
 plan output.
+
+## What the plan was working from
+
+Before the diff, plan says which account it read, when, and whether the
+answer came from the API or from your local cache:
+
+```
+plan: live state for customers/1234567890 read just now (fresh read).
+plan: live state for customers/1234567890 read 4m12s ago (cached — --refresh-state to refetch).
+```
+
+If the plan is not clean, the same fact is repeated under the summary,
+where the rejections are:
+
+```
+Plan: 2 to create, 0 to update, 2 to destroy, 1507 unchanged. (0 accepted, 2 rejected, 4 blocked by those failures)
+State: diffed against live state for customers/1234567890 read 12m4s ago (cached — --refresh-state to refetch).
+```
+
+A rejection is only as true as the snapshot behind it. If the account
+changed after that read — a colleague applied, CI merged to `main` —
+plan can reject changes that have in fact already landed. When the
+rejections look like that, plan says so and tells you to re-run with
+`--refresh-state`. See [A plan reported errors that turned out not to
+be real](/bidsmith/recipes/plan-errors-that-are-not-real/).
 
 ## What the change costs
 

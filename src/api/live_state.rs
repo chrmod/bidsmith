@@ -459,6 +459,7 @@ fn adapt_batches(batches: Vec<Value>) -> Result<ExportInput, LiveStateError> {
 }
 
 /// How the cache should be consulted during a fetch.
+#[derive(Clone, Copy, PartialEq)]
 pub enum CacheMode {
     /// Read cache if fresh, else fetch and write cache. Default for plan/apply.
     ReadWrite,
@@ -468,8 +469,85 @@ pub enum CacheMode {
     Bypass,
 }
 
+impl CacheMode {
+    /// Only the default mode may answer from cache. `--refresh-state` promises
+    /// a live read and must never be satisfiable by a cache hit, however fresh
+    /// the entry looks (issue #144).
+    fn reads_cache(self) -> bool {
+        self == CacheMode::ReadWrite
+    }
+
+    fn writes_cache(self) -> bool {
+        self != CacheMode::Bypass
+    }
+}
+
+/// Where a plan's picture of the account came from, and when. A diff is only
+/// ever as true as this snapshot: the operations it builds are checked against
+/// the *live* account, so a snapshot the account has moved past produces
+/// per-resource API errors that look exactly like a genuinely bad `.bid`
+/// (issue #144). Every path that loads state reports one of these.
+#[derive(Clone)]
+pub struct StateProvenance {
+    pub source: StateSource,
+    pub customer_id: String,
+    /// Unix seconds at which the underlying API read happened — not when it was
+    /// loaded, so a cache hit keeps the age of the original fetch.
+    pub fetched_at: u64,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum StateSource {
+    /// Read from the API during this run.
+    Fresh,
+    /// Reused from `.bidsmith/cache/live-state.json`.
+    Cached,
+    /// Reused from cache with no API call available at all (`--offline`).
+    CachedOffline,
+}
+
+impl StateProvenance {
+    pub fn age_secs(&self) -> u64 {
+        cache::now_unix().saturating_sub(self.fetched_at)
+    }
+
+    fn qualifier(&self) -> &'static str {
+        match self.source {
+            StateSource::Fresh => "fresh read",
+            StateSource::Cached => "cached — --refresh-state to refetch",
+            StateSource::CachedOffline => "cached — offline, no API call",
+        }
+    }
+
+    /// The one line every command prints once it knows what it is diffing
+    /// against. Same shape on the cache-hit and the fresh-fetch path, so two
+    /// runs that disagree can be told apart from their output alone.
+    pub fn describe(&self) -> String {
+        format!(
+            "live state for customers/{} read {} ({})",
+            self.customer_id,
+            cache::format_age_phrase(self.age_secs()),
+            self.qualifier(),
+        )
+    }
+
+    /// How long after this machine's last real mutate on the same customer the
+    /// state was read, when that is recent enough to matter.
+    pub fn secs_after_local_mutate(&self) -> Option<u64> {
+        let at = cache::load_last_mutate(&cache::project_cache_dir(), &self.customer_id)?;
+        let gap = self.fetched_at.saturating_sub(at);
+        (self.fetched_at >= at && gap <= MUTATE_SETTLING_SECS).then_some(gap)
+    }
+}
+
+/// How long after a mutate a live read is still worth flagging as possibly
+/// pre-mutate. The Google Ads API is not read-your-writes; a search issued
+/// seconds after a batch lands can still answer from the old picture.
+pub const MUTATE_SETTLING_SECS: u64 = 60;
+
 pub struct FetchOutcome {
     pub state: ExportInput,
+    pub provenance: StateProvenance,
 }
 
 pub fn fetch_with_cache(
@@ -485,7 +563,7 @@ pub fn fetch_with_cache(
     let queries_fp = queries_fingerprint();
     let login = client.login_customer_id.as_deref();
 
-    if matches!(effective_mode, CacheMode::ReadWrite) {
+    if effective_mode.reads_cache() {
         if let Some(hit) = cache::load_live_state(
             &cache_dir,
             &client.customer_id,
@@ -494,12 +572,14 @@ pub fn fetch_with_cache(
             &queries_fp,
             cache::live_state_ttl_secs(),
         ) {
-            eprintln!(
-                "{label}: using cached live state from {} ago (--refresh-state to refetch).",
-                cache::format_age(hit.age_secs),
-            );
+            let provenance = StateProvenance {
+                source: StateSource::Cached,
+                customer_id: client.customer_id.clone(),
+                fetched_at: cache::now_unix().saturating_sub(hit.age_secs),
+            };
+            eprintln!("{label}: {}.", provenance.describe());
             let state = adapt_batches(hit.batches)?;
-            return Ok(FetchOutcome { state });
+            return Ok(FetchOutcome { state, provenance });
         }
     }
 
@@ -508,8 +588,13 @@ pub fn fetch_with_cache(
         client.customer_id,
     );
     let batches = fetch_raw(client, access_token)?;
+    let provenance = StateProvenance {
+        source: StateSource::Fresh,
+        customer_id: client.customer_id.clone(),
+        fetched_at: cache::now_unix(),
+    };
 
-    if !matches!(effective_mode, CacheMode::Bypass) {
+    if effective_mode.writes_cache() {
         let _ = cache::save_live_state(
             &cache_dir,
             &client.customer_id,
@@ -520,12 +605,19 @@ pub fn fetch_with_cache(
         );
     }
 
+    eprintln!("{label}: {}.", provenance.describe());
     let state = adapt_batches(batches)?;
-    Ok(FetchOutcome { state })
+    Ok(FetchOutcome { state, provenance })
 }
 
-pub fn invalidate_cache() {
-    cache::invalidate_live_state(&cache::project_cache_dir());
+/// Called on the way *into* a real mutate, not on the way out: once the request
+/// is in flight the cached state is stale whatever happens next, and a lost
+/// response or a killed process must not leave a snapshot that still looks
+/// fresh (issue #144).
+pub fn note_mutate(customer_id: &str) {
+    let dir = cache::project_cache_dir();
+    cache::invalidate_live_state(&dir);
+    cache::record_last_mutate(&dir, customer_id);
 }
 
 #[cfg(test)]
@@ -546,6 +638,50 @@ mod tests {
             !fields.iter().any(|f| f.contains('\n')),
             "field paths are trimmed of the query's indentation",
         );
+    }
+
+    #[test]
+    fn refresh_state_can_never_be_answered_from_cache() {
+        // The first thing to rule out when a plan disagrees with the account:
+        // --refresh-state really does refetch (issue #144).
+        assert!(!CacheMode::RefreshWrite.reads_cache());
+        assert!(!CacheMode::Bypass.reads_cache());
+        assert!(CacheMode::ReadWrite.reads_cache());
+
+        assert!(CacheMode::RefreshWrite.writes_cache(), "a refetch reseeds the cache");
+        assert!(CacheMode::ReadWrite.writes_cache());
+        assert!(!CacheMode::Bypass.writes_cache());
+    }
+
+    #[test]
+    fn provenance_reads_the_same_on_both_paths() {
+        let fresh = StateProvenance {
+            source: StateSource::Fresh,
+            customer_id: "1234567890".into(),
+            fetched_at: cache::now_unix(),
+        };
+        assert_eq!(
+            fresh.describe(),
+            "live state for customers/1234567890 read just now (fresh read)",
+        );
+
+        let cached = StateProvenance {
+            source: StateSource::Cached,
+            customer_id: "1234567890".into(),
+            fetched_at: cache::now_unix().saturating_sub(70),
+        };
+        assert_eq!(
+            cached.describe(),
+            "live state for customers/1234567890 read 1m10s ago \
+             (cached — --refresh-state to refetch)",
+        );
+
+        let offline = StateProvenance {
+            source: StateSource::CachedOffline,
+            customer_id: "1234567890".into(),
+            fetched_at: cache::now_unix().saturating_sub(5),
+        };
+        assert!(offline.describe().contains("offline, no API call"));
     }
 
     #[test]

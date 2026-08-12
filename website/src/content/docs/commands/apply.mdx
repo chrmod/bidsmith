@@ -30,7 +30,7 @@ bidsmith apply [PATH] [--auto-approve] [--refresh-state] [--verbose]
 | Flag | Description |
 |---|---|
 | `--auto-approve` | Skip the interactive `yes` prompt. **Required** when stdin is not a TTY (CI, cron, scripts). |
-| `--refresh-state` | Ignore any cached live state and refetch from the API before computing the diff. The cache is invalidated after a successful apply regardless. See [Cut Google Ads API quota usage](/bidsmith/recipes/reduce-api-calls/). |
+| `--refresh-state` | Ignore any cached live state and refetch from the API before computing the diff. The cache is dropped as the mutate is sent regardless — including when the run is interrupted or the response is lost. See [Cut Google Ads API quota usage](/bidsmith/recipes/reduce-api-calls/). |
 | `--verbose` | Print the outgoing API request envelope and the raw response. |
 
 ## Environment variables
