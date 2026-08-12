@@ -11,9 +11,10 @@ use crate::commands::export::{
     JsonGeoTargetTypeSetting, JsonIncomeRange, JsonKeyword, JsonLanguage, JsonLocation,
     JsonManualCpc, JsonNetworkSettings, JsonParentalStatus, JsonPlacement, JsonProximity,
     JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedCriterion, JsonSharedSet, JsonSitelinkAsset,
-    JsonStructuredSnippetAsset, JsonTopic, JsonUserInterest, JsonValueSettings,
-    JsonVideoAd, JsonVideoAdInventoryControl, JsonVideoCampaignSettings,
-    JsonVideoResponsiveAd, JsonYoutubeChannel, JsonYoutubeVideo, JsonYoutubeVideoAsset,
+    JsonStructuredSnippetAsset, JsonTargetImpressionShare, JsonTargetSpend, JsonTopic,
+    JsonUserInterest, JsonValueSettings, JsonVideoAd, JsonVideoAdInventoryControl,
+    JsonVideoCampaignSettings, JsonVideoResponsiveAd, JsonYoutubeChannel, JsonYoutubeVideo,
+    JsonYoutubeVideoAsset,
 };
 use crate::diagnostics::Diag;
 use crate::parser::ParsedFile;
@@ -335,6 +336,8 @@ fn import_campaign(
     let mut manual_cpv = None;
     let mut target_cpm = None;
     let mut target_cpv = None;
+    let mut target_impression_share = None;
+    let mut target_spend = None;
     let mut network_settings = None;
     let mut geo_target_type_setting = None;
     let mut video_campaign_settings = None;
@@ -363,6 +366,10 @@ fn import_campaign(
                 "manual_cpv" => manual_cpv = Some(JsonBidSelector {}),
                 "target_cpm" => target_cpm = Some(JsonBidSelector {}),
                 "target_cpv" => target_cpv = Some(JsonBidSelector {}),
+                "target_impression_share" => {
+                    target_impression_share = Some(import_target_impression_share(ctx, b))
+                }
+                "target_spend" => target_spend = Some(import_target_spend(ctx, b)),
                 "network_settings" => network_settings = Some(import_network_settings(ctx, b)),
                 "geo_target_type_setting" => {
                     geo_target_type_setting = Some(import_geo_target_type_setting(ctx, b))
@@ -398,6 +405,8 @@ fn import_campaign(
             manual_cpv,
             target_cpm,
             target_cpv,
+            target_impression_share,
+            target_spend,
             network_settings,
             geo_target_type_setting,
             video_campaign_settings,
@@ -514,6 +523,33 @@ fn import_manual_cpc(ctx: &Ctx, block: &Block) -> JsonManualCpc {
     JsonManualCpc {
         enhanced_cpc_enabled: enhanced,
     }
+}
+
+fn import_target_impression_share(ctx: &Ctx, block: &Block) -> JsonTargetImpressionShare {
+    let mut t = JsonTargetImpressionShare::default();
+    for s in block.body.iter() {
+        if let Structure::Attribute(a) = s {
+            match a.key.as_str() {
+                "location" => t.location = expect_string_owned(ctx, a),
+                "location_fraction_micros" => t.location_fraction_micros = expect_i64(ctx, a),
+                "cpc_bid_ceiling_micros" => t.cpc_bid_ceiling_micros = expect_i64(ctx, a),
+                _ => {}
+            }
+        }
+    }
+    t
+}
+
+fn import_target_spend(ctx: &Ctx, block: &Block) -> JsonTargetSpend {
+    let mut t = JsonTargetSpend::default();
+    for s in block.body.iter() {
+        if let Structure::Attribute(a) = s {
+            if a.key.as_str() == "cpc_bid_ceiling_micros" {
+                t.cpc_bid_ceiling_micros = expect_i64(ctx, a);
+            }
+        }
+    }
+    t
 }
 
 fn import_network_settings(ctx: &Ctx, block: &Block) -> JsonNetworkSettings {
@@ -3500,6 +3536,54 @@ resource "google_ads_campaign" "preroll" {
         let c = &input.campaigns[0];
         assert!(c.manual_cpc.is_none());
         assert_eq!(c.bidding_strategy(), Some("manual_cpv"));
+    }
+
+    #[test]
+    fn target_impression_share_imports_with_its_subfields() {
+        let input = import_str(
+            "tis_import",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "search_generic" {
+  name                     = "Search_Generic"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  target_impression_share {
+    location                 = "ANYWHERE_ON_PAGE"
+    location_fraction_micros = 800000
+    cpc_bid_ceiling_micros   = 500000
+  }
+}
+
+resource "google_ads_campaign" "search_ublock" {
+  name                     = "Search_uBlock"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  target_spend {
+    cpc_bid_ceiling_micros = 1100000
+  }
+}
+"#,
+        );
+        let generic = &input.campaigns[0];
+        assert_eq!(generic.bidding_strategy(), Some("target_impression_share"));
+        let tis = generic.target_impression_share.as_ref().expect("tis parsed");
+        assert_eq!(tis.location.as_deref(), Some("ANYWHERE_ON_PAGE"));
+        assert_eq!(tis.location_fraction_micros, Some(800000));
+        assert_eq!(tis.cpc_bid_ceiling_micros, Some(500000));
+
+        let ublock = &input.campaigns[1];
+        assert_eq!(ublock.bidding_strategy(), Some("target_spend"));
+        assert_eq!(
+            ublock.target_spend.as_ref().and_then(|t| t.cpc_bid_ceiling_micros),
+            Some(1100000)
+        );
     }
 
     fn video_campaign_with_caps(name: &str, caps: &str) -> ExportInput {

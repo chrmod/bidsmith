@@ -729,7 +729,8 @@ fn collect_edits(
                     "end_date" => opt!(f, vec!["end_date"], c.end_date.as_deref().map(s)),
                     // A strategy switch replaces one block with another, which
                     // the scalar-path edit model can't express.
-                    "manual_cpc" | "manual_cpm" | "manual_cpv" | "target_cpm" | "target_cpv" => {
+                    "manual_cpc" | "manual_cpm" | "manual_cpv" | "target_cpm" | "target_cpv"
+                    | "target_impression_share" | "target_spend" => {
                         let live_block = c.bidding_strategy().unwrap_or("none");
                         skip.push(format!(
                             "{f} (live campaign bids with {live_block} — swap the block by hand)"
@@ -741,6 +742,38 @@ fn collect_edits(
                         c.manual_cpc
                             .as_ref()
                             .and_then(|m| m.enhanced_cpc_enabled)
+                            .map(Expression::from)
+                    ),
+                    "target_impression_share.location" => opt!(
+                        f,
+                        vec!["target_impression_share", "location"],
+                        c.target_impression_share
+                            .as_ref()
+                            .and_then(|t| t.location.as_deref())
+                            .map(s)
+                    ),
+                    "target_impression_share.location_fraction_micros" => opt!(
+                        f,
+                        vec!["target_impression_share", "location_fraction_micros"],
+                        c.target_impression_share
+                            .as_ref()
+                            .and_then(|t| t.location_fraction_micros)
+                            .map(Expression::from)
+                    ),
+                    "target_impression_share.cpc_bid_ceiling_micros" => opt!(
+                        f,
+                        vec!["target_impression_share", "cpc_bid_ceiling_micros"],
+                        c.target_impression_share
+                            .as_ref()
+                            .and_then(|t| t.cpc_bid_ceiling_micros)
+                            .map(Expression::from)
+                    ),
+                    "target_spend.cpc_bid_ceiling_micros" => opt!(
+                        f,
+                        vec!["target_spend", "cpc_bid_ceiling_micros"],
+                        c.target_spend
+                            .as_ref()
+                            .and_then(|t| t.cpc_bid_ceiling_micros)
                             .map(Expression::from)
                     ),
                     "frequency_caps" => match frequency_cap_blocks(&c.frequency_caps) {

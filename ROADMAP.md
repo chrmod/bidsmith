@@ -467,6 +467,20 @@ Smaller follow-ups that can ride along:
   period-aware: lifetime caps get their own line instead of being summed
   into a figure labelled `/day`. See DECISIONS.md for the immutability
   treatment (`period` / `type` warn, never update).
+- ✅ Search bidding strategies with fields (issue #134, found by
+  `drift`). `google_ads_campaign` takes `target_impression_share {
+  location, location_fraction_micros, cpc_bid_ceiling_micros }` (all
+  three required, matching the API) and `target_spend {
+  cpc_bid_ceiling_micros? }`, so the CPC ceilings live on enabled
+  search campaigns are declarable, diffable, and tunable through the
+  same PR/CI path as everything else. Both slot into the #120 switch
+  mechanism (masked by their subfields), read their live values off
+  their own GAQL leaves with `bidding_strategy_type` as the
+  no-fields-set fallback, and reconcile per-leaf through `refresh`.
+  Neither needs conversion tracking, which is what made them
+  modellable ahead of the conversion-based strategies.
+  **Deferred:** `TargetSpend.target_spend_micros`, which Google
+  deprecated in favour of the budget amount.
 - ✅ Whole-block network settings (issue #132, found by `drift`).
   `network_settings` models all six networks, single-sourced from
   `NETWORK_SETTINGS_FIELDS` so the next one is a one-line change, and

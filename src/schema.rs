@@ -65,6 +65,8 @@ pub const CAMPAIGN_BIDDING_BLOCKS: &[&str] = &[
     "manual_cpv",
     "target_cpm",
     "target_cpv",
+    "target_impression_share",
+    "target_spend",
 ];
 
 /// The update-mask paths that switch a live campaign onto each bidding block.
@@ -73,14 +75,22 @@ pub const CAMPAIGN_BIDDING_BLOCKS: &[&str] = &[
 /// has any is masked by those subfields instead, which reaches the same `oneof`
 /// member and clears whatever the campaign was bidding with before (issue #120).
 /// Only the strategies the API models as field-less messages can be named
-/// outright. `ManualCpc.enhanced_cpc_enabled` and `TargetCpm.target_frequency_goal`
-/// are the two subfields as of v22.
+/// outright; the rest list every subfield their message carries as of v22.
 pub const CAMPAIGN_BIDDING_MASK_PATHS: &[(&str, &[&str])] = &[
     ("manual_cpc", &["manual_cpc.enhanced_cpc_enabled"]),
     ("manual_cpm", &["manual_cpm"]),
     ("manual_cpv", &["manual_cpv"]),
     ("target_cpm", &["target_cpm.target_frequency_goal"]),
     ("target_cpv", &["target_cpv"]),
+    (
+        "target_impression_share",
+        &[
+            "target_impression_share.location",
+            "target_impression_share.location_fraction_micros",
+            "target_impression_share.cpc_bid_ceiling_micros",
+        ],
+    ),
+    ("target_spend", &["target_spend.cpc_bid_ceiling_micros"]),
 ];
 
 /// The mask paths that switch a campaign onto `field`, or `None` when `field`
@@ -361,6 +371,11 @@ const ADVERTISING_CHANNEL_SUB_TYPE: &[&str] = &[
 /// The deprecated `SEARCH_INTEREST` is deliberately absent: Google removed it
 /// from the UI and it only ever applied to the positive side.
 const GEO_TARGET_TYPE: &[&str] = &["PRESENCE_OR_INTEREST", "PRESENCE"];
+const TARGET_IMPRESSION_SHARE_LOCATION: &[&str] = &[
+    "ANYWHERE_ON_PAGE",
+    "TOP_OF_PAGE",
+    "ABSOLUTE_TOP_OF_PAGE",
+];
 const FREQUENCY_CAP_EVENT_TYPE: &[&str] = &["IMPRESSION", "VIDEO_VIEW"];
 const FREQUENCY_CAP_TIME_UNIT: &[&str] = &["DAY", "WEEK", "MONTH"];
 const FREQUENCY_CAP_LEVEL: &[&str] = &["CAMPAIGN", "AD_GROUP", "AD_GROUP_AD"];
@@ -773,6 +788,34 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                     bidding_selector_block("manual_cpv"),
                     bidding_selector_block("target_cpm"),
                     bidding_selector_block("target_cpv"),
+                    NestedBlockSchema {
+                        name: "target_impression_share",
+                        schema: BlockSchema {
+                            attributes: vec![
+                                attr(
+                                    "location",
+                                    FieldType::Enum(TARGET_IMPRESSION_SHARE_LOCATION),
+                                    true,
+                                ),
+                                attr("location_fraction_micros", FieldType::Integer, true),
+                                // Required by the API, not merely by this schema:
+                                // impression-share bidding has no uncapped form.
+                                attr("cpc_bid_ceiling_micros", FieldType::Integer, true),
+                            ],
+                            blocks: vec![],
+                        },
+                    },
+                    NestedBlockSchema {
+                        name: "target_spend",
+                        schema: BlockSchema {
+                            attributes: vec![attr(
+                                "cpc_bid_ceiling_micros",
+                                FieldType::Integer,
+                                false,
+                            )],
+                            blocks: vec![],
+                        },
+                    },
                     NestedBlockSchema {
                         name: "network_settings",
                         schema: BlockSchema {
@@ -4485,6 +4528,93 @@ resource "google_ads_campaign" "c" {{
             diags
                 .iter()
                 .any(|d| d.is_error() && d.message.contains("VIDEO_OUTSTREAM")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn search_bidding_blocks_validate_with_their_subfields() {
+        let diags = validate_str(
+            "search_bidding_ok",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "generic" {{
+  name                     = "Search_Generic"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  target_impression_share {{
+    location                 = "ANYWHERE_ON_PAGE"
+    location_fraction_micros = 800000
+    cpc_bid_ceiling_micros   = 500000
+  }}
+}}
+
+resource "google_ads_campaign" "ublock" {{
+  name                     = "Search_uBlock"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  target_spend {{}}
+}}
+"#
+            ),
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn an_impression_share_block_missing_its_ceiling_errors() {
+        let diags = validate_str(
+            "tis_missing_ceiling",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  target_impression_share {{
+    location                 = "TOP_OF_PAGE"
+    location_fraction_micros = 650000
+  }}
+}}
+"#
+            ),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("cpc_bid_ceiling_micros")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn an_impression_share_location_outside_the_enum_errors() {
+        let diags = validate_str(
+            "tis_bad_location",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  target_impression_share {{
+    location                 = "SIDEBAR"
+    location_fraction_micros = 650000
+    cpc_bid_ceiling_micros   = 500000
+  }}
+}}
+"#
+            ),
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("SIDEBAR")),
             "{:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );

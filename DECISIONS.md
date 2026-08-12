@@ -875,31 +875,43 @@ resource type, any file layout, modules, schema validation.
   removes it from both sides of the coverage ratio rather than only from
   the sightings list: no `.bid` chooses a resource name, so counting it
   as a field bidsmith fails to model was never honest.
-- **Bidding is one block, chosen from a fixed set** (issue #104):
+- **Bidding is one block, chosen from a fixed set** (issues #104, #134):
   `Campaign.campaign_bidding_strategy` is a protobuf `oneof`, so the
   campaign takes at most one of `manual_cpc`, `manual_cpm`,
-  `manual_cpv`, `target_cpm`, `target_cpv` — declaring two is a
-  validate error, and a `defaults "google_ads_campaign"` bidding block
+  `manual_cpv`, `target_cpm`, `target_cpv`, `target_impression_share`,
+  `target_spend` — declaring two is a validate error, and a
+  `defaults "google_ads_campaign"` bidding block
   is suppressed wholesale (not per-name) once the resource picks its
-  own, so a video campaign can opt out of a shared `manual_cpc`. Every
-  strategy but `manual_cpc` models nothing bidsmith writes — three are
+  own, so a video campaign can opt out of a shared `manual_cpc`. The
+  video strategies model nothing bidsmith writes — three are
   empty messages in the API and `target_cpm`'s one field
-  (`target_frequency_goal`) is deferred — so its block carries no
-  attributes: picking it is the whole declaration and the bid amount
-  lives on the ad group. For the four video strategies
-  that makes the block a *read* surface (see the VIDEO entry above) —
-  `manual_cpc` is the one bidsmith genuinely writes. The empty ones are
-  also unreadable through GAQL — there is no leaf field to select — so the
-  live side derives them from `campaign.bidding_strategy_type`
-  (`manual_cpc` still comes off `manual_cpc.enhanced_cpc_enabled`,
+  (`target_frequency_goal`) is deferred — so their blocks carry no
+  attributes: picking one is the whole declaration and the bid amount
+  lives on the ad group, and the block is a *read* surface (see the
+  VIDEO entry above). The search strategies are the ones bidsmith
+  genuinely writes: `manual_cpc` (with `enhanced_cpc_enabled`),
+  `target_impression_share` (`location`, `location_fraction_micros`,
+  `cpc_bid_ceiling_micros` — all three required, matching the API) and
+  `target_spend` (optional `cpc_bid_ceiling_micros`), so the CPC
+  ceiling that decides what a search click costs is set in a reviewed
+  file rather than the UI (issue #134). The two automated search
+  strategies need no conversion tracking, which is what makes them
+  modellable now. The empty video messages are unreadable through GAQL
+  — there is no leaf field to select — so the
+  live side derives them from `campaign.bidding_strategy_type`; the
+  strategies with fields come off their own leaves, with
+  `bidding_strategy_type` as the fallback when every field is unset and
+  the API returns no message object at all (`manual_cpc` still comes
+  off `manual_cpc.enhanced_cpc_enabled`,
   because enhanced CPC reports as `ENHANCED_CPC` rather than
   `MANUAL_CPC`). A strategy switch sends the desired member alone —
   setting one member of a `oneof` clears the others — but **masks it by
   its subfields, not by name** (issue #120): Google Ads refuses an
   update mask that names a message field carrying subfields, even when
   the operation leaves every one of them unset, so `manual_cpc` goes out
-  as `manual_cpc.enhanced_cpc_enabled` and `target_cpm` as
-  `target_cpm.target_frequency_goal`. Only the field-less messages can be
+  as `manual_cpc.enhanced_cpc_enabled`, `target_cpm` as
+  `target_cpm.target_frequency_goal`, and the two search strategies as
+  the full list of their subfields. Only the field-less messages can be
   masked by name. Conversion-based strategies (`target_cpa`,
   `maximize_conversions`, …) stay out until bidsmith models conversion
   tracking.
@@ -1457,7 +1469,8 @@ Validator covers (so far):
   `total_amount_micros`, whichever the immutable `period` selects, plus
   the immutable `type`), `google_ads_campaign` (one bidding
   block out of `manual_cpc` / `manual_cpm` / `manual_cpv` /
-  `target_cpm` / `target_cpv`, plus `network_settings` and the required
+  `target_cpm` / `target_cpv` / `target_impression_share` /
+  `target_spend`, plus `network_settings` and the required
   `contains_eu_political_advertising` enum — defaults to
   `DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING` at mutate time when the
   attribute is omitted, since Google Ads rejects new campaigns that
