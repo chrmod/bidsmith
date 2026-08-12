@@ -23,6 +23,36 @@ each focused on a single theme.
   legible.
 </Aside>
 
+
+## Callouts and snippets for this ad group only
+
+An ad group can own text assets the same way a campaign can, for
+extensions that should show with one theme's ads and not the rest:
+
+```hcl
+resource "google_ads_ad_group" "chrome" {
+  name     = "Chrome"
+  campaign = google_ads_campaign.gh_cookies.id
+
+  callouts = ["Works in Chrome", "One-click install"]
+
+  structured_snippet {
+    header = "Brands"
+    values = ["Chrome", "Firefox", "Edge"]
+  }
+}
+```
+
+bidsmith creates the assets and attaches them to the ad group. Declaring
+the same text on a campaign *and* on one of its ad groups creates two
+assets — which is what the account gets either way, since neither level
+can borrow the other's attachment.
+
+Use [`google_ads_callout_asset`](./google_ads_callout_asset/) plus
+[`google_ads_ad_group_asset`](./google_ads_ad_group_asset/) when the
+asset is **shared** between ad groups or campaigns. `refresh` folds only
+the ones a single owner uses, so a shared asset keeps its resource.
+
 ## Example
 
 ```hcl

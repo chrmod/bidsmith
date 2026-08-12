@@ -220,11 +220,15 @@ resource type, any file layout, modules, schema validation.
   resource's own address, so only adopting the list form re-addresses
   anything. A campaign declares **`callouts = [...]`** and
   **`structured_snippet { header, values }`** inline, and bidsmith
-  synthesizes the asset plus its attachment. Shared assets keep the
-  resource form — it is the one thing the inline spelling cannot say —
-  and `export` / `refresh` fold only assets a single campaign is the
-  sole user of, leaving anything attached twice, to an ad group, or to
-  the account alone. All of this is address-level only: assets are
+  synthesizes the asset plus its attachment; an **ad group takes the
+  same two**, for extensions scoped to one keyword theme. Each level
+  synthesizes its own asset, so the same text declared on a campaign and
+  on one of its ad groups is two assets — which is what the account gets
+  either way, since neither level can borrow the other's attachment.
+  Shared assets keep the resource form — it is the one thing the inline
+  spelling cannot say — and `export` / `refresh` fold only assets a
+  single owner is the sole user of, leaving anything attached twice or
+  to the account alone. All of this is address-level only: assets are
   matched by content, so adopting an account that already has them
   plans as a no-op.
 - **Folding emitter** (issue #57): `refresh` / `export` recognize repeated
