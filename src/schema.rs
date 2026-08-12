@@ -1742,17 +1742,73 @@ pub struct DefaultsDecl {
     pub block: Block,
 }
 
+/// The meta-attribute a resource uses to opt into a named `defaults` block.
+pub const DEFAULTS_ATTR: &str = "defaults";
+
 /// Type-scoped attribute/block defaults from top-level `defaults "<type>" {}`
-/// blocks. One block per resource type per scope; a resource's own attribute
-/// or nested block always wins (blocks override wholesale, no deep merge).
+/// blocks. A resource's own attribute or nested block always wins (blocks
+/// override wholesale, no deep merge).
+///
+/// An unlabeled block applies to every resource of its type. A block with a
+/// second label is opt-in: only resources naming it with
+/// `defaults = defaults.<name>` pick it up, and for those it *replaces* the
+/// unlabeled block rather than layering on top — one visible source per
+/// resource, so a reviewer reading the opt-in knows the whole story
+/// (issue #145).
 #[derive(Default)]
 pub struct DefaultsRegistry {
     by_type: HashMap<String, DefaultsDecl>,
+    by_name: HashMap<(String, String), DefaultsDecl>,
+}
+
+/// The `<name>` in a `defaults = defaults.<name>` opt-in, else `None`.
+pub fn defaults_ref_name(expr: &Expression) -> Option<String> {
+    let Expression::Traversal(t) = expr else {
+        return None;
+    };
+    let path = extract_traversal_path(t)?;
+    if path.len() != 2 || path[0] != DEFAULTS_ATTR {
+        return None;
+    }
+    Some(path[1].clone())
+}
+
+/// The name a resource block opts into, if any.
+pub fn declared_defaults_name(block: &Block) -> Option<String> {
+    block.body.iter().find_map(|s| match s {
+        Structure::Attribute(a) if a.key.as_str() == DEFAULTS_ATTR => {
+            defaults_ref_name(&a.value)
+        }
+        _ => None,
+    })
 }
 
 impl DefaultsRegistry {
-    pub fn provided_attrs(&self, ty: &str) -> HashSet<String> {
-        let Some(decl) = self.by_type.get(ty) else {
+    fn decl_for(&self, ty: &str, name: Option<&str>) -> Option<&DefaultsDecl> {
+        match name {
+            Some(n) => self.by_name.get(&(ty.to_string(), n.to_string())),
+            None => self.by_type.get(ty),
+        }
+    }
+
+    pub fn has_named(&self, ty: &str, name: &str) -> bool {
+        self.by_name.contains_key(&(ty.to_string(), name.to_string()))
+    }
+
+    /// Names declared for a type, for the "did you mean" tail of an error.
+    pub fn names_for(&self, ty: &str) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .by_name
+            .keys()
+            .filter(|(t, _)| t == ty)
+            .map(|(_, n)| n.clone())
+            .collect();
+        out.sort();
+        out
+    }
+
+    pub fn provided_attrs_named(&self, ty: &str, name: Option<&str>) -> HashSet<String> {
+        let Some(decl) = self.decl_for(ty, name) else {
             return HashSet::new();
         };
         decl.block
@@ -1763,6 +1819,10 @@ impl DefaultsRegistry {
                 _ => None,
             })
             .collect()
+    }
+
+    pub fn provided_attrs(&self, ty: &str) -> HashSet<String> {
+        self.provided_attrs_named(ty, None)
     }
 
     pub fn provided_blocks(&self, ty: &str) -> HashSet<String> {
@@ -1780,9 +1840,11 @@ impl DefaultsRegistry {
     }
 
     /// The resource block with missing attributes / nested blocks filled in
-    /// from its type's defaults; `None` when nothing applies.
+    /// from the defaults it opts into (or its type's unlabeled block);
+    /// `None` when nothing applies.
     pub fn merge(&self, ty: &str, block: &Block) -> Option<Block> {
-        let decl = self.by_type.get(ty)?;
+        let opted = declared_defaults_name(block);
+        let decl = self.decl_for(ty, opted.as_deref())?;
         let have_attrs: HashSet<&str> = block
             .body
             .iter()
@@ -1837,18 +1899,20 @@ impl DefaultsRegistry {
                 if b.ident.as_str() != "defaults" {
                     continue;
                 }
-                if b.labels.len() != 1 {
+                if b.labels.is_empty() || b.labels.len() > 2 {
                     diags.push(Diag::new(
                         f.src.clone(),
                         span_of(b.ident.span()),
                         format!(
-                            "'defaults' block requires exactly one label (the resource type), got {}",
+                            "'defaults' block takes the resource type, plus an optional name \
+                             resources opt into with 'defaults = defaults.<name>' — got {} label(s)",
                             b.labels.len()
                         ),
                     ));
                     continue;
                 }
                 let ty = b.labels[0].as_str().to_string();
+                let decl_name = b.labels.get(1).map(|l| l.as_str().to_string());
                 if !resource_schemas().contains_key(ty.as_str()) {
                     diags.push(Diag::new(
                         f.src.clone(),
@@ -1876,24 +1940,40 @@ impl DefaultsRegistry {
                         continue;
                     }
                 }
-                if let Some(prev) = registry.by_type.get(&ty) {
-                    diags.push(Diag::new(
-                        f.src.clone(),
-                        span_of(b.labels[0].span()),
-                        format!(
-                            "duplicate defaults for '{ty}' (also declared at {}); one defaults block per resource type",
-                            prev.file
-                        ),
-                    ));
-                    continue;
+                let decl = DefaultsDecl {
+                    file: f.path.display().to_string(),
+                    block: b.clone(),
+                };
+                match decl_name {
+                    Some(name) => {
+                        if let Some(prev) = registry.by_name.get(&(ty.clone(), name.clone())) {
+                            diags.push(Diag::new(
+                                f.src.clone(),
+                                span_of(b.labels[1].span()),
+                                format!(
+                                    "duplicate defaults '{name}' for '{ty}' (also declared at {}); one block per name per resource type",
+                                    prev.file
+                                ),
+                            ));
+                            continue;
+                        }
+                        registry.by_name.insert((ty, name), decl);
+                    }
+                    None => {
+                        if let Some(prev) = registry.by_type.get(&ty) {
+                            diags.push(Diag::new(
+                                f.src.clone(),
+                                span_of(b.labels[0].span()),
+                                format!(
+                                    "duplicate defaults for '{ty}' (also declared at {}); one unnamed defaults block per resource type — give one a name and opt in with 'defaults = defaults.<name>'",
+                                    prev.file
+                                ),
+                            ));
+                            continue;
+                        }
+                        registry.by_type.insert(ty, decl);
+                    }
                 }
-                registry.by_type.insert(
-                    ty,
-                    DefaultsDecl {
-                        file: f.path.display().to_string(),
-                        block: b.clone(),
-                    },
-                );
             }
         }
         (registry, diags)
@@ -2809,14 +2889,17 @@ fn validate_defaults(
     variables: &VariablesRegistry,
     diags: &mut Vec<Diag>,
 ) {
-    if block.labels.len() != 1 {
+    if block.labels.is_empty() || block.labels.len() > 2 {
         return;
     }
     let ty = block.labels[0].as_str();
     let Some(schema) = resource_schemas().get(ty) else {
         return;
     };
-    let address = format!("defaults.{ty}");
+    let address = match block.labels.get(1) {
+        Some(name) => format!("defaults.{ty}.{}", name.as_str()),
+        None => format!("defaults.{ty}"),
+    };
     validate_body(
         file,
         block,
@@ -2912,13 +2995,17 @@ fn validate_resource(
             return;
         }
     };
-    let provided = defaults.provided_attrs(ty);
     let address = format!("{ty}.{name}");
-    let without_lifecycle = validate_lifecycle(file, block, ty, &address, registry, locals, variables, diags);
+    let opted = validate_defaults_optin(file, block, ty, &address, defaults, diags);
+    let provided = defaults.provided_attrs_named(ty, opted.as_deref());
+    let without_lifecycle =
+        validate_lifecycle(file, block, ty, &address, registry, locals, variables, diags);
+    // Both are meta: the type's own schema never sees `lifecycle` or `defaults`.
+    let body = strip_defaults_attr(without_lifecycle.unwrap_or_else(|| block.body.clone()));
     validate_body(
         file,
         block,
-        without_lifecycle.as_ref().unwrap_or(&block.body),
+        &body,
         schema,
         &address,
         registry,
@@ -2935,6 +3022,74 @@ fn validate_resource(
         let body = merged.as_ref().map_or(&block.body, |b| &b.body);
         validate_budget_amount(file, block, body, &address, locals, variables, diags);
     }
+}
+
+fn strip_defaults_attr(body: Body) -> Body {
+    let mut out = Body::new();
+    for s in body.iter() {
+        if matches!(s, Structure::Attribute(a) if a.key.as_str() == DEFAULTS_ATTR) {
+            continue;
+        }
+        out.push(s.clone());
+    }
+    out
+}
+
+/// Check a resource's `defaults = defaults.<name>` opt-in and return the name
+/// it resolves to. A malformed or unknown reference is an error here rather
+/// than a silent fall-through to the unlabeled block — inheriting the wrong
+/// shell is exactly the failure this attribute exists to prevent.
+fn validate_defaults_optin(
+    file: &ParsedFile,
+    block: &Block,
+    ty: &str,
+    address: &str,
+    defaults: &DefaultsRegistry,
+    diags: &mut Vec<Diag>,
+) -> Option<String> {
+    let found: Vec<&hcl_edit::structure::Attribute> = block
+        .body
+        .iter()
+        .filter_map(|s| match s {
+            Structure::Attribute(a) if a.key.as_str() == DEFAULTS_ATTR => Some(a),
+            _ => None,
+        })
+        .collect();
+    let (first, extras) = found.split_first()?;
+    for extra in extras {
+        diags.push(Diag::new(
+            file.src.clone(),
+            span_of(extra.key.span()),
+            format!("duplicate 'defaults' attribute in {address}"),
+        ));
+    }
+
+    let Some(name) = defaults_ref_name(&first.value) else {
+        diags.push(Diag::new(
+            file.src.clone(),
+            span_of(first.value.span()),
+            format!(
+                "expected a defaults reference like 'defaults.<name>', got {}",
+                describe_expr(&first.value)
+            ),
+        ));
+        return None;
+    };
+    if !defaults.has_named(ty, &name) {
+        let known = defaults.names_for(ty);
+        let tail = if known.is_empty() {
+            format!("no named defaults are declared for {ty}")
+        } else {
+            format!("known for {ty}: {}", known.join(", "))
+        };
+        diags.push(Diag::new(
+            file.src.clone(),
+            span_of(first.value.span()),
+            format!("unknown defaults '{name}' — {tail}"),
+        ));
+        return None;
+    }
+    Some(name)
 }
 
 /// Check the resource's `lifecycle` meta-block and return the rest of its body
@@ -4998,6 +5153,107 @@ resource "google_ads_campaign" "c" {{
         );
     }
 
+    fn merged_attr(name: &str, src: &str, resource_index: usize) -> Vec<(String, String)> {
+        // A distinct name per call: parse_str writes a temp file keyed by it,
+        // and the test binary runs these concurrently.
+        let pf = parse_str(name, src);
+        let (defaults, diags) = DefaultsRegistry::build(std::slice::from_ref(&pf));
+        assert!(diags.is_empty(), "{:?}", diags.iter().map(|d| &d.message).collect::<Vec<_>>());
+        let resource = pf
+            .body
+            .iter()
+            .filter_map(|s| match s {
+                Structure::Block(b) if b.ident.as_str() == "resource" => Some(b),
+                _ => None,
+            })
+            .nth(resource_index)
+            .expect("resource block");
+        let merged = defaults
+            .merge("google_ads_campaign", resource)
+            .unwrap_or_else(|| resource.clone());
+        merged
+            .body
+            .iter()
+            .filter_map(|s| match s {
+                Structure::Attribute(a) => {
+                    Some((a.key.as_str().to_string(), a.value.to_string().trim().to_string()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    const MIXED_DEFAULTS: &str = r#"
+defaults "google_ads_campaign" {
+  status = "PAUSED"
+}
+
+defaults "google_ads_campaign" "search_us" {
+  advertising_channel_type = "SEARCH"
+  locations                = ["US"]
+}
+
+resource "google_ads_campaign" "search" {
+  defaults        = defaults.search_us
+  name            = "S"
+  campaign_budget = google_ads_campaign_budget.b.id
+}
+
+resource "google_ads_campaign" "other" {
+  name                     = "O"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+"#;
+
+    #[test]
+    fn an_opted_in_resource_takes_the_named_block_instead_of_the_unnamed_one() {
+        // Named defaults replace rather than layer: one visible source per
+        // resource, so the opt-in tells the whole story (issue #145).
+        let attrs = merged_attr("named_merge_optin", MIXED_DEFAULTS, 0);
+        let keys: Vec<&str> = attrs.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"advertising_channel_type"), "{attrs:?}");
+        assert!(keys.contains(&"locations"), "{attrs:?}");
+        assert!(
+            !keys.contains(&"status"),
+            "the unnamed block must not layer under the named one: {attrs:?}",
+        );
+    }
+
+    #[test]
+    fn a_resource_that_does_not_opt_in_still_gets_the_unnamed_block() {
+        let attrs = merged_attr("named_merge_no_optin", MIXED_DEFAULTS, 1);
+        let keys: Vec<&str> = attrs.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"status"), "{attrs:?}");
+        assert!(!keys.contains(&"locations"), "{attrs:?}");
+    }
+
+    #[test]
+    fn a_resources_own_value_still_beats_the_named_block() {
+        let attrs = merged_attr(
+            "named_merge_own_value",
+            r#"
+defaults "google_ads_campaign" "search_us" {
+  advertising_channel_type = "SEARCH"
+  locations                = ["US"]
+}
+
+resource "google_ads_campaign" "search" {
+  defaults                 = defaults.search_us
+  name                     = "S"
+  advertising_channel_type = "DISPLAY"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+"#,
+            0,
+        );
+        let channel = attrs
+            .iter()
+            .find(|(k, _)| k == "advertising_channel_type")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(channel, Some("\"DISPLAY\""), "{attrs:?}");
+    }
+
     #[test]
     fn a_campaigns_own_bidding_block_replaces_the_defaults_one() {
         let pf = parse_str(
@@ -6301,6 +6557,159 @@ resource "google_ads_campaign" "shell" {{
         );
         let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
         assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    const NAMED_DEFAULTS: &str = r#"
+defaults "google_ads_campaign" "search_us" {
+  advertising_channel_type = "SEARCH"
+  languages                = ["en"]
+  locations                = ["US"]
+}
+
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+"#;
+
+    #[test]
+    fn a_named_defaults_block_satisfies_required_attributes_for_resources_that_opt_in() {
+        let diags = validate_str(
+            "named_defaults_optin",
+            &format!(
+                r#"{NAMED_DEFAULTS}
+resource "google_ads_campaign" "search" {{
+  defaults        = defaults.search_us
+  name            = "GH_Search"
+  campaign_budget = google_ads_campaign_budget.b.id
+}}
+"#
+            ),
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_named_defaults_block_does_not_leak_into_resources_that_do_not_opt_in() {
+        // The whole point (issue #145): a VIDEO campaign in the same tree must
+        // not silently inherit the search shell.
+        let diags = validate_str(
+            "named_defaults_no_leak",
+            &format!(
+                r#"{NAMED_DEFAULTS}
+resource "google_ads_campaign" "video" {{
+  name            = "GH_Video"
+  campaign_budget = google_ads_campaign_budget.b.id
+}}
+"#
+            ),
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("advertising_channel_type")),
+            "the un-opted campaign must still be missing its own channel type: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn opting_into_a_name_that_does_not_exist_is_an_error() {
+        let diags = validate_str(
+            "named_defaults_unknown",
+            &format!(
+                r#"{NAMED_DEFAULTS}
+resource "google_ads_campaign" "search" {{
+  defaults        = defaults.search_uk
+  name            = "GH_Search"
+  campaign_budget = google_ads_campaign_budget.b.id
+}}
+"#
+            ),
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("unknown defaults 'search_uk'")
+                && d.message.contains("search_us")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn the_defaults_attribute_is_meta_not_a_campaign_field() {
+        // It must not reach the type schema as an unknown attribute.
+        let diags = validate_str(
+            "named_defaults_meta",
+            &format!(
+                r#"{NAMED_DEFAULTS}
+resource "google_ads_campaign" "search" {{
+  defaults        = defaults.search_us
+  name            = "GH_Search"
+  campaign_budget = google_ads_campaign_budget.b.id
+}}
+"#
+            ),
+        );
+        assert!(
+            !diags.iter().any(|d| d.message.contains("unknown attribute 'defaults'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_named_defaults_body_is_schema_validated_at_declaration() {
+        let diags = validate_str(
+            "named_defaults_body",
+            r#"
+defaults "google_ads_campaign" "search_us" {
+  advertising_channel_type = "TELEPATHY"
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("invalid value \"TELEPATHY\"")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn two_named_defaults_for_one_type_coexist_but_a_repeated_name_does_not() {
+        let ok = validate_str(
+            "named_defaults_two",
+            r#"
+defaults "google_ads_campaign" "search_us" {
+  advertising_channel_type = "SEARCH"
+}
+
+defaults "google_ads_campaign" "video_us" {
+  advertising_channel_type = "VIDEO"
+}
+"#,
+        );
+        assert!(
+            !ok.iter().any(|d| d.message.contains("duplicate defaults")),
+            "distinct names are the point: {:?}",
+            ok.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+
+        let dup = validate_str(
+            "named_defaults_dup",
+            r#"
+defaults "google_ads_campaign" "search_us" {
+  advertising_channel_type = "SEARCH"
+}
+
+defaults "google_ads_campaign" "search_us" {
+  advertising_channel_type = "VIDEO"
+}
+"#,
+        );
+        assert!(
+            dup.iter().any(|d| d.message.contains("duplicate defaults 'search_us'")),
+            "{:?}",
+            dup.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]
