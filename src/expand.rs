@@ -261,31 +261,41 @@ fn substitute_expr(
         }
         EachRef::None => {}
     }
+    walk_subexpressions(expr, &mut |sub| substitute_expr(sub, key, value, file, diags));
+}
+
+/// Visit every expression nested inside `expr` that a substitution could reach.
+/// Shared by `each.*` expansion and `ad_template` input binding so the two
+/// cannot drift on which positions they reach into.
+pub(crate) fn walk_subexpressions(
+    expr: &mut Expression,
+    visit: &mut impl FnMut(&mut Expression),
+) {
     match expr {
         Expression::Array(arr) => {
             for item in arr.iter_mut() {
-                substitute_expr(item, key, value, file, diags);
+                visit(item);
             }
         }
         Expression::Object(obj) => {
             for (_, item) in obj.iter_mut() {
-                substitute_expr(item.expr_mut(), key, value, file, diags);
+                visit(item.expr_mut());
             }
         }
         Expression::StringTemplate(template) => {
             for element in template.iter_mut() {
                 if let hcl_edit::template::Element::Interpolation(interp) = element {
-                    substitute_expr(&mut interp.expr, key, value, file, diags);
+                    visit(&mut interp.expr);
                 }
             }
         }
         Expression::FuncCall(call) => {
             for arg in call.args.iter_mut() {
-                substitute_expr(arg, key, value, file, diags);
+                visit(arg);
             }
         }
         Expression::Parenthesis(p) => {
-            substitute_expr(p.inner_mut(), key, value, file, diags);
+            visit(p.inner_mut());
         }
         // `google_ads_callout_asset.co[each.key].id` — the index carries the
         // key that picks which generated instance is meant, so it has to be
@@ -293,12 +303,114 @@ fn substitute_expr(
         Expression::Traversal(t) => {
             for op in t.operators.iter_mut() {
                 if let TraversalOperator::Index(inner) = op.value_mut() {
-                    substitute_expr(inner, key, value, file, diags);
+                    visit(inner);
                 }
             }
         }
         _ => {}
     }
+}
+
+/// The meta-attribute that binds an `ad_template`'s parameters at the point of
+/// use.
+pub const TEMPLATE_INPUTS_ATTR: &str = "inputs";
+
+/// The `<name>` in an `input.<name>` reference, else `None`.
+fn input_ref_name(expr: &Expression) -> Option<String> {
+    let Expression::Traversal(t) = expr else {
+        return None;
+    };
+    let path = extract_traversal_path(t)?;
+    if path.len() != 2 || path[0] != "input" {
+        return None;
+    }
+    Some(path[1].clone())
+}
+
+/// The parameter names a template body references, in declaration order of
+/// first use. A template declares its parameters by using them — there is no
+/// second list to keep in sync, and no way for the two to disagree.
+pub fn template_params(block: &Block) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    collect_params_body(&block.body, &mut out);
+    out
+}
+
+fn collect_params_body(body: &Body, out: &mut Vec<String>) {
+    for s in body.iter() {
+        match s {
+            Structure::Attribute(a) => collect_params_expr(&a.value, out),
+            Structure::Block(b) => collect_params_body(&b.body, out),
+        }
+    }
+}
+
+fn collect_params_expr(expr: &Expression, out: &mut Vec<String>) {
+    if let Some(name) = input_ref_name(expr) {
+        if !out.contains(&name) {
+            out.push(name);
+        }
+        return;
+    }
+    // The walker needs &mut; params are read-only, so walk a throwaway clone.
+    let mut scratch = expr.clone();
+    walk_subexpressions(&mut scratch, &mut |sub| collect_params_expr(sub, out));
+}
+
+/// Whether an expression reaches for a template parameter anywhere inside it.
+pub fn uses_template_input(expr: &Expression) -> bool {
+    if input_ref_name(expr).is_some() {
+        return true;
+    }
+    let mut found = false;
+    let mut scratch = expr.clone();
+    walk_subexpressions(&mut scratch, &mut |sub| {
+        if uses_template_input(sub) {
+            found = true;
+        }
+    });
+    found
+}
+
+/// A template body with every `input.<name>` replaced by the bound expression.
+/// Names with no binding are left in place — the caller reports them against
+/// the use site, where the author can actually fix them.
+pub fn bind_template_inputs(
+    block: &Block,
+    inputs: &std::collections::HashMap<String, Expression>,
+) -> Block {
+    let mut out = block.clone();
+    out.body = bind_body(&out.body, inputs);
+    out
+}
+
+fn bind_body(body: &Body, inputs: &std::collections::HashMap<String, Expression>) -> Body {
+    let mut out = Body::new();
+    for s in body.iter() {
+        match s {
+            Structure::Attribute(a) => {
+                let mut attr = a.clone();
+                bind_expr(&mut attr.value, inputs);
+                out.push(attr);
+            }
+            Structure::Block(b) => {
+                let mut block = b.clone();
+                block.body = bind_body(&b.body, inputs);
+                out.push(block);
+            }
+        }
+    }
+    out
+}
+
+fn bind_expr(expr: &mut Expression, inputs: &std::collections::HashMap<String, Expression>) {
+    if let Some(name) = input_ref_name(expr) {
+        if let Some(bound) = inputs.get(&name) {
+            replace_preserving_decor(expr, bound.clone());
+        }
+        return;
+    }
+    walk_subexpressions(expr, &mut |sub| bind_expr(sub, inputs));
 }
 
 fn replace_preserving_decor(slot: &mut Expression, mut replacement: Expression) {
@@ -381,7 +493,7 @@ fn lookup_value_field<'a>(
     Ok(current)
 }
 
-fn object_key_str(key: &ObjectKey) -> Option<String> {
+pub(crate) fn object_key_str(key: &ObjectKey) -> Option<String> {
     if let Some(ident) = key.as_ident() {
         return Some(ident.as_str().to_string());
     }

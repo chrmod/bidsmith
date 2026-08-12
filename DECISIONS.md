@@ -172,10 +172,23 @@ resource type, any file layout, modules, schema validation.
   template that declares no `final_urls` and supplies no override fails
   `validate` at the use site. Overrides are rejected alongside an inline
   `ad {}` block (set the fields inside it instead). The merged path
-  overrides are linted like any RSA path; headline/description overrides
-  stay deferred (the measured duplication is URLs, not copy). The Option B
+  overrides are linted like any RSA path. The Option B
   fan-out form remains a deferred follow-up. `variable` blocks
   stay scalar; this is a block-level reuse primitive, not a value one.
+- **`ad_template` parameters** (issue #145): the URL-and-path overrides
+  above cover the measured duplication but not an A/B pair, which differs
+  in a headline or a tracking slug and otherwise duplicates the whole
+  body. A template body may reference `input.<name>` anywhere an
+  expression is allowed, and a use site binds them with
+  `inputs = { name = value }`. A template's parameter list is exactly the
+  `input.` names its body uses — declaring them separately would be a
+  second list to keep in sync — so both a missing binding and a surplus
+  one are validate-time errors naming what the template takes. Binding
+  happens at import time like the overrides, so the mutate is identical
+  to writing the body inline. Because a placeholder has no type at the
+  declaration, `input.` expressions are skipped when the template body is
+  validated and the *bound* body is validated at each use site instead —
+  which is where a wrong value is actually fixable.
 - **Folding emitter** (issue #57): `refresh` / `export` recognize repeated
   structure and emit the compact constructs instead of re-exploding the
   tree on every pull. Three folds, all computed in `plan_fold` and applied

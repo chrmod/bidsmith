@@ -2378,7 +2378,9 @@ fn validate_ad_templates(
                     if b.labels.len() == 2
                         && b.labels[0].as_str() == "google_ads_ad_group_ad" =>
                 {
-                    validate_ad_group_ad_template(f, b, templates, diags);
+                    validate_ad_group_ad_template(
+                        f, b, templates, registry, locals, variables, diags,
+                    );
                     if let Some(ad) = find_child_block(&b.body, "ad") {
                         let address = format!("google_ads_ad_group_ad.{}", b.labels[1].as_str());
                         validate_ad_creative_exclusivity(f, &ad.body, &address, diags);
@@ -2390,10 +2392,132 @@ fn validate_ad_templates(
     }
 }
 
+/// Check an ad's `inputs = { … }` against the parameters its template actually
+/// references. A template's parameters are the `input.<name>` names in its body
+/// — there is no second list to drift — so both directions are checkable: a
+/// missing binding leaves a dangling `input.x` in the mutate, and a surplus one
+/// is a typo that would otherwise do nothing at all.
+fn validate_template_inputs(
+    file: &ParsedFile,
+    address: &str,
+    template_name: &str,
+    decl: &AdTemplateDecl,
+    inputs: Option<&hcl_edit::structure::Attribute>,
+    fallback_span: std::ops::Range<usize>,
+    registry: &ResourceRegistry,
+    locals: &LocalsRegistry,
+    variables: &VariablesRegistry,
+    diags: &mut Vec<Diag>,
+) {
+    let params = crate::expand::template_params(&decl.block);
+    if params.is_empty() && inputs.is_none() {
+        return;
+    }
+    let (span, supplied) = match inputs {
+        Some(a) => {
+            let Expression::Object(obj) = &a.value else {
+                diags.push(Diag::new(
+                    file.src.clone(),
+                    span_of(a.value.span()),
+                    format!(
+                        "{address} 'inputs' must be a map of name = value, got {}",
+                        describe_expr(&a.value)
+                    ),
+                ));
+                return;
+            };
+            let mut names: Vec<String> = Vec::new();
+            for (key, _) in obj.iter() {
+                match crate::expand::object_key_str(key) {
+                    Some(k) => names.push(k),
+                    None => diags.push(Diag::new(
+                        file.src.clone(),
+                        span_of(a.value.span()),
+                        format!("{address} 'inputs' keys must be identifiers or strings"),
+                    )),
+                }
+            }
+            (span_of(a.value.span()), names)
+        }
+        None => (fallback_span.clone(), Vec::new()),
+    };
+
+    let missing: Vec<&String> = params.iter().filter(|p| !supplied.contains(p)).collect();
+    if !missing.is_empty() {
+        diags.push(Diag::new(
+            file.src.clone(),
+            span.clone(),
+            format!(
+                "{address} uses 'ad_template.{template_name}', which needs {} — add {} to 'inputs'",
+                params
+                    .iter()
+                    .map(|p| format!("input.{p}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                missing
+                    .iter()
+                    .map(|p| p.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+        ));
+    }
+    for name in &supplied {
+        if !params.contains(name) {
+            let known = if params.is_empty() {
+                format!("ad_template.{template_name} takes no inputs")
+            } else {
+                format!("it takes {}", params.join(", "))
+            };
+            diags.push(Diag::new(
+                file.src.clone(),
+                span.clone(),
+                format!("{address} passes input '{name}' that its template never uses — {known}"),
+            ));
+        }
+    }
+
+    // The declaration could not type-check its own placeholders; the body with
+    // real values spliced in is the first point where `pin = 3` is visibly
+    // wrong, so check it here and anchor the complaint at the use site.
+    if let Some(attr) = inputs {
+        let mut bindings: std::collections::HashMap<String, Expression> =
+            std::collections::HashMap::new();
+        if let Expression::Object(obj) = &attr.value {
+            for (key, value) in obj.iter() {
+                if let Some(k) = crate::expand::object_key_str(key) {
+                    bindings.insert(k, value.expr().clone());
+                }
+            }
+        }
+        let bound = crate::expand::bind_template_inputs(&decl.block, &bindings);
+        let mut bound_diags = Vec::new();
+        validate_body(
+            file,
+            &bound,
+            &bound.body,
+            &ad_block(false).schema,
+            &format!("{address} (via ad_template.{template_name})"),
+            registry,
+            locals,
+            variables,
+            RequiredCheck::Enforce,
+            &mut bound_diags,
+        );
+        for d in bound_diags {
+            diags.push(Diag::new(file.src.clone(), span.clone(), d.message));
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn validate_ad_group_ad_template(
     file: &ParsedFile,
     block: &Block,
     templates: &AdTemplateRegistry,
+    registry: &ResourceRegistry,
+    locals: &LocalsRegistry,
+    variables: &VariablesRegistry,
     diags: &mut Vec<Diag>,
 ) {
     let address = format!("google_ads_ad_group_ad.{}", block.labels[1].as_str());
@@ -2401,11 +2525,13 @@ fn validate_ad_group_ad_template(
     let mut template: Option<(std::ops::Range<usize>, &Expression)> = None;
     let mut overrides: Vec<(&str, std::ops::Range<usize>)> = Vec::new();
     let mut has_final_urls_override = false;
+    let mut inputs: Option<&hcl_edit::structure::Attribute> = None;
     for s in block.body.iter() {
         match s {
             Structure::Block(b) if b.ident.as_str() == "ad" => has_ad_block = true,
             Structure::Attribute(a) => match a.key.as_str() {
                 "template" => template = Some((span_of(a.key.span()), &a.value)),
+                crate::expand::TEMPLATE_INPUTS_ATTR => inputs = Some(a),
                 "final_urls" => {
                     overrides.push(("final_urls", span_of(a.key.span())));
                     if !is_empty_array_literal(&a.value) {
@@ -2462,6 +2588,20 @@ fn validate_ad_group_ad_template(
             };
             match templates.resolve(&file.module, &name) {
                 Resolution::Found(qualified) => {
+                    if let Some(decl) = templates.get(&qualified) {
+                        validate_template_inputs(
+                            file,
+                            &address,
+                            &name,
+                            decl,
+                            inputs,
+                            span_of(value.span()),
+                            registry,
+                            locals,
+                            variables,
+                            diags,
+                        );
+                    }
                     let template_has_final_urls = templates
                         .get(&qualified)
                         .map(|d| body_has_attr(&d.block.body, "final_urls"))
@@ -3000,8 +3140,7 @@ fn validate_resource(
     let provided = defaults.provided_attrs_named(ty, opted.as_deref());
     let without_lifecycle =
         validate_lifecycle(file, block, ty, &address, registry, locals, variables, diags);
-    // Both are meta: the type's own schema never sees `lifecycle` or `defaults`.
-    let body = strip_defaults_attr(without_lifecycle.unwrap_or_else(|| block.body.clone()));
+    let body = strip_meta_attrs(without_lifecycle.unwrap_or_else(|| block.body.clone()));
     validate_body(
         file,
         block,
@@ -3024,10 +3163,14 @@ fn validate_resource(
     }
 }
 
-fn strip_defaults_attr(body: Body) -> Body {
+/// Meta-attributes the type schema never sees: they configure how the resource
+/// is assembled rather than what is sent to Google Ads.
+const META_ATTRS: &[&str] = &[DEFAULTS_ATTR, crate::expand::TEMPLATE_INPUTS_ATTR];
+
+fn strip_meta_attrs(body: Body) -> Body {
     let mut out = Body::new();
     for s in body.iter() {
-        if matches!(s, Structure::Attribute(a) if a.key.as_str() == DEFAULTS_ATTR) {
+        if matches!(s, Structure::Attribute(a) if META_ATTRS.contains(&a.key.as_str())) {
             continue;
         }
         out.push(s.clone());
@@ -3495,6 +3638,11 @@ fn validate_value(
     diags: &mut Vec<Diag>,
 ) {
     let span = span_of(expr.span());
+    // A template parameter has no value here by construction: it is bound where
+    // the template is used, and the bound body is type-checked there.
+    if crate::expand::uses_template_input(expr) {
+        return;
+    }
     let evaluated = match resolve_binding_chain(file, expr, locals, variables, diags) {
         BindingResolution::Resolved(value) => value,
         BindingResolution::Failed => return,
@@ -5806,6 +5954,157 @@ resource "google_ads_ad_group_ad" "rsa" {
             .map(|d| &d.message)
             .collect();
         assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    const PARAMETERIZED_PREAMBLE: &str = r#"
+ad_template "param" {
+  final_urls = ["https://example.com/?utm=${input.slug}"]
+  responsive_search_ad {
+    headline {
+      text = input.headline_1
+      pin  = input.slot
+    }
+    headline { text = "Two Headline" }
+    headline { text = "Three Headline" }
+    description { text = "A description here" }
+    description { text = "Another description here" }
+  }
+}
+
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  manual_cpc { enhanced_cpc_enabled = false }
+}
+
+resource "google_ads_ad_group" "g" {
+  name           = "G"
+  campaign       = google_ads_campaign.c.id
+  cpc_bid_micros = 1000000
+}
+"#;
+
+    fn validate_parameterized(name: &str, ad: &str) -> Vec<String> {
+        let mut content = String::from(ad);
+        content.push_str(PARAMETERIZED_PREAMBLE);
+        validate_str(name, &content)
+            .iter()
+            .filter(|d| d.is_error())
+            .map(|d| d.message.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_fully_bound_template_validates() {
+        let errors = validate_parameterized(
+            "tmpl_inputs_ok",
+            r#"
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group = google_ads_ad_group.g.id
+  template = ad_template.param
+  inputs = {
+    headline_1 = "Block Facebook Ads Now"
+    slug       = "rsa_a"
+    slot       = "HEADLINE_1"
+  }
+}
+"#,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn a_missing_input_names_what_the_template_needs() {
+        let errors = validate_parameterized(
+            "tmpl_inputs_missing",
+            r#"
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group = google_ads_ad_group.g.id
+  template = ad_template.param
+  inputs = {
+    headline_1 = "Block Facebook Ads Now"
+  }
+}
+"#,
+        );
+        assert!(
+            errors.iter().any(|m| m.contains("which needs")
+                && m.contains("input.slug")
+                && m.contains("add slug, slot")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn an_input_the_template_never_uses_is_a_typo_worth_flagging() {
+        let errors = validate_parameterized(
+            "tmpl_inputs_surplus",
+            r#"
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group = google_ads_ad_group.g.id
+  template = ad_template.param
+  inputs = {
+    headline_1 = "H"
+    slug       = "s"
+    slot       = "HEADLINE_1"
+    headline2  = "typo"
+  }
+}
+"#,
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|m| m.contains("passes input 'headline2' that its template never uses")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_bound_value_is_type_checked_against_the_field_it_lands_in() {
+        // The declaration cannot check `pin = input.slot`; the use site can.
+        let errors = validate_parameterized(
+            "tmpl_inputs_badtype",
+            r#"
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group = google_ads_ad_group.g.id
+  template = ad_template.param
+  inputs = {
+    headline_1 = "H"
+    slug       = "s"
+    slot       = "TOPLEFT"
+  }
+}
+"#,
+        );
+        assert!(
+            errors.iter().any(|m| m.contains("invalid value \"TOPLEFT\"")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn inputs_must_be_a_map() {
+        let errors = validate_parameterized(
+            "tmpl_inputs_shape",
+            r#"
+resource "google_ads_ad_group_ad" "rsa" {
+  ad_group = google_ads_ad_group.g.id
+  template = ad_template.param
+  inputs   = ["headline_1"]
+}
+"#,
+        );
+        assert!(
+            errors.iter().any(|m| m.contains("'inputs' must be a map")),
+            "{errors:?}"
+        );
     }
 
     #[test]

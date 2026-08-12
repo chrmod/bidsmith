@@ -808,6 +808,7 @@ fn import_ad_group_ad(
     let mut status = None;
     let mut ad = None;
     let mut template: Option<&Attribute> = None;
+    let mut template_inputs: Option<&Attribute> = None;
     let mut final_urls_override: Option<Vec<String>> = None;
     let mut path1_override: Option<String> = None;
     let mut path2_override: Option<String> = None;
@@ -818,6 +819,7 @@ fn import_ad_group_ad(
                 "ad_group" => ad_group_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r)),
                 "status" => status = expect_string_owned(ctx, a),
                 "template" => template = Some(a),
+                "inputs" => template_inputs = Some(a),
                 "final_urls" => final_urls_override = Some(expect_string_list(ctx, &a.value)),
                 "path1" => path1_override = expect_string_owned(ctx, a),
                 "path2" => path2_override = expect_string_owned(ctx, a),
@@ -834,7 +836,7 @@ fn import_ad_group_ad(
     // Per-instance overrides on the resource (final_urls, RSA path1/path2) take precedence over the template body.
     if ad.is_none() {
         if let Some(a) = template {
-            let mut resolved = resolve_ad_template(ctx, a)?;
+            let mut resolved = resolve_ad_template(ctx, a, template_inputs)?;
             apply_ad_overrides(&mut resolved, final_urls_override, path1_override, path2_override);
             ad = Some(resolved);
         }
@@ -851,7 +853,11 @@ fn import_ad_group_ad(
     })
 }
 
-fn resolve_ad_template(ctx: &Ctx, attr: &Attribute) -> Result<JsonAd, Diag> {
+fn resolve_ad_template(
+    ctx: &Ctx,
+    attr: &Attribute,
+    inputs: Option<&Attribute>,
+) -> Result<JsonAd, Diag> {
     let invalid = || {
         Diag::new(
             ctx.file.src.clone(),
@@ -862,7 +868,11 @@ fn resolve_ad_template(ctx: &Ctx, attr: &Attribute) -> Result<JsonAd, Diag> {
     let name = ad_template_ref_name(&attr.value).ok_or_else(invalid)?;
     match ctx.templates.resolve(&ctx.file.module, &name) {
         Resolution::Found(q) => match ctx.templates.get(&q) {
-            Some(decl) => Ok(import_ad(ctx, &decl.block)),
+            Some(decl) => {
+                let bindings = template_input_bindings(inputs);
+                let bound = crate::expand::bind_template_inputs(&decl.block, &bindings);
+                Ok(import_ad(ctx, &bound))
+            }
             None => Err(invalid()),
         },
         _ => Err(Diag::new(
@@ -871,6 +881,23 @@ fn resolve_ad_template(ctx: &Ctx, attr: &Attribute) -> Result<JsonAd, Diag> {
             format!("reference to undeclared ad_template 'ad_template.{name}'"),
         )),
     }
+}
+
+/// The `inputs = { … }` map on an ad, as expressions to splice into the
+/// template body. Malformed shapes are reported by `validate`, so anything
+/// unusable here is simply left unbound.
+fn template_input_bindings(
+    attr: Option<&Attribute>,
+) -> std::collections::HashMap<String, Expression> {
+    let mut out = std::collections::HashMap::new();
+    let Some(attr) = attr else { return out };
+    let Expression::Object(obj) = &attr.value else { return out };
+    for (key, value) in obj.iter() {
+        if let Some(k) = crate::expand::object_key_str(key) {
+            out.insert(k, value.expr().clone());
+        }
+    }
+    out
 }
 
 fn apply_ad_overrides(
@@ -3059,6 +3086,105 @@ resource "google_ads_ad_group_ad" "b" {
         let ids: Vec<&str> = input.ad_group_ads.iter().map(|a| a.id.as_str()).collect();
         assert!(ids.iter().any(|id| id.ends_with("google_ads_ad_group_ad.a")));
         assert!(ids.iter().any(|id| id.ends_with("google_ads_ad_group_ad.b")));
+    }
+
+    #[test]
+    fn ad_template_inputs_vary_the_body_per_ad() {
+        // The A/B pair differed in three strings and duplicated everything else
+        // (issue #145).
+        let input = import_str(
+            "ad_template_inputs",
+            r#"
+ad_template "fb_rsa" {
+  final_urls = ["https://example.com/?utm=${input.slug}"]
+
+  responsive_search_ad {
+    headline {
+      text = input.headline_1
+      pin  = "HEADLINE_1"
+    }
+    headline { text = "Block Facebook Ads" }
+    headline { text = "Free Ad Blocker" }
+    description { text = "Stop the feed ads." }
+    description { text = "Free and open source." }
+  }
+}
+
+resource "google_ads_ad_group_ad" "a" {
+  ad_group = google_ads_ad_group.g.id
+  template = ad_template.fb_rsa
+  inputs = {
+    headline_1 = "Block Facebook Ads Now"
+    slug       = "rsa_a"
+  }
+}
+
+resource "google_ads_ad_group_ad" "b" {
+  ad_group = google_ads_ad_group.g.id
+  template = ad_template.fb_rsa
+  inputs = {
+    headline_1 = "Get Rid of Facebook Ads"
+    slug       = "rsa_b"
+  }
+}
+"#,
+        );
+        assert_eq!(input.ad_group_ads.len(), 2);
+        let headline = |i: usize| {
+            input.ad_group_ads[i]
+                .ad
+                .responsive_search_ad
+                .as_ref()
+                .expect("rsa")
+                .headlines[0]
+                .text
+                .clone()
+        };
+        assert_eq!(headline(0), "Block Facebook Ads Now");
+        assert_eq!(headline(1), "Get Rid of Facebook Ads");
+        // The shared parts stay shared.
+        assert_eq!(
+            input.ad_group_ads[0].ad.responsive_search_ad.as_ref().unwrap().headlines[1].text,
+            "Block Facebook Ads",
+        );
+        // A parameter inside an interpolation substitutes too.
+        assert_eq!(
+            input.ad_group_ads[0].ad.final_urls,
+            vec!["https://example.com/?utm=rsa_a".to_string()]
+        );
+        assert_eq!(
+            input.ad_group_ads[1].ad.final_urls,
+            vec!["https://example.com/?utm=rsa_b".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_template_with_no_parameters_still_works_without_inputs() {
+        let input = import_str(
+            "ad_template_no_inputs",
+            r#"
+ad_template "plain" {
+  final_urls = ["https://example.com/"]
+
+  responsive_search_ad {
+    headline { text = "A" }
+    headline { text = "B" }
+    headline { text = "C" }
+    description { text = "D1" }
+    description { text = "D2" }
+  }
+}
+
+resource "google_ads_ad_group_ad" "a" {
+  ad_group = google_ads_ad_group.g.id
+  template = ad_template.plain
+}
+"#,
+        );
+        assert_eq!(
+            input.ad_group_ads[0].ad.responsive_search_ad.as_ref().unwrap().headlines[0].text,
+            "A",
+        );
     }
 
     #[test]
