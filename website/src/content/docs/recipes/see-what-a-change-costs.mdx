@@ -1,0 +1,84 @@
+---
+title: See what a change costs before you merge it
+description: Every plan ends with the committed daily spend before and after — in your account's currency, counting only campaigns that will actually run.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A pull request that raises a budget, unpauses a campaign, or launches a
+new one is a spending decision. The operation counts at the bottom of a
+plan don't say so:
+
+```
+Plan: 0 to create, 0 to update, 0 to destroy, 2 to adopt, 1447 unchanged. (2 accepted, 0 rejected)
+```
+
+The line under it does:
+
+```
+Budget: committed daily spend 320.00 EUR -> 340.00 EUR (+20.00 EUR/day) across 17 enabled campaigns
+```
+
+You don't have to do anything to get it. Run `bidsmith plan .` and it's
+there, in the account's own currency.
+
+## Reading the line
+
+| Part | Means |
+|---|---|
+| `320.00 EUR` | What the account commits per day right now. |
+| `340.00 EUR` | What it commits per day once this change is applied. |
+| `(+20.00 EUR/day)` | The difference — this pull request's blast radius. |
+| `across 17 enabled campaigns` | How many campaigns will be running afterwards. |
+
+When the change doesn't move any money, the line collapses to the
+total, which is still worth knowing:
+
+```
+Budget: committed daily spend 320.00 EUR/day across 1 enabled campaign
+```
+
+## What counts, and what doesn't
+
+**Only campaigns that will be `ENABLED` after the change.** A budget
+sitting behind a paused campaign commits nothing, so it isn't counted.
+The useful consequence: pausing a campaign shows up as a *drop*.
+
+```
+Budget: committed daily spend 340.00 EUR -> 320.00 EUR (-20.00 EUR/day) across 16 enabled campaigns
+```
+
+**A shared budget counts once.** Five campaigns drawing on one
+`explicitly_shared` budget commit that budget, not five times it.
+
+**The whole account, not just your files.** Campaigns somebody built in
+the Google Ads UI are in the total too. That's deliberate — the total
+answers "what are we running?", which is a question about the account,
+not about your branch.
+
+## Why the total matters as much as the delta
+
+Three pull requests, one week, each launching a video campaign at
+EUR 20/day. Each PR honestly describes itself as "+20 EUR/day". None of
+them mentions EUR 60/day, because no single PR knows about the other
+two.
+
+The running total closes that gap: the third PR's plan opens at
+`360.00 EUR` where the first one opened at `320.00 EUR`. The drift is
+visible in the review, before the merge, without anyone adding up
+`amount_micros` by hand.
+
+<Aside type="tip">
+  The GitHub Actions workflow [`bidsmith init`](/bidsmith/commands/init/)
+  scaffolds posts the plan as a pull-request comment, so the budget line
+  shows up in the review thread automatically. Nothing to configure.
+</Aside>
+
+## See also
+
+- [`bidsmith plan`](/bidsmith/commands/plan/) — the rest of the plan
+  output.
+- [Pause everything for the holidays](./pause-for-holidays/) — a change
+  whose whole point is taking the number down.
+- [Leave a note explaining a number](./leave-a-note-explaining-a-number/) —
+  keep the *reason* for a budget next to the budget.

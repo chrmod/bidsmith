@@ -21,7 +21,9 @@ Full docs and walkthroughs: **[chrmod.github.io/bidsmith](https://chrmod.github.
   teammate approve. "Who paused that campaign last Friday?" — Git
   tells you.
 - **Preview before you spend.** `bidsmith plan` shows you exactly what
-  will change in Google Ads before anything ships. No surprises.
+  will change in Google Ads before anything ships — down to the
+  committed daily spend before and after, in your account's currency.
+  No surprises.
 - **One source of truth.** Your `.bid` files describe what should
   exist. bidsmith reconciles. Run it twice — the second run does
   nothing.

@@ -70,6 +70,7 @@ export default defineConfig({
             { label: 'Turn many cloned campaigns into one template', slug: 'recipes/collapse-cloned-campaigns' },
             { label: 'Rename a resource without recreating it', slug: 'recipes/rename-without-recreating' },
             { label: 'Leave a note explaining a number', slug: 'recipes/leave-a-note-explaining-a-number' },
+            { label: 'See what a change costs before you merge it', slug: 'recipes/see-what-a-change-costs' },
           ],
         },
         {

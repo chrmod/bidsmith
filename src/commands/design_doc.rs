@@ -349,7 +349,7 @@ fn rmf_table() -> Vec<RmfRow> {
     vec![
         RmfRow {
             requirement: "Display account-level information (name, currency, time zone, status)",
-            satisfied_by: "<code>bidsmith query 'SELECT customer.descriptive_name, customer.currency_code, customer.time_zone, customer.status FROM customer'</code>; also surfaced by <code>plan --whoami</code>.",
+            satisfied_by: "<code>bidsmith query 'SELECT customer.descriptive_name, customer.currency_code, customer.time_zone, customer.status FROM customer'</code>; the account ids are surfaced by <code>plan --whoami</code> and the currency by <code>plan --read-live</code>, which every <code>plan</code> also uses to report committed daily spend as money.",
         },
         RmfRow {
             requirement: "Show campaigns: name, status, budget, type, start/end dates",

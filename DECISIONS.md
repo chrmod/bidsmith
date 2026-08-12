@@ -1168,9 +1168,19 @@ Verified locally:
   token and prints `access token … expires_in: 3599s` plus the
   customer / login / developer-token envelope. No Google Ads API call
   yet — just the OAuth token endpoint.
-- `bidsmith plan --read-live` lists per-resource-type counts for the
-  customer (one `googleAds:searchStream` call per type bidsmith
-  models).
+- `bidsmith plan --read-live` prints the account currency plus
+  per-resource-type counts for the customer (one
+  `googleAds:searchStream` call per type bidsmith models, plus one for
+  the `customer` row itself).
+- Every `plan` / `apply` footer carries a `Budget:` line — committed
+  daily spend before and after the changeset, the delta, and how many
+  campaigns end up `ENABLED` (issue #117). Only budgets backing a
+  post-apply `ENABLED` campaign count, a shared budget counts once, and
+  the whole account is totalled, not just the declared slice — so three
+  sibling PRs each adding EUR 20/day show the running total the third
+  one would otherwise hide. Computed in `src/api/spend.rs` from the
+  diff plus live state; amounts render in the account currency read by
+  the `customer` GAQL query.
 - `bidsmith plan examples/basic` against the rezolutnie account
   validates 8 CREATE operations on the live API and prints
   `8 accepted, 0 rejected (validateOnly)`. Proves every resource
