@@ -2131,7 +2131,7 @@ mod tests {
                 update_count: 0,
                 delete_count: 0,
                 adopt_count: 0,
-                warnings: Vec::new(),
+                ..DiffReport::default()
             };
             let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
             let ops = plan.body["mutateOperations"].as_array().unwrap();
@@ -2170,7 +2170,7 @@ mod tests {
             update_count: 1,
             delete_count: 0,
             adopt_count: 0,
-            warnings: Vec::new(),
+            ..DiffReport::default()
         };
         let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
         let ops = plan.body["mutateOperations"].as_array().unwrap();
@@ -2227,7 +2227,7 @@ mod tests {
             update_count: 1,
             delete_count: 0,
             adopt_count: 0,
-            warnings: Vec::new(),
+            ..DiffReport::default()
         };
         let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
         let ops = plan.body["mutateOperations"].as_array().unwrap();
@@ -2262,7 +2262,7 @@ mod tests {
             update_count: 0,
             delete_count: 0,
             adopt_count: 0,
-            warnings: Vec::new(),
+            ..DiffReport::default()
         };
         let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
         let ops = plan.body["mutateOperations"].as_array().unwrap();
@@ -2308,7 +2308,7 @@ mod tests {
             update_count: 1,
             delete_count: 0,
             adopt_count: 0,
-            warnings: Vec::new(),
+            ..DiffReport::default()
         };
         let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
         let op = plan.body["mutateOperations"][0]["campaignOperation"].clone();
@@ -2348,7 +2348,7 @@ mod tests {
             update_count: 0,
             delete_count: 0,
             adopt_count: 0,
-            warnings: Vec::new(),
+            ..DiffReport::default()
         };
         (input, report)
     }
@@ -2456,7 +2456,7 @@ mod tests {
             update_count: 0,
             delete_count: 0,
             adopt_count: 0,
-            warnings: Vec::new(),
+            ..DiffReport::default()
         };
         let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
         let creates: Vec<&Value> = plan.body["mutateOperations"]
@@ -2526,7 +2526,7 @@ mod tests {
             update_count: 0,
             delete_count: 1,
             adopt_count: 0,
-            warnings: Vec::new(),
+            ..DiffReport::default()
         };
 
         let plan = match build_mutate_with_diff(&input, &report, true) {
@@ -2592,7 +2592,7 @@ mod tests {
             update_count: 0,
             delete_count: 0,
             adopt_count: 1,
-            warnings: Vec::new(),
+            ..DiffReport::default()
         };
 
         let plan = match build_mutate_with_diff(&input, &report, true) {
@@ -2656,7 +2656,7 @@ mod tests {
             update_count: 0,
             delete_count: 2,
             adopt_count: 0,
-            warnings: Vec::new(),
+            ..DiffReport::default()
         };
 
         let plan = match build_mutate_with_diff(&input, &report, true) {
@@ -2727,7 +2727,7 @@ mod tests {
             update_count: 0,
             delete_count: 0,
             adopt_count: 0,
-            warnings: Vec::new(),
+            ..DiffReport::default()
         };
 
         let plan = match build_mutate_with_diff(&input, &report, true) {
@@ -2804,7 +2804,7 @@ mod tests {
             update_count: 0,
             delete_count: 0,
             adopt_count: 0,
-            warnings: Vec::new(),
+            ..DiffReport::default()
         };
 
         let plan = match build_mutate_with_diff(&input, &report, true) {
@@ -2895,7 +2895,7 @@ mod tests {
             update_count: 0,
             delete_count: 0,
             adopt_count: 0,
-            warnings: Vec::new(),
+            ..DiffReport::default()
         };
 
         let plan = match build_mutate_with_diff(&input, &report, true) {
@@ -2990,7 +2990,7 @@ mod tests {
             update_count: 0,
             delete_count: 0,
             adopt_count: 0,
-            warnings: Vec::new(),
+            ..DiffReport::default()
         };
 
         let plan = match build_mutate_with_diff(&input, &report, true) {
@@ -3394,7 +3394,7 @@ mod tests {
             update_count: 0,
             delete_count: 0,
             adopt_count: 2,
-            warnings: Vec::new(),
+            ..DiffReport::default()
         };
 
         let plan = match build_mutate_with_diff(&input, &report, true) {
