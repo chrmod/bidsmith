@@ -1,5 +1,5 @@
 use hcl_edit::Span;
-use hcl_edit::expr::{Expression, Traversal, TraversalOperator};
+use hcl_edit::expr::Expression;
 use hcl_edit::structure::{Attribute, Block, Structure};
 
 use crate::commands::export::{
@@ -2050,7 +2050,7 @@ fn extract_resource_ref(ctx: &Ctx, value: &Expression) -> Option<String> {
     let Expression::Traversal(t) = resolved.as_ref() else {
         return None;
     };
-    let path = extract_traversal_path(t)?;
+    let path = crate::schema::extract_traversal_path(t)?;
     if path.len() < 2 {
         return None;
     }
@@ -2065,21 +2065,6 @@ fn extract_resource_ref_list(ctx: &Ctx, value: &Expression) -> Vec<String> {
     arr.iter()
         .filter_map(|item| extract_resource_ref(ctx, item))
         .collect()
-}
-
-fn extract_traversal_path(t: &Traversal) -> Option<Vec<String>> {
-    let mut path = Vec::new();
-    match &t.expr {
-        Expression::Variable(v) => path.push(v.as_str().to_string()),
-        _ => return None,
-    }
-    for op in t.operators.iter() {
-        match &**op {
-            TraversalOperator::GetAttr(name) => path.push(name.as_str().to_string()),
-            _ => return None,
-        }
-    }
-    Some(path)
 }
 
 fn missing(file: &ParsedFile, block: &Block, address: &str, field: &str) -> Diag {
