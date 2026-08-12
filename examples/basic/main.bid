@@ -41,6 +41,13 @@ resource "google_ads_ad_group" "summer_search_default" {
   status = "ENABLED"
   type = "SEARCH_STANDARD"
   cpc_bid_micros = 2000000
+
+  targeting_setting {
+    target_restriction {
+      targeting_dimension = "AUDIENCE"
+      bid_only = true
+    }
+  }
 }
 
 resource "google_ads_ad_group_criterion" "summer_kw_summer_deals" {

@@ -11,10 +11,10 @@ use crate::commands::export::{
     JsonGeoTargetTypeSetting, JsonIncomeRange, JsonKeyword, JsonLanguage, JsonLocation,
     JsonManualCpc, JsonNetworkSettings, JsonParentalStatus, JsonPlacement, JsonProximity,
     JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedSet, JsonSitelinkAsset,
-    JsonStructuredSnippetAsset, JsonTargetImpressionShare, JsonTargetSpend, JsonTopic,
-    JsonUserInterest, JsonValueSettings, JsonVideoAd, JsonVideoAdInventoryControl,
-    JsonVideoCampaignSettings, JsonVideoResponsiveAd, JsonYoutubeChannel, JsonYoutubeVideo,
-    JsonYoutubeVideoAsset,
+    JsonStructuredSnippetAsset, JsonTargetImpressionShare, JsonTargetRestriction,
+    JsonTargetSpend, JsonTargetingSetting, JsonTopic, JsonUserInterest, JsonValueSettings,
+    JsonVideoAd, JsonVideoAdInventoryControl, JsonVideoCampaignSettings, JsonVideoResponsiveAd,
+    JsonYoutubeChannel, JsonYoutubeVideo, JsonYoutubeVideoAsset,
 };
 
 pub fn from_search_response(raw: &str) -> Result<ExportInput, String> {
@@ -325,6 +325,7 @@ impl AdapterState {
                 network_settings: None,
                 geo_target_type_setting: None,
                 video_campaign_settings: None,
+                targeting_setting: None,
                 frequency_caps: Vec::new(),
                 managed_address: None,
             });
@@ -436,6 +437,9 @@ impl AdapterState {
                 video_ad_inventory_control: Some(control),
             });
         }
+        if v.get("targetingSetting").is_some() {
+            entry.targeting_setting = parse_targeting_setting(v);
+        }
     }
 
     fn merge_ad_group(&mut self, v: &Value) {
@@ -465,6 +469,12 @@ impl AdapterState {
             if let Some(n) = parse_i64(v.get(json)) {
                 entry.set_bid(field, Some(n));
             }
+        }
+        // Only when the row carries the field: a row from another query that
+        // merely mentions this ad group must not blank out what one that
+        // selected it already read.
+        if v.get("targetingSetting").is_some() {
+            entry.targeting_setting = parse_targeting_setting(v);
         }
     }
 
@@ -1235,6 +1245,34 @@ fn parse_frequency_cap(v: &Value) -> Option<JsonFrequencyCap> {
             .and_then(Value::as_str)
             .map(str::to_string),
     })
+}
+
+/// A live targeting setting, or `None` when it says only what the API would
+/// assume anyway. Google fills in a restriction for every dimension it has an
+/// opinion about, and reading those back as a declaration would put a dozen
+/// lines of boilerplate in every ad group (issue #135). Dimensions no `.bid` can
+/// declare are dropped, like the geo `UNKNOWN` sentinel above.
+fn parse_targeting_setting(v: &Value) -> Option<JsonTargetingSetting> {
+    let restrictions = v
+        .get("targetingSetting")?
+        .get("targetRestrictions")?
+        .as_array()?;
+    let setting = JsonTargetingSetting {
+        target_restrictions: restrictions
+            .iter()
+            .filter_map(|r| {
+                Some(JsonTargetRestriction {
+                    targeting_dimension: r
+                        .get("targetingDimension")
+                        .and_then(Value::as_str)
+                        .filter(|d| crate::schema::is_targeting_dimension(d))?
+                        .to_string(),
+                    bid_only: r.get("bidOnly").and_then(Value::as_bool)?,
+                })
+            })
+            .collect(),
+    };
+    (!setting.effective().is_empty()).then_some(setting)
 }
 
 /// Read whichever criterion `oneof` a live row carries. One reader for both

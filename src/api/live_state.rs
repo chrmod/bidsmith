@@ -81,6 +81,7 @@ pub const QUERIES: &[(&str, &str)] = &[
           campaign.video_campaign_settings.video_ad_inventory_control.allow_in_feed,
           campaign.video_campaign_settings.video_ad_inventory_control.allow_shorts,
           campaign.video_campaign_settings.video_ad_inventory_control.allow_non_skippable_in_stream,
+          campaign.targeting_setting.target_restrictions,
           campaign.frequency_caps
         FROM campaign
         WHERE campaign.status != 'REMOVED'",
@@ -101,7 +102,8 @@ pub const QUERIES: &[(&str, &str)] = &[
           ad_group.target_cpm_micros,
           ad_group.target_cpv_micros,
           ad_group.percent_cpc_bid_micros,
-          ad_group.fixed_cpm_micros
+          ad_group.fixed_cpm_micros,
+          ad_group.targeting_setting.target_restrictions
         FROM ad_group
         WHERE ad_group.status != 'REMOVED'",
     ),

@@ -759,6 +759,20 @@ mod tests {
         assert!(blocks.is_empty());
     }
 
+    /// The field this verb reported on 67 ad groups and 14 campaigns before it
+    /// was modelled. Both levels are read now, so it drops out of the report
+    /// rather than needing to be remembered (issue #135).
+    #[test]
+    fn the_target_restrictions_of_both_levels_are_compared() {
+        let sel = live_state::selected_fields();
+        for field in [
+            "campaign.targeting_setting.target_restrictions",
+            "ad_group.targeting_setting.target_restrictions",
+        ] {
+            assert!(is_compared(field, &sel), "{field} is still unmodelled");
+        }
+    }
+
     #[test]
     fn a_shared_prefix_that_is_not_a_path_boundary_is_not_coverage() {
         let sel = selected(&["ad_group.cpc_bid_micros"]);

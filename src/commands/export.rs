@@ -200,6 +200,8 @@ pub struct JsonCampaign {
     pub geo_target_type_setting: Option<JsonGeoTargetTypeSetting>,
     #[serde(default)]
     pub video_campaign_settings: Option<JsonVideoCampaignSettings>,
+    #[serde(default)]
+    pub targeting_setting: Option<JsonTargetingSetting>,
     /// Repeated, and managed as a whole list: an empty list means "this
     /// campaign has no frequency caps", so caps set in the UI on a declared
     /// campaign read as drift rather than staying invisible.
@@ -406,6 +408,46 @@ impl JsonGeoTargetTypeSetting {
     }
 }
 
+/// Whether each targeting dimension restricts who is eligible to see the ad
+/// (`bid_only = false`) or merely informs bidding (`bid_only = true`). Carried
+/// by both campaigns and ad groups, and written as one field: the API replaces
+/// the whole list and removes whatever the body leaves out.
+#[derive(Deserialize, Default, Clone)]
+pub struct JsonTargetingSetting {
+    #[serde(default)]
+    pub target_restrictions: Vec<JsonTargetRestriction>,
+}
+
+#[derive(Deserialize, Clone, PartialEq, Eq)]
+pub struct JsonTargetRestriction {
+    pub targeting_dimension: String,
+    pub bid_only: bool,
+}
+
+impl JsonTargetingSetting {
+    /// The restrictions that say something an absent entry would not, sorted by
+    /// dimension. Google fills in defaults nobody asked for, and the order of
+    /// the list is not a setting, so this is the comparable form.
+    pub fn effective(&self) -> Vec<(&str, bool)> {
+        let mut out: Vec<(&str, bool)> = self
+            .target_restrictions
+            .iter()
+            .filter(|r| r.bid_only != crate::schema::DEFAULT_BID_ONLY)
+            .map(|r| (r.targeting_dimension.as_str(), r.bid_only))
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
+/// One restriction as a reviewer reads it, so a plan row says what a dimension
+/// becomes rather than merely that it moves.
+pub fn shown_target_restriction(dimension: &str, bid_only: bool) -> String {
+    let how = if bid_only { "observation" } else { "targeting" };
+    format!("{dimension} {how}")
+}
+
 #[derive(Deserialize, Clone, PartialEq, Eq)]
 pub struct JsonFrequencyCap {
     pub event_type: String,
@@ -461,6 +503,8 @@ pub struct JsonAdGroup {
     pub percent_cpc_bid_micros: Option<i64>,
     #[serde(default)]
     pub fixed_cpm_micros: Option<i64>,
+    #[serde(default)]
+    pub targeting_setting: Option<JsonTargetingSetting>,
     #[serde(default)]
     pub managed_address: Option<String>,
 }
@@ -1797,6 +1841,7 @@ fn write_campaign(
         }
         out.push_str("  }\n");
     }
+    write_targeting_setting(out, c.targeting_setting.as_ref());
     for f in &c.frequency_caps {
         out.push_str("\n  frequency_caps {\n");
         write_attr(out, 2, "event_type", &fmt_string(&f.event_type));
@@ -1842,7 +1887,31 @@ fn write_ad_group(
             }
         }
     }
+    write_targeting_setting(out, g.targeting_setting.as_ref());
     out.push_str("}\n\n");
+}
+
+/// Only the restrictions that differ from what an absent entry would mean —
+/// Google reports a default for every dimension it has an opinion about, and
+/// rendering those would put a dozen lines of boilerplate in every ad group.
+fn write_targeting_setting(out: &mut String, setting: Option<&JsonTargetingSetting>) {
+    let Some(setting) = setting else { return };
+    let effective = setting.effective();
+    if effective.is_empty() {
+        out.push_str("\n  targeting_setting {}\n");
+        return;
+    }
+    out.push_str("\n  targeting_setting {\n");
+    for (i, (dimension, bid_only)) in effective.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str("    target_restriction {\n");
+        write_attr(out, 3, "targeting_dimension", &fmt_string(dimension));
+        write_attr(out, 3, "bid_only", &bid_only.to_string());
+        out.push_str("    }\n");
+    }
+    out.push_str("  }\n");
 }
 
 fn write_ad_group_ad(
@@ -3356,6 +3425,38 @@ mod tests {
         // The default level stays implicit; a non-default one is written out.
         assert_eq!(out.matches("level = ").count(), 1, "{out}");
         assert!(out.contains("level = \"AD_GROUP\""), "{out}");
+    }
+
+    /// Google fills in a restriction for every dimension it has an opinion
+    /// about, so what reads back is only the part that says something an absent
+    /// entry would not — otherwise every ad group carries a dozen lines nobody
+    /// wrote and nobody can act on (issue #135).
+    #[test]
+    fn only_the_restrictions_that_say_something_render() {
+        let raw = r#"[{"results":[
+            { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget", "amountMicros": "5000000" } },
+            { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Brand", "status": "ENABLED", "advertisingChannelType": "SEARCH", "campaignBudget": "customers/9/campaignBudgets/1001" } },
+            { "adGroup": { "resourceName": "customers/9/adGroups/3001", "id": "3001", "name": "Observed", "campaign": "customers/9/campaigns/2001", "status": "ENABLED", "targetingSetting": { "targetRestrictions": [
+                { "targetingDimension": "AGE_RANGE", "bidOnly": true },
+                { "targetingDimension": "GENDER", "bidOnly": false },
+                { "targetingDimension": "KEYWORD", "bidOnly": false }
+            ] } } },
+            { "adGroup": { "resourceName": "customers/9/adGroups/3002", "id": "3002", "name": "Plain", "campaign": "customers/9/campaigns/2001", "status": "ENABLED", "targetingSetting": { "targetRestrictions": [
+                { "targetingDimension": "AGE_RANGE", "bidOnly": false }
+            ] } } }
+        ]}]"#;
+        let input = from_search_response(raw).expect("adapter");
+        let out = render(&input);
+
+        assert_eq!(out.matches("targeting_setting {").count(), 1, "{out}");
+        assert_eq!(out.matches("target_restriction {").count(), 1, "{out}");
+        assert!(out.contains("targeting_dimension = \"AGE_RANGE\""), "{out}");
+        assert!(out.contains("bid_only = true"), "{out}");
+        // An all-defaults ad group reads as one that says nothing at all.
+        assert!(
+            input.ad_groups[1].targeting_setting.is_none(),
+            "an all-default live setting must read as absent"
+        );
     }
 
     #[test]

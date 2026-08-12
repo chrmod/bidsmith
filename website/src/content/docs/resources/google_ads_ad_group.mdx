@@ -8,6 +8,8 @@ import AttributeTable from '~/components/AttributeTable.astro';
 import schema from '~/data/schema.json';
 
 export const resource = schema.resources['google_ads_ad_group'];
+export const targetingSetting = resource.blocks.find((b) => b.name === 'targeting_setting');
+export const targetRestriction = targetingSetting.blocks.find((b) => b.name === 'target_restriction');
 
 An **ad group** is a bucket inside a campaign. It holds the keywords
 people search for and the ads that show in response. Every campaign
@@ -72,9 +74,84 @@ nothing. Set the field that matches the strategy.
   campaigns have no such limit.
 </Aside>
 
+## Targeting, or just watching
+
+An audience, an age range, or a gender attached to an ad group can mean
+one of two very different things:
+
+- **Targeting** — only people who match are eligible to see the ad.
+- **Observation** — everyone stays eligible; the match only tells
+  Google how to bid.
+
+Same criteria, very different reach, and nothing in the criterion itself
+says which one is in force. `targeting_setting` is where you say it, one
+dimension at a time:
+
+```hcl
+resource "google_ads_ad_group" "remarketing" {
+  name           = "Remarketing — cart abandoners"
+  campaign       = google_ads_campaign.summer_search.id
+  cpc_bid_micros = 2000000
+
+  targeting_setting {
+    target_restriction {
+      targeting_dimension = "AUDIENCE"
+      bid_only            = true
+    }
+  }
+}
+```
+
+That reads as *"the audience on this ad group is an observation — bid
+differently for cart abandoners, but keep showing ads to everyone
+else."* Change `bid_only` to `false` and the same file says only cart
+abandoners ever see the ad. It's a one-word edit with a large change in
+reach, which is exactly the kind of thing worth having in review.
+
+Three things worth knowing:
+
+- The restrictions are managed **as a set**, and only once you declare
+  the block. An ad group with no `targeting_setting` leaves the setting
+  to whoever set it in the Google Ads UI; write the block and the whole
+  set becomes yours, because replacing the list wholesale is the only
+  update the Google Ads API offers. A dimension you drop from the file
+  goes back to targeting.
+- `bid_only = false` is what Google assumes for a dimension nobody
+  mentions, so bidsmith doesn't write those entries out. An ad group
+  whose live setting is all defaults reads back with no block at all
+  rather than seven lines that say nothing.
+- Declare it on the ad group **or** the campaign, not both. Google Ads
+  refuses to write an ad group's setting while its campaign has one, and
+  `validate` warns when a file does that — a refused operation takes the
+  whole `apply` down with it.
+
+<Aside type="tip">
+  Google's own [targeting
+  settings](https://developers.google.com/google-ads/api/docs/targeting/targeting-settings)
+  guide covers the same switch from the API side, and
+  ["Targeting" vs "Observation"](https://support.google.com/google-ads/answer/7365594)
+  covers it from the Google Ads UI side.
+</Aside>
+
 ## Schema
 
 <AttributeTable block={resource} headingLevel={3} />
+
+## Nested blocks
+
+### targeting_setting
+
+The `targeting_setting` block carries one `target_restriction` block per
+dimension you want to pin down — see [Targeting, or just
+watching](#targeting-or-just-watching) above. It takes no attributes of
+its own.
+
+#### target_restriction
+
+<AttributeTable block={targetRestriction} headingLevel={5} />
+
+`KEYWORD` is deliberately absent from `targeting_dimension`: keywords
+always restrict, so Google Ads has no observation mode for them.
 
 ## See also
 

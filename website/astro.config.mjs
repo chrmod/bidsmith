@@ -53,6 +53,7 @@ export default defineConfig({
             { label: 'Target specific countries and languages', slug: 'recipes/target-countries-and-languages' },
             { label: 'Cap how often people see your video ad', slug: 'recipes/cap-how-often-people-see-your-video' },
             { label: 'Narrow a video campaign to a specific audience', slug: 'recipes/narrow-a-video-audience' },
+            { label: 'Make an audience observe instead of target', slug: 'recipes/target-or-observe-an-audience' },
             { label: 'Add a whole keyword list at once', slug: 'recipes/add-many-keywords' },
             { label: 'Remove a whole keyword list safely', slug: 'recipes/remove-keywords-safely' },
             { label: 'Reuse a headline set across many ads', slug: 'recipes/reuse-a-headline-set' },

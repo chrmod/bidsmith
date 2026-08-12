@@ -5,7 +5,8 @@ use crate::commands::export::{
     JsonAdGroupCriterion, JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign,
     JsonCampaignAsset, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
     JsonAudience, JsonCriterion, JsonCustomAudience, JsonCustomerAsset, JsonSharedCriterion,
-    JsonSharedSet, JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonYoutubeVideoAsset,
+    JsonSharedSet, JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonTargetingSetting,
+    JsonYoutubeVideoAsset,
 };
 use crate::schema::CUSTOM_PERIOD;
 
@@ -1842,6 +1843,10 @@ fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign, caps_claimed: bool) -> Vec<
             ));
         }
     }
+    c.extend(diff_targeting_setting(
+        d.targeting_setting.as_ref(),
+        l.targeting_setting.as_ref(),
+    ));
     if (!d.frequency_caps.is_empty() || caps_claimed)
         && sorted_frequency_caps(d) != sorted_frequency_caps(l)
     {
@@ -1852,6 +1857,41 @@ fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign, caps_claimed: bool) -> Vec<
         ));
     }
     c
+}
+
+/// Omitted means unmanaged, as everywhere else — but a declared block manages
+/// the *whole* list, because that is the only thing the API offers: it replaces
+/// `target_restrictions` wholesale and removes whatever the body leaves out.
+/// Both sides drop the entries that say what an absent one would, so Google's
+/// own defaults never read as drift (issue #135).
+fn diff_targeting_setting(
+    d: Option<&JsonTargetingSetting>,
+    l: Option<&JsonTargetingSetting>,
+) -> Option<FieldChange> {
+    let desired = d?.effective();
+    let live = l.map(JsonTargetingSetting::effective).unwrap_or_default();
+    (desired != live).then(|| {
+        change(
+            "targeting_setting.target_restrictions",
+            Raw(shown_target_restrictions(&live)),
+            Raw(shown_target_restrictions(&desired)),
+        )
+    })
+}
+
+/// The restrictions as a reviewer reads them, so a plan row says which
+/// dimensions stop narrowing the audience rather than merely that a list moved.
+fn shown_target_restrictions(effective: &[(&str, bool)]) -> String {
+    if effective.is_empty() {
+        return "all targeting".to_string();
+    }
+    effective
+        .iter()
+        .map(|(dimension, bid_only)| {
+            crate::commands::export::shown_target_restriction(dimension, *bid_only)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The cap list as a reviewer reads it — `3 IMPRESSION / 1 DAY (CAMPAIGN)` per
@@ -1898,6 +1938,10 @@ fn diff_ad_group(d: &JsonAdGroup, l: &JsonAdGroup) -> Vec<FieldChange> {
             c.push(change(*field, l.bid(field), desired));
         }
     }
+    c.extend(diff_targeting_setting(
+        d.targeting_setting.as_ref(),
+        l.targeting_setting.as_ref(),
+    ));
     c
 }
 
@@ -4094,6 +4138,115 @@ mod geo_target_type_tests {
         assert_eq!(
             field_names(&changed),
             vec!["geo_target_type_setting.negative_geo_target_type".to_string()]
+        );
+    }
+}
+
+#[cfg(test)]
+mod targeting_setting_tests {
+    use super::*;
+
+    fn campaign(setting: &str) -> JsonCampaign {
+        serde_json::from_str(&format!(
+            r#"{{"id":"c","name":"C","advertising_channel_type":"SEARCH",
+                 "campaign_budget":"b"{setting}}}"#
+        ))
+        .expect("valid test campaign")
+    }
+
+    fn ad_group(setting: &str) -> JsonAdGroup {
+        serde_json::from_str(&format!(
+            r#"{{"id":"g","name":"G","campaign":"c"{setting}}}"#
+        ))
+        .expect("valid test ad group")
+    }
+
+    fn restrictions(entries: &str) -> String {
+        format!(r#","targeting_setting":{{"target_restrictions":[{entries}]}}"#)
+    }
+
+    const AUDIENCE_OBSERVED: &str = r#"{"targeting_dimension":"AUDIENCE","bid_only":true}"#;
+    const AUDIENCE_TARGETED: &str = r#"{"targeting_dimension":"AUDIENCE","bid_only":false}"#;
+    const AGE_OBSERVED: &str = r#"{"targeting_dimension":"AGE_RANGE","bid_only":true}"#;
+
+    #[test]
+    fn observation_versus_targeting_reads_as_drift_in_both_words() {
+        let changed = diff_campaign(
+            &campaign(&restrictions(AUDIENCE_TARGETED)),
+            &campaign(&restrictions(AUDIENCE_OBSERVED)),
+            false,
+        );
+        assert_eq!(
+            changed.iter().map(FieldChange::render).collect::<Vec<_>>(),
+            vec![
+                "targeting_setting.target_restrictions: AUDIENCE observation -> all targeting"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_campaign_that_declares_nothing_leaves_the_restrictions_alone() {
+        let changed = diff_campaign(
+            &campaign(""),
+            &campaign(&restrictions(AUDIENCE_OBSERVED)),
+            false,
+        );
+        assert!(changed.is_empty(), "{changed:?}");
+    }
+
+    /// The API reads a dimension nobody named as targeting, so an entry that
+    /// says exactly that is not a difference — otherwise every plan would
+    /// propose a write that changes nothing, forever.
+    #[test]
+    fn an_explicitly_default_entry_matches_an_absent_one() {
+        let changed = diff_campaign(
+            &campaign(&restrictions(AUDIENCE_TARGETED)),
+            &campaign(&restrictions("")),
+            false,
+        );
+        assert!(changed.is_empty(), "{changed:?}");
+    }
+
+    #[test]
+    fn declaration_order_is_not_a_setting() {
+        let changed = diff_campaign(
+            &campaign(&restrictions(&format!("{AGE_OBSERVED},{AUDIENCE_OBSERVED}"))),
+            &campaign(&restrictions(&format!("{AUDIENCE_OBSERVED},{AGE_OBSERVED}"))),
+            false,
+        );
+        assert!(changed.is_empty(), "{changed:?}");
+    }
+
+    /// A declared block owns the whole list, because that is all the API offers:
+    /// it removes whatever the body leaves out. So dropping a dimension from the
+    /// file is a change, not silence about it.
+    #[test]
+    fn a_dimension_the_declared_block_omits_is_planned_away() {
+        let changed = diff_campaign(
+            &campaign(&restrictions(AUDIENCE_OBSERVED)),
+            &campaign(&restrictions(&format!("{AGE_OBSERVED},{AUDIENCE_OBSERVED}"))),
+            false,
+        );
+        assert_eq!(
+            changed.iter().map(FieldChange::render).collect::<Vec<_>>(),
+            vec![
+                "targeting_setting.target_restrictions: AGE_RANGE observation, \
+                 AUDIENCE observation -> AUDIENCE observation"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn an_ad_group_carries_the_same_setting() {
+        let changed = diff_ad_group(
+            &ad_group(&restrictions(AGE_OBSERVED)),
+            &ad_group(&restrictions("")),
+        );
+        assert_eq!(
+            field_names(&changed),
+            vec!["targeting_setting.target_restrictions".to_string()]
         );
     }
 }
