@@ -42,8 +42,13 @@ bidsmith design-doc render [--config design-doc.toml] [--output design-doc.html]
 
 2. **Fill in the placeholders.** Open `design-doc.toml` in your
    editor. Every field marked `<FILL IN …>` needs a real value before
-   the doc will render. The two most important fields are:
+   the doc will render. The fields reviewers focus on:
 
+   - `core_business`, `primary_customers`, `value_exchange` — Google's
+     compliance team asks for exactly these three things: the specific
+     service or product your company provides, who buys it, and who
+     pays whom for what. Answer concretely; a mission statement won't
+     pass.
    - `why_this_tool_exists` — three to five sentences describing
      **your team's** specific use case. Reviewers reject submissions
      where this reads like stock copy. Be concrete: real campaign
@@ -92,7 +97,7 @@ bidsmith design-doc render [--config design-doc.toml] [--output design-doc.html]
 
 None for the config or template, but the rendered doc reflects bidsmith's
 runtime API version. If you've set `BIDSMITH_API_VERSION` to override
-the default (`v22`), §4 of the rendered doc will show that override.
+the default (`v22`), §5 of the rendered doc will show that override.
 
 ## Exit codes
 
@@ -106,22 +111,24 @@ the default (`v22`), §4 of the rendered doc will show that override.
 | Section of the doc | Source |
 |---|---|
 | §1 Summary (applicant references) | `applicant_legal_entity` from TOML |
-| §2 Why we need API access | `why_this_tool_exists` from TOML |
-| §2 Operator population | `who_uses_it_operators` from TOML |
-| §3 How it works (plan/apply safety) | Universal — describes the read/write boundary and plan/apply contract |
-| §4 Endpoints + API version | `crate::api::client::api_version()` and the actual HTTP call sites |
-| §4 GAQL query list | `crate::api::live_state::QUERIES` — iterated, count derived |
-| §4 Operation volume | Stock estimates; override `volume_typical_per_day` / `volume_ceiling` in TOML if your usage differs |
-| §5 RMF mapping | Hardcoded — universal for any bidsmith user |
-| §6 Authentication and data handling | Universal description of bidsmith's OAuth flow and data handling |
-| §8 Contact | `contact_name`, `contact_email`, `company_url` from TOML |
+| §2 Business model | `core_business`, `primary_customers`, `value_exchange` from TOML |
+| §3 Why the API is essential | `why_this_tool_exists` from TOML; the capability → API service necessity table is auto-generated |
+| §3 Operator population + internal-tool classification | `who_uses_it_operators` from TOML; the classification callout is universal |
+| §4 How it works (plan/apply safety) | Universal — describes the read/write boundary and plan/apply contract |
+| §5 Endpoints + API version | `crate::api::client::api_version()` and the actual HTTP call sites |
+| §5 GAQL query list | `crate::api::live_state::QUERIES` — iterated, count derived |
+| §5 Operation volume | Stock estimates; override `volume_typical_per_day` / `volume_ceiling` in TOML if your usage differs |
+| §6 RMF mapping | Hardcoded — universal for any bidsmith user |
+| §7 Authentication and data handling | Universal description of bidsmith's OAuth flow and data handling |
+| §9 Contact | `contact_name`, `contact_email`, `company_url` from TOML |
 
 <Aside type="caution" title="Don't reuse stock paragraphs verbatim">
   The biggest reason API applications get rejected is that the design
-  doc reads like a template. The `why_this_tool_exists` field
-  specifically must describe your team's actual situation — campaign
-  counts, geographies, the workflow problem you're solving. Reviewers
-  will recognise generic copy on sight.
+  doc reads like a template. The `core_business` and
+  `why_this_tool_exists` fields specifically must describe your
+  company's actual situation — what you sell, campaign counts,
+  geographies, the workflow problem you're solving. Reviewers will
+  recognise generic copy on sight.
 </Aside>
 
 ## Re-rendering for a follow-up application

@@ -36,11 +36,15 @@ design doc for you in two commands.
    commented template with one field per personalisation point.
 
 2. **Fill in your specifics.** Open `design-doc.toml` in your editor.
-   Every field marked `<FILL IN …>` is required. The two that
-   reviewers focus on:
+   Every field marked `<FILL IN …>` is required. The fields reviewers
+   focus on:
 
    - `applicant_legal_entity` — the legal name on your Google Ads
      account.
+   - `core_business`, `primary_customers`, `value_exchange` — what
+     your company actually sells, who buys it, and who pays whom for
+     what. Google's compliance team asks for exactly this; answer
+     concretely, not with a mission statement.
    - `why_this_tool_exists` — three to five sentences describing
      **your team's actual workflow**. Real campaign counts, real
      geographies, real audit/review needs. Generic boilerplate is the
@@ -86,6 +90,21 @@ design doc for you in two commands.
 
 </Steps>
 
+<Aside type="caution" title="Two things that trigger compliance follow-ups">
+  - **Use a corporate email address.** Set the API Center contact
+    email to an address on the applicant company's own domain and
+    correspond from it. Applications tied to generic mailboxes
+    (gmail.com and the like) get a follow-up asking you to re-confirm
+    the company's identity from a corporate address.
+  - **Don't pick "Independent Developer" for an internal tool.** By
+    Google's definition, independent developers cannot build internal
+    tools. bidsmith is an internal tool of the company whose accounts
+    it manages, so apply as that company — even if a contractor
+    operates it on the company's behalf. If people outside the company
+    would use the tool (a client counts as an external user), that's a
+    different application: the tool would be classified as external.
+</Aside>
+
 ## Step 3 — Wait, and prepare for follow-ups
 
 Approval typically takes 1–5 business days. Google may email
@@ -93,11 +112,13 @@ follow-up questions. The most common ones:
 
 | Question | Where the design doc answers it |
 |---|---|
-| "Who runs the tool?" | §2 — your `who_uses_it_operators` field. |
-| "What endpoints do you call?" | §4 endpoint table — auto-generated from bidsmith's source. |
-| "How do you protect against accidental mass updates?" | §3 plan-before-apply — the explicit `yes` prompt is the central safety property. |
-| "How do you store credentials?" | §6 — env vars only, access tokens process-memory only, no on-disk credential cache. |
-| "Do you re-sell or expose this to other advertisers?" | §1 and §2 — single-tenant, not multi-tenant, no third-party access. |
+| "What is your core business model? Who are your customers? What is the value exchange?" | §2 — your `core_business`, `primary_customers`, and `value_exchange` fields. |
+| "Why is API access essential? Which features are critical?" | §3 — the auto-generated table mapping each workflow capability to the API service it requires. |
+| "Who runs the tool? Is it internal or external?" | §3 — your `who_uses_it_operators` field plus the internal-tool classification callout. |
+| "What endpoints do you call?" | §5 endpoint table — auto-generated from bidsmith's source. |
+| "How do you protect against accidental mass updates?" | §4 plan-before-apply — the explicit `yes` prompt is the central safety property. |
+| "How do you store credentials?" | §7 — env vars or a mode-0600 credentials file; access tokens live in process memory only. |
+| "Do you re-sell or expose this to other advertisers?" | §1 and §3 — single-tenant, not multi-tenant, no third-party access. |
 
 If Google asks for a revised submission, edit `design-doc.toml`,
 re-run `bidsmith design-doc render`, re-print the PDF, and attach the

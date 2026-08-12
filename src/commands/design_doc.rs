@@ -28,6 +28,10 @@ pub struct DesignDocConfig {
     #[serde(default = "default_source_repo_url")]
     pub source_repo_url: String,
 
+    pub core_business: String,
+    pub primary_customers: String,
+    pub value_exchange: String,
+
     pub why_this_tool_exists: String,
     pub who_uses_it_operators: String,
 
@@ -131,6 +135,9 @@ fn validate_config(cfg: &DesignDocConfig) -> Result<(), String> {
         ("manager_account_id", &cfg.manager_account_id),
         ("contact_name", &cfg.contact_name),
         ("contact_email", &cfg.contact_email),
+        ("core_business", &cfg.core_business),
+        ("primary_customers", &cfg.primary_customers),
+        ("value_exchange", &cfg.value_exchange),
         ("why_this_tool_exists", &cfg.why_this_tool_exists),
         ("who_uses_it_operators", &cfg.who_uses_it_operators),
     ];
@@ -174,6 +181,13 @@ struct RmfRow {
 }
 
 #[derive(Serialize)]
+struct ApiNecessityRow {
+    capability: &'static str,
+    service: &'static str,
+    why: &'static str,
+}
+
+#[derive(Serialize)]
 struct Context {
     applicant_legal_entity: String,
     manager_account_id: String,
@@ -190,6 +204,9 @@ struct Context {
     oauth_scope: &'static str,
     document_date: String,
     closing_note: String,
+    core_business_paragraphs: Vec<String>,
+    primary_customers: String,
+    value_exchange: String,
     why_this_tool_exists_paragraphs: Vec<String>,
     who_uses_it_operators: String,
     volume_typical_per_day: String,
@@ -197,6 +214,7 @@ struct Context {
     endpoints: Vec<Endpoint>,
     gaql_queries: Vec<GaqlQuery>,
     gaql_query_count: usize,
+    api_necessity: Vec<ApiNecessityRow>,
     rmf_table: Vec<RmfRow>,
 }
 
@@ -277,6 +295,12 @@ fn build_context(cfg: &DesignDocConfig) -> Context {
         oauth_scope: "https://www.googleapis.com/auth/adwords",
         document_date: html_escape(&cfg.document_date),
         closing_note: html_escape(&cfg.closing_note),
+        core_business_paragraphs: split_paragraphs(&cfg.core_business)
+            .into_iter()
+            .map(|p| html_escape(&p))
+            .collect(),
+        primary_customers: html_escape(&cfg.primary_customers),
+        value_exchange: html_escape(&cfg.value_exchange),
         why_this_tool_exists_paragraphs: split_paragraphs(&cfg.why_this_tool_exists)
             .into_iter()
             .map(|p| html_escape(&p))
@@ -287,6 +311,7 @@ fn build_context(cfg: &DesignDocConfig) -> Context {
         endpoints,
         gaql_queries,
         gaql_query_count,
+        api_necessity: api_necessity_table(),
         rmf_table: rmf_table(),
     }
 }
@@ -357,6 +382,46 @@ fn unix_days_to_ymd(days: i64) -> (i32, u32, u32) {
     (y as i32, m, d)
 }
 
+fn api_necessity_table() -> Vec<ApiNecessityRow> {
+    vec![
+        ApiNecessityRow {
+            capability: "Read the complete live state of the account so every change can be expressed as a reviewable diff",
+            service: "<code>GoogleAdsService.SearchStream</code>",
+            why: "The plan/apply model needs machine-readable account state to diff against the declared source. The web interface and Ads Editor render state for a human but expose nothing a diff can consume.",
+        },
+        ApiNecessityRow {
+            capability: "Validate every proposed change before anything is written",
+            service: "<code>GoogleAdsService.Mutate</code> with <code>validateOnly=true</code>",
+            why: "Pre-flight validation exists only in the API. It is the tool's core safety property: policy, reference, and limit errors surface before any spend-affecting write.",
+        },
+        ApiNecessityRow {
+            capability: "Apply a change set as one atomic, dependency-ordered batch",
+            service: "<code>GoogleAdsService.Mutate</code>",
+            why: "Manual edits are one-at-a-time and non-transactional; a half-applied change set would leave live campaigns in an inconsistent, spend-affecting intermediate state.",
+        },
+        ApiNecessityRow {
+            capability: "Create the search-intent custom audiences the declared campaigns reference",
+            service: "<code>CustomAudienceService.MutateCustomAudiences</code>",
+            why: "Custom audiences cannot be carried by the <code>GoogleAdsService.Mutate</code> batch; this service is the only way to manage them declaratively.",
+        },
+        ApiNecessityRow {
+            capability: "Audit the fields the declared diff is silent about (drift detection)",
+            service: "<code>GoogleAdsFieldService.Search</code> plus the public discovery document",
+            why: "Read-only metadata: it tells the operator which settable fields the declaration does not cover, so \u{201c}unchanged\u{201d} is a verified claim rather than an assumption.",
+        },
+        ApiNecessityRow {
+            capability: "Research keywords when drafting new campaigns",
+            service: "<code>KeywordPlanIdeaService.GenerateKeywordIdeas</code>",
+            why: "Read-only: feeds search volume and bid estimates into campaign drafts that then go through the same reviewed plan/apply flow.",
+        },
+        ApiNecessityRow {
+            capability: "Report on the campaigns the tool manages",
+            service: "<code>GoogleAdsService.SearchStream</code> (GAQL passthrough)",
+            why: "The read-only <code>query</code> command is how the team reviews performance of the campaigns declared in source, without leaving the audited toolchain.",
+        },
+    ]
+}
+
 fn rmf_table() -> Vec<RmfRow> {
     vec![
         RmfRow {
@@ -420,6 +485,9 @@ mod tests {
             company_url: "https://acme.example".into(),
             tool_name: "bidsmith".into(),
             source_repo_url: "https://github.com/chrmod/bidsmith".into(),
+            core_business: "Acme sells widgets.\n\nMostly online.".into(),
+            primary_customers: "European widget wholesalers".into(),
+            value_exchange: "wholesalers pay Acme per widget shipped".into(),
             why_this_tool_exists: "First paragraph.\n\nSecond paragraph.".into(),
             who_uses_it_operators: "two named ops engineers".into(),
             volume_typical_per_day: default_volume_typical(),
@@ -502,6 +570,10 @@ mod tests {
         assert!(html.contains("2026-01-15"));
         assert!(html.contains("First paragraph."));
         assert!(html.contains("Second paragraph."));
+        assert!(html.contains("Acme sells widgets."));
+        assert!(html.contains("Mostly online."));
+        assert!(html.contains("European widget wholesalers"));
+        assert!(html.contains("wholesalers pay Acme per widget shipped"));
 
         assert!(!html.contains("<FILL IN"));
         assert!(!html.contains("{{"));
@@ -528,6 +600,17 @@ mod tests {
     }
 
     #[test]
+    fn render_maps_every_necessity_row_to_a_listed_endpoint() {
+        // §3's necessity table must not claim a service §5's endpoint table
+        // doesn't list — a reviewer will diff the two.
+        let html = render(&build_context(&good_config())).expect("render");
+        for row in api_necessity_table() {
+            assert!(html.contains(row.capability), "missing capability '{}'", row.capability);
+            assert!(html.contains(row.service), "missing service '{}'", row.service);
+        }
+    }
+
+    #[test]
     fn render_includes_all_introspected_queries() {
         let html = render(&build_context(&good_config())).expect("render");
         for (label, _) in live_state::QUERIES {
@@ -543,7 +626,7 @@ mod tests {
         let html = render(&build_context(&good_config())).expect("render");
         assert!(
             html.contains(&format!("currently <code>{}</code>", client::api_version())),
-            "API version not rendered in §4.1 lead paragraph",
+            "API version not rendered in §5 lead paragraph",
         );
     }
 

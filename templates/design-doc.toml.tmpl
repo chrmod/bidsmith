@@ -6,8 +6,8 @@
 #
 # Fill in every field marked <FILL IN ...> before rendering. Google reviewers
 # reject obviously templated submissions, so put real numbers and real
-# sentences in §1 and §2.1 — describe your team's actual use case, not the
-# template's stock text.
+# sentences in §2 and §3 — describe your company's actual business and your
+# team's actual use case, not the template's stock text.
 #
 # After editing, run:
 #
@@ -21,6 +21,11 @@
 # -----------------------------------------------------------------------------
 
 # Legal entity name as it appears on your Google Ads account.
+#
+# The applicant is the company whose accounts bidsmith manages — even if a
+# contractor operates it. In the API Center, set the company type to that
+# company, NOT "Independent Developer": by Google's definition independent
+# developers cannot build internal tools, and bidsmith is an internal tool.
 applicant_legal_entity = "<FILL IN: e.g. Acme Marketing GmbH>"
 
 # Your manager (MCC) account ID, 10 digits, no dashes.
@@ -32,8 +37,13 @@ manager_account_id = "<FILL IN: e.g. 1234567890>"
 manager_account_name = ""
 
 # Person Google should contact about this application.
+#
+# Use an address on the applicant company's own domain, and set the API Center
+# contact email to the same address. Google's compliance team flags
+# applications tied to generic mailboxes (gmail.com, outlook.com, ...) and
+# will ask you to re-confirm from a corporate address before proceeding.
 contact_name = "<FILL IN: e.g. Jane Doe>"
-contact_email = "<FILL IN: jane.doe@example.com>"
+contact_email = "<FILL IN: jane.doe@your-company-domain.com>"
 
 # Optional: your company website. Used as a link in the contact section.
 # Leave empty to omit.
@@ -47,11 +57,40 @@ company_url = ""
 # source_repo_url = "https://github.com/chrmod/bidsmith"
 
 # -----------------------------------------------------------------------------
-# §2 — Why we need API access (REWRITE in your own words)
+# §2 — Business model (REWRITE in your own words)
+#
+# Google's compliance team asks for this almost verbatim: "describe the
+# specific service or product your company provides. Who are your primary
+# customers, and what is the 'value exchange' occurring on your platform?"
+# A vague answer here is the most common reason an application bounces back
+# with follow-up questions.
+# -----------------------------------------------------------------------------
+
+# The specific service or product your company sells — not a mission
+# statement. Name the industry, the offering, and how customers buy it.
+# Use a blank line between paragraphs.
+core_business = """
+<FILL IN: 2-4 sentences. What does your company actually sell, to whom,
+and through which channel? e.g. "Acme runs three garden centres in the
+Hamburg area and an online shop for garden furniture. Orders are placed
+on acme.example and fulfilled from our own warehouse.">
+"""
+
+# One sentence: who buys it (customer segment, geography).
+primary_customers = "<FILL IN: e.g. homeowners in northern Germany buying garden furniture online>"
+
+# One sentence: who pays whom for what.
+value_exchange = "<FILL IN: e.g. customers pay Acme directly for furniture ordered on acme.example>"
+
+# -----------------------------------------------------------------------------
+# §3 — Why the Google Ads API is essential (REWRITE in your own words)
 #
 # Three to five sentences describing why your team needs the Google Ads API
 # and what problem bidsmith solves for you in production. Don't reuse the stock
-# paragraph. Reviewers scan this and reject submissions that read like boilerplate.
+# paragraph. Reviewers scan this and reject submissions that read like
+# boilerplate. The rendered doc follows this with an auto-generated table
+# mapping each workflow capability to the exact API service it requires, so
+# focus here on your workflow and scale — the endpoint specifics are covered.
 #
 # Use a blank line between paragraphs.
 # -----------------------------------------------------------------------------
@@ -64,7 +103,7 @@ counts, real geographies, real review/audit needs.>
 """
 
 # -----------------------------------------------------------------------------
-# §2 — Who runs bidsmith
+# §3 — Who runs bidsmith
 #
 # One sentence describing your operator population. Example:
 #   "a small number (currently 1-2) of named employees who hold the OAuth
@@ -75,7 +114,7 @@ counts, real geographies, real review/audit needs.>
 who_uses_it_operators = "<FILL IN: how many operators, what they do>"
 
 # -----------------------------------------------------------------------------
-# §4 — Operation volume (override defaults if your usage differs)
+# §5 — Operation volume (override defaults if your usage differs)
 # -----------------------------------------------------------------------------
 
 # volume_typical_per_day = "well under 1,000 operations"
