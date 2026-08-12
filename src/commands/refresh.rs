@@ -751,7 +751,20 @@ fn collect_edits(
                                 .to_string(),
                         ),
                     },
-                    other => skip.push(other.to_string()),
+                    other => match other
+                        .strip_prefix("geo_target_type_setting.")
+                        .and_then(|name| {
+                            crate::schema::GEO_TARGET_TYPE_FIELDS
+                                .iter()
+                                .find(|(field, _)| *field == name)
+                        }) {
+                        Some((field, _)) => opt!(
+                            f,
+                            vec!["geo_target_type_setting", *field],
+                            c.geo_target_type_setting.as_ref().and_then(|g| g.get(field)).map(s)
+                        ),
+                        None => skip.push(other.to_string()),
+                    },
                 }
             }
         }
@@ -1119,6 +1132,50 @@ resource "google_ads_campaign" "summer_search" {
             outcome.skipped.iter().any(|s| s.contains("status") && s.contains("not set")),
             "expected a skip note for status, got {:?}",
             outcome.skipped
+        );
+    }
+
+    #[test]
+    fn a_geo_target_type_flipped_in_the_ui_is_written_back() {
+        let src = r#"provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+resource "google_ads_campaign_budget" "budget" {
+  name          = "Budget"
+  amount_micros = 10000000
+}
+
+resource "google_ads_campaign" "us_search" {
+  name                     = "US search"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.budget.id
+  locations                = ["US"]
+
+  geo_target_type_setting {
+    positive_geo_target_type = "PRESENCE"
+  }
+}
+"#;
+        let live = r#"{
+          "customer_id": "1234567890",
+          "campaign_budgets": [{"id":"111","name":"Budget","amount_micros":10000000}],
+          "campaigns": [
+            {"id":"555","name":"US search","advertising_channel_type":"SEARCH",
+             "campaign_budget":"111",
+             "managed_address":"main.google_ads_campaign.us_search",
+             "geo_target_type_setting":{"positive_geo_target_type":"PRESENCE_OR_INTEREST"}}
+          ]
+        }"#;
+        let (out, outcome) = run(src, live);
+        assert!(
+            out.contains(r#"positive_geo_target_type = "PRESENCE_OR_INTEREST""#),
+            "{out}"
+        );
+        let (_, fields) = &outcome.applied[0];
+        assert_eq!(
+            fields,
+            &vec!["geo_target_type_setting.positive_geo_target_type".to_string()]
         );
     }
 

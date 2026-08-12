@@ -1543,6 +1543,16 @@ fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign, caps_claimed: bool) -> Vec<
             c.push(path.into());
         }
     }
+    // Omitted means unmanaged: a campaign that says nothing about how its geo
+    // targets are read leaves that to the account, and the live side may report
+    // a value this schema doesn't model (`UNKNOWN`) that no file could match.
+    for (field, _) in crate::schema::GEO_TARGET_TYPE_FIELDS {
+        let desired = d.geo_target_type_setting.as_ref().and_then(|g| g.get(field));
+        let live = l.geo_target_type_setting.as_ref().and_then(|g| g.get(field));
+        if desired.is_some() && desired != live {
+            c.push(format!("geo_target_type_setting.{field}"));
+        }
+    }
     if (!d.frequency_caps.is_empty() || caps_claimed)
         && sorted_frequency_caps(d) != sorted_frequency_caps(l)
     {
@@ -3131,6 +3141,59 @@ mod campaign_bidding_tests {
             false,
         );
         assert!(changed.is_empty(), "{changed:?}");
+    }
+}
+
+#[cfg(test)]
+mod geo_target_type_tests {
+    use super::*;
+
+    fn campaign(geo: &str) -> JsonCampaign {
+        serde_json::from_str(&format!(
+            r#"{{"id":"c","name":"C","advertising_channel_type":"SEARCH",
+                 "campaign_budget":"b"{geo}}}"#
+        ))
+        .expect("valid test campaign")
+    }
+
+    const PRESENCE: &str = r#","geo_target_type_setting":{"positive_geo_target_type":"PRESENCE"}"#;
+    const INTEREST: &str =
+        r#","geo_target_type_setting":{"positive_geo_target_type":"PRESENCE_OR_INTEREST"}"#;
+
+    #[test]
+    fn a_ui_flip_to_presence_or_interest_is_drift() {
+        let changed = diff_campaign(&campaign(PRESENCE), &campaign(INTEREST), false);
+        assert_eq!(
+            changed,
+            vec!["geo_target_type_setting.positive_geo_target_type".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_declared_interpretation_is_a_noop() {
+        let changed = diff_campaign(&campaign(PRESENCE), &campaign(PRESENCE), false);
+        assert!(changed.is_empty(), "{changed:?}");
+    }
+
+    #[test]
+    fn a_file_that_says_nothing_leaves_the_interpretation_alone() {
+        let changed = diff_campaign(&campaign(""), &campaign(INTEREST), false);
+        assert!(changed.is_empty(), "{changed:?}");
+    }
+
+    #[test]
+    fn each_side_is_managed_on_its_own() {
+        let changed = diff_campaign(
+            &campaign(
+                r#","geo_target_type_setting":{"negative_geo_target_type":"PRESENCE"}"#,
+            ),
+            &campaign(INTEREST),
+            false,
+        );
+        assert_eq!(
+            changed,
+            vec!["geo_target_type_setting.negative_geo_target_type".to_string()]
+        );
     }
 }
 

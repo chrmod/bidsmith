@@ -7,7 +7,8 @@ use crate::commands::export::{
     JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCustomerAsset,
     JsonAgeRange, JsonAudience, JsonCustomAudience, JsonCustomAudienceMember,
-    JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonGender, JsonKeyword,
+    JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonGender,
+    JsonGeoTargetTypeSetting, JsonKeyword,
     JsonLanguage, JsonLocation, JsonManualCpc, JsonNetworkSettings, JsonProximity,
     JsonResponsiveSearchAd, JsonRsaAsset,
     JsonSharedSet, JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonTopic, JsonUserInterest,
@@ -306,6 +307,7 @@ impl AdapterState {
                 target_cpm: None,
                 target_cpv: None,
                 network_settings: None,
+                geo_target_type_setting: None,
                 frequency_caps: Vec::new(),
                 managed_address: None,
             });
@@ -367,6 +369,23 @@ impl AdapterState {
                     .get("targetPartnerSearchNetwork")
                     .and_then(Value::as_bool),
             });
+        }
+        // Google reports a geo target type it has no value for as `UNKNOWN`,
+        // which is not a setting anyone can declare — carrying it over would
+        // render a `.bid` the validator rejects and drift that never resolves.
+        if let Some(gs) = v.get("geoTargetTypeSetting") {
+            let mut setting = JsonGeoTargetTypeSetting::default();
+            for (field, json) in crate::schema::GEO_TARGET_TYPE_FIELDS {
+                let live = gs
+                    .get(json)
+                    .and_then(Value::as_str)
+                    .filter(|s| crate::schema::is_geo_target_type(s))
+                    .map(str::to_string);
+                setting.set(field, live);
+            }
+            if !setting.is_empty() {
+                entry.geo_target_type_setting = Some(setting);
+            }
         }
     }
 

@@ -7,7 +7,8 @@ use crate::commands::export::{
     JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCustomerAsset,
     JsonAgeRange, JsonAudience, JsonCustomAudience, JsonCustomAudienceMember,
-    JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonGender, JsonKeyword,
+    JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonGender,
+    JsonGeoTargetTypeSetting, JsonKeyword,
     JsonLanguage, JsonLocation, JsonManualCpc, JsonNetworkSettings,
     JsonProximity, JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedCriterion, JsonSharedSet,
     JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonTopic, JsonUserInterest, JsonValueSettings,
@@ -322,6 +323,7 @@ fn import_campaign(
     let mut target_cpm = None;
     let mut target_cpv = None;
     let mut network_settings = None;
+    let mut geo_target_type_setting = None;
     let mut frequency_caps: Vec<JsonFrequencyCap> = Vec::new();
     let mut languages: Vec<String> = Vec::new();
     let mut locations: Vec<String> = Vec::new();
@@ -347,6 +349,9 @@ fn import_campaign(
                 "target_cpm" => target_cpm = Some(JsonBidSelector {}),
                 "target_cpv" => target_cpv = Some(JsonBidSelector {}),
                 "network_settings" => network_settings = Some(import_network_settings(ctx, b)),
+                "geo_target_type_setting" => {
+                    geo_target_type_setting = Some(import_geo_target_type_setting(ctx, b))
+                }
                 "frequency_caps" => frequency_caps.extend(import_frequency_cap(ctx, b)),
                 _ => {}
             },
@@ -375,6 +380,7 @@ fn import_campaign(
             target_cpm,
             target_cpv,
             network_settings,
+            geo_target_type_setting,
             frequency_caps,
             managed_address: None,
         },
@@ -525,6 +531,21 @@ fn import_network_settings(ctx: &Ctx, block: &Block) -> JsonNetworkSettings {
         }
     }
     s
+}
+
+fn import_geo_target_type_setting(ctx: &Ctx, block: &Block) -> JsonGeoTargetTypeSetting {
+    let mut g = JsonGeoTargetTypeSetting::default();
+    for st in block.body.iter() {
+        if let Structure::Attribute(a) = st {
+            if crate::schema::GEO_TARGET_TYPE_FIELDS
+                .iter()
+                .any(|(field, _)| *field == a.key.as_str())
+            {
+                g.set(a.key.as_str(), expect_string_owned(ctx, a));
+            }
+        }
+    }
+    g
 }
 
 /// `None` when a required attribute is missing or non-literal — `validate`
@@ -2996,6 +3017,10 @@ defaults "google_ads_campaign" {
     target_google_search = true
     target_search_network = false
   }
+
+  geo_target_type_setting {
+    positive_geo_target_type = "PRESENCE"
+  }
 }
 
 resource "google_ads_campaign_budget" "b" {
@@ -3021,6 +3046,12 @@ resource "google_ads_campaign" "shell" {
                 .as_ref()
                 .and_then(|n| n.target_google_search),
             Some(true)
+        );
+        assert_eq!(
+            c.geo_target_type_setting
+                .as_ref()
+                .and_then(|g| g.get("positive_geo_target_type")),
+            Some("PRESENCE")
         );
         // `languages = ["en"]` expands to one positive language criterion.
         assert_eq!(input.campaign_criteria.len(), 1);

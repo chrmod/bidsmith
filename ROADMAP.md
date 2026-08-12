@@ -397,6 +397,19 @@ Smaller follow-ups that can ride along:
   **Deferred:** an `end_date`-in-the-past warning (needs injectable
   time), and dates on other resources — only the campaign has them
   today.
+- ✅ Advanced location options (issue #114). `google_ads_campaign` takes
+  a `geo_target_type_setting { positive_geo_target_type,
+  negative_geo_target_type }` block, so a campaign whose whole identity
+  is a market can declare that it means people *in* it rather than
+  people anywhere interested in it. Reported live on the account as
+  `PRESENCE` for the three `GH_YouTube_*` in-stream campaigns — the
+  value we wanted, but by way of a UI default nothing was checking, and
+  on Google's `PRESENCE_OR_INTEREST` default a per-market A/B stops
+  being comparable. Each side is managed on its own, an omitted one is
+  unmanaged, and the `UNKNOWN` the API reports for a type it has no
+  value for maps to an omitted attribute rather than into the file.
+  **Deferred:** the deprecated `SEARCH_INTEREST` positive type, which
+  Google has removed from the UI.
 - ✅ Local pre-flight for impossible operations (issue #116). The mutate
   batch is atomic, so one operation the account can never accept rejects
   every unrelated one with it — a stale declaration in one corner of the

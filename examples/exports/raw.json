@@ -26,6 +26,10 @@
             "targetSearchNetwork": false,
             "targetContentNetwork": false,
             "targetPartnerSearchNetwork": false
+          },
+          "geoTargetTypeSetting": {
+            "positiveGeoTargetType": "PRESENCE",
+            "negativeGeoTargetType": "UNKNOWN"
           }
         }
       },
