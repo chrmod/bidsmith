@@ -1467,6 +1467,7 @@ fn write_campaign_tree(
             budget_addr,
             inline.languages_for(&c.id),
             inline.locations_for(&c.id),
+            inline.devices_for(&c.id),
         );
     }
     for g in &input.ad_groups {
@@ -1731,6 +1732,7 @@ fn write_campaign(
     budget_addr: &HashMap<String, String>,
     languages: &[String],
     locations: &[String],
+    devices: Option<&InlineDevices>,
 ) {
     let _ = writeln!(out, "resource \"google_ads_campaign\" \"{name}\" {{");
     write_attr(out, 1, "name", &fmt_string(&c.name));
@@ -1765,6 +1767,9 @@ fn write_campaign(
     }
     if !locations.is_empty() {
         write_attr(out, 1, "locations", &fmt_string_list(locations));
+    }
+    if let Some(d) = devices {
+        write_attr(out, 1, d.attr, &fmt_string_list(&d.values));
     }
 
     if let Some(m) = &c.manual_cpc {
@@ -2276,7 +2281,14 @@ fn write_ad_group_criterion(
 struct InlineTargeting {
     languages: HashMap<String, Vec<String>>,
     locations: HashMap<String, Vec<String>>,
+    devices: HashMap<String, InlineDevices>,
     folded: HashSet<String>,
+}
+
+/// Which spelling a campaign's device criteria fold back to, and its values.
+struct InlineDevices {
+    attr: &'static str,
+    values: Vec<String>,
 }
 
 impl InlineTargeting {
@@ -2286,6 +2298,10 @@ impl InlineTargeting {
 
     fn locations_for(&self, campaign_id: &str) -> &[String] {
         self.locations.get(campaign_id).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    fn devices_for(&self, campaign_id: &str) -> Option<&InlineDevices> {
+        self.devices.get(campaign_id)
     }
 }
 
@@ -2327,7 +2343,69 @@ fn compute_inline_targeting(input: &ExportInput) -> InlineTargeting {
         v.sort();
         v.dedup();
     }
+    fold_devices(input, &campaign_ids, &mut t);
     t
+}
+
+/// Collapse a campaign's device criteria back to `devices` / `excluded_devices`
+/// when — and only when — they are exactly what one of those attributes expands
+/// to. A real bid adjustment (`0.8` on mobile) is not an exclusion and keeps its
+/// explicit criterion, as does any set the closed `devices` form would misstate.
+fn fold_devices(input: &ExportInput, campaign_ids: &HashSet<&str>, t: &mut InlineTargeting) {
+    let mut by_campaign: HashMap<&str, Vec<&JsonCampaignCriterion>> = HashMap::new();
+    for c in &input.campaign_criteria {
+        if c.target.device.is_some() && campaign_ids.contains(c.campaign.as_str()) {
+            by_campaign.entry(c.campaign.as_str()).or_default().push(c);
+        }
+    }
+    for (campaign, criteria) in by_campaign {
+        let foldable = criteria.iter().all(|c| {
+            !c.negative.unwrap_or(false) && matches!(c.status.as_deref(), None | Some("ENABLED"))
+        });
+        if !foldable {
+            continue;
+        }
+        let mut targeted: Vec<String> = Vec::new();
+        let mut excluded: Vec<String> = Vec::new();
+        let mut adjusted = false;
+        for c in &criteria {
+            let ty = c.target.device.as_ref().expect("filtered above").ty.clone();
+            match c.bid_modifier {
+                None => targeted.push(ty),
+                Some(m) if m.abs() < 1e-6 => excluded.push(ty),
+                Some(m) if (m - 1.0).abs() < 1e-6 => targeted.push(ty),
+                Some(_) => adjusted = true,
+            }
+        }
+        if adjusted {
+            continue;
+        }
+        targeted.sort();
+        excluded.sort();
+        let folded = if targeted.is_empty() {
+            (!excluded.is_empty()).then(|| InlineDevices {
+                attr: "excluded_devices",
+                values: excluded.clone(),
+            })
+        } else {
+            // The closed form only survives a round trip when the criteria
+            // cover every core device type: anything missing would come back
+            // as an exclusion that live state does not actually carry.
+            let mut covered: Vec<&str> =
+                targeted.iter().chain(excluded.iter()).map(String::as_str).collect();
+            covered.sort();
+            let mut core: Vec<&str> = crate::schema::CORE_DEVICE_TYPES.to_vec();
+            core.sort();
+            core.iter()
+                .all(|d| covered.binary_search(d).is_ok())
+                .then(|| InlineDevices { attr: "devices", values: targeted.clone() })
+        };
+        let Some(folded) = folded else { continue };
+        for c in &criteria {
+            t.folded.insert(c.id.clone());
+        }
+        t.devices.insert(campaign.to_string(), folded);
+    }
 }
 
 // ---- Folding (issue #57): collapse repeated structure into `ad_template` + `locals` ----
@@ -3763,12 +3841,57 @@ mod tests {
         }
     ]"#;
 
+    // The mandated desktop-only trio as three live criteria (campaign 2001),
+    // plus a campaign whose mobile criterion carries a real bid adjustment
+    // rather than an exclusion (campaign 2002).
+    const DEVICE_FIXTURE: &str = r#"[
+        {
+            "results": [
+                { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget", "amountMicros": "5000000" } },
+                { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Desktop Only", "status": "ENABLED", "advertisingChannelType": "SEARCH", "campaignBudget": "customers/9/campaignBudgets/1001" } },
+                { "campaign": { "resourceName": "customers/9/campaigns/2002", "id": "2002", "name": "Mobile Adjusted", "status": "ENABLED", "advertisingChannelType": "SEARCH", "campaignBudget": "customers/9/campaignBudgets/1001" } },
+                { "campaignCriterion": { "resourceName": "customers/9/campaignCriteria/2001~30000", "campaign": "customers/9/campaigns/2001", "status": "ENABLED", "device": { "type": "DESKTOP" } } },
+                { "campaignCriterion": { "resourceName": "customers/9/campaignCriteria/2001~30001", "campaign": "customers/9/campaigns/2001", "status": "ENABLED", "bidModifier": 0, "device": { "type": "MOBILE" } } },
+                { "campaignCriterion": { "resourceName": "customers/9/campaignCriteria/2001~30002", "campaign": "customers/9/campaigns/2001", "status": "ENABLED", "bidModifier": 0, "device": { "type": "TABLET" } } },
+                { "campaignCriterion": { "resourceName": "customers/9/campaignCriteria/2002~30003", "campaign": "customers/9/campaigns/2002", "status": "ENABLED", "bidModifier": 0.8, "device": { "type": "MOBILE" } } }
+            ]
+        }
+    ]"#;
+
     #[test]
     fn fold_roundtrips_to_verbose() {
         assert_fold_roundtrips(FULL_FIXTURE);
         assert_fold_roundtrips(FOLD_FIXTURE);
         assert_fold_roundtrips(NEG_FIXTURE);
         assert_fold_roundtrips(MIXED_FIXTURE);
+        assert_fold_roundtrips(DEVICE_FIXTURE);
+    }
+
+    #[test]
+    fn the_mandated_device_trio_folds_to_one_attribute() {
+        // Three resources per campaign encoding an account-wide constant was
+        // the single biggest repeated block in the measured tree (issue #145).
+        let input = from_search_response(DEVICE_FIXTURE).expect("adapter");
+        let out = render(&input);
+        assert!(out.contains(r#"devices = ["DESKTOP"]"#), "{out}");
+        assert_eq!(
+            out.matches("device {").count(),
+            1,
+            "only the bid-adjusted criterion keeps its explicit block:\n{out}"
+        );
+    }
+
+    #[test]
+    fn a_device_bid_adjustment_is_not_an_exclusion() {
+        // 0.8 on mobile means "bid less here", not "do not serve here", and no
+        // spelling of the inline attribute can say it.
+        let input = from_search_response(DEVICE_FIXTURE).expect("adapter");
+        let out = render(&input);
+        assert!(out.contains("bid_modifier = 0.8"), "{out}");
+        assert!(
+            !out.contains("excluded_devices"),
+            "an adjusted campaign must not fold:\n{out}"
+        );
     }
 
     #[test]
