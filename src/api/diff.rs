@@ -419,9 +419,7 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
                     let l = live_campaigns[*li];
                     claimed[*li] = true;
                     campaign_match.insert(d.id.clone(), l.id.clone());
-                    if let Some(w) = channel_mismatch_warning(&d.id, d, l) {
-                        campaign_warnings.push(w);
-                    }
+                    campaign_warnings.extend(campaign_immutable_warnings(&d.id, d, l));
                     let caps_claimed = live
                         .campaign_claims
                         .get(&l.id)
@@ -1523,23 +1521,39 @@ fn budget_immutable_warnings(address: &str, d: &JsonBudget, l: &JsonBudget) -> V
     out
 }
 
-/// A campaign's channel is fixed at creation, so the diff skips it — which
-/// means a file naming one channel while matching a live campaign on another
-/// reports as a clean adoption. The plan says so out loud instead: the file is
-/// describing a campaign it is not pointing at (issue #112).
-fn channel_mismatch_warning(address: &str, d: &JsonCampaign, l: &JsonCampaign) -> Option<String> {
-    if d.advertising_channel_type.is_empty()
-        || l.advertising_channel_type.is_empty()
-        || d.advertising_channel_type == l.advertising_channel_type
+/// A campaign's channel and its sub-type are both fixed at creation, so the
+/// diff skips them — which means a file naming one and matching a live campaign
+/// on another reports as a clean adoption. The plan says so out loud instead:
+/// the file is describing a campaign it is not pointing at (issues #112, #133).
+fn campaign_immutable_warnings(address: &str, d: &JsonCampaign, l: &JsonCampaign) -> Vec<String> {
+    let mut out = Vec::new();
+    if !d.advertising_channel_type.is_empty()
+        && !l.advertising_channel_type.is_empty()
+        && d.advertising_channel_type != l.advertising_channel_type
     {
-        return None;
+        out.push(format!(
+            "{address} declares advertising_channel_type = {:?} but the live campaign it matched \
+             is {:?}. A campaign's channel is fixed when it is created, so bidsmith can never \
+             reconcile that — check the file is pointing at the campaign you think it is",
+            d.advertising_channel_type, l.advertising_channel_type,
+        ));
     }
-    Some(format!(
-        "{address} declares advertising_channel_type = {:?} but the live campaign it matched is \
-         {:?}. A campaign's channel is fixed when it is created, so bidsmith can never reconcile \
-         that — check the file is pointing at the campaign you think it is",
-        d.advertising_channel_type, l.advertising_channel_type,
-    ))
+    // Only when the file says something. An omitted sub-type is unmanaged, like
+    // every other omitted field, not an assertion that the campaign has none.
+    if let Some(ds) = d.advertising_channel_sub_type.as_deref() {
+        if Some(ds) != l.advertising_channel_sub_type.as_deref() {
+            let live = match l.advertising_channel_sub_type.as_deref() {
+                Some(ls) => format!("{ls:?}"),
+                None => "not set".to_string(),
+            };
+            out.push(format!(
+                "{address} declares advertising_channel_sub_type = {ds:?} but the live campaign \
+                 it matched is {live}. A campaign's sub-type is fixed when it is created, so \
+                 bidsmith can never reconcile that — the two campaigns are different formats"
+            ));
+        }
+    }
+    out
 }
 
 /// Google Ads requires a bidding strategy to *create* a campaign, and rejects
@@ -1758,6 +1772,20 @@ fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign, caps_claimed: bool) -> Vec<
                 format!("geo_target_type_setting.{field}"),
                 live,
                 desired,
+            ));
+        }
+    }
+    // Omitted means unmanaged, one inventory at a time. The point of comparing
+    // these at all is a format experiment: a campaign declared in-stream-only
+    // stays a valid test only while nothing switches Shorts back on.
+    for (field, _) in crate::schema::VIDEO_AD_INVENTORY_FIELDS {
+        let dv = d.video_ad_inventory(field);
+        let lv = l.video_ad_inventory(field);
+        if dv.is_some() && dv != lv {
+            c.push(change(
+                format!("video_campaign_settings.video_ad_inventory_control.{field}"),
+                lv,
+                dv,
             ));
         }
     }
@@ -2743,6 +2771,57 @@ mod label_match_tests {
             .find(|w| w.contains("advertising_channel_type"))
             .expect("a channel mismatch warning");
         assert!(warning.contains("\"SEARCH\"") && warning.contains("\"VIDEO\""), "{warning}");
+    }
+
+    /// The sub-type is creation-only too, and it is what separates two video
+    /// campaigns of different formats — so a mismatch has to be said out loud
+    /// rather than reported as a clean adoption (issue #133).
+    #[test]
+    fn adopting_a_campaign_of_another_sub_type_warns() {
+        let declared = DECLARED_SUMMER.replace(
+            r#""advertising_channel_type":"SEARCH""#,
+            r#""advertising_channel_type":"SEARCH","advertising_channel_sub_type":"VIDEO_NON_SKIPPABLE""#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "campaign_budgets": [{"id":"999","name":"B","amount_micros":1000}],
+            "campaigns": [{"id":"555","name":"Summer","advertising_channel_type":"SEARCH","advertising_channel_sub_type":"VIDEO_REACH_TARGET_FREQUENCY","campaign_budget":"999"}]
+        }"#,
+        );
+        let report = diff(&input(&declared), &live);
+
+        assert!(matches!(&campaign_diff(&report).action, Action::NoOp { .. }));
+        let warning = report
+            .warnings
+            .iter()
+            .find(|w| w.contains("advertising_channel_sub_type"))
+            .expect("a sub-type mismatch warning");
+        assert!(
+            warning.contains("\"VIDEO_NON_SKIPPABLE\"")
+                && warning.contains("\"VIDEO_REACH_TARGET_FREQUENCY\""),
+            "{warning}"
+        );
+    }
+
+    /// A file that says nothing about the sub-type is not asserting the
+    /// campaign has none, so adopting one that carries a sub-type is quiet.
+    #[test]
+    fn an_undeclared_sub_type_is_not_a_mismatch() {
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "campaign_budgets": [{"id":"999","name":"B","amount_micros":1000}],
+            "campaigns": [{"id":"555","name":"Summer","advertising_channel_type":"SEARCH","advertising_channel_sub_type":"VIDEO_NON_SKIPPABLE","campaign_budget":"999"}]
+        }"#,
+        );
+        let report = diff(&input(DECLARED_SUMMER), &live);
+
+        assert!(
+            !report.warnings.iter().any(|w| w.contains("advertising_channel_sub_type")),
+            "{:?}",
+            report.warnings
+        );
     }
 
     #[test]

@@ -58,6 +58,7 @@ pub const QUERIES: &[(&str, &str)] = &[
           campaign.name,
           campaign.status,
           campaign.advertising_channel_type,
+          campaign.advertising_channel_sub_type,
           campaign.start_date,
           campaign.end_date,
           campaign.campaign_budget,
@@ -72,6 +73,10 @@ pub const QUERIES: &[(&str, &str)] = &[
           campaign.network_settings.target_google_tv_network,
           campaign.geo_target_type_setting.positive_geo_target_type,
           campaign.geo_target_type_setting.negative_geo_target_type,
+          campaign.video_campaign_settings.video_ad_inventory_control.allow_in_stream,
+          campaign.video_campaign_settings.video_ad_inventory_control.allow_in_feed,
+          campaign.video_campaign_settings.video_ad_inventory_control.allow_shorts,
+          campaign.video_campaign_settings.video_ad_inventory_control.allow_non_skippable_in_stream,
           campaign.frequency_caps
         FROM campaign
         WHERE campaign.status != 'REMOVED'",

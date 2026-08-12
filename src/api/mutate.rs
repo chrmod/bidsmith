@@ -957,6 +957,7 @@ fn campaign_update_body(c: &JsonCampaign, resource_name: &str, fields: &[String]
     let mut manual_cpc_sub: Option<Map<String, Value>> = None;
     let mut network_sub: Option<Map<String, Value>> = None;
     let mut geo_sub: Option<Map<String, Value>> = None;
+    let mut inventory_sub: Option<Map<String, Value>> = None;
     for f in fields {
         match f.as_str() {
             "name" => {
@@ -1028,6 +1029,19 @@ fn campaign_update_body(c: &JsonCampaign, resource_name: &str, fields: &[String]
                         sub.insert((*json).into(), Value::String(v.to_string()));
                     }
                 }
+                if let Some((field, json)) = other
+                    .strip_prefix("video_campaign_settings.video_ad_inventory_control.")
+                    .and_then(|f| {
+                        crate::schema::VIDEO_AD_INVENTORY_FIELDS
+                            .iter()
+                            .find(|(field, _)| *field == f)
+                    })
+                {
+                    let sub = inventory_sub.get_or_insert_with(Map::new);
+                    if let Some(v) = c.video_ad_inventory(field) {
+                        sub.insert((*json).into(), Value::Bool(v));
+                    }
+                }
             }
         }
     }
@@ -1039,6 +1053,12 @@ fn campaign_update_body(c: &JsonCampaign, resource_name: &str, fields: &[String]
     }
     if let Some(sub) = geo_sub {
         m.insert("geoTargetTypeSetting".into(), Value::Object(sub));
+    }
+    if let Some(sub) = inventory_sub {
+        m.insert(
+            "videoCampaignSettings".into(),
+            json!({ "videoAdInventoryControl": Value::Object(sub) }),
+        );
     }
     Value::Object(m)
 }
@@ -1685,6 +1705,12 @@ fn campaign_create(c: &JsonCampaign, resource_name: &str, budget_rn: &str) -> Va
         "advertisingChannelType".into(),
         Value::String(c.advertising_channel_type.clone()),
     );
+    if let Some(s) = &c.advertising_channel_sub_type {
+        m.insert(
+            "advertisingChannelSubType".into(),
+            Value::String(s.clone()),
+        );
+    }
     m.insert("campaignBudget".into(), Value::String(budget_rn.to_string()));
     let eu_political = c
         .contains_eu_political_advertising
@@ -1722,6 +1748,18 @@ fn campaign_create(c: &JsonCampaign, resource_name: &str, budget_rn: &str) -> Va
         if !sub.is_empty() {
             m.insert("geoTargetTypeSetting".into(), Value::Object(sub));
         }
+    }
+    let mut inventory = Map::new();
+    for (field, json) in crate::schema::VIDEO_AD_INVENTORY_FIELDS {
+        if let Some(v) = c.video_ad_inventory(field) {
+            inventory.insert((*json).into(), Value::Bool(v));
+        }
+    }
+    if !inventory.is_empty() {
+        m.insert(
+            "videoCampaignSettings".into(),
+            json!({ "videoAdInventoryControl": Value::Object(inventory) }),
+        );
     }
     if !c.frequency_caps.is_empty() {
         m.insert("frequencyCaps".into(), frequency_caps_value(c));
@@ -2405,6 +2443,98 @@ mod tests {
         assert_eq!(
             campaign["geoTargetTypeSetting"],
             json!({"positiveGeoTargetType": "PRESENCE", "negativeGeoTargetType": "PRESENCE"})
+        );
+    }
+
+    #[test]
+    fn a_declared_video_inventory_goes_out_as_its_own_leaf_path() {
+        let op = campaign_update_op(
+            &campaign_bidding(
+                "DEMAND_GEN",
+                json!({
+                    "video_campaign_settings": {
+                        "video_ad_inventory_control": {"allow_shorts": false}
+                    }
+                }),
+            ),
+            &strategy_switch(
+                "video_campaign_settings.video_ad_inventory_control.allow_shorts",
+            ),
+        );
+        assert_eq!(
+            op["updateMask"],
+            json!("video_campaign_settings.video_ad_inventory_control.allow_shorts")
+        );
+        assert_eq!(
+            op["update"]["videoCampaignSettings"],
+            json!({"videoAdInventoryControl": {"allowShorts": false}})
+        );
+    }
+
+    #[test]
+    fn a_new_campaign_creates_with_the_video_inventory_it_declares() {
+        let input = campaign_bidding(
+            "DEMAND_GEN",
+            json!({
+                "target_cpm": {},
+                "video_campaign_settings": {
+                    "video_ad_inventory_control": {
+                        "allow_in_stream": true,
+                        "allow_shorts": false,
+                    }
+                },
+            }),
+        );
+        let report = DiffReport {
+            diffs: vec![
+                create_diff("m.b", "campaign_budget"),
+                create_diff("m.c", "campaign"),
+            ],
+            create_count: 2,
+            ..DiffReport::default()
+        };
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let campaign = plan.body["mutateOperations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|op| op.get("campaignOperation").and_then(|o| o.get("create")))
+            .expect("campaign create op");
+        assert_eq!(
+            campaign["videoCampaignSettings"],
+            json!({"videoAdInventoryControl": {"allowInStream": true, "allowShorts": false}})
+        );
+    }
+
+    /// The sub-type is immutable, so the create is the only chance to set it —
+    /// it never appears in an update body (issue #133).
+    #[test]
+    fn a_new_campaign_creates_with_the_channel_sub_type_it_declares() {
+        let input = campaign_bidding(
+            "SEARCH",
+            json!({
+                "manual_cpc": {},
+                "advertising_channel_sub_type": "SEARCH_MOBILE_APP",
+            }),
+        );
+        let report = DiffReport {
+            diffs: vec![
+                create_diff("m.b", "campaign_budget"),
+                create_diff("m.c", "campaign"),
+            ],
+            create_count: 2,
+            ..DiffReport::default()
+        };
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let campaign = plan.body["mutateOperations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|op| op.get("campaignOperation").and_then(|o| o.get("create")))
+            .expect("campaign create op");
+        assert_eq!(
+            campaign["advertisingChannelSubType"],
+            json!("SEARCH_MOBILE_APP")
         );
     }
 

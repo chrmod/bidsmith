@@ -777,6 +777,20 @@ fn collect_edits(
                                     .and_then(|g| g.get(field))
                                     .map(s)
                             )
+                        } else if let Some((field, _)) = block_field(
+                            other,
+                            "video_campaign_settings.video_ad_inventory_control.",
+                            crate::schema::VIDEO_AD_INVENTORY_FIELDS,
+                        ) {
+                            opt!(
+                                f,
+                                vec![
+                                    "video_campaign_settings",
+                                    "video_ad_inventory_control",
+                                    *field
+                                ],
+                                c.video_ad_inventory(field).map(Expression::from)
+                            )
                         } else {
                             skip.push(other.to_string())
                         }
@@ -1116,6 +1130,39 @@ resource "google_ads_campaign" "summer_search" {
         assert!(out.contains("target_youtube = true"), "{out}");
         let (_, fields) = &outcome.applied[0];
         assert_eq!(fields, &["network_settings.target_youtube".to_string()]);
+    }
+
+    /// Two blocks deep, which is where the edit model earns its recursion —
+    /// Shorts switched on in the UI comes back into the file (issue #133).
+    #[test]
+    fn a_drifted_video_inventory_is_written_back() {
+        let src = CAMPAIGN_SRC.replace(
+            "  manual_cpc {\n    enhanced_cpc_enabled = false\n  }\n",
+            "  manual_cpc {\n    enhanced_cpc_enabled = false\n  }\n\n  \
+             video_campaign_settings {\n    video_ad_inventory_control {\n      \
+             allow_shorts = false\n    }\n  }\n",
+        );
+        let live = r#"{
+          "customer_id": "1234567890",
+          "campaign_budgets": [
+            {"id":"111","name":"Budget","amount_micros":10000000,"delivery_method":"STANDARD"}
+          ],
+          "campaigns": [
+            {"id":"555","name":"Summer 2026","status":"ENABLED",
+             "advertising_channel_type":"SEARCH","campaign_budget":"111",
+             "managed_address":"main.google_ads_campaign.summer_search",
+             "manual_cpc":{"enhanced_cpc_enabled":false},
+             "video_campaign_settings":{"video_ad_inventory_control":{"allow_shorts":true}}}
+          ]
+        }"#;
+        let (out, outcome) = run(&src, live);
+
+        assert!(out.contains("allow_shorts = true"), "{out}");
+        let (_, fields) = &outcome.applied[0];
+        assert_eq!(
+            fields,
+            &["video_campaign_settings.video_ad_inventory_control.allow_shorts".to_string()]
+        );
     }
 
     #[test]
