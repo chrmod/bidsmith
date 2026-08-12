@@ -381,6 +381,22 @@ Smaller follow-ups that can ride along:
   a portfolio `google_ads_bidding_strategy` resource, and the
   conversion-based strategies (`target_cpa`, `maximize_conversions`, …),
   which want conversion tracking modelled first.
+- ✅ Campaign flight windows (issue #113). `google_ads_campaign` takes
+  `start_date` / `end_date`, so a time-boxed test carries its own stop
+  instead of relying on someone remembering. Verified live: eleven
+  ENABLED campaigns on the account carried Google's `2037-12-30`
+  "no end date" sentinel, including three video campaigns documented
+  in-repo as 14-day tests — at EUR 20/day each, the gap between the
+  intended flight and the configured one is roughly EUR 840 against
+  roughly EUR 240k of exposure. Six of the eleven are SEARCH, where
+  bidsmith can write the correction; a `validateOnly` update of
+  `end_date` on a live search campaign is accepted. The sentinel maps to
+  an omitted attribute so adoption doesn't bake a fake date into every
+  file, dates are validated as real calendar dates, and `lint` warns on
+  a window that ends before it starts.
+  **Deferred:** an `end_date`-in-the-past warning (needs injectable
+  time), and dates on other resources — only the campaign has them
+  today.
 - ✅ Local pre-flight for impossible operations (issue #116). The mutate
   batch is atomic, so one operation the account can never accept rejects
   every unrelated one with it — a stale declaration in one corner of the

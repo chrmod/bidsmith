@@ -1,6 +1,6 @@
 ---
 interface TypeShape {
-  type: 'string' | 'integer' | 'number' | 'boolean' | 'enum' | 'reference' | 'list' | 'rsa_asset_list' | 'language_list' | 'location_list';
+  type: 'string' | 'date' | 'integer' | 'number' | 'boolean' | 'enum' | 'reference' | 'list' | 'rsa_asset_list' | 'language_list' | 'location_list';
   values?: string[];
   targets?: string[];
   element?: TypeShape;
@@ -27,6 +27,8 @@ function plainTypeLabel(t: TypeShape): string {
   switch (t.type) {
     case 'string':
       return 'String';
+    case 'date':
+      return 'Date (YYYY-MM-DD)';
     case 'integer':
       return 'Integer';
     case 'number':

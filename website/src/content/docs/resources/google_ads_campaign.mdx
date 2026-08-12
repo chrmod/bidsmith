@@ -48,6 +48,42 @@ resource "google_ads_campaign" "summer_search" {
 }
 ```
 
+## Flight windows
+
+`start_date` and `end_date` are `YYYY-MM-DD` strings, and they're how a
+time-boxed campaign stops on its own:
+
+```hcl
+resource "google_ads_campaign" "instream_test" {
+  name                     = "YouTube in-stream — August test"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.instream.id
+  start_date               = "2026-08-11"
+  end_date                 = "2026-08-25"
+}
+```
+
+A campaign with no `end_date` runs until somebody stops it. That's the
+default, and for an always-on brand campaign it's the right one — but
+for a two-week test it's the difference between a fortnight of spend and
+an open tab. Putting the end date in the file makes the intended
+envelope a committed fact that goes through review like everything else,
+instead of a reminder somebody has to remember.
+
+<Aside type="caution">
+  Google records "runs until further notice" as the date `2037-12-30`
+  rather than leaving the field empty. bidsmith treats that sentinel as
+  *unset*, so an open-ended campaign reads back with no `end_date`
+  instead of a fake one — and adding an `end_date` to such a campaign
+  shows up as ordinary drift you can review and apply.
+</Aside>
+
+Leave a date out and bidsmith won't touch it: a file that names no
+flight window manages neither end of it. `validate` catches dates that
+aren't real dates (`2026-02-30`, `11.08.2026`) and warns when a campaign
+would end before it starts, which Google accepts and then silently never
+delivers.
+
 ## Geo and language targeting
 
 The `languages` and `locations` lists are the readable way to say *who*

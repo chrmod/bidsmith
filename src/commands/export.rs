@@ -140,6 +140,10 @@ pub struct JsonCampaign {
     #[serde(default)]
     pub contains_eu_political_advertising: Option<String>,
     #[serde(default)]
+    pub start_date: Option<String>,
+    #[serde(default)]
+    pub end_date: Option<String>,
+    #[serde(default)]
     pub manual_cpc: Option<JsonManualCpc>,
     #[serde(default)]
     pub manual_cpm: Option<JsonBidSelector>,
@@ -1396,6 +1400,12 @@ fn write_campaign(
     write_attr(out, 1, "campaign_budget", &budget_ref);
     if let Some(v) = &c.contains_eu_political_advertising {
         write_attr(out, 1, "contains_eu_political_advertising", &fmt_string(v));
+    }
+    if let Some(v) = &c.start_date {
+        write_attr(out, 1, "start_date", &fmt_string(v));
+    }
+    if let Some(v) = &c.end_date {
+        write_attr(out, 1, "end_date", &fmt_string(v));
     }
     if !languages.is_empty() {
         write_attr(out, 1, "languages", &fmt_string_list(languages));

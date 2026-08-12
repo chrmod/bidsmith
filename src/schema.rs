@@ -14,6 +14,8 @@ use crate::parser::ParsedFile;
 #[derive(Clone)]
 pub enum FieldType {
     String,
+    /// `YYYY-MM-DD`, the shape every date field in the Google Ads API takes.
+    Date,
     Integer,
     Number,
     Bool,
@@ -63,6 +65,10 @@ pub const CAMPAIGN_BIDDING_BLOCKS: &[&str] = &[
     "target_cpm",
     "target_cpv",
 ];
+
+/// Google Ads stores "runs until further notice" as this date rather than an
+/// empty field, so it round-trips as an omitted `end_date` (issue #113).
+pub const NO_END_DATE: &str = "2037-12-30";
 
 /// The settable bid fields on `AdGroup`, each paired with its Google Ads JSON
 /// name. Which one carries the live bid depends on the campaign's bidding
@@ -527,6 +533,8 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                     )
                     .with_default(DefaultValue::Str(DEFAULT_EU_POLITICAL))
                     .always_emit(),
+                    attr("start_date", FieldType::Date, false),
+                    attr("end_date", FieldType::Date, false),
                     attr("languages", FieldType::LanguageList, false),
                     attr("locations", FieldType::LocationList, false),
                 ],
@@ -2717,6 +2725,23 @@ fn validate_value(
                 ));
             }
         }
+        FieldType::Date => match expr {
+            Expression::String(s) => {
+                if let Some(problem) = date_problem(s.value()) {
+                    diags.push(Diag::new(file.src.clone(), span, problem));
+                }
+            }
+            other => {
+                diags.push(Diag::new(
+                    file.src.clone(),
+                    span,
+                    format!(
+                        "expected date string (YYYY-MM-DD), got {}",
+                        describe_expr(other)
+                    ),
+                ));
+            }
+        },
         FieldType::Number => {
             if !matches!(expr, Expression::Number(_)) {
                 diags.push(Diag::new(
@@ -3021,9 +3046,45 @@ pub(crate) fn extract_traversal_path(t: &Traversal) -> Option<Vec<String>> {
     Some(path)
 }
 
+/// Google Ads dates are plain `YYYY-MM-DD` civil dates with no zone, so the
+/// check is calendar arithmetic and nothing more. Returns the complaint to
+/// show, or None when the string is a real date.
+pub fn date_problem(s: &str) -> Option<String> {
+    let bad = |why: &str| Some(format!("{s:?} is not a date (YYYY-MM-DD) — {why}"));
+    let parts: Vec<&str> = s.split('-').collect();
+    if parts.len() != 3
+        || parts[0].len() != 4
+        || parts[1].len() != 2
+        || parts[2].len() != 2
+        || !s.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+    {
+        return bad("expected four-digit year, two-digit month, two-digit day");
+    }
+    let (year, month, day) = (
+        parts[0].parse::<u32>().ok()?,
+        parts[1].parse::<u32>().ok()?,
+        parts[2].parse::<u32>().ok()?,
+    );
+    if !(1..=12).contains(&month) {
+        return bad("month must be 01-12");
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let last = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        _ if leap => 29,
+        _ => 28,
+    };
+    if day < 1 || day > last {
+        return bad(&format!("{year:04}-{month:02} has {last} days"));
+    }
+    None
+}
+
 fn describe_field_type(ty: &FieldType) -> String {
     match ty {
         FieldType::String => "string".to_string(),
+        FieldType::Date => "date string (YYYY-MM-DD)".to_string(),
         FieldType::Integer => "integer".to_string(),
         FieldType::Number => "number".to_string(),
         FieldType::Bool => "boolean".to_string(),
@@ -3222,6 +3283,7 @@ fn is_false(b: &bool) -> bool {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TypeDoc {
     String,
+    Date,
     Integer,
     Number,
     Boolean,
@@ -3292,6 +3354,7 @@ fn default_to_json(d: &DefaultValue) -> serde_json::Value {
 fn ty_to_doc(ty: &FieldType) -> TypeDoc {
     match ty {
         FieldType::String => TypeDoc::String,
+        FieldType::Date => TypeDoc::Date,
         FieldType::Integer => TypeDoc::Integer,
         FieldType::Number => TypeDoc::Number,
         FieldType::Bool => TypeDoc::Boolean,
@@ -5039,6 +5102,66 @@ resource "google_ads_campaign_criterion" "extra_geo" {{
         );
         assert!(
             diags.iter().any(|d| d.message.contains("already declares inline 'locations'")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_flight_date_that_is_not_a_date_errors() {
+        for (label, value, expected) in [
+            ("date_month", "2026-13-01", "month must be 01-12"),
+            ("date_day", "2026-02-30", "2026-02 has 28 days"),
+            ("date_shape", "11.08.2026", "expected four-digit year"),
+            ("date_short", "2026-8-1", "expected four-digit year"),
+        ] {
+            let diags = validate_str(
+                label,
+                &format!(
+                    r#"
+resource "google_ads_campaign_budget" "b" {{
+  name          = "B"
+  amount_micros = 1000000
+}}
+
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  end_date                 = "{value}"
+}}
+"#
+                ),
+            );
+            assert!(
+                diags.iter().any(|d| d.message.contains(expected)),
+                "{value}: {:?}",
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn a_leap_day_is_a_date() {
+        let diags = validate_str(
+            "date_leap",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  start_date               = "2028-02-29"
+  end_date                 = "2028-12-31"
+}
+"#,
+        );
+        assert!(
+            diags.is_empty(),
             "{:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );

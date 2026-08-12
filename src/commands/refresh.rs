@@ -706,6 +706,8 @@ fn collect_edits(
                         vec!["contains_eu_political_advertising"],
                         c.contains_eu_political_advertising.as_deref().map(s)
                     ),
+                    "start_date" => opt!(f, vec!["start_date"], c.start_date.as_deref().map(s)),
+                    "end_date" => opt!(f, vec!["end_date"], c.end_date.as_deref().map(s)),
                     // A strategy switch replaces one block with another, which
                     // the scalar-path edit model can't express.
                     "manual_cpc" | "manual_cpm" | "manual_cpv" | "target_cpm" | "target_cpv" => {

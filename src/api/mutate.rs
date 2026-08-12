@@ -955,6 +955,16 @@ fn campaign_update_body(c: &JsonCampaign, resource_name: &str, fields: &[String]
                     );
                 }
             }
+            "start_date" => {
+                if let Some(s) = &c.start_date {
+                    m.insert("startDate".into(), Value::String(s.clone()));
+                }
+            }
+            "end_date" => {
+                if let Some(s) = &c.end_date {
+                    m.insert("endDate".into(), Value::String(s.clone()));
+                }
+            }
             "manual_cpc.enhanced_cpc_enabled" => {
                 let sub = manual_cpc_sub.get_or_insert_with(Map::new);
                 if let Some(e) = c.manual_cpc.as_ref().and_then(|m| m.enhanced_cpc_enabled) {
@@ -1613,6 +1623,12 @@ fn campaign_create(c: &JsonCampaign, resource_name: &str, budget_rn: &str) -> Va
         "containsEuPoliticalAdvertising".into(),
         Value::String(eu_political),
     );
+    if let Some(d) = &c.start_date {
+        m.insert("startDate".into(), Value::String(d.clone()));
+    }
+    if let Some(d) = &c.end_date {
+        m.insert("endDate".into(), Value::String(d.clone()));
+    }
     if let Some((field, body)) = bidding_strategy_value(c) {
         m.insert(field.into(), body);
     }

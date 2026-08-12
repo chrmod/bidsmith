@@ -70,6 +70,7 @@ fn lint_resource(file: &ParsedFile, block: &Block, bindings: &Bindings, diags: &
 
     if ty == "google_ads_campaign" {
         lint_frequency_caps(file, block, &address, bindings, diags);
+        lint_flight_window(file, block, &address, bindings, diags);
     }
 
     if ty == "google_ads_campaign_criterion" {
@@ -77,6 +78,38 @@ fn lint_resource(file: &ParsedFile, block: &Block, bindings: &Bindings, diags: &
             lint_language(file, lang_block, &address, bindings, diags);
         }
         lint_undetermined_demographic(file, block, &address, bindings, diags);
+    }
+}
+
+/// A flight that ends before it starts is a typo with a silent consequence:
+/// Google accepts the campaign and it simply never delivers. Dates sort
+/// lexically in `YYYY-MM-DD`, and both are validated as real dates before this
+/// runs, so a string compare is the whole check.
+fn lint_flight_window(
+    file: &ParsedFile,
+    block: &Block,
+    address: &str,
+    bindings: &Bindings,
+    diags: &mut Vec<Diag>,
+) {
+    let Some(end_attr) = find_attr(&block.body, "end_date") else {
+        return;
+    };
+    let (Some(start), Some(end)) = (
+        find_attr(&block.body, "start_date")
+            .and_then(|a| eval_str(bindings, &file.module, &a.value)),
+        eval_str(bindings, &file.module, &end_attr.value),
+    ) else {
+        return;
+    };
+    if end.as_str() < start.as_str() {
+        diags.push(Diag::warning(
+            file.src.clone(),
+            span_of(end_attr.value.span()),
+            format!(
+                "{address} ends on {end} but starts on {start}: Google Ads accepts the campaign and it never delivers"
+            ),
+        ));
     }
 }
 
@@ -475,6 +508,69 @@ mod tests {
             .iter()
             .map(|d| d.message.clone())
             .collect()
+    }
+
+    fn campaign_with_flight(name: &str, dates: &str) -> Vec<String> {
+        lint_str(
+            name,
+            &format!(
+                r#"
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+{dates}
+}}
+"#
+            ),
+        )
+    }
+
+    #[test]
+    fn a_flight_that_ends_before_it_starts_warns() {
+        let msgs = campaign_with_flight(
+            "flight_backwards",
+            "  start_date = \"2026-08-25\"\n  end_date   = \"2026-08-11\"",
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("never delivers")),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_flight_window_is_quiet() {
+        let msgs = campaign_with_flight(
+            "flight_ok",
+            "  start_date = \"2026-08-11\"\n  end_date   = \"2026-08-25\"",
+        );
+        assert!(
+            !msgs.iter().any(|m| m.contains("never delivers")),
+            "{msgs:?}"
+        );
+    }
+
+    /// Same day is a legitimate one-day flight, not an error.
+    #[test]
+    fn a_single_day_flight_is_quiet() {
+        let msgs = campaign_with_flight(
+            "flight_one_day",
+            "  start_date = \"2026-08-11\"\n  end_date   = \"2026-08-11\"",
+        );
+        assert!(
+            !msgs.iter().any(|m| m.contains("never delivers")),
+            "{msgs:?}"
+        );
+    }
+
+    /// An open-ended campaign declares a start and no end; nothing to compare.
+    #[test]
+    fn a_start_without_an_end_is_quiet() {
+        let msgs = campaign_with_flight("flight_open", "  start_date = \"2026-08-11\"");
+        assert!(
+            !msgs.iter().any(|m| m.contains("never delivers")),
+            "{msgs:?}"
+        );
     }
 
     fn campaign_with_caps(name: &str, channel: &str) -> Vec<String> {
