@@ -18,8 +18,28 @@ per-resource rows. Pass `--show-unchanged` to list every resource,
 including `no-op` rows.
 
 If `plan` reports no changes, your `.bid` files and the live account
-already match. If `plan` has rows, [`apply`](/bidsmith/commands/apply/)
-is the next step.
+already match **on the settings bidsmith models**. If `plan` has rows,
+[`apply`](/bidsmith/commands/apply/) is the next step.
+
+## What `unchanged` covers
+
+Any plan that counts unchanged resources ends with a line saying what
+that count is a statement about:
+
+```
+Plan: 0 to create, 0 to update, 0 to destroy, 2 to adopt, 1447 unchanged. (2 accepted, 0 rejected)
+Note: `unchanged` compares the fields bidsmith models. Run `bidsmith drift` for the live fields it does not.
+```
+
+Google Ads has far more settings per campaign than bidsmith models, and
+a setting bidsmith doesn't model isn't just left alone — it's never
+fetched, so it can't show up as a difference. `unchanged` therefore means
+"nothing changed among the fields on this page," not "nothing about this
+campaign differs from your repo."
+
+[`bidsmith drift`](/bidsmith/commands/drift/) reports the rest: which
+settings fall outside the comparison, and which of those are actually set
+on your account.
 
 ## Synopsis
 

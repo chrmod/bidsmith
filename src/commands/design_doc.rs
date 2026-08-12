@@ -220,7 +220,19 @@ fn build_context(cfg: &DesignDocConfig) -> Context {
                 "/{api_v}/customers/{{id}}/googleAds:searchStream"
             ),
             method: "POST",
-            used_by: "plan, apply, pull, refresh, query",
+            used_by: "plan, apply, pull, refresh, query, drift",
+            validate_only: "n/a (read)",
+        },
+        Endpoint {
+            endpoint: format!("/{api_v}/googleAdsFields:search"),
+            method: "POST",
+            used_by: "drift (GoogleAdsFieldService — which fields a resource exposes; account-independent metadata)",
+            validate_only: "n/a (read)",
+        },
+        Endpoint {
+            endpoint: "googleads.googleapis.com/$discovery/rest".into(),
+            method: "GET",
+            used_by: "drift (public discovery document — which fields are settable rather than output-only; unauthenticated)",
             validate_only: "n/a (read)",
         },
         Endpoint {
@@ -494,6 +506,25 @@ mod tests {
         assert!(!html.contains("<FILL IN"));
         assert!(!html.contains("{{"));
         assert!(!html.contains("{%"));
+    }
+
+    #[test]
+    fn render_lists_every_endpoint_the_client_can_call() {
+        // The lockstep rule: a new API call site has to reach the applicant's
+        // design document in the same change, or the document understates what
+        // the tool does with the token it is asking for.
+        let html = render(&build_context(&good_config())).expect("render");
+        for endpoint in [
+            "customers:listAccessibleCustomers",
+            "googleAds:searchStream",
+            "googleAdsFields:search",
+            "$discovery/rest",
+            ":generateKeywordIdeas",
+            "googleAds:mutate",
+            "customAudiences:mutate",
+        ] {
+            assert!(html.contains(endpoint), "missing endpoint '{endpoint}' in output");
+        }
     }
 
     #[test]

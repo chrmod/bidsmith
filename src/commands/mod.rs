@@ -2,6 +2,7 @@ pub mod adapt;
 pub mod apply;
 pub mod auth;
 pub mod design_doc;
+pub mod drift;
 pub mod e2e_cleanup;
 pub mod export;
 pub mod fmt;

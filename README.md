@@ -41,6 +41,7 @@ Validate, plan, and apply all work today.
 | `validate` | Check that your `.bid` files are well-formed                                 |
 | `plan`     | Show the diff between your `.bid` files and what's live in Google Ads        |
 | `apply`    | Make Google Ads match the `.bid` files (prompts before changing anything)    |
+| `drift`    | Show the settings `plan` doesn't look at — and which of them are set on your account |
 | `pull`     | Snapshot the live account                                                    |
 | `refresh`  | Pull the live account into `.bid` files — bootstrap fresh ones (`-d`/`-o`), or `--in-place` to update existing files with live changes |
 | `query`    | Read stats and reports with a GAQL query (clicks, cost, conversions, search terms) |
@@ -54,6 +55,10 @@ keywords and negatives, shared keyword lists, budgets,
 location/language/proximity targeting, device bid adjustments,
 conversion actions, and call / customer assets. The full reference is on the
 [docs site](https://chrmod.github.io/bidsmith/resources/).
+
+What isn't covered is not silently ignored: `plan` compares the fields
+bidsmith models, and `bidsmith drift` reports the rest — every Google Ads
+setting the plan never looked at, and which of them are set on your account.
 
 ## A `.bid` file looks like this
 

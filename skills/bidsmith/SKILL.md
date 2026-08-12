@@ -99,6 +99,7 @@ bidsmith export --from-json input.json [-o out.bid]
 bidsmith plan                                   # diff .bid vs. live Google Ads
 bidsmith plan --format markdown --detailed-exitcode  # PR-comment table; exit 2 on a non-empty diff (CI)
 bidsmith apply                                  # apply the plan; prompts unless --auto-approve
+bidsmith drift                                  # settings plan never compares, and which are set live
 bidsmith refresh [-d DIR | -o FILE]             # import live state into fresh .bid files
 bidsmith query "GAQL" [--format table|json|tsv] # read-only stats/reporting passthrough
 bidsmith pull [-o FILE]                         # dump raw live state as SearchStream JSON
@@ -277,6 +278,13 @@ Never run `bidsmith apply --auto-approve` without first showing the user
 the `plan` output. State lives on Google Ads itself (no local `.tfstate`);
 `plan` and `refresh` match live resources against `.bid` declarations by
 name.
+
+`plan` compares the fields bidsmith models, so an `unchanged` row is a
+statement about those fields only — never describe a clean plan as "the
+account matches the repo". `bidsmith drift` reports the rest: which live
+settings fall outside the comparison and which of them are actually set.
+Reach for it when a number on the account disagrees with the repo and the
+plan is green anyway.
 
 ## GitOps: repos with CI
 
