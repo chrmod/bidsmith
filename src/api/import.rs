@@ -12,8 +12,8 @@ use crate::commands::export::{
     JsonManualCpc, JsonNetworkSettings, JsonParentalStatus, JsonPlacement, JsonProximity,
     JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedCriterion, JsonSharedSet, JsonSitelinkAsset,
     JsonStructuredSnippetAsset, JsonTopic, JsonUserInterest, JsonValueSettings,
-    JsonVideoAdInventoryControl, JsonVideoCampaignSettings, JsonVideoResponsiveAd,
-    JsonYoutubeChannel, JsonYoutubeVideo, JsonYoutubeVideoAsset,
+    JsonVideoAd, JsonVideoAdInventoryControl, JsonVideoCampaignSettings,
+    JsonVideoResponsiveAd, JsonYoutubeChannel, JsonYoutubeVideo, JsonYoutubeVideoAsset,
 };
 use crate::diagnostics::Diag;
 use crate::parser::ParsedFile;
@@ -741,8 +741,11 @@ fn apply_ad_overrides(
 fn import_ad(ctx: &Ctx, block: &Block) -> JsonAd {
     let mut name = None;
     let mut final_urls: Vec<String> = Vec::new();
+    let mut final_mobile_urls: Vec<String> = Vec::new();
+    let mut display_url = None;
     let mut rsa = None;
     let mut video = None;
+    let mut plain_video = None;
     let mut demand_gen = None;
 
     for s in block.body.iter() {
@@ -750,11 +753,14 @@ fn import_ad(ctx: &Ctx, block: &Block) -> JsonAd {
             Structure::Attribute(a) => match a.key.as_str() {
                 "name" => name = expect_string_owned(ctx, a),
                 "final_urls" => final_urls = expect_string_list(ctx, &a.value),
+                "final_mobile_urls" => final_mobile_urls = expect_string_list(ctx, &a.value),
+                "display_url" => display_url = expect_string_owned(ctx, a),
                 _ => {}
             },
             Structure::Block(b) => match b.ident.as_str() {
                 "responsive_search_ad" => rsa = Some(import_rsa(ctx, b)),
-                "video_responsive_ad" => video = Some(import_video_ad(ctx, b)),
+                "video_responsive_ad" => video = Some(import_video_responsive_ad(ctx, b)),
+                "video_ad" => plain_video = Some(import_video_ad(ctx, b)),
                 "demand_gen_video_responsive_ad" => {
                     demand_gen = Some(import_demand_gen_video_ad(ctx, b))
                 }
@@ -766,8 +772,11 @@ fn import_ad(ctx: &Ctx, block: &Block) -> JsonAd {
     JsonAd {
         name,
         final_urls,
+        final_mobile_urls,
+        display_url,
         responsive_search_ad: rsa,
         video_responsive_ad: video,
+        video_ad: plain_video,
         demand_gen_video_responsive_ad: demand_gen,
     }
 }
@@ -812,12 +821,14 @@ fn import_demand_gen_video_ad(ctx: &Ctx, block: &Block) -> JsonDemandGenVideoRes
     }
 }
 
-fn import_video_ad(ctx: &Ctx, block: &Block) -> JsonVideoResponsiveAd {
+fn import_video_responsive_ad(ctx: &Ctx, block: &Block) -> JsonVideoResponsiveAd {
     let mut video = None;
     let mut headlines: Vec<String> = Vec::new();
     let mut long_headlines: Vec<String> = Vec::new();
     let mut descriptions: Vec<String> = Vec::new();
     let mut call_to_actions: Vec<String> = Vec::new();
+    let mut breadcrumb1 = None;
+    let mut breadcrumb2 = None;
     for s in block.body.iter() {
         let Structure::Attribute(a) = s else { continue };
         match a.key.as_str() {
@@ -828,6 +839,8 @@ fn import_video_ad(ctx: &Ctx, block: &Block) -> JsonVideoResponsiveAd {
             "long_headlines" => long_headlines = expect_string_list(ctx, &a.value),
             "descriptions" => descriptions = expect_string_list(ctx, &a.value),
             "call_to_actions" => call_to_actions = expect_string_list(ctx, &a.value),
+            "breadcrumb1" => breadcrumb1 = expect_string_owned(ctx, a),
+            "breadcrumb2" => breadcrumb2 = expect_string_owned(ctx, a),
             _ => {}
         }
     }
@@ -837,6 +850,21 @@ fn import_video_ad(ctx: &Ctx, block: &Block) -> JsonVideoResponsiveAd {
         long_headlines,
         descriptions,
         call_to_actions,
+        breadcrumb1,
+        breadcrumb2,
+    }
+}
+
+fn import_video_ad(ctx: &Ctx, block: &Block) -> JsonVideoAd {
+    let mut video = None;
+    for s in block.body.iter() {
+        let Structure::Attribute(a) = s else { continue };
+        if a.key.as_str() == "video" {
+            video = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r));
+        }
+    }
+    JsonVideoAd {
+        video: video.unwrap_or_default(),
     }
 }
 
@@ -2239,6 +2267,79 @@ resource "google_ads_ad_group_ad" "preroll" {
         assert_eq!(video.call_to_actions, vec!["Install".to_string()]);
         // A video ad carries no RSA.
         assert!(input.ad_group_ads[0].ad.responsive_search_ad.is_none());
+    }
+
+    #[test]
+    fn imports_a_video_ad_creative_with_its_tracking_urls() {
+        let input = import_str(
+            "video_ad_urls",
+            r#"
+resource "google_ads_youtube_video_asset" "brand" {
+  youtube_video_id = "dQw4w9WgXcQ"
+}
+
+resource "google_ads_ad_group_ad" "preroll" {
+  ad_group = google_ads_ad_group.ig.id
+
+  ad {
+    final_urls        = ["https://ghostery.com/?utm_campaign=GH_YouTubeUS_v1"]
+    final_mobile_urls = ["https://m.ghostery.com/?utm_campaign=GH_YouTubeUS_v1"]
+    display_url       = "www.ghostery.com"
+
+    video_ad {
+      video = google_ads_youtube_video_asset.brand.id
+    }
+  }
+}
+"#,
+        );
+        let ad = &input.ad_group_ads[0].ad;
+        assert_eq!(ad.display_url.as_deref(), Some("www.ghostery.com"));
+        assert_eq!(
+            ad.final_mobile_urls,
+            vec!["https://m.ghostery.com/?utm_campaign=GH_YouTubeUS_v1".to_string()]
+        );
+        let video = ad.video_ad.as_ref().expect("video_ad body imported");
+        assert!(
+            video.video.ends_with("google_ads_youtube_video_asset.brand"),
+            "video ref was {}",
+            video.video
+        );
+        assert!(ad.video_responsive_ad.is_none());
+    }
+
+    #[test]
+    fn imports_video_responsive_breadcrumbs() {
+        let input = import_str(
+            "video_breadcrumbs",
+            r#"
+resource "google_ads_youtube_video_asset" "brand" {
+  youtube_video_id = "dQw4w9WgXcQ"
+}
+
+resource "google_ads_ad_group_ad" "preroll" {
+  ad_group = google_ads_ad_group.ig.id
+
+  ad {
+    final_urls = ["https://ghostery.com/get"]
+
+    video_responsive_ad {
+      video       = google_ads_youtube_video_asset.brand.id
+      headlines   = ["Block Ads"]
+      breadcrumb1 = "AdBlocker"
+      breadcrumb2 = "Browser"
+    }
+  }
+}
+"#,
+        );
+        let video = input.ad_group_ads[0]
+            .ad
+            .video_responsive_ad
+            .as_ref()
+            .expect("video ad body imported");
+        assert_eq!(video.breadcrumb1.as_deref(), Some("AdBlocker"));
+        assert_eq!(video.breadcrumb2.as_deref(), Some("Browser"));
     }
 
     #[test]

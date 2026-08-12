@@ -541,6 +541,16 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     }
 
     // ---- ad_group_ads (label hit, else body 1:1; label authorizes destroy) -
+    // The read-only channel reaches the creative too, and an ad carries no
+    // channel of its own — so the check is on the parent, the same way the ad
+    // group's is on its campaign. Adoption is what works here: the label write
+    // that claims a live video ad is permitted, creating one never is.
+    let video_ad_groups: HashSet<&str> = declared
+        .ad_groups
+        .iter()
+        .filter(|g| video_campaigns.contains(g.campaign.as_str()))
+        .map(|g| g.id.as_str())
+        .collect();
     let ad_outcomes = match_ad_group_ads(
         &declared.ad_group_ads,
         &live.ad_group_ads,
@@ -558,6 +568,15 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
             }
             None => None,
         };
+        // As on the campaign: a create the file already forbade gets the
+        // sharper "expected to adopt, found nothing" blocker instead.
+        let adopt_only_create =
+            matches!(action, Action::Create) && declared.adopt_only.contains(&d.id);
+        if video_ad_groups.contains(d.ad_group.as_str()) && !adopt_only_create {
+            if let Some(b) = video_is_read_only_blocker(&d.id, action) {
+                blockers.push(b);
+            }
+        }
         if let Some(plan) =
             make_label_plan("ad_group_ad", &d.id, matched, customer_id, &live.labels)
         {
@@ -1972,7 +1991,7 @@ fn match_ad_group_ads(
             .iter()
             .enumerate()
             .filter(|(li, l)| {
-                !consumed[*li] && &l.ad_group == parent_id && ad_urls_key(l) == ad_urls_key(d)
+                !consumed[*li] && &l.ad_group == parent_id && ad_urls_match(d, l)
             })
             .map(|(li, _)| li)
             .min_by_key(|&li| usize::from(!diff_ad_group_ad(d, &live[li]).is_empty()));
@@ -1991,6 +2010,7 @@ fn match_ad_group_ads(
 fn declares_creative(a: &JsonAdGroupAd) -> bool {
     a.ad.responsive_search_ad.is_some()
         || a.ad.video_responsive_ad.is_some()
+        || a.ad.video_ad.is_some()
         || a.ad.demand_gen_video_responsive_ad.is_some()
 }
 
@@ -2004,8 +2024,19 @@ fn ad_bodies_match(
     if declares_creative(d) {
         ad_body_key(d, asset_match) == ad_body_key(l, asset_match)
     } else {
-        ad_urls_key(d) == ad_urls_key(l)
+        ad_urls_match(d, l)
     }
+}
+
+/// The URL match for a creative-less `ad {}` — the "the URLs are mine, the
+/// creative is not" shape. `final_urls` always has to agree; the two optional
+/// URL fields only when the file names them, because an ad that declares no
+/// creative is not asserting anything about the ones it leaves out, and
+/// tightening this would re-plan every already-adopted UI-built ad as a create.
+fn ad_urls_match(d: &JsonAdGroupAd, l: &JsonAdGroupAd) -> bool {
+    d.ad.final_urls == l.ad.final_urls
+        && (d.ad.final_mobile_urls.is_empty() || d.ad.final_mobile_urls == l.ad.final_mobile_urls)
+        && (d.ad.display_url.is_none() || d.ad.display_url == l.ad.display_url)
 }
 
 fn ad_urls_key(a: &JsonAdGroupAd) -> String {
@@ -2022,7 +2053,13 @@ fn ad_body_key(a: &JsonAdGroupAd, asset_match: &HashMap<String, String>) -> Stri
     use std::fmt::Write;
     let video_id = |r: &String| asset_match.get(r).unwrap_or(r).clone();
     let mut k = String::new();
-    let _ = write!(k, "urls:{}", ad_urls_key(a));
+    let _ = write!(
+        k,
+        "urls:{}\u{1e}murls:{}\u{1e}durl:{}",
+        ad_urls_key(a),
+        a.ad.final_mobile_urls.join("\u{1f}"),
+        a.ad.display_url.as_deref().unwrap_or(""),
+    );
     if let Some(rsa) = &a.ad.responsive_search_ad {
         k.push_str("\u{1e}h:");
         for h in &rsa.headlines {
@@ -2042,13 +2079,18 @@ fn ad_body_key(a: &JsonAdGroupAd, asset_match: &HashMap<String, String>) -> Stri
     if let Some(v) = &a.ad.video_responsive_ad {
         let _ = write!(
             k,
-            "\u{1e}video:{}\u{1e}vh:{}\u{1e}vlh:{}\u{1e}vd:{}\u{1e}vcta:{}",
+            "\u{1e}video:{}\u{1e}vh:{}\u{1e}vlh:{}\u{1e}vd:{}\u{1e}vcta:{}\u{1e}vb1:{}\u{1e}vb2:{}",
             video_id(&v.video),
             v.headlines.join("\u{1f}"),
             v.long_headlines.join("\u{1f}"),
             v.descriptions.join("\u{1f}"),
             v.call_to_actions.join("\u{1f}"),
+            v.breadcrumb1.as_deref().unwrap_or(""),
+            v.breadcrumb2.as_deref().unwrap_or(""),
         );
+    }
+    if let Some(v) = &a.ad.video_ad {
+        let _ = write!(k, "\u{1e}va:{}", video_id(&v.video));
     }
     if let Some(dg) = &a.ad.demand_gen_video_responsive_ad {
         // call_to_actions are left out: live Demand Gen CTAs are asset refs, so
@@ -2391,6 +2433,9 @@ mod ad_match_tests {
             ad: JsonAd {
                 name: None,
                 final_urls: vec!["https://example.com".to_string()],
+                final_mobile_urls: Vec::new(),
+                display_url: None,
+                video_ad: None,
                 responsive_search_ad: Some(JsonResponsiveSearchAd {
                     headlines: vec![JsonRsaAsset {
                         text: headline.to_string(),
@@ -3243,6 +3288,251 @@ mod removed_resource_tests {
         assert!(
             ad_destroys(&report).is_empty(),
             "a REMOVED ad must not be re-flagged for destroy"
+        );
+    }
+}
+
+#[cfg(test)]
+mod video_creative_tests {
+    use super::*;
+
+    fn input(json: &str) -> ExportInput {
+        serde_json::from_str(json).expect("valid test input")
+    }
+
+    fn ad_action(report: &DiffReport) -> &Action {
+        &report.diffs.iter().find(|d| d.kind == "ad_group_ad").expect("an ad row").action
+    }
+
+    /// A live in-stream ad as `pull` renders it: a `video_ad` creative, the UTM
+    /// slug on `final_urls`, and the display URL beside it.
+    fn live_instream(managed_address: &str) -> ExportInput {
+        input(&format!(
+            r#"{{
+            "customer_id": "100",
+            "campaigns": [{{"id":"5","name":"Preroll","advertising_channel_type":"VIDEO","campaign_budget":"9"}}],
+            "ad_groups": [{{"id":"55","name":"In-stream","campaign":"5","managed_address":"m.ag"}}],
+            "youtube_video_assets": [{{"id":"42","youtube_video_id":"dQw4w9WgXcQ"}}],
+            "ad_group_ads": [{{
+                "id":"55~9","ad_group":"55","status":"ENABLED",
+                "ad":{{
+                    "final_urls":["https://ghostery.com/?utm_campaign=GH_YouTubeUS_v1"],
+                    "display_url":"www.ghostery.com",
+                    "video_ad":{{"video":"42"}}
+                }},
+                "managed_address":"{managed_address}"
+            }}],
+            "labels": {{"m.ag":"customers/100/labels/1","{managed_address}":"customers/100/labels/2"}}
+        }}"#
+        ))
+    }
+
+    #[test]
+    fn a_declared_video_ad_adopts_the_live_creative_it_describes() {
+        // The whole point of modelling these fields: the UTM slug the test is
+        // measured on becomes a reviewable line in the repo, and the ad it
+        // belongs to still plans as a no-op.
+        let declared = input(
+            r#"{
+            "customer_id": "100",
+            "ad_groups": [{"id":"m.ag","name":"In-stream","campaign":"m.c"}],
+            "youtube_video_assets": [{"id":"m.brand","youtube_video_id":"dQw4w9WgXcQ"}],
+            "ad_group_ads": [{
+                "id":"m.preroll","ad_group":"m.ag","status":"ENABLED",
+                "ad":{
+                    "final_urls":["https://ghostery.com/?utm_campaign=GH_YouTubeUS_v1"],
+                    "display_url":"www.ghostery.com",
+                    "video_ad":{"video":"m.brand"}
+                }
+            }]
+        }"#,
+        );
+        let report = diff(&declared, &live_instream("m.preroll"));
+
+        assert!(matches!(ad_action(&report), Action::NoOp { .. }), "{:?}", ad_action(&report));
+    }
+
+    #[test]
+    fn a_creative_less_ad_still_adopts_one_carrying_a_display_url() {
+        // The pre-#136 shape: a file that names only the URLs. Modelling
+        // `display_url` must not turn every already-adopted UI-built ad into a
+        // create of an ad the VIDEO channel would refuse anyway.
+        let declared = input(
+            r#"{
+            "customer_id": "100",
+            "ad_groups": [{"id":"m.ag","name":"In-stream","campaign":"m.c"}],
+            "ad_group_ads": [{
+                "id":"m.preroll","ad_group":"m.ag","status":"ENABLED",
+                "ad":{"final_urls":["https://ghostery.com/?utm_campaign=GH_YouTubeUS_v1"]}
+            }]
+        }"#,
+        );
+        let report = diff(&declared, &live_instream("m.preroll"));
+
+        assert!(matches!(ad_action(&report), Action::NoOp { .. }), "{:?}", ad_action(&report));
+    }
+
+    #[test]
+    fn a_declared_display_url_that_disagrees_is_not_the_same_ad() {
+        let declared = input(
+            r#"{
+            "customer_id": "100",
+            "ad_groups": [{"id":"m.ag","name":"In-stream","campaign":"m.c"}],
+            "ad_group_ads": [{
+                "id":"m.preroll","ad_group":"m.ag","status":"ENABLED",
+                "ad":{
+                    "final_urls":["https://ghostery.com/?utm_campaign=GH_YouTubeUS_v1"],
+                    "display_url":"ghostery.example"
+                }
+            }]
+        }"#,
+        );
+        let report = diff(&declared, &live_instream("m.preroll"));
+
+        assert!(matches!(ad_action(&report), Action::Create), "{:?}", ad_action(&report));
+    }
+
+    #[test]
+    fn two_ads_differing_only_in_the_tracking_url_are_two_bodies() {
+        let a = input(
+            r#"{"customer_id":"1","ad_group_ads":[{"id":"a","ad_group":"g",
+            "ad":{"final_urls":["https://e.com"],"display_url":"e.com",
+                  "final_mobile_urls":["https://m.e.com"],"video_ad":{"video":"v"}}}]}"#,
+        );
+        let b = input(
+            r#"{"customer_id":"1","ad_group_ads":[{"id":"b","ad_group":"g",
+            "ad":{"final_urls":["https://e.com"],"display_url":"e.com",
+                  "final_mobile_urls":["https://m2.e.com"],"video_ad":{"video":"v"}}}]}"#,
+        );
+        let empty = HashMap::new();
+        assert_ne!(
+            ad_body_key(&a.ad_group_ads[0], &empty),
+            ad_body_key(&b.ad_group_ads[0], &empty),
+        );
+    }
+
+    #[test]
+    fn video_responsive_breadcrumbs_are_part_of_the_body() {
+        let with = input(
+            r#"{"customer_id":"1","ad_group_ads":[{"id":"a","ad_group":"g",
+            "ad":{"final_urls":["https://e.com"],"video_responsive_ad":{
+                "video":"v","breadcrumb1":"AdBlocker","breadcrumb2":"Browser"}}}]}"#,
+        );
+        let without = input(
+            r#"{"customer_id":"1","ad_group_ads":[{"id":"a","ad_group":"g",
+            "ad":{"final_urls":["https://e.com"],"video_responsive_ad":{"video":"v"}}}]}"#,
+        );
+        let empty = HashMap::new();
+        assert_ne!(
+            ad_body_key(&with.ad_group_ads[0], &empty),
+            ad_body_key(&without.ad_group_ads[0], &empty),
+        );
+    }
+
+    #[test]
+    fn a_new_ad_on_a_video_campaign_blocks_the_batch() {
+        // The restriction is the channel, and an ad carries none of its own —
+        // so without the parent check this create reaches Google and takes
+        // every unrelated operation in the atomic batch down with it.
+        let declared = input(
+            r#"{
+            "customer_id": "100",
+            "campaign_budgets": [{"id":"m.b","name":"B","amount_micros":1000}],
+            "campaigns": [{"id":"m.c","name":"Preroll","advertising_channel_type":"VIDEO","campaign_budget":"m.b"}],
+            "ad_groups": [{"id":"m.ag","name":"In-stream","campaign":"m.c"}],
+            "youtube_video_assets": [{"id":"m.brand","youtube_video_id":"dQw4w9WgXcQ"}],
+            "ad_group_ads": [{
+                "id":"m.preroll","ad_group":"m.ag","status":"ENABLED",
+                "ad":{"final_urls":["https://ghostery.com/get"],
+                      "video_responsive_ad":{"video":"m.brand","headlines":["Block ads"]}}
+            }]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "campaign_budgets": [{"id":"9","name":"B","amount_micros":1000}],
+            "campaigns": [{"id":"5","name":"Preroll","advertising_channel_type":"VIDEO","campaign_budget":"9","managed_address":"m.c"}],
+            "ad_groups": [{"id":"55","name":"In-stream","campaign":"5","managed_address":"m.ag"}],
+            "labels": {"m.c":"customers/100/labels/1","m.ag":"customers/100/labels/2"}
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        assert!(
+            report.blockers.iter().any(|b| b.contains("m.preroll")),
+            "the ad itself has to be named: {:?}",
+            report.blockers,
+        );
+    }
+
+    #[test]
+    fn an_adopt_only_ad_that_matched_nothing_gets_the_sharper_blocker() {
+        // Two true statements, one useful one. "You meant to adopt and found
+        // nothing" tells the reader what to fix; "the channel is read-only"
+        // just restates why it matters.
+        let declared = input(
+            r#"{
+            "customer_id": "100",
+            "campaign_budgets": [{"id":"m.b","name":"B","amount_micros":1000}],
+            "campaigns": [{"id":"m.c","name":"Preroll","advertising_channel_type":"VIDEO","campaign_budget":"m.b"}],
+            "ad_groups": [{"id":"m.ag","name":"In-stream","campaign":"m.c"}],
+            "youtube_video_assets": [{"id":"m.brand","youtube_video_id":"dQw4w9WgXcQ"}],
+            "ad_group_ads": [{
+                "id":"m.preroll","ad_group":"m.ag","status":"ENABLED",
+                "ad":{"final_urls":["https://ghostery.com/get"],"video_ad":{"video":"m.brand"}}
+            }],
+            "adopt_only": ["m.preroll"]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "campaign_budgets": [{"id":"9","name":"B","amount_micros":1000}],
+            "campaigns": [{"id":"5","name":"Preroll","advertising_channel_type":"VIDEO","campaign_budget":"9","managed_address":"m.c"}],
+            "ad_groups": [{"id":"55","name":"In-stream","campaign":"5","managed_address":"m.ag"}],
+            "labels": {"m.c":"customers/100/labels/1","m.ag":"customers/100/labels/2"}
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        let about_the_ad: Vec<&String> =
+            report.blockers.iter().filter(|b| b.contains("m.preroll")).collect();
+        assert_eq!(about_the_ad.len(), 1, "{about_the_ad:?}");
+        assert!(about_the_ad[0].contains("nothing to adopt"), "{about_the_ad:?}");
+    }
+
+    #[test]
+    fn an_adopted_video_ad_draws_no_blocker() {
+        let declared = input(
+            r#"{
+            "customer_id": "100",
+            "campaign_budgets": [{"id":"m.b","name":"B","amount_micros":1000}],
+            "campaigns": [{"id":"m.c","name":"Preroll","advertising_channel_type":"VIDEO","campaign_budget":"m.b"}],
+            "ad_groups": [{"id":"m.ag","name":"In-stream","campaign":"m.c"}],
+            "youtube_video_assets": [{"id":"m.brand","youtube_video_id":"dQw4w9WgXcQ"}],
+            "ad_group_ads": [{
+                "id":"m.preroll","ad_group":"m.ag","status":"ENABLED",
+                "ad":{
+                    "final_urls":["https://ghostery.com/?utm_campaign=GH_YouTubeUS_v1"],
+                    "display_url":"www.ghostery.com",
+                    "video_ad":{"video":"m.brand"}
+                }
+            }]
+        }"#,
+        );
+        let mut live = live_instream("m.preroll");
+        live.campaign_budgets =
+            input(r#"{"customer_id":"100","campaign_budgets":[{"id":"9","name":"B","amount_micros":1000}]}"#)
+                .campaign_budgets;
+        live.campaigns[0].managed_address = Some("m.c".to_string());
+        live.labels.insert("m.c".to_string(), "customers/100/labels/3".to_string());
+        let report = diff(&declared, &live);
+
+        assert!(
+            report.blockers.is_empty(),
+            "adoption is the supported path on this channel: {:?}",
+            report.blockers,
         );
     }
 }
