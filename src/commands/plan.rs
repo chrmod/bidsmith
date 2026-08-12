@@ -1637,7 +1637,7 @@ mod tests {
     fn provenance(source: StateSource, age_secs: u64) -> StateProvenance {
         StateProvenance {
             source,
-            customer_id: "6571974784".into(),
+            customer_id: "1234567890".into(),
             fetched_at: cache::now_unix().saturating_sub(age_secs),
         }
     }
@@ -1657,7 +1657,7 @@ mod tests {
         // that disagreed looked identical in the output (issue #144).
         let notes = state_notes(&provenance(StateSource::Fresh, 0), None, 0, 0, 4);
         assert_eq!(notes.len(), 1, "{notes:?}");
-        assert!(notes[0].contains("customers/6571974784"), "{}", notes[0]);
+        assert!(notes[0].contains("customers/1234567890"), "{}", notes[0]);
         assert!(notes[0].contains("just now"), "{}", notes[0]);
         assert!(notes[0].contains("fresh read"), "{}", notes[0]);
 

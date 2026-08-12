@@ -657,28 +657,28 @@ mod tests {
     fn provenance_reads_the_same_on_both_paths() {
         let fresh = StateProvenance {
             source: StateSource::Fresh,
-            customer_id: "6571974784".into(),
+            customer_id: "1234567890".into(),
             fetched_at: cache::now_unix(),
         };
         assert_eq!(
             fresh.describe(),
-            "live state for customers/6571974784 read just now (fresh read)",
+            "live state for customers/1234567890 read just now (fresh read)",
         );
 
         let cached = StateProvenance {
             source: StateSource::Cached,
-            customer_id: "6571974784".into(),
+            customer_id: "1234567890".into(),
             fetched_at: cache::now_unix().saturating_sub(70),
         };
         assert_eq!(
             cached.describe(),
-            "live state for customers/6571974784 read 1m10s ago \
+            "live state for customers/1234567890 read 1m10s ago \
              (cached — --refresh-state to refetch)",
         );
 
         let offline = StateProvenance {
             source: StateSource::CachedOffline,
-            customer_id: "6571974784".into(),
+            customer_id: "1234567890".into(),
             fetched_at: cache::now_unix().saturating_sub(5),
         };
         assert!(offline.describe().contains("offline, no API call"));
