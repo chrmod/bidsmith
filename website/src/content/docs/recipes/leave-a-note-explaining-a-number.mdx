@@ -1,0 +1,128 @@
+---
+title: Leave a note explaining a number
+description: Put the reasoning behind a budget or bid right next to the value, where the next person to change it has to read it.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Six months from now, someone — possibly you — will look at this line
+and wonder where the number came from:
+
+```hcl
+amount_micros = 20000000
+```
+
+Budgets and bids are written in **micros**, millionths of your account
+currency, so that's EUR 20/day. But the arithmetic isn't the hard part.
+The hard part is *why* 20 and not 15, and whether it's safe to change.
+
+Write it down, in the file, on the line above:
+
+```hcl
+resource "google_ads_campaign_budget" "summer" {
+  name = "Summer sale"
+
+  # EUR 20/day. Last summer we spent EUR 17/day and were
+  # budget-capped every weekend, so +15% for the longer sale
+  # window. Finance signed off 2026-03-14.
+  amount_micros = 20000000 # 20 EUR
+}
+```
+
+That's it. `bidsmith fmt` keeps comments exactly where you put them,
+so the note survives every reformat, and anyone editing the number has
+to look straight at your reasoning to reach it.
+
+## Where notes are worth writing
+
+Not everywhere. A comment restating the obvious is noise the next
+reader has to skip. The ones that pay for themselves:
+
+- **A number nobody can re-derive.** Budgets, bid caps, frequency
+  caps — anything that came out of a spreadsheet, a meeting, or last
+  quarter's results.
+- **A setting that looks like a mistake.** A campaign left `PAUSED`, a
+  search-partners toggle off, a default set explicitly. Say why, or
+  someone will "fix" it.
+- **A deadline.** "Revisit after the sale ends 2026-08-31" is a note
+  your future self will thank you for.
+- **A keyword you keep getting asked about.** Line-end comments work
+  inside lists too:
+
+  ```hcl
+  keywords = [
+    "running shoes",
+    "trail shoes", # our best converter — don't drop it
+    # "walking shoes" pulled 2026-04: all clicks, no conversions
+  ]
+  ```
+
+<Aside type="tip">
+  A commented-out keyword with a date and a reason is often more useful
+  than deleting it outright — it stops the same experiment being run
+  twice.
+</Aside>
+
+## The three comment styles
+
+```hcl
+# Most common. Use this one.
+
+// Also works, if you're used to it from other languages.
+
+/*
+  For a longer explanation that runs to several lines —
+  a link to the brief, the numbers behind a decision.
+*/
+```
+
+All three survive formatting. Pick one and stay consistent within a
+file.
+
+## Why in the file, and not in a README
+
+A README beside your `.bid` files can only be right by accident. When
+someone changes a bid in a pull request, the README isn't in the diff,
+so it isn't updated — and a document describing a manual CPV of EUR
+0.10 for a campaign that's been running at EUR 0.05 for months is
+worse than no document at all, because people believe it.
+
+A comment on the line above is in the same diff as the change. The
+reviewer sees the old reasoning and the new value side by side, and
+notices when they've stopped agreeing.
+
+Keep a README for things that aren't about a specific value — how the
+account is organized, who to ask for access, what your naming
+convention is.
+
+<Aside type="note" title="The commit message is not a substitute either">
+  `git blame` will tell you which commit last touched a line, and a
+  good commit message explains that *change*. But it explains the
+  change, not the current state — after three edits you have to read
+  three messages in order to reconstruct why the number is what it is.
+  A comment is the current answer.
+</Aside>
+
+## What `bidsmith fmt --minimal` does with them
+
+[`--minimal`](/bidsmith/commands/fmt/) drops attributes that are just
+sitting at their default value, on the grounds that they're noise. An
+attribute you've commented isn't noise, so it stays:
+
+```hcl
+# Standard delivery on purpose — accelerated burns the whole
+# budget by Saturday lunchtime on this account.
+delivery_method = "STANDARD"
+```
+
+`STANDARD` is the default, but the comment is the point of the line,
+so `--minimal` leaves both alone.
+
+## See also
+
+- [`bidsmith fmt`](/bidsmith/commands/fmt/) — the formatter that keeps
+  them.
+- [The .bid file](/bidsmith/concepts/bid-file/) — comment syntax in
+  context.
+- [Audit who changed what, when](./audit-who-changed-what/) — the git
+  history side of the same question.

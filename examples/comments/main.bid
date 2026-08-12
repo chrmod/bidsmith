@@ -1,0 +1,94 @@
+# Summer 2026 — Search.
+#
+# Every number below that came out of a spreadsheet or a meeting
+# carries its reasoning on the line above it. `bidsmith fmt` keeps
+# these comments where they are, so the explanation stays next to the
+# thing it explains.
+
+provider "google_ads" {
+  customer_id = "1234567890"
+  login_customer_id = "9876543210" # the MCC, not the client account
+}
+
+resource "google_ads_campaign_budget" "summer" {
+  name = "Summer 2026"
+
+  # EUR 10/day. Last summer we ran at EUR 8.70/day and were
+  # budget-capped every weekend; +15% buys the extra weekend reach.
+  # Signed off by finance 2026-03-14.
+  amount_micros = 10000000 # 10 EUR
+
+  /*
+    STANDARD on purpose. ACCELERATED burns the whole daily budget by
+    Saturday lunchtime on this account, which is how we lost the
+    Sunday evening slot in 2025.
+  */
+  delivery_method = "STANDARD"
+}
+
+resource "google_ads_campaign" "summer_search" {
+  name = "Summer 2026 — Search"
+
+  // Stays paused until the sale creative is approved (ADS-4417).
+  status = "PAUSED"
+  advertising_channel_type = "SEARCH"
+  campaign_budget = google_ads_campaign_budget.summer.id
+  contains_eu_political_advertising = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"
+
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+
+  # Search partners off: they were 22% of spend and 4% of conversions
+  # in the Q1 review. Revisit after the sale ends 2026-08-31.
+  network_settings {
+    target_google_search = true
+    target_search_network = false
+    target_content_network = false
+    target_partner_search_network = false
+  }
+}
+
+resource "google_ads_ad_group" "summer_search_default" {
+  name = "Default"
+  campaign = google_ads_campaign.summer_search.id
+  status = "PAUSED"
+  type = "SEARCH_STANDARD"
+
+  # EUR 2.00 opening bid — roughly the blended CPC we paid last
+  # August. Expect to tune this in week two.
+  cpc_bid_micros = 2000000
+}
+
+resource "google_ads_ad_group_criterion" "summer_keywords" {
+  ad_group = google_ads_ad_group.summer_search_default.id
+  status = "PAUSED"
+
+  keywords {
+    match_type = "PHRASE"
+    texts = [
+      "summer deals",
+      "summer sale", # our best converter last year — don't drop it
+      "summer discounts",
+      # "cheap summer" pulled 2026-04: all clicks, no conversions
+    ]
+  }
+}
+
+resource "google_ads_campaign_criterion" "summer_negatives" {
+  campaign = google_ads_campaign.summer_search.id
+  status = "PAUSED"
+
+  # Bargain-hunter and DIY intent. Added after the Q1 search-terms
+  # review; each one was costing us clicks that never converted.
+  negative_keyword {
+    text = "free"
+    match_type = "BROAD"
+  }
+
+  negative_keyword {
+    text = "diy"
+    match_type = "BROAD"
+  }
+  # Add new exclusions here, with the date and the reason.
+}
