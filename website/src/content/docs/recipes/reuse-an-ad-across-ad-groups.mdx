@@ -135,9 +135,68 @@ every reference has to provide one — `validate` catches any that forget.
 <Aside type="tip">
   Overrides only apply on top of a `template`. With an inline `ad {}`
   block, set `final_urls` / `path1` / `path2` inside the block as usual.
-  Per-asset headline/description overrides aren't supported yet — vary
-  those by keeping separate templates.
 </Aside>
+
+## Vary a headline or a tracking slug
+
+`final_urls` and the paths are the common case, but an A/B pair usually
+differs in one headline too — and duplicating the whole body to change
+one string is exactly what a template is meant to prevent.
+
+Anywhere in a template body, write `input.<name>` for a value the ad
+supplies:
+
+```hcl
+ad_template "fb_rsa" {
+  final_urls = ["https://ghostery.info/facebook?utm_content=${input.slug}"]
+
+  responsive_search_ad {
+    headline {
+      text = input.headline_1
+      pin  = "HEADLINE_1"
+    }
+    headline { text = "Block Facebook Ads" }
+    headline { text = "Free & Open Source" }
+    description { text = "Stop the feed ads and the tracking behind them." }
+    description { text = "Free forever. No account needed." }
+  }
+}
+
+resource "google_ads_ad_group_ad" "fbads_block_rsa" {
+  ad_group = google_ads_ad_group.fbads.id
+  template = ad_template.fb_rsa
+  inputs = {
+    headline_1 = "Block Facebook Ads"
+    slug       = "rsa_a"
+  }
+}
+
+resource "google_ads_ad_group_ad" "fbads_getrid_rsa" {
+  ad_group = google_ads_ad_group.fbads.id
+  template = ad_template.fb_rsa
+  inputs = {
+    headline_1 = "Get Rid of Facebook Ads"
+    slug       = "rsa_b"
+  }
+}
+```
+
+An A/B pair that used to be two full bodies is now two four-line
+resources, and the shared copy has one home.
+
+A template's parameters are simply the `input.` names its body uses —
+there is no separate list to declare, so the two can never disagree.
+bidsmith checks both directions:
+
+- Leave one out and `validate` says which template needs it and what to
+  add.
+- Pass one the template never mentions and it says so too, with the
+  names it does take. A silently-ignored `headline2` is the kind of typo
+  that only shows up in a performance report weeks later.
+
+Values are checked where they land, not where they're written: bind
+`pin = input.slot` to `"TOPLEFT"` and you get the same
+`expected one of [HEADLINE_1, …]` error as if you'd typed it inline.
 
 ## See also
 
