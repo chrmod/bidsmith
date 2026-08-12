@@ -40,7 +40,7 @@ Expected: one `- destroy` row per keyword the resource managed, plus a
 google_ads_ad_group.winter_default (removed negative_keyword "free" PHRASE)   - destroy  ok
 google_ads_ad_group.winter_default (removed negative_keyword "cheap" PHRASE)  - destroy  ok
 google_ads_ad_group.winter_default (removed negative_keyword "diy" PHRASE)    - destroy  ok
-google_ads_ad_group.winter_default                                            ~ claim (-negative keywords)
+google_ads_ad_group.winter_default                                            ~ claim (label only; releases negative keywords)
 ```
 
 If the destroys are there, commit, PR, merge, apply as usual.
@@ -54,13 +54,18 @@ database, bidsmith puts a small marker label on each ad group and
 campaign, one per kind of keyword list it manages there (the label is
 visible in the Google Ads UI as `bidsmith:owns=…`).
 
-- `~ claim (+negative keywords)` — bidsmith is about to start managing
-  this ad group's negative keywords and marks that now. You'll see
-  these once on the first apply after declaring a list (or after
-  upgrading bidsmith).
-- `~ claim (-negative keywords)` — the last declared list of that kind
-  is gone; bidsmith removes its marker in the same apply that removes
-  the keywords.
+- `~ claim (label only; claims negative keywords)` — bidsmith is about
+  to start managing this ad group's negative keywords and marks that
+  now. You'll see these once on the first apply after declaring a list
+  (or after upgrading bidsmith).
+- `~ claim (label only; releases negative keywords)` — the last
+  declared list of that kind is gone; bidsmith removes its marker in
+  the same apply that removes the keywords.
+
+`label only` is the important half: a claim row writes the marker and
+nothing else. It never changes a keyword, a location, or any other
+value on the live campaign — the rows that do that are the
+`+ create` / `~ update` / `- destroy` rows around it.
 
 The markers are what keep the cleanup working even when you delete the
 *only* negative-keyword resource an ad group had — without them,
@@ -70,10 +75,11 @@ its job.
 The same marker guards settings that come as a set rather than a
 single value. A campaign's
 [frequency caps](./cap-how-often-people-see-your-video/) get a
-`~ claim (+frequency caps)` row the first time you apply one that
-declares a cap; deleting every `frequency_caps` block then clears the
-caps and drops the marker in one apply. Until that first claim, caps
-somebody set in the Google Ads UI are simply not bidsmith's to change.
+`~ claim (label only; claims frequency caps)` row the first time you
+apply one that declares a cap; deleting every `frequency_caps` block
+then clears the caps and drops the marker in one apply. Until that
+first claim, caps somebody set in the Google Ads UI are simply not
+bidsmith's to change.
 
 <Aside type="caution">
   The marker is written by `apply`. If you delete a keyword resource
@@ -81,7 +87,7 @@ somebody set in the Google Ads UI are simply not bidsmith's to change.
   existed), the plan has nothing to prove the live keywords were
   managed, and it will quietly leave them in place. Run one
   `bidsmith apply` from your current files *before* the removal PR —
-  it writes the markers (`~ claim (+…)` rows) — and re-plan the
+  it writes the markers (`~ claim` rows) — and re-plan the
   removal; the destroys appear.
 </Aside>
 

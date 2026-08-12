@@ -18,15 +18,14 @@ you do about it.
 `bidsmith plan` shows it as `~ update` rows:
 
 ```
-~ summer-2026.google_ads_campaign.search
-  status: "ENABLED" → "PAUSED"
-  ...
+google_ads_campaign.search    ~ update (status: "PAUSED" -> "ENABLED")
 ```
 
-Read as: *"if you apply, bidsmith will change `status` from `PAUSED`
-to `ENABLED`, because that's what the file says."* In other words,
-bidsmith's plan always pulls reality back toward what's in the
-files. If somebody paused a campaign in the UI and your `.bid` file
+Each changed field is spelled out as *what the account holds now* ->
+*what the file asks for*. Read the row as: *"if you apply, bidsmith
+will change `status` from `PAUSED` to `ENABLED`, because that's what
+the file says."* In other words, bidsmith's plan always pulls reality
+back toward what's in the files. If somebody paused a campaign in the UI and your `.bid` file
 still says `"ENABLED"`, applying will re-enable it.
 
 This is the right default for a config-as-code tool. The files are

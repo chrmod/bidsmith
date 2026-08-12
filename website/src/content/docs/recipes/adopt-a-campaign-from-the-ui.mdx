@@ -81,15 +81,26 @@ the campaign adopts.
 A successful adoption shows up as an `adopt` row, not a `create`:
 
 ```
-google_ads_campaign.gh_video_fr           ~ adopt (label)
+google_ads_campaign.gh_video_fr           ~ adopt (label only)
 
 Plan: 0 to create, 0 to update, 0 to destroy, 1 to adopt, 1 unchanged.
 ```
 
-`~ adopt (label)` means bidsmith found the live campaign and will write
-its `bidsmith:address` label. After that apply, the campaign is
-bidsmith's to manage — drift in any field you declared shows up as a
-`~ update` row on every plan.
+`~ adopt (label only)` means bidsmith found the live campaign and will
+write its `bidsmith:address` label — and nothing else. Every field the
+file declares already matches the live campaign, which is why the row
+is an adoption rather than an update: no budget, targeting, or status
+is written. After that apply, the campaign is bidsmith's to manage —
+drift in any field you declared shows up as a `~ update` row on every
+plan, spelling out what the value is now and what it would become.
+
+An adoption may also list the criterion categories it starts managing,
+which is still a label write and still changes nothing about the live
+campaign:
+
+```
+google_ads_campaign.gh_video_fr           ~ adopt (label only; claims frequency caps, languages, locations)
+```
 
 ## What it doesn't do
 

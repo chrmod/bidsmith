@@ -127,6 +127,36 @@ that captures this output and posts it as a comment on every pull
 request; `--detailed-exitcode` lets the job exit `2` for "changes
 pending" and reserve `1` for a genuine failure.
 
+## Reading the rows
+
+Every row says what it writes, and an `~ update` row says what each
+field becomes:
+
+```
+google_ads_campaign.brand      ~ adopt (label only; claims frequency caps, languages, locations)
+google_ads_campaign.winter     ~ update (status: "PAUSED" -> "ENABLED")
+google_ads_campaign_budget.winter  ~ update (amount_micros: 30000000 -> 45000000)
+
+Note: ~ adopt / ~ claim rows write bidsmith's own labels only: every field they
+declare already matches live, so no campaign, ad group, or targeting value is
+written. A claim records which criterion categories this file manages, so
+removing the last declared member of one later prunes the live members too.
+```
+
+| Row | What it writes |
+|---|---|
+| `+ create` | A new resource. |
+| `~ update (field: was -> becomes, …)` | Only the fields listed, to the values on the right of each arrow. |
+| `- destroy` | Removes the resource (or the criterion named in the row). |
+| `~ adopt (label only)` | A `bidsmith:address` label on a live resource that already matches the file, field for field. Nothing else. |
+| `~ adopt (label only; claims …)` / `~ claim (label only; claims …)` | The same label write, plus a `bidsmith:owns=<category>` marker. See [what the `~ claim` rows mean](/bidsmith/recipes/remove-keywords-safely/#what-the--claim-rows-mean). |
+| `no-op` | Nothing — shown only with `--show-unchanged`. |
+
+The distinction matters most on a campaign that is already spending: a
+category named on an `adopt` or `claim` row is a marker, not new
+targeting. If targeting were really changing, it would appear as its
+own `+ create` / `- destroy` rows.
+
 ## How the diff is computed
 
 1. Resources are matched between `.bid` and live by **name**.
@@ -200,10 +230,10 @@ predict *before* sending, and does one of two things.
 Google Ads API is read-only for that channel:
 
 ```
-plan: error: video_de.google_ads_campaign.gh_video_de has drift on status.
-  Nothing in the batch can be sent while it is there, because the Google Ads
-  API cannot create or update VIDEO campaigns — make the change in the
-  Google Ads UI, then let bidsmith adopt it
+plan: error: video_de.google_ads_campaign.gh_video_de has drift on
+  status: "PAUSED" -> "ENABLED". Nothing in the batch can be sent while it is
+  there, because the Google Ads API cannot create or update VIDEO campaigns —
+  make the change in the Google Ads UI, then let bidsmith adopt it
 ```
 
 Make the change in the Google Ads UI, or put the file back the way the

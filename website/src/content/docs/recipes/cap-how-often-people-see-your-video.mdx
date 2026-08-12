@@ -76,7 +76,8 @@ To take an existing UI-set cap under management, copy it into the
 campaign as a block — `bidsmith refresh --in-place` will keep it in
 sync from then on, rewriting the blocks whenever the live caps drift.
 The first `apply` after you declare a cap shows a
-`~ claim (+frequency caps)` row on the campaign: that's bidsmith
+`~ claim (label only; claims frequency caps)` row on the campaign:
+that's bidsmith
 [marking the setting as its own](./remove-keywords-safely/), which is
 what lets a later "delete every block" mean "clear every cap".
 

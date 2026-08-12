@@ -402,7 +402,8 @@ fn reconcile_sources(
         let Action::Update { live_id, changed_fields } = &d.action else {
             continue;
         };
-        let (edits, unsupported) = collect_edits(d.kind, live, live_id, changed_fields);
+        let fields = crate::api::diff::field_names(changed_fields);
+        let (edits, unsupported) = collect_edits(d.kind, live, live_id, &fields);
         for u in unsupported {
             skipped.push(format!("{}: {u}", d.address));
         }
