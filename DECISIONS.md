@@ -277,7 +277,7 @@ resource type, any file layout, modules, schema validation.
   error pointing at the offending expression. Adopting `for_each` for
   existing hand-written resources is live-neutral for content-matched
   types (criteria, assets, keywords); labelable types re-adopt via
-  content fallback and show visible `~ adopt (label)` rows as their
+  content fallback and show visible `~ adopt (label only)` rows as their
   `bidsmith:address` label moves to the keyed form. Referencing a
   keyed instance from another resource
   (`google_ads_campaign.t["a"].id`) is not supported yet — fan out
@@ -449,7 +449,8 @@ resource type, any file layout, modules, schema validation.
   association when a category gains its first declared member and
   releases it — in the same batch as the member destroys — when the
   category's last declared member goes away; `plan` shows the work as
-  `~ claim (+negative keywords)` / `~ claim (-negative keywords)` rows.
+  `~ claim (label only; claims negative keywords)` /
+  `~ claim (label only; releases negative keywords)` rows.
   `shared_set` membership keeps the ≥1-declared-member gate and the
   last-member gap: the API has no shared-set label association to hang
   a claim on, and matching alone can't prove ownership (sets match by
@@ -612,7 +613,7 @@ resource type, any file layout, modules, schema validation.
     label by name — a duplicate name is an API error) plus the
     association op, wiring temp ids; a relabel also removes the stale
     association. First-run adoption of an already-matching resource
-    surfaces as a visible `~ adopt (label)` row and counts as a pending
+    surfaces as a visible `~ adopt (label only)` row and counts as a pending
     change, so the label write is never silent.
   - **80-char cap**: Google Ads caps `label.name` at 80 chars and rejects
     a longer one with `Too long.`, sinking the whole atomic adoption batch.
@@ -868,6 +869,27 @@ resource type, any file layout, modules, schema validation.
   API also refuses to mutate. Skips are counted in the summary
   (`4 to destroy (2 skipped)`) so they read as a decision, not an
   omission.
+- **A plan row says what it writes, and an update says what the value
+  becomes** (issue #112): `~ update (name, status)` named the fields but
+  not the change, and `~ adopt (label; +locations)` read like new
+  targeting on a campaign that was already spending — when in fact an
+  adopt / claim row writes bidsmith's own labels and nothing else. Both
+  now spell it out. `Action::Update` carries a `FieldChange`
+  (`field` / `live` / `desired`) per field instead of a bare name, so
+  rows render `status: "PAUSED" -> "ENABLED"`; strings are quoted, an
+  absent value reads `(unset)`, whole-set fields (`frequency_caps`,
+  audience `members`) render their contents, and anything over 60 chars
+  elides. `field_names()` supplies the `updateMask`, which is why the
+  field string stays the raw API path. Claims are verbs
+  (`claims locations` / `releases locations`) behind a `label only`
+  marker, and a one-off note under the listing says that every field on
+  such a row already matches live. The channel is the one declared
+  field the diff can't reconcile (creation-only), so a file matching a
+  live campaign on another channel now **warns** rather than reporting a
+  clean adoption. Chosen over a per-field detail block under each row:
+  a first-run adoption can carry hundreds of rows, and the answer a
+  reviewer needs ("does merging this change what is serving?") fits on
+  the row itself.
 - **The ad group models every settable bid field, and an omitted one is
   unmanaged** (issue #109): the campaign's block picks the strategy, the
   ad group carries the amount, and which field holds it follows from the
@@ -890,8 +912,9 @@ resource type, any file layout, modules, schema validation.
   form — so it follows the criteria ownership rule instead. Declaring
   ≥1 cap claims the field (`bidsmith:owns=frequency_caps` on the
   campaign, the same association the criterion categories use, shown as
-  a `~ claim (+frequency caps)` row); dropping the last block on a
-  claimed campaign plans the clear and releases the claim. A campaign
+  a `~ claim (label only; claims frequency caps)` row); dropping the
+  last block on a claimed campaign plans the clear and releases the
+  claim. A campaign
   that never declared a cap diffs as if the field didn't exist. Without
   the gate, merely *reading* a new repeated field turned every
   UI-capped campaign into a pending clear — destructive where it
@@ -1234,7 +1257,8 @@ Verified locally:
   the campaign already exists) prints `Plan: 0 to create, 0 to
   update, 0 to destroy, 97 unchanged. (no API call needed)` once the .bid is
   in-sync with live. Editing any scalar in the file produces a
-  single `~ update (field)  ok` row + 96 no-ops on the next run.
+  single `~ update (field: was -> becomes)  ok` row + 96 no-ops on the
+  next run.
 - `cargo test` runs the three offline `render_split` checks plus a
   cache round-trip suite (`api::cache::tests::*`) covering token
   fingerprint mismatch, near-expiry skew, live-state TTL eviction, and
@@ -1475,7 +1499,7 @@ Validator covers (so far):
 | `mv`       | working | Rename a resource address in source: rewrites the `resource` block label and every reference that resolves to it, across all `.bid` files under `--path` (default `.`). Addresses are `<type>.<name>`, or `<module>.<type>.<name>` to disambiguate a name shared across files. **Bulk mode** `--from-file <path>` (or `-` for stdin) renames a whole batch from a `<from> <to>`-per-line file (arrow optional, `#` comments) applied atomically against one snapshot — rejects missing sources, occupied targets, duplicate sources/targets, and rename chains (`a→b`,`b→c`); any bad rule writes nothing. Format-preserving (only the renamed identifiers change; comments and layout are byte-preserved). Refuses when the rename would raise the project's validation-error count above its pre-rename baseline (so it can still tidy a not-yet-fully-valid tree). **Source-only by design**: because the planner matches live resources by content (name / keyword / geo / …), not by address or label, an address rename is invisible to the account — no delete+create, no lost history or ad review. Once labels become identity (Phase 3 v2), a move will additionally rewrite the live `bidsmith:address` label; until then `mv` is the complete mechanism and `moved` blocks are deferred |
 | `validate` | partial | Syntax + schema + references + lint warnings (local only). `--var NAME=VALUE` (repeatable) supplies values for `variable` blocks; `BIDSMITH_VAR_<name>` env vars are the fallback |
 | `export`   | partial | Render a fmt-canonical `.bid` file from flat bidsmith JSON (`--from-json`) or raw Google Ads SearchStream JSON (`--from-gads-search-response`); always emits the compact form (one `google_ads_ad_group_criterion` per `(ad_group, match_type)` group with N `keyword {}` sub-blocks, one negatives resource per ad-group / campaign with N `negative_keyword {}` sub-blocks, RSAs as `headlines = [...]` / `descriptions = [...]` lists). Also **folds repeated structure** (issue #57): ad bodies shared across ≥ 2 ads become a top-level `ad_template` (URL-variant bodies collapse onto one URL-agnostic template + per-instance `final_urls` / `path1` / `path2` overrides), RSA arrays used by ≥ 2 sites and campaign negative lists shared by ≥ 2 campaigns become `locals`. Folding is source-only — the tree round-trips through `validate` / `plan` identically to the verbose form. Drops REMOVED resources unless `--include-removed`; `--login-customer-id` / `--customer-id` (or env vars `GOOGLE_ADS_LOGIN_CUSTOMER_ID` / `GOOGLE_ADS_CUSTOMER_ID`) override the provider block |
-| `plan`     | partial | Diff `.bid` vs live, validateOnly batch via googleAds:mutate; emits `+ create` / `~ update` / `~ adopt` / `- destroy` / `no-op` per resource. Campaigns and ad groups match by their `bidsmith:address` label first, then by content (name) to adopt an unlabeled live resource; ads match by body; keywords by text. `- destroy` rows are orphaned criteria members **and** whole labeled resources (campaign / ad_group / ad_group_ad) dropped from the `.bid`; an unlabeled UI-created resource is never destroyed. `~ adopt` rows are first-run label writes onto an already-matching resource. Operations the account can never accept are caught locally, before anything is sent (issue #116): a create or update on the read-only VIDEO channel **blocks** the plan (exit `1`, nothing submitted), while a removal of a labeled VIDEO resource the file no longer declares is **skipped** with a warning and counted as `N to destroy (M skipped)`. A rejected batch separates operations that drew their own error (`rejected`) from those that only went down with the atomic batch (`blocked by those failures`). Reuses cached SearchStream batches from `.bidsmith/cache/` when fresh (15-min TTL); `--refresh-state` forces a re-pull; `--offline` skips OAuth and the validateOnly mutate, diffing against the cache only (errors if no fresh cache). `--var NAME=VALUE` (repeatable) and `BIDSMITH_VAR_<name>` env vars supply values for `variable` blocks. `--format markdown` renders the diff as a PR-comment table (`Resource \| Action \| Result`) instead of the default aligned `text` listing; `--detailed-exitcode` makes a non-empty diff exit `2` (terraform-style) while keeping `1` for errors, so CI can distinguish "changes pending" from "plan failed" |
+| `plan`     | partial | Diff `.bid` vs live, validateOnly batch via googleAds:mutate; emits `+ create` / `~ update` / `~ adopt` / `- destroy` / `no-op` per resource. An `~ update` row names each changed field with the value live holds and the value the file asserts (`status: "PAUSED" -> "ENABLED"`); `~ adopt` / `~ claim` rows are marked `label only` and followed by a note saying every field they declare already matches live (issue #112). Campaigns and ad groups match by their `bidsmith:address` label first, then by content (name) to adopt an unlabeled live resource; ads match by body; keywords by text. `- destroy` rows are orphaned criteria members **and** whole labeled resources (campaign / ad_group / ad_group_ad) dropped from the `.bid`; an unlabeled UI-created resource is never destroyed. `~ adopt` rows are first-run label writes onto an already-matching resource. Operations the account can never accept are caught locally, before anything is sent (issue #116): a create or update on the read-only VIDEO channel **blocks** the plan (exit `1`, nothing submitted), while a removal of a labeled VIDEO resource the file no longer declares is **skipped** with a warning and counted as `N to destroy (M skipped)`. A rejected batch separates operations that drew their own error (`rejected`) from those that only went down with the atomic batch (`blocked by those failures`). Reuses cached SearchStream batches from `.bidsmith/cache/` when fresh (15-min TTL); `--refresh-state` forces a re-pull; `--offline` skips OAuth and the validateOnly mutate, diffing against the cache only (errors if no fresh cache). `--var NAME=VALUE` (repeatable) and `BIDSMITH_VAR_<name>` env vars supply values for `variable` blocks. `--format markdown` renders the diff as a PR-comment table (`Resource \| Action \| Result`) instead of the default aligned `text` listing; `--detailed-exitcode` makes a non-empty diff exit `2` (terraform-style) while keeping `1` for errors, so CI can distinguish "changes pending" from "plan failed" |
 | `apply`    | partial | Shows the validateOnly diff first, then prompts for `yes` (or skips the prompt with `--auto-approve`) before mutating. Refuses to prompt when stdin is not a TTY. Reuses the same cached live state as `plan`; invalidates the cache after a successful real mutate. Executes `- destroy` removes (orphaned criteria members and whole labeled resources) through the same prompt — no separate `--allow-destroy` flag. Writes `bidsmith:address=…` identity labels on created / adopted campaigns, ad groups, and ads (reusing an existing label by name) and reconciles stale associations on rename. Same `--var` / `BIDSMITH_VAR_<name>` plumbing as `plan` |
 | `pull`     | partial | Dump live state as raw SearchStream JSON (`-o PATH` or stdout). Reuses the same query list `plan --read-live` issues; output is the exact shape `export --from-gads-search-response` consumes, so the pair round-trips an account into a `.bid` |
 | `refresh`  | partial | Bootstrap-mode import of live state into `.bid` (no `-o`/`-d` → stdout, `-o PATH` → single file, `-d DIR` → split into `<DIR>/account.bid` for conversion actions / call assets / customer assets / shared sets and `<DIR>/campaigns.bid` for everything campaign-scoped). Shares the `export` renderer, so it emits the same **folded** form (issue #57): repeated ad bodies → `ad_template`, repeated RSA arrays and shared campaign negative lists → `locals`. Folding is source-only and round-trips identically, so a re-`refresh` no longer re-explodes a hand-folded tree. `--in-place` is reconcile mode: label-first matching writes drifted scalars back into the files you maintain (`--check` previews), loading the tree through the same `Program` path `validate` / `plan` use so `module` templates resolve as instance scopes, with the same `--var` / `BIDSMITH_VAR_<name>` plumbing |

@@ -497,6 +497,7 @@ pub fn execute(
     let mut rejected = 0usize;
     let mut collateral = 0usize;
     let mut deferred_count = 0usize;
+    let mut label_only_shown = false;
     let mut md_rows: Vec<(String, String, String)> = Vec::new();
     for d in &report.diffs {
         let is_adopt = adopted.contains(d.address.as_str());
@@ -531,6 +532,7 @@ pub fn execute(
         if !printable {
             continue;
         }
+        label_only_shown |= is_adopt || claim.is_some();
         let addr = display_address(&d.address, strip);
         let first_err = errors_by_address
             .get(&d.address)
@@ -562,7 +564,7 @@ pub fn execute(
                 } else {
                     "⚠️ blocked by another failure".to_string()
                 };
-                let action = format!("{}{}", md_action(verb), detail);
+                let action = md_cell(&format!("{}{}", md_action(verb), detail));
                 md_rows.push((addr.to_string(), action, result));
             }
         }
@@ -589,6 +591,7 @@ pub fn execute(
             if matches!(display, DisplayMode::PerResource) {
                 println!();
             }
+            print_text_label_only_note(label_only_shown);
             print_text_summary(
                 report, validate_only, accepted, rejected, collateral, deferred_count,
             );
@@ -618,6 +621,7 @@ pub fn execute(
                 collateral,
                 deferred_count,
                 &md_rows,
+                label_only_shown,
                 &unattributed,
                 spend,
             );
@@ -674,6 +678,19 @@ fn print_markdown_spend(spend: &SpendSummary) {
     }
 }
 
+fn print_text_label_only_note(shown: bool) {
+    if shown {
+        println!("Note: {LABEL_ONLY_NOTE}");
+        println!();
+    }
+}
+
+fn print_markdown_label_only_note(shown: bool) {
+    if shown {
+        println!("_{LABEL_ONLY_NOTE}_\n");
+    }
+}
+
 /// Only shown when something was actually held back, so the common summary
 /// line keeps its familiar shape.
 fn deferred_clause(deferred: usize) -> String {
@@ -715,6 +732,7 @@ fn print_markdown(
     collateral: usize,
     deferred: usize,
     rows: &[(String, String, String)],
+    label_only_shown: bool,
     unattributed: &[&GoogleAdsErrorEntry],
     spend: Option<&SpendSummary>,
 ) {
@@ -727,6 +745,7 @@ fn print_markdown(
         }
         println!();
     }
+    print_markdown_label_only_note(label_only_shown);
     println!(
         "**Plan:** {} to create, {} to update, {} to destroy{}, {}{} unchanged. ({} accepted, {} rejected{}{})",
         report.create_count, report.update_count, report.delete_count,
@@ -791,19 +810,43 @@ fn adopted_addresses(report: &diff::DiffReport) -> std::collections::HashSet<&st
 }
 
 /// Per-address summary of pending `bidsmith:owns` claim work, e.g.
-/// `+negative keywords, -locations` — rendered as a `~ claim` row on parents
-/// that otherwise match live unchanged.
+/// `claims negative keywords, releases locations` — rendered as a `~ claim` row
+/// on parents that otherwise match live unchanged. Spelled as verbs rather than
+/// `+`/`-` signs because a claim writes a label, never the category's values,
+/// and `+locations` reads like new targeting on a serving campaign (issue #112).
 fn claim_details(report: &diff::DiffReport) -> HashMap<&str, String> {
-    let mut parts: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut claimed: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut released: HashMap<&str, Vec<&str>> = HashMap::new();
     for p in &report.claim_plans {
-        let sign = if p.stale_assoc_rn.is_some() { '-' } else { '+' };
-        parts
-            .entry(p.address.as_str())
+        let side = if p.stale_assoc_rn.is_some() { &mut released } else { &mut claimed };
+        side.entry(p.address.as_str())
             .or_default()
-            .push(format!("{sign}{}", claim_category_display(p.category)));
+            .push(claim_category_display(p.category));
     }
-    parts.into_iter().map(|(a, v)| (a, v.join(", "))).collect()
+    let addresses: HashSet<&str> = claimed.keys().chain(released.keys()).copied().collect();
+    addresses
+        .into_iter()
+        .map(|addr| {
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(cats) = claimed.get(addr) {
+                parts.push(format!("claims {}", cats.join(", ")));
+            }
+            if let Some(cats) = released.get(addr) {
+                parts.push(format!("releases {}", cats.join(", ")));
+            }
+            (addr, parts.join("; "))
+        })
+        .collect()
 }
+
+/// The one-line explanation of what a label-only row does, printed under the
+/// listing whenever one is shown. The row itself can only say how little it
+/// writes; this says why a category name appearing on it is not a value change
+/// (issue #112).
+const LABEL_ONLY_NOTE: &str = "~ adopt / ~ claim rows write bidsmith's own labels only: every field \
+     they declare already matches live, so no campaign, ad group, or targeting value is written. \
+     A claim records which criterion categories this file manages, so removing the last declared \
+     member of one later prunes the live members too.";
 
 fn verb_detail(
     action: &diff::Action,
@@ -811,14 +854,24 @@ fn verb_detail(
     claim: Option<&String>,
 ) -> (&'static str, String) {
     match (action, claim) {
-        (diff::Action::NoOp { .. }, Some(c)) if is_adopt => ("~ adopt", format!(" (label; {c})")),
-        (diff::Action::NoOp { .. }, _) if is_adopt => ("~ adopt", " (label)".to_string()),
-        (diff::Action::NoOp { .. }, Some(c)) => ("~ claim", format!(" ({c})")),
+        (diff::Action::NoOp { .. }, Some(c)) if is_adopt => {
+            ("~ adopt", format!(" (label only; {c})"))
+        }
+        (diff::Action::NoOp { .. }, _) if is_adopt => ("~ adopt", " (label only)".to_string()),
+        (diff::Action::NoOp { .. }, Some(c)) => ("~ claim", format!(" (label only; {c})")),
         (diff::Action::NoOp { .. }, None) => ("no-op", String::new()),
         (diff::Action::Create, _) => ("+ create", String::new()),
-        (diff::Action::Update { changed_fields, .. }, _) => {
-            ("~ update", format!(" ({})", changed_fields.join(", ")))
-        }
+        (diff::Action::Update { changed_fields, .. }, _) => (
+            "~ update",
+            format!(
+                " ({})",
+                changed_fields
+                    .iter()
+                    .map(diff::FieldChange::render)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ),
         (diff::Action::Delete { .. }, _) => ("- destroy", String::new()),
     }
 }
@@ -874,6 +927,7 @@ fn display_offline_diff(
     let strip = prepared.strip_module;
     let adopted = adopted_addresses(report);
     let claims = claim_details(report);
+    let mut label_only_shown = false;
     let mut md_rows: Vec<(String, String)> = Vec::new();
     for d in &report.diffs {
         let is_adopt = adopted.contains(d.address.as_str());
@@ -886,6 +940,7 @@ fn display_offline_diff(
         {
             continue;
         }
+        label_only_shown |= is_adopt || claim.is_some();
         let (verb, detail) = verb_detail(&d.action, is_adopt, claim);
         let addr = display_address(&d.address, strip);
         match format {
@@ -893,7 +948,7 @@ fn display_offline_diff(
                 println!("{addr:<width$}  {verb}{detail}", width = width);
             }
             Format::Markdown => {
-                let action = format!("{}{}", md_action(verb), detail);
+                let action = md_cell(&format!("{}{}", md_action(verb), detail));
                 md_rows.push((addr.to_string(), action));
             }
         }
@@ -901,6 +956,7 @@ fn display_offline_diff(
     match format {
         Format::Text => {
             println!();
+            print_text_label_only_note(label_only_shown);
             let title = summary_title(validate_only);
             println!(
                 "{title}: {} to create, {} to update, {} to destroy{}, {}{} unchanged. ({note})",
@@ -920,6 +976,7 @@ fn display_offline_diff(
                 }
                 println!();
             }
+            print_markdown_label_only_note(label_only_shown);
             println!(
                 "**Plan:** {} to create, {} to update, {} to destroy{}, {}{} unchanged. _({note})_",
                 report.create_count, report.update_count, report.delete_count,
@@ -1252,8 +1309,11 @@ fn tail(s: &str, n: usize) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_address, md_action, md_cell, module_of, row_is_visible, split_module, DisplayMode};
-    use crate::api::diff::Action;
+    use super::{
+        claim_details, display_address, md_action, md_cell, module_of, row_is_visible,
+        split_module, verb_detail, DisplayMode,
+    };
+    use crate::api::diff::{Action, ClaimPlanEntry, DiffReport, FieldChange};
 
     #[test]
     fn md_cell_escapes_table_breakers() {
@@ -1276,7 +1336,10 @@ mod tests {
     }
 
     fn update() -> Action {
-        Action::Update { live_id: "123".into(), changed_fields: vec!["amount_micros".into()] }
+        Action::Update {
+            live_id: "123".into(),
+            changed_fields: vec![FieldChange::named("amount_micros")],
+        }
     }
 
     #[test]
@@ -1303,6 +1366,83 @@ mod tests {
         assert!(!row_is_visible(&update(), &DisplayMode::Summary, false, false));
         assert!(row_is_visible(&update(), &DisplayMode::Summary, false, true));
         assert!(!row_is_visible(&noop(), &DisplayMode::Summary, true, false));
+    }
+
+    #[test]
+    fn an_update_row_shows_what_the_field_becomes() {
+        let action = Action::Update {
+            live_id: "123".into(),
+            changed_fields: vec![
+                FieldChange {
+                    field: "name".into(),
+                    live: "\"Winter\"".into(),
+                    desired: "\"Winter Sale\"".into(),
+                },
+                FieldChange {
+                    field: "status".into(),
+                    live: "\"PAUSED\"".into(),
+                    desired: "\"ENABLED\"".into(),
+                },
+            ],
+        };
+        let (verb, detail) = verb_detail(&action, false, None);
+        assert_eq!(verb, "~ update");
+        assert_eq!(
+            detail,
+            " (name: \"Winter\" -> \"Winter Sale\", status: \"PAUSED\" -> \"ENABLED\")"
+        );
+    }
+
+    #[test]
+    fn an_adopt_row_says_it_writes_labels_only() {
+        let claim = "claims frequency caps, languages, locations".to_string();
+        assert_eq!(
+            verb_detail(&noop(), true, None),
+            ("~ adopt", " (label only)".to_string())
+        );
+        assert_eq!(
+            verb_detail(&noop(), true, Some(&claim)),
+            (
+                "~ adopt",
+                " (label only; claims frequency caps, languages, locations)".to_string()
+            )
+        );
+        assert_eq!(
+            verb_detail(&noop(), false, Some(&claim)),
+            (
+                "~ claim",
+                " (label only; claims frequency caps, languages, locations)".to_string()
+            )
+        );
+    }
+
+    fn claim(address: &str, category: &'static str, release: bool) -> ClaimPlanEntry {
+        ClaimPlanEntry {
+            address: address.to_string(),
+            kind: "campaign",
+            category,
+            existing_label_rn: None,
+            stale_assoc_rn: release.then(|| "customers/1/campaignLabels/2~3".to_string()),
+        }
+    }
+
+    #[test]
+    fn claims_read_as_verbs_not_as_plus_or_minus_signs() {
+        // `+locations` on a live campaign reads as new targeting; a claim only
+        // writes a label (issue #112).
+        let report = DiffReport {
+            claim_plans: vec![
+                claim("m.google_ads_campaign.c", "frequency_caps", false),
+                claim("m.google_ads_campaign.c", "language", false),
+                claim("m.google_ads_campaign.c", "location", true),
+            ],
+            ..Default::default()
+        };
+        let details = claim_details(&report);
+        assert_eq!(
+            details.get("m.google_ads_campaign.c").map(String::as_str),
+            Some("claims frequency caps, languages; releases locations")
+        );
     }
 
     #[test]

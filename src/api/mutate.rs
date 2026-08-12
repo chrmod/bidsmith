@@ -68,9 +68,10 @@ pub fn build_custom_audience_mutate(
             }
             Some(Action::Update { live_id, changed_fields }) => {
                 let rn = format!("customers/{customer_id}/customAudiences/{live_id}");
+                let fields = crate::api::diff::field_names(changed_fields);
                 ops.push(json!({
-                    "update": custom_audience_update_body(a, &rn, changed_fields),
-                    "updateMask": changed_fields.join(","),
+                    "update": custom_audience_update_body(a, &rn, &fields),
+                    "updateMask": fields.join(","),
                 }));
             }
             _ => continue,
@@ -99,7 +100,7 @@ pub fn build_mutate_with_diff(
     let mut next: i32 = -1;
     let mut create_set: HashSet<String> = HashSet::new();
 
-    let mut update_set: HashMap<String, &[String]> = HashMap::new();
+    let mut update_set: HashMap<String, Vec<String>> = HashMap::new();
 
     // Build resource_name refs for every declared address: matched (NoOp or
     // Update) resources get the real live resource_name; Create resources
@@ -134,7 +135,7 @@ pub fn build_mutate_with_diff(
                 format!("customers/{customer_id}/{segment}/{live_id}"),
             );
             if let Action::Update { changed_fields, .. } = &d.action {
-                update_set.insert(d.address.clone(), changed_fields.as_slice());
+                update_set.insert(d.address.clone(), crate::api::diff::field_names(changed_fields));
             }
         } else {
             create_set.insert(d.address.clone());
@@ -2109,7 +2110,9 @@ fn custom_audience_members_value(a: &JsonCustomAudience) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::diff::{Action, ClaimPlanEntry, DiffReport, LabelPlanEntry, ResourceDiff};
+    use crate::api::diff::{
+        Action, ClaimPlanEntry, DiffReport, FieldChange, LabelPlanEntry, ResourceDiff,
+    };
 
     /// The unified batch as it looks when no custom audience had to be created
     /// first — the shape every case but the custom-audience tests exercises.
@@ -2188,7 +2191,7 @@ mod tests {
                     kind: "campaign",
                     action: Action::Update {
                         live_id: "42".to_string(),
-                        changed_fields: vec![changed_field.to_string()],
+                        changed_fields: vec![FieldChange::named(changed_field)],
                     },
                 },
             ],
@@ -2355,7 +2358,7 @@ mod tests {
         let mut report = strategy_switch("manual_cpc");
         report.diffs[1].action = Action::Update {
             live_id: "42".to_string(),
-            changed_fields: vec!["name".to_string(), "manual_cpc".to_string()],
+            changed_fields: vec![FieldChange::named("name"), FieldChange::named("manual_cpc")],
         };
         let op = campaign_update_op(&input, &report);
         assert_eq!(
@@ -2398,7 +2401,7 @@ mod tests {
                     kind: "ad_group",
                     action: Action::Update {
                         live_id: "43".to_string(),
-                        changed_fields: vec!["target_cpv_micros".to_string()],
+                        changed_fields: vec![FieldChange::named("target_cpv_micros")],
                     },
                 },
             ],
@@ -2479,7 +2482,7 @@ mod tests {
                     kind: "campaign",
                     action: Action::Update {
                         live_id: "42".to_string(),
-                        changed_fields: vec!["frequency_caps".to_string()],
+                        changed_fields: vec![FieldChange::named("frequency_caps")],
                     },
                 },
             ],

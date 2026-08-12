@@ -19,7 +19,7 @@ pub enum Action {
     Create,
     Update {
         live_id: String,
-        changed_fields: Vec<String>,
+        changed_fields: Vec<FieldChange>,
     },
     /// A live resource that is no longer declared and should be removed. Only
     /// emitted for criteria members whose declared parent still exists, so the
@@ -36,6 +36,123 @@ impl Action {
             | Action::Update { live_id, .. }
             | Action::Delete { live_id } => Some(live_id.as_str()),
             Action::Create => None,
+        }
+    }
+}
+
+/// One field an update writes, carrying both sides of the comparison. The
+/// field name alone answers "what does this touch"; a reviewer of a serving
+/// campaign needs "what does it become" — so the value the account holds now
+/// and the value the file asserts travel with it (issue #112).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldChange {
+    /// The API field path — also the `updateMask` entry, so it is never
+    /// prettified.
+    pub field: String,
+    pub live: String,
+    pub desired: String,
+}
+
+impl FieldChange {
+    /// `name: "Winter" -> "Winter Sale"`, the form plan rows print.
+    pub fn render(&self) -> String {
+        format!("{}: {} -> {}", self.field, self.live, self.desired)
+    }
+
+    /// For tests that exercise the update mask, where the values are beside
+    /// the point.
+    #[cfg(test)]
+    pub fn named(field: &str) -> Self {
+        FieldChange {
+            field: field.to_string(),
+            live: "(live)".to_string(),
+            desired: "(desired)".to_string(),
+        }
+    }
+}
+
+/// The `updateMask` entries for a set of changes.
+pub fn field_names(changes: &[FieldChange]) -> Vec<String> {
+    changes.iter().map(|c| c.field.clone()).collect()
+}
+
+/// Longest value a plan row prints before eliding — a 300-keyword audience
+/// member list would otherwise bury the row it belongs to.
+const MAX_SHOWN_VALUE: usize = 60;
+
+fn change(field: impl Into<String>, live: impl Shown, desired: impl Shown) -> FieldChange {
+    FieldChange {
+        field: field.into(),
+        live: elide(live.shown()),
+        desired: elide(desired.shown()),
+    }
+}
+
+fn elide(s: String) -> String {
+    match s.char_indices().nth(MAX_SHOWN_VALUE) {
+        Some((i, _)) => format!("{}…", &s[..i]),
+        None => s,
+    }
+}
+
+/// How a field value reads in a plan row. Strings are quoted so a trailing
+/// space or an empty name is visible rather than invisible; an absent value
+/// reads as `(unset)` rather than as an empty string it is not the same as.
+trait Shown {
+    fn shown(&self) -> String;
+}
+
+/// A value that is already display text (a joined list, say) and must not be
+/// quoted again.
+struct Raw(String);
+
+impl Shown for Raw {
+    fn shown(&self) -> String {
+        self.0.clone()
+    }
+}
+
+impl Shown for str {
+    fn shown(&self) -> String {
+        format!("{self:?}")
+    }
+}
+
+impl Shown for String {
+    fn shown(&self) -> String {
+        self.as_str().shown()
+    }
+}
+
+impl Shown for i64 {
+    fn shown(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl Shown for f64 {
+    fn shown(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl Shown for bool {
+    fn shown(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl<T: Shown + ?Sized> Shown for &T {
+    fn shown(&self) -> String {
+        (*self).shown()
+    }
+}
+
+impl<T: Shown> Shown for Option<T> {
+    fn shown(&self) -> String {
+        match self {
+            Some(v) => v.shown(),
+            None => "(unset)".to_string(),
         }
     }
 }
@@ -298,6 +415,9 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
                     let l = live_campaigns[*li];
                     claimed[*li] = true;
                     campaign_match.insert(d.id.clone(), l.id.clone());
+                    if let Some(w) = channel_mismatch_warning(&d.id, d, l) {
+                        campaign_warnings.push(w);
+                    }
                     let caps_claimed = live
                         .campaign_claims
                         .get(&l.id)
@@ -1303,7 +1423,7 @@ fn campaign_criterion_descriptor(cr: &JsonCampaignCriterion) -> Option<String> {
     }
 }
 
-fn action_for_match(live_id: String, changed: Vec<String>) -> Action {
+fn action_for_match(live_id: String, changed: Vec<FieldChange>) -> Action {
     if changed.is_empty() {
         Action::NoOp { live_id }
     } else {
@@ -1352,6 +1472,25 @@ fn shared_budget_warnings(declared: &ExportInput) -> Vec<String> {
     out
 }
 
+/// A campaign's channel is fixed at creation, so the diff skips it — which
+/// means a file naming one channel while matching a live campaign on another
+/// reports as a clean adoption. The plan says so out loud instead: the file is
+/// describing a campaign it is not pointing at (issue #112).
+fn channel_mismatch_warning(address: &str, d: &JsonCampaign, l: &JsonCampaign) -> Option<String> {
+    if d.advertising_channel_type.is_empty()
+        || l.advertising_channel_type.is_empty()
+        || d.advertising_channel_type == l.advertising_channel_type
+    {
+        return None;
+    }
+    Some(format!(
+        "{address} declares advertising_channel_type = {:?} but the live campaign it matched is \
+         {:?}. A campaign's channel is fixed when it is created, so bidsmith can never reconcile \
+         that — check the file is pointing at the campaign you think it is",
+        d.advertising_channel_type, l.advertising_channel_type,
+    ))
+}
+
 /// Google Ads requires a bidding strategy to *create* a campaign, and rejects
 /// the create with a bare "The required field was not present." that names no
 /// field. Only creates: an adopted campaign keeps whatever the account bids
@@ -1384,7 +1523,14 @@ fn video_is_read_only_blocker(address: &str, action: &Action) -> Option<String> 
     let what = match action {
         Action::Create => "would be created".to_string(),
         Action::Update { changed_fields, .. } => {
-            format!("has drift on {}", changed_fields.join(", "))
+            format!(
+                "has drift on {}",
+                changed_fields
+                    .iter()
+                    .map(FieldChange::render)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         }
         _ => return None,
     };
@@ -1466,19 +1612,19 @@ fn video_removal_skipped_warning(what: &str, address: &str) -> String {
     )
 }
 
-fn diff_budget(d: &JsonBudget, l: &JsonBudget) -> Vec<String> {
+fn diff_budget(d: &JsonBudget, l: &JsonBudget) -> Vec<FieldChange> {
     let mut c = Vec::new();
     if d.name != l.name {
-        c.push("name".into());
+        c.push(change("name", &l.name, &d.name));
     }
     if d.amount_micros != l.amount_micros {
-        c.push("amount_micros".into());
+        c.push(change("amount_micros", l.amount_micros, d.amount_micros));
     }
     if d.delivery_method != l.delivery_method {
-        c.push("delivery_method".into());
+        c.push(change("delivery_method", &l.delivery_method, &d.delivery_method));
     }
     if d.explicitly_shared != l.explicitly_shared {
-        c.push("explicitly_shared".into());
+        c.push(change("explicitly_shared", l.explicitly_shared, d.explicitly_shared));
     }
     c
 }
@@ -1487,18 +1633,22 @@ fn diff_budget(d: &JsonBudget, l: &JsonBudget) -> Vec<String> {
 /// are only bidsmith's to reconcile once the file declared some. Without that
 /// gate, a campaign that never mentions `frequency_caps` would read as "desired
 /// = no caps" and plan a clear of whatever the Google Ads UI set (issue #102).
-fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign, caps_claimed: bool) -> Vec<String> {
+fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign, caps_claimed: bool) -> Vec<FieldChange> {
     let mut c = Vec::new();
     if d.name != l.name {
-        c.push("name".into());
+        c.push(change("name", &l.name, &d.name));
     }
     if d.status != l.status {
-        c.push("status".into());
+        c.push(change("status", &l.status, &d.status));
     }
     if d.contains_eu_political_advertising != l.contains_eu_political_advertising
         && d.contains_eu_political_advertising.is_some()
     {
-        c.push("contains_eu_political_advertising".into());
+        c.push(change(
+            "contains_eu_political_advertising",
+            &l.contains_eu_political_advertising,
+            &d.contains_eu_political_advertising,
+        ));
     }
     // Omitted means unmanaged, as everywhere else: a file that names no flight
     // window is not asking to clear the one the account has.
@@ -1507,19 +1657,21 @@ fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign, caps_claimed: bool) -> Vec<
         ("end_date", &d.end_date, &l.end_date),
     ] {
         if desired.is_some() && desired != live {
-            c.push(field.into());
+            c.push(change(field, live, desired));
         }
     }
     // advertising_channel_type is creation-only; skip.
     // The bidding strategy is a `oneof`, so a file that declares none leaves it
     // unmanaged rather than asking to clear whatever the account is bidding on.
     match (d.bidding_strategy(), l.bidding_strategy()) {
-        (Some(desired), live) if Some(desired) != live => c.push(desired.into()),
+        (Some(desired), live) if Some(desired) != live => {
+            c.push(change(desired, live, Some(desired)))
+        }
         (Some("manual_cpc"), _) => {
             let dm = d.manual_cpc.as_ref().and_then(|m| m.enhanced_cpc_enabled);
             let lm = l.manual_cpc.as_ref().and_then(|m| m.enhanced_cpc_enabled);
             if dm != lm {
-                c.push("manual_cpc.enhanced_cpc_enabled".into());
+                c.push(change("manual_cpc.enhanced_cpc_enabled", lm, dm));
             }
         }
         _ => {}
@@ -1540,7 +1692,7 @@ fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign, caps_claimed: bool) -> Vec<
     ];
     for (path, dv, lv) in pairs {
         if dv != lv {
-            c.push(path.into());
+            c.push(change(path, lv, dv));
         }
     }
     // Omitted means unmanaged: a campaign that says nothing about how its geo
@@ -1550,15 +1702,38 @@ fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign, caps_claimed: bool) -> Vec<
         let desired = d.geo_target_type_setting.as_ref().and_then(|g| g.get(field));
         let live = l.geo_target_type_setting.as_ref().and_then(|g| g.get(field));
         if desired.is_some() && desired != live {
-            c.push(format!("geo_target_type_setting.{field}"));
+            c.push(change(
+                format!("geo_target_type_setting.{field}"),
+                live,
+                desired,
+            ));
         }
     }
     if (!d.frequency_caps.is_empty() || caps_claimed)
         && sorted_frequency_caps(d) != sorted_frequency_caps(l)
     {
-        c.push("frequency_caps".into());
+        c.push(change(
+            "frequency_caps",
+            Raw(shown_frequency_caps(l)),
+            Raw(shown_frequency_caps(d)),
+        ));
     }
     c
+}
+
+/// The cap list as a reviewer reads it — `3 IMPRESSION / 1 DAY (CAMPAIGN)` per
+/// cap — so a plan row says what the cap becomes, not merely that it moves.
+fn shown_frequency_caps(c: &JsonCampaign) -> String {
+    if c.frequency_caps.is_empty() {
+        return "none".to_string();
+    }
+    sorted_frequency_caps(c)
+        .iter()
+        .map(|(level, event, unit, length, cap)| {
+            format!("{cap} {event} / {length} {unit} ({level})")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The whole cap list is one API field, so it diffs as a set — reordering the
@@ -1569,16 +1744,16 @@ fn sorted_frequency_caps(c: &JsonCampaign) -> Vec<(&str, &str, &str, i64, i64)> 
     caps
 }
 
-fn diff_ad_group(d: &JsonAdGroup, l: &JsonAdGroup) -> Vec<String> {
+fn diff_ad_group(d: &JsonAdGroup, l: &JsonAdGroup) -> Vec<FieldChange> {
     let mut c = Vec::new();
     if d.name != l.name {
-        c.push("name".into());
+        c.push(change("name", &l.name, &d.name));
     }
     if d.status != l.status {
-        c.push("status".into());
+        c.push(change("status", &l.status, &d.status));
     }
     if d.ty != l.ty {
-        c.push("type".into());
+        c.push(change("type", &l.ty, &d.ty));
     }
     // A bid field the file leaves out is unmanaged, not a request to clear
     // whatever the account is bidding — the same rule the campaign's bidding
@@ -1587,16 +1762,16 @@ fn diff_ad_group(d: &JsonAdGroup, l: &JsonAdGroup) -> Vec<String> {
     for (field, _) in crate::schema::AD_GROUP_BID_FIELDS {
         let desired = d.bid(field);
         if desired.is_some() && desired != l.bid(field) {
-            c.push((*field).into());
+            c.push(change(*field, l.bid(field), desired));
         }
     }
     c
 }
 
-fn diff_ad_group_ad(d: &JsonAdGroupAd, l: &JsonAdGroupAd) -> Vec<String> {
+fn diff_ad_group_ad(d: &JsonAdGroupAd, l: &JsonAdGroupAd) -> Vec<FieldChange> {
     let mut c = Vec::new();
     if d.status != l.status {
-        c.push("status".into());
+        c.push(change("status", &l.status, &d.status));
     }
     // ad.* fields are creation-only / a new ad is the way to "edit" copy.
     c
@@ -1815,33 +1990,43 @@ fn ad_body_key(a: &JsonAdGroupAd, asset_match: &HashMap<String, String>) -> Stri
     k
 }
 
-fn diff_ad_group_criterion(d: &JsonAdGroupCriterion, l: &JsonAdGroupCriterion) -> Vec<String> {
+fn diff_ad_group_criterion(d: &JsonAdGroupCriterion, l: &JsonAdGroupCriterion) -> Vec<FieldChange> {
     let mut c = Vec::new();
     if d.status != l.status {
-        c.push("status".into());
+        c.push(change("status", &l.status, &d.status));
     }
     if d.negative != l.negative {
-        c.push("negative".into());
+        c.push(change("negative", negative_or_default(l.negative), negative_or_default(d.negative)));
     }
     if d.cpc_bid_micros != l.cpc_bid_micros {
-        c.push("cpc_bid_micros".into());
+        c.push(change("cpc_bid_micros", l.cpc_bid_micros, d.cpc_bid_micros));
     }
     // keyword.text / match_type are creation-only.
     c
 }
 
-fn diff_campaign_criterion(d: &JsonCampaignCriterion, l: &JsonCampaignCriterion) -> Vec<String> {
+fn diff_campaign_criterion(
+    d: &JsonCampaignCriterion,
+    l: &JsonCampaignCriterion,
+) -> Vec<FieldChange> {
     let mut c = Vec::new();
     if d.status != l.status {
-        c.push("status".into());
+        c.push(change("status", &l.status, &d.status));
     }
     if d.negative != l.negative {
-        c.push("negative".into());
+        c.push(change("negative", negative_or_default(l.negative), negative_or_default(d.negative)));
     }
     if bid_modifier_changed(d.bid_modifier, l.bid_modifier) {
-        c.push("bid_modifier".into());
+        c.push(change("bid_modifier", l.bid_modifier, d.bid_modifier));
     }
     c
+}
+
+/// An omitted `negative` is `false` everywhere else in the diff, so a plan row
+/// says `false -> true` rather than the `(unset) -> true` the raw option would
+/// print.
+fn negative_or_default(v: Option<bool>) -> bool {
+    v.unwrap_or(false)
 }
 
 fn bid_modifier_changed(d: Option<f64>, l: Option<f64>) -> bool {
@@ -1852,24 +2037,32 @@ fn bid_modifier_changed(d: Option<f64>, l: Option<f64>) -> bool {
     }
 }
 
-fn diff_conversion_action(d: &JsonConversionAction, l: &JsonConversionAction) -> Vec<String> {
+fn diff_conversion_action(d: &JsonConversionAction, l: &JsonConversionAction) -> Vec<FieldChange> {
     let mut c = Vec::new();
     if d.status != l.status {
-        c.push("status".into());
+        c.push(change("status", &l.status, &d.status));
     }
     if d.counting_type != l.counting_type {
-        c.push("counting_type".into());
+        c.push(change("counting_type", &l.counting_type, &d.counting_type));
     }
     if d.click_through_lookback_window_days != l.click_through_lookback_window_days {
-        c.push("click_through_lookback_window_days".into());
+        c.push(change(
+            "click_through_lookback_window_days",
+            l.click_through_lookback_window_days,
+            d.click_through_lookback_window_days,
+        ));
     }
     if d.view_through_lookback_window_days != l.view_through_lookback_window_days {
-        c.push("view_through_lookback_window_days".into());
+        c.push(change(
+            "view_through_lookback_window_days",
+            l.view_through_lookback_window_days,
+            d.view_through_lookback_window_days,
+        ));
     }
     let dv = d.value_settings.as_ref().and_then(|v| v.default_value);
     let lv = l.value_settings.as_ref().and_then(|v| v.default_value);
     if dv != lv {
-        c.push("value_settings.default_value".into());
+        c.push(change("value_settings.default_value", lv, dv));
     }
     let dc = d
         .value_settings
@@ -1880,7 +2073,7 @@ fn diff_conversion_action(d: &JsonConversionAction, l: &JsonConversionAction) ->
         .as_ref()
         .and_then(|v| v.default_currency_code.clone());
     if dc != lc {
-        c.push("value_settings.default_currency_code".into());
+        c.push(change("value_settings.default_currency_code", &lc, &dc));
     }
     let da = d
         .value_settings
@@ -1891,12 +2084,12 @@ fn diff_conversion_action(d: &JsonConversionAction, l: &JsonConversionAction) ->
         .as_ref()
         .and_then(|v| v.always_use_default_value);
     if da != la {
-        c.push("value_settings.always_use_default_value".into());
+        c.push(change("value_settings.always_use_default_value", la, da));
     }
     c
 }
 
-fn diff_call_asset(_d: &JsonCallAsset, _l: &JsonCallAsset) -> Vec<String> {
+fn diff_call_asset(_d: &JsonCallAsset, _l: &JsonCallAsset) -> Vec<FieldChange> {
     Vec::new()
 }
 
@@ -1935,62 +2128,82 @@ fn resolve_ad_group_id(ad_group_match: &HashMap<String, String>, ad_group: &str)
     })
 }
 
-fn diff_customer_asset(d: &JsonCustomerAsset, l: &JsonCustomerAsset) -> Vec<String> {
+fn diff_customer_asset(d: &JsonCustomerAsset, l: &JsonCustomerAsset) -> Vec<FieldChange> {
     let mut c = Vec::new();
     if d.status != l.status {
-        c.push("status".into());
+        c.push(change("status", &l.status, &d.status));
     }
     c
 }
 
-fn diff_campaign_asset(d: &JsonCampaignAsset, l: &JsonCampaignAsset) -> Vec<String> {
+fn diff_campaign_asset(d: &JsonCampaignAsset, l: &JsonCampaignAsset) -> Vec<FieldChange> {
     let mut c = Vec::new();
     if d.status != l.status {
-        c.push("status".into());
+        c.push(change("status", &l.status, &d.status));
     }
     c
 }
 
-fn diff_ad_group_asset(d: &JsonAdGroupAsset, l: &JsonAdGroupAsset) -> Vec<String> {
+fn diff_ad_group_asset(d: &JsonAdGroupAsset, l: &JsonAdGroupAsset) -> Vec<FieldChange> {
     let mut c = Vec::new();
     if d.status != l.status {
-        c.push("status".into());
+        c.push(change("status", &l.status, &d.status));
     }
     c
 }
 
-fn diff_shared_set(d: &JsonSharedSet, l: &JsonSharedSet) -> Vec<String> {
+fn diff_shared_set(d: &JsonSharedSet, l: &JsonSharedSet) -> Vec<FieldChange> {
     let mut c = Vec::new();
     if d.status != l.status {
-        c.push("status".into());
+        c.push(change("status", &l.status, &d.status));
     }
     if d.ty != l.ty && d.ty.is_some() {
-        c.push("type".into());
+        c.push(change("type", &l.ty, &d.ty));
     }
     c
 }
 
-fn diff_campaign_shared_set(d: &JsonCampaignSharedSet, l: &JsonCampaignSharedSet) -> Vec<String> {
+fn diff_campaign_shared_set(
+    d: &JsonCampaignSharedSet,
+    l: &JsonCampaignSharedSet,
+) -> Vec<FieldChange> {
     let mut c = Vec::new();
     if d.status != l.status {
-        c.push("status".into());
+        c.push(change("status", &l.status, &d.status));
     }
     c
 }
 
-fn diff_custom_audience(d: &JsonCustomAudience, l: &JsonCustomAudience) -> Vec<String> {
+fn diff_custom_audience(d: &JsonCustomAudience, l: &JsonCustomAudience) -> Vec<FieldChange> {
     let mut c = Vec::new();
     if d.description != l.description && d.description.is_some() {
-        c.push("description".into());
+        c.push(change("description", &l.description, &d.description));
     }
     if d.status != l.status {
-        c.push("status".into());
+        c.push(change("status", &l.status, &d.status));
     }
     // `type` is creation-only: the API rejects changing what a segment is built from.
     if sorted_members(d) != sorted_members(l) {
-        c.push("members".into());
+        c.push(change(
+            "members",
+            Raw(shown_members(l)),
+            Raw(shown_members(d)),
+        ));
     }
     c
+}
+
+/// The member list as `keyword:running shoes` pairs, so a plan row says which
+/// signals the segment gains or loses rather than only that it moved.
+fn shown_members(a: &JsonCustomAudience) -> String {
+    if sorted_members(a).is_empty() {
+        return "none".to_string();
+    }
+    sorted_members(a)
+        .iter()
+        .map(|(ty, value)| format!("{ty}:{value}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The member list is one API field, so it diffs as a set — reordering the
@@ -2329,7 +2542,7 @@ mod criterion_match_tests {
         assert!(
             matches!(
                 crit_action(&changed, "d"),
-                Action::Update { ref changed_fields, .. } if changed_fields == &["bid_modifier".to_string()]
+                Action::Update { ref changed_fields, .. } if field_names(changed_fields) == ["bid_modifier"]
             ),
             "changed device modifier should update bid_modifier, got {:?}",
             crit_action(&changed, "d")
@@ -2442,6 +2655,29 @@ mod label_match_tests {
     }
 
     #[test]
+    fn adopting_a_campaign_on_another_channel_warns_instead_of_reading_as_a_match() {
+        // The channel is creation-only, so the diff skips it — without the
+        // warning this adoption reports as a clean match while the file
+        // describes a campaign it is not pointing at (issue #112).
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "campaign_budgets": [{"id":"999","name":"B","amount_micros":1000}],
+            "campaigns": [{"id":"555","name":"Summer","advertising_channel_type":"VIDEO","campaign_budget":"999"}]
+        }"#,
+        );
+        let report = diff(&input(DECLARED_SUMMER), &live);
+
+        assert!(matches!(&campaign_diff(&report).action, Action::NoOp { .. }));
+        let warning = report
+            .warnings
+            .iter()
+            .find(|w| w.contains("advertising_channel_type"))
+            .expect("a channel mismatch warning");
+        assert!(warning.contains("\"SEARCH\"") && warning.contains("\"VIDEO\""), "{warning}");
+    }
+
+    #[test]
     fn correct_label_is_a_clean_noop() {
         let live = input(
             r#"{
@@ -2473,7 +2709,7 @@ mod label_match_tests {
         let report = diff(&input(DECLARED_SUMMER), &live);
 
         assert!(
-            matches!(&campaign_diff(&report).action, Action::Update { changed_fields, .. } if changed_fields.iter().any(|f| f == "name")),
+            matches!(&campaign_diff(&report).action, Action::Update { changed_fields, .. } if changed_fields.iter().any(|f| f.field == "name")),
             "expected a name update, got {:?}",
             campaign_diff(&report).action
         );
@@ -3092,6 +3328,73 @@ mod claim_tests {
 }
 
 #[cfg(test)]
+mod field_change_tests {
+    use super::*;
+
+    fn campaign(extra: &str) -> JsonCampaign {
+        serde_json::from_str(&format!(
+            r#"{{"id":"c","name":"C","advertising_channel_type":"SEARCH",
+                 "campaign_budget":"b"{extra}}}"#
+        ))
+        .expect("valid test campaign")
+    }
+
+    #[test]
+    fn a_scalar_change_carries_both_sides() {
+        let mut declared = campaign("");
+        declared.name = "Winter Sale".to_string();
+        let mut live = campaign("");
+        live.name = "Winter".to_string();
+        live.status = Some("PAUSED".to_string());
+        declared.status = Some("ENABLED".to_string());
+
+        let changed = diff_campaign(&declared, &live, false);
+        assert_eq!(
+            changed.iter().map(FieldChange::render).collect::<Vec<_>>(),
+            vec![
+                "name: \"Winter\" -> \"Winter Sale\"".to_string(),
+                "status: \"PAUSED\" -> \"ENABLED\"".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_absent_live_value_reads_as_unset_not_as_empty() {
+        let declared = campaign(r#","end_date":"2026-12-31""#);
+        let live = campaign("");
+        let changed = diff_campaign(&declared, &live, false);
+        assert_eq!(
+            changed.iter().map(FieldChange::render).collect::<Vec<_>>(),
+            vec!["end_date: (unset) -> \"2026-12-31\"".to_string()]
+        );
+    }
+
+    #[test]
+    fn frequency_caps_render_as_the_caps_themselves() {
+        let declared = campaign(
+            r#","frequency_caps":[{"event_type":"IMPRESSION","time_unit":"DAY","time_length":1,"cap":3}]"#,
+        );
+        let live = campaign("");
+        let changed = diff_campaign(&declared, &live, false);
+        assert_eq!(
+            changed.iter().map(FieldChange::render).collect::<Vec<_>>(),
+            vec!["frequency_caps: none -> 3 IMPRESSION / 1 DAY (CAMPAIGN)".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_long_value_is_elided_rather_than_burying_the_row() {
+        let mut declared = campaign("");
+        declared.name = "x".repeat(200);
+        let live = campaign("");
+        let changed = diff_campaign(&declared, &live, false);
+        assert_eq!(changed.len(), 1);
+        assert!(changed[0].desired.ends_with('…'), "{:?}", changed[0]);
+        assert!(changed[0].desired.chars().count() <= MAX_SHOWN_VALUE + 1);
+    }
+}
+
+#[cfg(test)]
 mod campaign_bidding_tests {
     use super::*;
 
@@ -3110,7 +3413,7 @@ mod campaign_bidding_tests {
             &campaign(r#","manual_cpv":{}"#),
             false,
         );
-        assert_eq!(changed, vec!["target_cpv".to_string()]);
+        assert_eq!(field_names(&changed), vec!["target_cpv".to_string()]);
     }
 
     #[test]
@@ -3130,7 +3433,7 @@ mod campaign_bidding_tests {
             &campaign(r#","manual_cpc":{"enhanced_cpc_enabled":false}"#),
             false,
         );
-        assert_eq!(changed, vec!["manual_cpc.enhanced_cpc_enabled".to_string()]);
+        assert_eq!(field_names(&changed), vec!["manual_cpc.enhanced_cpc_enabled".to_string()]);
     }
 
     #[test]
@@ -3164,7 +3467,7 @@ mod geo_target_type_tests {
     fn a_ui_flip_to_presence_or_interest_is_drift() {
         let changed = diff_campaign(&campaign(PRESENCE), &campaign(INTEREST), false);
         assert_eq!(
-            changed,
+            field_names(&changed),
             vec!["geo_target_type_setting.positive_geo_target_type".to_string()]
         );
     }
@@ -3191,7 +3494,7 @@ mod geo_target_type_tests {
             false,
         );
         assert_eq!(
-            changed,
+            field_names(&changed),
             vec!["geo_target_type_setting.negative_geo_target_type".to_string()]
         );
     }

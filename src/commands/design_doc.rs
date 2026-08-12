@@ -373,7 +373,7 @@ fn rmf_table() -> Vec<RmfRow> {
         },
         RmfRow {
             requirement: "Pause / enable campaigns and ad groups",
-            satisfied_by: "The <code>status</code> attribute on every campaign / ad-group / ad / criterion resource is editable. Toggling it produces a <code>~ update (status)</code> diff in <code>plan</code> and is applied via the normal mutate flow.",
+            satisfied_by: "The <code>status</code> attribute on every campaign / ad-group / ad / criterion resource is editable. Toggling it produces a <code>~ update (status: &quot;PAUSED&quot; -&gt; &quot;ENABLED&quot;)</code> diff in <code>plan</code> and is applied via the normal mutate flow.",
         },
         RmfRow {
             requirement: "Adjust budgets",

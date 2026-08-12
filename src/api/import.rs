@@ -2351,18 +2351,18 @@ resource "google_ads_campaign" "c" {
 
         let report = crate::api::diff::diff(&declared, &live);
         assert_eq!(report.update_count, 1, "diffs: {:?}", report.diffs);
-        let changed: Vec<&str> = report
+        let changed: Vec<String> = report
             .diffs
             .iter()
             .filter_map(|d| match &d.action {
                 crate::api::diff::Action::Update { changed_fields, .. } => {
-                    Some(changed_fields.iter().map(String::as_str).collect::<Vec<_>>())
+                    Some(crate::api::diff::field_names(changed_fields))
                 }
                 _ => None,
             })
             .flatten()
             .collect();
-        assert!(changed.contains(&"status"), "changed: {changed:?}");
+        assert!(changed.iter().any(|f| f == "status"), "changed: {changed:?}");
     }
 
     #[test]
@@ -2568,7 +2568,7 @@ resource "google_ads_ad_group_ad" "custom" {
             .iter()
             .filter_map(|d| match &d.action {
                 crate::api::diff::Action::Update { changed_fields, .. } => {
-                    Some(changed_fields.clone())
+                    Some(crate::api::diff::field_names(changed_fields))
                 }
                 _ => None,
             })
@@ -3182,16 +3182,18 @@ resource "google_ads_campaign" "v" {{
         let live = crate::commands::adapt::from_search_response(LIVE_VIDEO_CAMPAIGN)
             .expect("adapt live");
         let report = diff_after_defaults(declared, live);
-        let changed: Vec<&Vec<String>> = report
+        let changed: Vec<Vec<String>> = report
             .diffs
             .iter()
             .filter_map(|d| match &d.action {
-                crate::api::diff::Action::Update { changed_fields, .. } => Some(changed_fields),
+                crate::api::diff::Action::Update { changed_fields, .. } => {
+                    Some(crate::api::diff::field_names(changed_fields))
+                }
                 _ => None,
             })
             .collect();
         assert_eq!(changed.len(), 1, "diffs: {:?}", report.diffs);
-        assert_eq!(changed[0], &vec!["frequency_caps".to_string()]);
+        assert_eq!(changed[0], vec!["frequency_caps".to_string()]);
     }
 
     /// `LIVE_VIDEO_CAMPAIGN` plus the `bidsmith:owns=frequency_caps`
@@ -3221,7 +3223,7 @@ resource "google_ads_campaign" "v" {{
             matches!(
                 &d.action,
                 crate::api::diff::Action::Update { changed_fields, .. }
-                    if changed_fields.contains(&"frequency_caps".to_string())
+                    if changed_fields.iter().any(|f| f.field == "frequency_caps")
             )
         })
     }
@@ -3417,19 +3419,19 @@ resource "google_ads_campaign_criterion" "no_kids" {
         let live =
             crate::commands::adapt::from_search_response(LIVE_VIDEO_TARGETING).expect("adapt live");
         let report = diff_after_defaults(declared, live);
-        let changed: Vec<(&str, &Vec<String>)> = report
+        let changed: Vec<(&str, Vec<String>)> = report
             .diffs
             .iter()
             .filter_map(|d| match &d.action {
                 crate::api::diff::Action::Update { changed_fields, .. } => {
-                    Some((d.kind, changed_fields))
+                    Some((d.kind, crate::api::diff::field_names(changed_fields)))
                 }
                 _ => None,
             })
             .collect();
         assert_eq!(changed.len(), 1, "diffs: {:?}", report.diffs);
         assert_eq!(changed[0].0, "custom_audience");
-        assert_eq!(changed[0].1, &vec!["members".to_string()]);
+        assert_eq!(changed[0].1, vec!["members".to_string()]);
     }
 
     #[test]
