@@ -60,6 +60,43 @@ resource "google_ads_campaign_asset" "cookies_sitelinks" {
 so a name like `"Sitelink — ${each.key}"` names each instance after
 its map key.
 
+## When each copy needs more than one value
+
+A map value can be a whole record, and `each.value.<field>` reaches
+inside it. That is what turns N sitelinks — four fields each — into one
+block:
+
+```hcl
+resource "google_ads_sitelink_asset" "sl" {
+  for_each = {
+    howto  = { text = "How it works", url = "https://example.com/how" }
+    chrome = { text = "For Chrome",   url = "https://example.com/chrome" }
+  }
+  link_text  = each.value.text
+  final_urls = [each.value.url]
+}
+```
+
+Misspell a field and bidsmith says which names the entry actually has,
+rather than leaving you to compare two lists by eye.
+
+## Attaching what you just fanned out
+
+A generated instance has a keyed address — `sl["howto"]` — and you can
+point at it from another resource with the same key:
+
+```hcl
+resource "google_ads_campaign_asset" "sl_link" {
+  for_each   = ["howto", "chrome"]
+  campaign   = google_ads_campaign.cookies.id
+  asset      = google_ads_sitelink_asset.sl[each.key].id
+  field_type = "SITELINK"
+}
+```
+
+So the assets and their attachments both collapse to one block, driven
+by the same set of keys.
+
 ## Adopting it on a live account
 
 Rewriting existing hand-written resources into a `for_each` block is
@@ -74,5 +111,11 @@ anything is written.
 `for_each` fans out the resources *under* a campaign. To stamp out
 whole campaign families — same structure, different city or product —
 use a [module with for_each](/bidsmith/recipes/collapse-cloned-campaigns/)
-instead. Referencing a single fanned-out instance from another
-resource (`google_ads_campaign.t["a"].id`) isn't supported.
+instead.
+
+For callouts and structured snippets specifically, there is now a
+shorter road still: declare them
+[straight on the campaign](/bidsmith/resources/google_ads_campaign/)
+and skip the asset and attachment resources altogether. Reach for
+`for_each` when the assets are shared between campaigns, or when they
+carry fields the inline form doesn't cover.

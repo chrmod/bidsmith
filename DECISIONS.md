@@ -290,14 +290,20 @@ resource type, any file layout, modules, schema validation.
   spliced verbatim so `asset = each.value` resolves through normal
   reference validation. Empty tables and duplicate keys are errors
   (same policy as module `for_each`); `each.<anything else>` is an
-  error pointing at the offending expression. Adopting `for_each` for
+  error pointing at the offending expression. A map value that is an
+  object exposes its fields as `each.value.<field>`, so one entry can
+  carry a whole record (a sitelink's text, url, and descriptions)
+  rather than a single scalar; a field lookup on a scalar entry, or a
+  name the entry does not have, is an error listing what it does have.
+  A generated instance is referenceable by key —
+  `google_ads_callout_asset.co[each.key].id` — because a string index
+  folds into the segment it subscripts, matching the generated
+  `co["howto"]` label verbatim. Together these mean an asset *and* its
+  attachment can fan out from the same key set (issue #145). Adopting `for_each` for
   existing hand-written resources is live-neutral for content-matched
   types (criteria, assets, keywords); labelable types re-adopt via
   content fallback and show visible `~ adopt (label only)` rows as their
-  `bidsmith:address` label moves to the keyed form. Referencing a
-  keyed instance from another resource
-  (`google_ads_campaign.t["a"].id`) is not supported yet — fan out
-  parents with `module` `for_each` instead. `refresh --in-place`
+  `bidsmith:address` label moves to the keyed form. `refresh --in-place`
   reports (rather than silently drops) drift on generated instances,
   since there is no source block to patch.
 - **`defaults` block** (issue #87): shared campaign boilerplate is

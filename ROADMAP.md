@@ -309,9 +309,9 @@ Smaller follow-ups that can ride along:
   refresh / lints; `fmt` / `mv` see raw source. Collapses the
   per-campaign device-exclusion pair and N-sitelink `campaign_asset`
   attachments (the two measured ghostery/marketing patterns).
-  **Deferred:** referencing a keyed instance from another resource
-  (`google_ads_campaign.t["a"].id`) and `each.value.<attr>` on object
-  values.
+  Referencing a keyed instance from another resource
+  (`google_ads_callout_asset.co[each.key].id`) and `each.value.<attr>`
+  on object values landed with issue #145.
 - ✅ Reusable ad bodies via `ad_template` (issue #40) — a top-level
   `ad_template "name" { … }` declares an `ad {}` body once, and a
   `google_ads_ad_group_ad` attaches it with `template = ad_template.<name>`

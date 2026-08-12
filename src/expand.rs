@@ -1,4 +1,4 @@
-use hcl_edit::expr::{Expression, ObjectKey};
+use hcl_edit::expr::{Expression, ObjectKey, TraversalOperator};
 use hcl_edit::structure::{Block, BlockLabel, Body, Structure};
 use hcl_edit::{Decorate, Decorated, Span};
 
@@ -238,6 +238,17 @@ fn substitute_expr(
             replace_preserving_decor(expr, value.clone());
             return;
         }
+        EachRef::ValueField(fields) => {
+            match lookup_value_field(value, &fields) {
+                Ok(found) => replace_preserving_decor(expr, found.clone()),
+                Err(message) => diags.push(Diag::new(
+                    file.src.clone(),
+                    span_of(expr.span()),
+                    message,
+                )),
+            }
+            return;
+        }
         EachRef::Unsupported(path) => {
             diags.push(Diag::new(
                 file.src.clone(),
@@ -276,6 +287,16 @@ fn substitute_expr(
         Expression::Parenthesis(p) => {
             substitute_expr(p.inner_mut(), key, value, file, diags);
         }
+        // `google_ads_callout_asset.co[each.key].id` — the index carries the
+        // key that picks which generated instance is meant, so it has to be
+        // substituted like any other occurrence.
+        Expression::Traversal(t) => {
+            for op in t.operators.iter_mut() {
+                if let TraversalOperator::Index(inner) = op.value_mut() {
+                    substitute_expr(inner, key, value, file, diags);
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -289,6 +310,10 @@ enum EachRef {
     None,
     Key,
     Value,
+    /// `each.value.<field>[.<field>…]` — the entry's value is an object and
+    /// this names a field inside it, so one map can carry a whole record
+    /// (a sitelink's text, url, and two descriptions) instead of one scalar.
+    ValueField(Vec<String>),
     Unsupported(String),
 }
 
@@ -305,8 +330,55 @@ fn each_ref(expr: &Expression) -> EachRef {
     match path.get(1).map(String::as_str) {
         Some("key") if path.len() == 2 => EachRef::Key,
         Some("value") if path.len() == 2 => EachRef::Value,
+        Some("value") => EachRef::ValueField(path[2..].to_vec()),
         _ => EachRef::Unsupported(path.join(".")),
     }
+}
+
+/// Walk `each.value.a.b` into the entry's value. Errors describe what the entry
+/// actually holds — a missing field is far more often a typo than a design
+/// change, and the available names are the fastest way to see which.
+fn lookup_value_field<'a>(
+    value: &'a Expression,
+    fields: &[String],
+) -> Result<&'a Expression, String> {
+    let mut current = value;
+    for (depth, field) in fields.iter().enumerate() {
+        let so_far = || {
+            if depth == 0 {
+                "each.value".to_string()
+            } else {
+                format!("each.value.{}", fields[..depth].join("."))
+            }
+        };
+        let Expression::Object(obj) = current else {
+            return Err(format!(
+                "each.value.{} needs {} to be an object, but it is {}",
+                fields.join("."),
+                so_far(),
+                crate::schema::describe_expr(current),
+            ));
+        };
+        let found = obj
+            .iter()
+            .find(|(k, _)| object_key_str(k).as_deref() == Some(field.as_str()))
+            .map(|(_, v)| v.expr());
+        match found {
+            Some(v) => current = v,
+            None => {
+                let mut available: Vec<String> =
+                    obj.iter().filter_map(|(k, _)| object_key_str(k)).collect();
+                available.sort();
+                let has = if available.is_empty() {
+                    "it is empty".to_string()
+                } else {
+                    format!("it has {}", available.join(", "))
+                };
+                return Err(format!("{} has no field '{field}' — {has}", so_far()));
+            }
+        }
+    }
+    Ok(current)
 }
 
 fn object_key_str(key: &ObjectKey) -> Option<String> {
@@ -526,7 +598,7 @@ resource "google_ads_campaign_budget" "b" {
             r#"
 resource "google_ads_campaign_budget" "b" {
   for_each = ["a"]
-  name = each.value.name
+  name = each.other
   amount_micros = 1000000
 }
 "#,
@@ -537,6 +609,113 @@ resource "google_ads_campaign_budget" "b" {
                 .any(|m| m.contains("only each.key and each.value are available")),
             "{:?}",
             errors(&diags)
+        );
+    }
+
+    #[test]
+    fn a_field_of_an_object_valued_entry_substitutes() {
+        // One map entry carrying a whole record, so N sitelinks fan out from one
+        // block instead of one resource each (issue #145).
+        let (files, diags) = expand_str(
+            "each_value_field",
+            r#"
+resource "google_ads_sitelink_asset" "sl" {
+  for_each = {
+    howto  = { text = "How it works", url = "https://example.com/how" }
+    chrome = { text = "For Chrome", url = "https://example.com/chrome" }
+  }
+  link_text  = each.value.text
+  final_urls = [each.value.url]
+}
+"#,
+        );
+        assert!(errors(&diags).is_empty(), "{:?}", errors(&diags));
+        let rendered = files[0].body.to_string();
+        assert!(rendered.contains(r#"link_text  = "How it works""#), "{rendered}");
+        assert!(rendered.contains(r#"link_text  = "For Chrome""#), "{rendered}");
+        assert!(
+            rendered.contains(r#"final_urls = ["https://example.com/chrome"]"#),
+            "{rendered}"
+        );
+        assert_eq!(
+            resource_labels(&files[0]),
+            vec![r#"sl["howto"]"#.to_string(), r#"sl["chrome"]"#.to_string()],
+        );
+    }
+
+    #[test]
+    fn a_missing_field_names_the_ones_the_entry_has() {
+        let (_files, diags) = expand_str(
+            "each_value_typo",
+            r#"
+resource "google_ads_sitelink_asset" "sl" {
+  for_each = {
+    howto = { text = "How it works", url = "https://example.com/how" }
+  }
+  link_text = each.value.tex
+}
+"#,
+        );
+        let errs = errors(&diags);
+        assert!(
+            errs.iter().any(|m| m.contains("has no field 'tex'")
+                && m.contains("text")
+                && m.contains("url")),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn a_field_lookup_on_a_scalar_entry_says_so() {
+        // A list `for_each` binds each.value to a string; asking for a field of
+        // it is a mistake worth naming precisely.
+        let (_files, diags) = expand_str(
+            "each_value_scalar",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  for_each = ["a"]
+  name = each.value.name
+  amount_micros = 1000000
+}
+"#,
+        );
+        let errs = errors(&diags);
+        assert!(
+            errs.iter()
+                .any(|m| m.contains("needs each.value to be an object") && m.contains("string")),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn an_instance_of_another_for_each_can_be_referenced_by_key() {
+        // Previously you could fan out an asset or its attachment, never both
+        // (DECISIONS.md deferred this with issue #86).
+        let (files, diags) = expand_str(
+            "keyed_ref",
+            r#"
+resource "google_ads_callout_asset" "co" {
+  for_each      = ["fast", "free"]
+  callout_text  = each.key
+}
+
+resource "google_ads_campaign_asset" "co_link" {
+  for_each   = ["fast", "free"]
+  campaign   = google_ads_campaign.c.id
+  asset      = google_ads_callout_asset.co[each.key].id
+  field_type = "CALLOUT"
+}
+"#,
+        );
+        assert!(errors(&diags).is_empty(), "{:?}", errors(&diags));
+        let rendered = files[0].body.to_string();
+        assert!(
+            rendered.contains(r#"google_ads_callout_asset.co["fast"].id"#),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(r#"google_ads_callout_asset.co["free"].id"#),
+            "{rendered}"
         );
     }
 

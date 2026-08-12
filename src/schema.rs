@@ -3825,6 +3825,14 @@ pub(crate) fn extract_traversal_path(t: &Traversal) -> Option<Vec<String>> {
     for op in t.operators.iter() {
         match &**op {
             TraversalOperator::GetAttr(name) => path.push(name.as_str().to_string()),
+            // A `for_each` instance is addressed `co["howto"]`, one segment
+            // whose name happens to contain brackets — fold the index back into
+            // the segment it subscripts so it matches the generated label
+            // verbatim (issue #145).
+            TraversalOperator::Index(Expression::String(key)) => {
+                let last = path.last_mut()?;
+                last.push_str(&format!("[{:?}]", key.value().as_str()));
+            }
             _ => return None,
         }
     }
