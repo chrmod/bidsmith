@@ -2703,7 +2703,7 @@ resource "google_ads_ad_group" "ag" {
     /// campaign ones, and the atomic batch takes everything else down with it —
     /// verified live against a TARGET_CPV in-stream ad group (issue #109).
     #[test]
-    fn video_ad_group_bid_drift_warns_before_the_batch() {
+    fn video_ad_group_bid_drift_blocks_the_batch() {
         let declared = import_str(
             "video_ad_group_drift",
             r#"
@@ -2740,11 +2740,11 @@ resource "google_ads_ad_group" "ag" {
         assert_eq!(report.update_count, 1, "diffs: {:?}", report.diffs);
         assert!(
             report
-                .warnings
+                .blockers
                 .iter()
-                .any(|w| w.contains("ag") && w.contains("target_cpv_micros")),
-            "no warning for the video ad group: {:?}",
-            report.warnings
+                .any(|b| b.contains("ag") && b.contains("target_cpv_micros")),
+            "no blocker for the video ad group: {:?}",
+            report.blockers
         );
     }
 

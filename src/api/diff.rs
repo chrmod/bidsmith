@@ -88,6 +88,7 @@ pub struct ClaimPlanEntry {
     pub stale_assoc_rn: Option<String>,
 }
 
+#[derive(Default)]
 pub struct DiffReport {
     pub diffs: Vec<ResourceDiff>,
     pub label_plans: Vec<LabelPlanEntry>,
@@ -105,6 +106,15 @@ pub struct DiffReport {
     /// modifier — the API forbids removing device criteria). Printed by
     /// plan / apply; never turned into mutate ops.
     pub warnings: Vec<String>,
+    /// Removals dropped before the batch because the API refuses them and
+    /// nothing is lost by leaving the resource alone. Shown next to the
+    /// destroy count so a skipped row is visible, not merely absent.
+    pub skipped_removal_count: usize,
+    /// Operations the file asks for that this account can never accept —
+    /// checked locally, before anything is sent, because the batch is atomic
+    /// and one doomed operation rejects every unrelated one with it
+    /// (issue #116). A non-empty list stops the plan.
+    pub blockers: Vec<String>,
 }
 
 /// Label-first match with content fallback over parallel declared / live
@@ -211,6 +221,22 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     let mut diffs: Vec<ResourceDiff> = Vec::new();
     let mut label_plans: Vec<LabelPlanEntry> = Vec::new();
     let mut campaign_warnings: Vec<String> = Vec::new();
+    let mut blockers: Vec<String> = Vec::new();
+    let mut skipped_removal_count = 0usize;
+    // Live ids on the read-only VIDEO channel, so a removal the API would
+    // refuse is dropped before it can poison the batch (issue #116).
+    let live_video_campaigns: HashSet<&str> = live
+        .campaigns
+        .iter()
+        .filter(|c| c.advertising_channel_type == "VIDEO")
+        .map(|c| c.id.as_str())
+        .collect();
+    let live_video_ad_groups: HashSet<&str> = live
+        .ad_groups
+        .iter()
+        .filter(|g| live_video_campaigns.contains(g.campaign.as_str()))
+        .map(|g| g.id.as_str())
+        .collect();
     let mut campaign_match: HashMap<String, String> = HashMap::new();
     let mut ad_group_match: HashMap<String, String> = HashMap::new();
     // declared asset address -> live asset id, across every asset type
@@ -289,8 +315,8 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
                 }
             };
             if d.advertising_channel_type == "VIDEO" {
-                if let Some(w) = video_is_read_only_warning(&d.id, &action) {
-                    campaign_warnings.push(w);
+                if let Some(b) = video_is_read_only_blocker(&d.id, &action) {
+                    blockers.push(b);
                 }
             }
             if let Some(plan) =
@@ -307,6 +333,11 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         for (li, l) in live_campaigns.iter().enumerate() {
             if !claimed[li] && !is_removed(l.status.as_deref()) {
                 if let Some(addr) = &l.managed_address {
+                    if live_video_campaigns.contains(l.id.as_str()) {
+                        campaign_warnings.push(video_removal_skipped_warning("a VIDEO campaign", addr));
+                        skipped_removal_count += 1;
+                        continue;
+                    }
                     diffs.push(removal_diff("campaign", addr, &l.id));
                 }
             }
@@ -353,8 +384,8 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
                 None => (Action::Create, None),
             };
             if video_campaigns.contains(d.campaign.as_str()) {
-                if let Some(w) = video_is_read_only_warning(&d.id, &action) {
-                    campaign_warnings.push(w);
+                if let Some(b) = video_is_read_only_blocker(&d.id, &action) {
+                    blockers.push(b);
                 }
             }
             if let Some(plan) =
@@ -371,6 +402,11 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         for (li, l) in live_ad_groups.iter().enumerate() {
             if !claimed[li] && !is_removed(l.status.as_deref()) {
                 if let Some(addr) = &l.managed_address {
+                    if live_video_ad_groups.contains(l.id.as_str()) {
+                        campaign_warnings.push(video_removal_skipped_warning("an ad group on a VIDEO campaign", addr));
+                        skipped_removal_count += 1;
+                        continue;
+                    }
                     diffs.push(removal_diff("ad_group", addr, &l.id));
                 }
             }
@@ -421,6 +457,11 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
             continue;
         }
         if let Some(addr) = &l.managed_address {
+            if live_video_ad_groups.contains(l.ad_group.as_str()) {
+                campaign_warnings.push(video_removal_skipped_warning("an ad on a VIDEO campaign", addr));
+                skipped_removal_count += 1;
+                continue;
+            }
             diffs.push(removal_diff("ad_group_ad", addr, &l.id));
         }
     }
@@ -825,7 +866,9 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         update_count,
         delete_count,
         adopt_count,
+        skipped_removal_count,
         warnings,
+        blockers,
     }
 }
 
@@ -1320,12 +1363,18 @@ fn missing_bidding_strategy_warning(d: &JsonCampaign) -> Option<String> {
 }
 
 /// Every create or update against the VIDEO channel is rejected, and because
-/// the batch is atomic it takes every unrelated operation with it — so this is
-/// worth saying before the request goes out, not after (issue #104). The
+/// the batch is atomic it takes every unrelated operation with it — so the
+/// plan stops here rather than letting Google decide (issues #104, #116). The
 /// restriction covers the channel, not just the campaign resource: a bid or
 /// status update on a video campaign's ad group is refused the same way
 /// (issue #109). Label writes are allowed, so `~ adopt` stays quiet.
-fn video_is_read_only_warning(address: &str, action: &Action) -> Option<String> {
+///
+/// A create or update is blocked rather than skipped because the file is
+/// asserting a state the account can never reach; quietly dropping it would
+/// leave the repo and the account permanently disagreeing under a green plan.
+/// A *removal* is skipped instead — see `diff` — since a file that stopped
+/// mentioning a resource is not asserting anything about it.
+fn video_is_read_only_blocker(address: &str, action: &Action) -> Option<String> {
     let what = match action {
         Action::Create => "would be created".to_string(),
         Action::Update { changed_fields, .. } => {
@@ -1334,9 +1383,21 @@ fn video_is_read_only_warning(address: &str, action: &Action) -> Option<String> 
         _ => return None,
     };
     Some(format!(
-        "{address} {what}, but {} — the whole atomic batch is rejected with it",
+        "{address} {what}. Nothing in the batch can be sent while it is there, because {}",
         crate::schema::VIDEO_IS_READ_ONLY
     ))
+}
+
+/// A labeled live resource the file no longer declares, on a channel whose
+/// removals the API refuses. Nothing is lost by leaving it alone, and skipping
+/// it lets every unrelated operation through (issue #116).
+fn video_removal_skipped_warning(what: &str, address: &str) -> String {
+    format!(
+        "{address} is labeled by bidsmith but no longer declared, and the Google Ads API \
+         cannot remove {what} (see developers.google.com/google-ads/api/docs/video/overview) — \
+         skipping the removal so the rest of the batch can go through. Delete it in the Google \
+         Ads UI, or restore the declaration, to make this quiet."
+    )
 }
 
 fn diff_budget(d: &JsonBudget, l: &JsonBudget) -> Vec<String> {
@@ -3012,6 +3073,64 @@ mod bidding_warning_tests {
                        "campaign_budget":"7"}]
     }"#;
 
+    /// A labeled video campaign dropped from the file plans a destroy the API
+    /// refuses, and one refusal sinks every unrelated operation in the atomic
+    /// batch. Nothing is lost by leaving it alone, so the row is dropped and
+    /// the rest of the plan survives (issue #116).
+    #[test]
+    fn an_undeclared_video_campaign_is_skipped_rather_than_destroyed() {
+        const LIVE_LABELED: &str = r#"{
+            "customer_id": "1",
+            "campaign_budgets": [{"id":"7","name":"B","amount_micros":1000000}],
+            "campaigns": [{"id":"9","name":"Preroll","advertising_channel_type":"VIDEO",
+                           "campaign_budget":"7","managed_address":"m.google_ads_campaign.preroll"}]
+        }"#;
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "campaign_budgets": [{"id":"b","name":"B","amount_micros":1000000}]
+        }"#,
+        );
+        let report = diff(&declared, &input(LIVE_LABELED));
+        assert_eq!(report.delete_count, 0, "diffs: {:?}", report.diffs);
+        assert!(
+            !report
+                .diffs
+                .iter()
+                .any(|d| matches!(d.action, Action::Delete { .. })),
+            "a doomed destroy reached the batch: {:?}",
+            report.diffs
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("preroll") && w.contains("skipping the removal")),
+            "{:?}",
+            report.warnings
+        );
+        assert!(report.blockers.is_empty(), "{:?}", report.blockers);
+    }
+
+    /// The same live campaign without a bidsmith label is not bidsmith's to
+    /// remove in the first place, so nothing is said about it.
+    #[test]
+    fn an_unlabeled_video_campaign_is_not_mentioned() {
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "campaign_budgets": [{"id":"b","name":"B","amount_micros":1000000}]
+        }"#,
+        );
+        let report = diff(&declared, &input(LIVE));
+        assert_eq!(report.delete_count, 0, "diffs: {:?}", report.diffs);
+        assert!(
+            !report.warnings.iter().any(|w| w.contains("skipping the removal")),
+            "{:?}",
+            report.warnings
+        );
+    }
+
     #[test]
     fn a_new_search_campaign_without_bidding_warns() {
         let declared = input(
@@ -3031,7 +3150,7 @@ mod bidding_warning_tests {
     }
 
     #[test]
-    fn a_new_video_campaign_warns_that_the_api_cannot_create_it() {
+    fn a_new_video_campaign_blocks_the_plan_because_the_api_cannot_create_it() {
         // No bidding block makes a video campaign appliable — the channel is
         // read-only through the API, whatever it bids with.
         let declared = input(
@@ -3044,14 +3163,14 @@ mod bidding_warning_tests {
         );
         let report = diff(&declared, &input(LIVE));
         assert!(
-            report.warnings.iter().any(|w| w.contains("cannot create or update VIDEO")),
+            report.blockers.iter().any(|b| b.contains("cannot create or update VIDEO")),
             "{:?}",
-            report.warnings
+            report.blockers
         );
     }
 
     #[test]
-    fn drift_on_a_live_video_campaign_warns_before_the_batch_goes_out() {
+    fn drift_on_a_live_video_campaign_blocks_before_the_batch_goes_out() {
         let declared = input(
             r#"{
             "customer_id": "1",
@@ -3062,10 +3181,10 @@ mod bidding_warning_tests {
         );
         let report = diff(&declared, &input(LIVE));
         assert!(
-            report.warnings.iter().any(|w| w.contains("cannot create or update VIDEO")
-                && w.contains("status")),
+            report.blockers.iter().any(|b| b.contains("cannot create or update VIDEO")
+                && b.contains("status")),
             "{:?}",
-            report.warnings
+            report.blockers
         );
     }
 

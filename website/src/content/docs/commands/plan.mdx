@@ -65,7 +65,7 @@ for how to obtain these.
 | Code | Meaning |
 |---|---|
 | `0` | Plan completed. Without `--detailed-exitcode`, this covers both "no changes" and "changes pending." With `--detailed-exitcode`, `0` means **no changes**. |
-| `1` | Local validation failed, authentication failed, Google rejected the validate-only request, or any other error. |
+| `1` | Local validation failed, authentication failed, Google rejected the validate-only request, bidsmith refused to send a batch it knows the account can't accept (see [below](#when-plan-wont-send-the-batch)), or any other error. |
 | `2` | **Only with `--detailed-exitcode`:** the plan succeeded and the diff is non-empty (changes are pending). |
 
 ## Examples
@@ -139,10 +139,11 @@ pending" and reserve `1` for a genuine failure.
    set, so a live keyword no longer in it is removed. The pruning
    stays within what you manage — declaring negatives never destroys
    positives, and vice versa.
-5. Whole resources in the live account with no `.bid` match are
-   **not** shown today — they're "stuff bidsmith doesn't manage."
-   Label-based matching (and whole-resource `- destroy` rows) is on
-   the roadmap.
+5. A whole resource that bidsmith created earlier (it carries a
+   bidsmith label) and that your files no longer declare becomes a
+   `- destroy` row. A campaign somebody built in the Google Ads UI
+   carries no label, so it is never destroyed — it's simply not
+   bidsmith's to manage.
 
 After producing the diff, bidsmith sends the create/update/remove
 operations to Google's `googleAds:mutate` endpoint with
@@ -150,6 +151,47 @@ operations to Google's `googleAds:mutate` endpoint with
 Google checks them without committing. Any rejection
 ("headline too long," "bid below minimum") shows up inline in the
 plan output.
+
+## When plan won't send the batch
+
+Google applies the whole batch or none of it. One operation it refuses
+takes every other operation down with it — including changes to
+campaigns you never touched. So bidsmith checks for the refusals it can
+predict *before* sending, and does one of two things.
+
+**It stops.** If your files ask to create or change something on a
+**Video** campaign, the plan halts and nothing is sent, because the
+Google Ads API is read-only for that channel:
+
+```
+plan: error: video_de.google_ads_campaign.gh_video_de has drift on status.
+  Nothing in the batch can be sent while it is there, because the Google Ads
+  API cannot create or update VIDEO campaigns — make the change in the
+  Google Ads UI, then let bidsmith adopt it
+```
+
+Make the change in the Google Ads UI, or put the file back the way the
+account has it. Either way the plan goes green again.
+
+**It skips.** If a Video campaign or ad group carries a bidsmith label
+but is *gone* from your files, bidsmith would normally destroy it — and
+the API won't allow that either. Since nothing is lost by leaving it
+alone, the removal is skipped, everything else proceeds, and the summary
+says so:
+
+```
+Plan: 16 to create, 21 to update, 4 to destroy (2 skipped), 1432 unchanged.
+```
+
+To make the warning stop, either delete the resource in the Google Ads
+UI or restore its declaration.
+
+<Aside type="tip">
+  When Google *does* reject a batch, the summary separates the
+  operations that were actually at fault from the ones that only failed
+  because they shared the batch — `(0 accepted, 1 rejected, 262 blocked
+  by those failures)`. Fix the rejected one; the rest need nothing.
+</Aside>
 
 ## See also
 

@@ -30,6 +30,20 @@ pub fn run(
         Err(code) => return code,
     };
 
+    // Blocked plans never reach the API, so the usual "validateOnly rejected
+    // changes" wording below would be wrong — execute says what happened.
+    if !prepared.report.blockers.is_empty() {
+        return plan::execute(
+            &prepared,
+            /* validate_only */ true,
+            verbose,
+            /* show_unchanged */ false,
+            plan::DisplayMode::PerResource,
+            plan::Format::Text,
+            /* detailed_exitcode */ false,
+        );
+    }
+
     if !plan::has_pending_changes(&prepared) {
         let code = plan::execute(
             &prepared,

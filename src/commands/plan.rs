@@ -372,8 +372,40 @@ pub fn execute(
         return ExitCode::SUCCESS;
     }
 
+    // The batch is atomic, so one operation the account can never accept
+    // rejects every unrelated one with it. Those are knowable from the live
+    // state alone, so the plan stops here and nothing is sent (issue #116).
+    if !report.blockers.is_empty() {
+        display_offline_diff(
+            prepared,
+            validate_only,
+            show_unchanged,
+            format,
+            /* detailed_exitcode */ false,
+            "not sent — see the blocking errors below",
+        );
+        eprintln!();
+        for b in &report.blockers {
+            eprintln!("{label}: error: {b}");
+        }
+        eprintln!();
+        eprintln!(
+            "{label}: {} operation(s) cannot succeed against this account, and the batch is \
+             all-or-nothing — nothing was sent. Resolve them, or drop them from the plan.",
+            report.blockers.len()
+        );
+        return ExitCode::from(1);
+    }
+
     let Some((client, token)) = prepared.client.as_ref().zip(prepared.token.as_ref()) else {
-        return display_offline_diff(prepared, validate_only, show_unchanged, format, detailed_exitcode);
+        return display_offline_diff(
+            prepared,
+            validate_only,
+            show_unchanged,
+            format,
+            detailed_exitcode,
+            "offline — diff only, not server-validated",
+        );
     };
 
     // Resources their own service owns go first: the unified batch below
@@ -453,6 +485,7 @@ pub fn execute(
     let claims = claim_details(report);
     let mut accepted = 0usize;
     let mut rejected = 0usize;
+    let mut collateral = 0usize;
     let mut deferred_count = 0usize;
     let mut md_rows: Vec<(String, String, String)> = Vec::new();
     for d in &report.diffs {
@@ -469,8 +502,13 @@ pub fn execute(
         let batch_ok = pre.handled.get(&d.address).copied().unwrap_or(success);
         let is_deferred = deferred.contains(d.address.as_str());
         if is_mutating {
-            if has_err || (!batch_ok && !is_deferred) {
+            if has_err {
                 rejected += 1;
+            } else if !batch_ok && !is_deferred {
+                // No error of its own: this operation was fine and went down
+                // with the batch. Counting it as "rejected" is what sends a PR
+                // author bisecting an account they never touched (issue #116).
+                collateral += 1;
             } else if is_deferred {
                 deferred_count += 1;
             } else {
@@ -498,7 +536,7 @@ pub fn execute(
                 } else if batch_ok {
                     "  ok".to_string()
                 } else {
-                    "  (no result — batch rejected)".to_string()
+                    "  (not applied — another operation in the batch failed)".to_string()
                 };
                 println!("{addr:<width$}  {verb}{detail}{outcome}", width = width);
             }
@@ -512,7 +550,7 @@ pub fn execute(
                 } else if batch_ok {
                     "✅".to_string()
                 } else {
-                    "⚠️ batch rejected".to_string()
+                    "⚠️ blocked by another failure".to_string()
                 };
                 let action = format!("{}{}", md_action(verb), detail);
                 md_rows.push((addr.to_string(), action, result));
@@ -535,7 +573,9 @@ pub fn execute(
             if matches!(display, DisplayMode::PerResource) {
                 println!();
             }
-            print_text_summary(report, validate_only, accepted, rejected, deferred_count);
+            print_text_summary(
+                report, validate_only, accepted, rejected, collateral, deferred_count,
+            );
             if !success && !unattributed.is_empty() {
                 eprintln!();
                 eprintln!("Other errors:");
@@ -556,6 +596,7 @@ pub fn execute(
                 validate_only,
                 accepted,
                 rejected,
+                collateral,
                 deferred_count,
                 &md_rows,
                 &unattributed,
@@ -577,20 +618,23 @@ fn print_text_summary(
     validate_only: bool,
     accepted: usize,
     rejected: usize,
+    collateral: usize,
     deferred: usize,
 ) {
     let title = summary_title(validate_only);
-    let deferred_clause = deferred_clause(deferred);
+    let tail = format!("{}{}", collateral_clause(collateral), deferred_clause(deferred));
     if validate_only {
         println!(
-            "{title}: {} to create, {} to update, {} to destroy, {}{} unchanged. ({} accepted, {} rejected{deferred_clause})",
+            "{title}: {} to create, {} to update, {} to destroy{}, {}{} unchanged. ({} accepted, {} rejected{tail})",
             report.create_count, report.update_count, report.delete_count,
+            skipped_clause(report),
             adopt_clause(report, false), report.noop_count - report.adopt_count, accepted, rejected,
         );
     } else {
         println!(
-            "{title}: {} created, {} updated, {} destroyed, {}{} unchanged. ({} succeeded, {} failed{deferred_clause})",
+            "{title}: {} created, {} updated, {} destroyed{}, {}{} unchanged. ({} succeeded, {} failed{tail})",
             report.create_count, report.update_count, report.delete_count,
+            skipped_clause(report),
             adopt_clause(report, true), report.noop_count - report.adopt_count, accepted, rejected,
         );
     }
@@ -606,6 +650,27 @@ fn deferred_clause(deferred: usize) -> String {
     }
 }
 
+/// Removals the API refuses and bidsmith therefore never sent. Shown so a
+/// skipped row reads as a decision rather than an omission (issue #116).
+fn skipped_clause(report: &diff::DiffReport) -> String {
+    if report.skipped_removal_count == 0 {
+        String::new()
+    } else {
+        format!(" ({} skipped)", report.skipped_removal_count)
+    }
+}
+
+/// Operations that drew no error of their own and failed only because the
+/// batch is atomic. Kept out of the `rejected` count so a red plan says how
+/// much of it is actually the author's to fix (issue #116).
+fn collateral_clause(collateral: usize) -> String {
+    if collateral == 0 {
+        String::new()
+    } else {
+        format!(", {collateral} blocked by those failures")
+    }
+}
+
 /// Render the diff as a GitHub-flavoured Markdown table — the shape the
 /// scaffolded CI posts as a pull-request comment.
 fn print_markdown(
@@ -613,6 +678,7 @@ fn print_markdown(
     validate_only: bool,
     accepted: usize,
     rejected: usize,
+    collateral: usize,
     deferred: usize,
     rows: &[(String, String, String)],
     unattributed: &[&GoogleAdsErrorEntry],
@@ -627,9 +693,11 @@ fn print_markdown(
         println!();
     }
     println!(
-        "**Plan:** {} to create, {} to update, {} to destroy, {}{} unchanged. ({} accepted, {} rejected{})",
+        "**Plan:** {} to create, {} to update, {} to destroy{}, {}{} unchanged. ({} accepted, {} rejected{}{})",
         report.create_count, report.update_count, report.delete_count,
+        skipped_clause(report),
         adopt_clause(report, false), report.noop_count - report.adopt_count, accepted, rejected,
+        collateral_clause(collateral),
         deferred_clause(deferred),
     );
     if !unattributed.is_empty() {
@@ -761,6 +829,7 @@ fn display_offline_diff(
     show_unchanged: bool,
     format: Format,
     detailed_exitcode: bool,
+    note: &str,
 ) -> ExitCode {
     let report = &prepared.report;
     let width = prepared.width;
@@ -796,8 +865,9 @@ fn display_offline_diff(
             println!();
             let title = summary_title(validate_only);
             println!(
-                "{title}: {} to create, {} to update, {} to destroy, {}{} unchanged. (offline — diff only, not server-validated)",
+                "{title}: {} to create, {} to update, {} to destroy{}, {}{} unchanged. ({note})",
                 report.create_count, report.update_count, report.delete_count,
+                skipped_clause(report),
                 adopt_clause(report, false), report.noop_count - report.adopt_count,
             );
         }
@@ -812,8 +882,9 @@ fn display_offline_diff(
                 println!();
             }
             println!(
-                "**Plan:** {} to create, {} to update, {} to destroy, {}{} unchanged. _(offline — diff only, not server-validated)_",
+                "**Plan:** {} to create, {} to update, {} to destroy{}, {}{} unchanged. _({note})_",
                 report.create_count, report.update_count, report.delete_count,
+                skipped_clause(report),
                 adopt_clause(report, false), report.noop_count - report.adopt_count,
             );
         }

@@ -381,6 +381,23 @@ Smaller follow-ups that can ride along:
   a portfolio `google_ads_bidding_strategy` resource, and the
   conversion-based strategies (`target_cpa`, `maximize_conversions`, …),
   which want conversion tracking modelled first.
+- ✅ Local pre-flight for impossible operations (issue #116). The mutate
+  batch is atomic, so one operation the account can never accept rejects
+  every unrelated one with it — a stale declaration in one corner of the
+  repo turns every other author's plan red. Those cases are knowable from
+  the live state alone, so `plan` now decides before sending: a create or
+  update on the VIDEO channel blocks the plan (nothing is submitted,
+  exit `1`), and a removal of a labeled VIDEO resource the file no longer
+  declares is skipped with a warning so the rest of the batch goes
+  through. A rejected batch now separates operations that drew their own
+  error from those that were merely collateral, which is what made a red
+  plan on an untouched campaign so hard to diagnose.
+  **Deferred:** #115's declarable `lifecycle { create = false }` — with
+  creates on the video channel now blocked, the remaining value there is
+  making the intent visible in the file and catching a *failed* adopt
+  (name-match miss) before it becomes a create. Also unaddressed:
+  impossible operations outside the video channel, which need a general
+  notion of "the API refuses this here" rather than one channel check.
 - ✅ Ad group bid fields (issue #109). `google_ads_ad_group` models all
   eight settable `AdGroup` bid fields, not just `cpc_bid_micros`, so the
   amount a CPV or CPM campaign actually bids is declarable and — more to
