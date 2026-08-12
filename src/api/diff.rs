@@ -4,7 +4,8 @@ use crate::commands::export::{
     address_label_payload, ExportInput, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset,
     JsonAdGroupCriterion, JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign,
     JsonCampaignAsset, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
-    JsonAudience, JsonCriterion, JsonCustomAudience, JsonCustomerAsset, JsonSharedCriterion,
+    JsonAudience, JsonCriterion, JsonCustomAudience, JsonCustomParameter, JsonCustomerAsset,
+    JsonSharedCriterion,
     JsonSharedSet, JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonTargetingSetting,
     JsonYoutubeVideoAsset,
 };
@@ -1728,6 +1729,43 @@ fn diff_budget(d: &JsonBudget, l: &JsonBudget) -> Vec<FieldChange> {
 /// are only bidsmith's to reconcile once the file declared some. Without that
 /// gate, a campaign that never mentions `frequency_caps` would read as "desired
 /// = no caps" and plan a clear of whatever the Google Ads UI set (issue #102).
+/// The tracking-template pair, compared the same way at every level. Omitted
+/// means unmanaged, as everywhere else — a file that says nothing about the
+/// suffix is not asking to clear the one the account is appending.
+fn diff_tracking(
+    c: &mut Vec<FieldChange>,
+    desired: (&Option<String>, &Option<Vec<JsonCustomParameter>>),
+    live: (&Option<String>, &Option<Vec<JsonCustomParameter>>),
+) {
+    if desired.0.is_some() && desired.0 != live.0 {
+        c.push(change("final_url_suffix", live.0, desired.0));
+    }
+    if let Some(want) = desired.1 {
+        let have = live.1.as_deref().unwrap_or(&[]);
+        if want.as_slice() != have {
+            c.push(change(
+                "custom_parameters",
+                render_custom_parameters(have),
+                render_custom_parameters(want),
+            ));
+        }
+    }
+}
+
+fn render_custom_parameters(params: &[JsonCustomParameter]) -> String {
+    if params.is_empty() {
+        return "{}".to_string();
+    }
+    format!(
+        "{{{}}}",
+        params
+            .iter()
+            .map(|p| format!("{}={}", p.key, p.value))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
 fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign, caps_claimed: bool) -> Vec<FieldChange> {
     let mut c = Vec::new();
     if d.name != l.name {
@@ -1755,6 +1793,11 @@ fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign, caps_claimed: bool) -> Vec<
             c.push(change(field, live, desired));
         }
     }
+    diff_tracking(
+        &mut c,
+        (&d.final_url_suffix, &d.custom_parameters),
+        (&l.final_url_suffix, &l.custom_parameters),
+    );
     // advertising_channel_type is creation-only; skip.
     // The bidding strategy is a `oneof`, so a file that declares none leaves it
     // unmanaged rather than asking to clear whatever the account is bidding on.
@@ -1938,6 +1981,11 @@ fn diff_ad_group(d: &JsonAdGroup, l: &JsonAdGroup) -> Vec<FieldChange> {
             c.push(change(*field, l.bid(field), desired));
         }
     }
+    diff_tracking(
+        &mut c,
+        (&d.final_url_suffix, &d.custom_parameters),
+        (&l.final_url_suffix, &l.custom_parameters),
+    );
     c.extend(diff_targeting_setting(
         d.targeting_setting.as_ref(),
         l.targeting_setting.as_ref(),
@@ -1950,7 +1998,21 @@ fn diff_ad_group_ad(d: &JsonAdGroupAd, l: &JsonAdGroupAd) -> Vec<FieldChange> {
     if d.status != l.status {
         c.push(change("status", &l.status, &d.status));
     }
-    // ad.* fields are creation-only / a new ad is the way to "edit" copy.
+    // The creative is creation-only — a new ad is how you "edit" copy — but the
+    // tracking pair is not part of it. The API updates both in place, and
+    // recreating an ad to change a UTM slug would throw away its performance
+    // history for a string the visitor never sees.
+    let mut tracking = Vec::new();
+    diff_tracking(
+        &mut tracking,
+        (&d.ad.final_url_suffix, &d.ad.custom_parameters),
+        (&l.ad.final_url_suffix, &l.ad.custom_parameters),
+    );
+    c.extend(tracking.into_iter().map(|f| FieldChange {
+        field: format!("ad.{}", f.field),
+        live: f.live,
+        desired: f.desired,
+    }));
     c
 }
 
@@ -2513,6 +2575,8 @@ mod ad_match_tests {
                 final_urls: vec!["https://example.com".to_string()],
                 final_mobile_urls: Vec::new(),
                 display_url: None,
+                final_url_suffix: None,
+                custom_parameters: None,
                 video_ad: None,
                 responsive_search_ad: Some(JsonResponsiveSearchAd {
                     headlines: vec![JsonRsaAsset {
@@ -4722,5 +4786,93 @@ mod adopt_only_tests {
         );
         let report = diff(&declared, &input(EMPTY_LIVE));
         assert!(report.blockers.is_empty(), "{:?}", report.blockers);
+    }
+}
+
+#[cfg(test)]
+mod tracking_tests {
+    use super::*;
+
+    fn input(json: &str) -> ExportInput {
+        serde_json::from_str(json).expect("valid test input")
+    }
+
+    fn changed_fields(declared: &ExportInput, live: &ExportInput, address: &str) -> Vec<String> {
+        diff(declared, live)
+            .diffs
+            .iter()
+            .find(|d| d.address == address)
+            .map(|d| match &d.action {
+                Action::Update { changed_fields, .. } => {
+                    changed_fields.iter().map(FieldChange::render).collect()
+                }
+                _ => Vec::new(),
+            })
+            .unwrap_or_default()
+    }
+
+    const LIVE: &str = r#"{
+        "customer_id": "1",
+        "campaigns": [{"id":"100","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"200","managed_address":"m.google_ads_campaign.c","final_url_suffix":"utm_source=google","custom_parameters":[{"key":"region","value":"us"}]}],
+        "campaign_budgets": [{"id":"200","name":"B","amount_micros":1000000,"managed_address":"m.google_ads_campaign_budget.b"}]
+    }"#;
+
+    fn declared(suffix: &str, params: &str) -> ExportInput {
+        input(&format!(
+            r#"{{
+            "customer_id": "1",
+            "campaigns": [{{"id":"m.google_ads_campaign.c","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"m.google_ads_campaign_budget.b"{suffix}{params}}}],
+            "campaign_budgets": [{{"id":"m.google_ads_campaign_budget.b","name":"B","amount_micros":1000000}}]
+        }}"#
+        ))
+    }
+
+    #[test]
+    fn a_changed_suffix_is_an_update_not_a_recreate() {
+        let changes = changed_fields(
+            &declared(r#","final_url_suffix":"utm_source=bing""#, ""),
+            &input(LIVE),
+            "m.google_ads_campaign.c",
+        );
+        assert_eq!(
+            changes,
+            vec![r#"final_url_suffix: "utm_source=google" -> "utm_source=bing""#.to_string()]
+        );
+    }
+
+    #[test]
+    fn an_omitted_suffix_is_unmanaged_not_a_request_to_clear_it() {
+        // The rule everywhere else in bidsmith: saying nothing is not the same
+        // as saying "none".
+        let changes = changed_fields(&declared("", ""), &input(LIVE), "m.google_ads_campaign.c");
+        assert!(changes.is_empty(), "{changes:?}");
+    }
+
+    #[test]
+    fn custom_parameters_render_as_a_readable_map_in_the_diff() {
+        let changes = changed_fields(
+            &declared(
+                r#","final_url_suffix":"utm_source=google""#,
+                r#","custom_parameters":[{"key":"region","value":"eu"}]"#,
+            ),
+            &input(LIVE),
+            "m.google_ads_campaign.c",
+        );
+        assert_eq!(
+            changes,
+            vec![r#"custom_parameters: "{region=us}" -> "{region=eu}""#.to_string()]
+        );
+    }
+
+    #[test]
+    fn a_declared_empty_map_clears_the_parameters() {
+        // Unlike omitting the attribute, writing `custom_parameters = {}` is an
+        // explicit statement that there should be none.
+        let changes = changed_fields(
+            &declared(r#","final_url_suffix":"utm_source=google""#, r#","custom_parameters":[]"#),
+            &input(LIVE),
+            "m.google_ads_campaign.c",
+        );
+        assert_eq!(changes, vec![r#"custom_parameters: "{region=us}" -> "{}""#.to_string()]);
     }
 }

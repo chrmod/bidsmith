@@ -82,7 +82,9 @@ pub const QUERIES: &[(&str, &str)] = &[
           campaign.video_campaign_settings.video_ad_inventory_control.allow_shorts,
           campaign.video_campaign_settings.video_ad_inventory_control.allow_non_skippable_in_stream,
           campaign.targeting_setting.target_restrictions,
-          campaign.frequency_caps
+          campaign.frequency_caps,
+          campaign.final_url_suffix,
+          campaign.url_custom_parameters
         FROM campaign
         WHERE campaign.status != 'REMOVED'",
     ),
@@ -103,7 +105,9 @@ pub const QUERIES: &[(&str, &str)] = &[
           ad_group.target_cpv_micros,
           ad_group.percent_cpc_bid_micros,
           ad_group.fixed_cpm_micros,
-          ad_group.targeting_setting.target_restrictions
+          ad_group.targeting_setting.target_restrictions,
+          ad_group.final_url_suffix,
+          ad_group.url_custom_parameters
         FROM ad_group
         WHERE ad_group.status != 'REMOVED'",
     ),
@@ -118,6 +122,8 @@ pub const QUERIES: &[(&str, &str)] = &[
           ad_group_ad.ad.final_urls,
           ad_group_ad.ad.final_mobile_urls,
           ad_group_ad.ad.display_url,
+          ad_group_ad.ad.final_url_suffix,
+          ad_group_ad.ad.url_custom_parameters,
           ad_group_ad.ad.responsive_search_ad.headlines,
           ad_group_ad.ad.responsive_search_ad.descriptions,
           ad_group_ad.ad.responsive_search_ad.path1,

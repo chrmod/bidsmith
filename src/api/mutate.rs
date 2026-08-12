@@ -7,7 +7,7 @@ use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
     JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
     JsonAudience, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
-    JsonCriterion, JsonCustomAudience, JsonCustomerAsset,
+    JsonCriterion, JsonCustomAudience, JsonCustomParameter, JsonCustomerAsset,
     JsonDemandGenVideoResponsiveAd, JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedSet,
     JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonTargetingSetting, JsonVideoResponsiveAd,
     JsonYoutubeVideoAsset,
@@ -341,7 +341,7 @@ pub fn build_mutate_with_diff(
             mutate_ops.push(json!({
                 "adGroupOperation": {
                     "update": ad_group_update_body(g, rn, fields),
-                    "updateMask": fields.join(","),
+                    "updateMask": tracking_mask(fields),
                 }
             }));
             operations.push(PlanOperation { address: g.id.clone(), kind: "ad_group" });
@@ -381,7 +381,7 @@ pub fn build_mutate_with_diff(
             mutate_ops.push(json!({
                 "adGroupAdOperation": {
                     "update": ad_group_ad_update_body(a, rn, fields),
-                    "updateMask": fields.join(","),
+                    "updateMask": tracking_mask(fields),
                 }
             }));
             operations.push(PlanOperation { address: a.id.clone(), kind: "ad_group_ad" });
@@ -946,15 +946,81 @@ fn campaign_update_mask(fields: &[String]) -> String {
     for f in fields {
         match crate::schema::campaign_bidding_mask_paths(f) {
             Some(strategy) => paths.extend_from_slice(strategy),
-            None => paths.push(f.as_str()),
+            None => paths.push(tracking_mask_path(f)),
         }
     }
     paths.join(",")
 }
 
+/// `custom_parameters` is bidsmith's spelling; the API field — and therefore
+/// the update mask path — is `url_custom_parameters`.
+fn tracking_mask_path(field: &str) -> &str {
+    match field {
+        "custom_parameters" => "url_custom_parameters",
+        "ad.custom_parameters" => "ad.url_custom_parameters",
+        other => other,
+    }
+}
+
+/// Both tracking fields at once, for a create body — only what the file
+/// actually declared, since an omitted one is unmanaged rather than empty.
+fn put_tracking_all(
+    m: &mut Map<String, Value>,
+    suffix: &Option<String>,
+    params: &Option<Vec<JsonCustomParameter>>,
+) {
+    if suffix.is_some() {
+        put_tracking(m, "final_url_suffix", suffix, params);
+    }
+    if params.is_some() {
+        put_tracking(m, "custom_parameters", suffix, params);
+    }
+}
+
+fn tracking_mask(fields: &[String]) -> String {
+    fields
+        .iter()
+        .map(|f| tracking_mask_path(f))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Write the tracking pair into an update/create body under `m`.
+fn put_tracking(
+    m: &mut Map<String, Value>,
+    field: &str,
+    suffix: &Option<String>,
+    params: &Option<Vec<JsonCustomParameter>>,
+) -> bool {
+    match field {
+        "final_url_suffix" => {
+            if let Some(s) = suffix {
+                m.insert("finalUrlSuffix".into(), Value::String(s.clone()));
+            }
+            true
+        }
+        "custom_parameters" => {
+            let list = params.as_deref().unwrap_or(&[]);
+            m.insert(
+                "urlCustomParameters".into(),
+                Value::Array(
+                    list.iter()
+                        .map(|p| json!({ "key": p.key, "value": p.value }))
+                        .collect(),
+                ),
+            );
+            true
+        }
+        _ => false,
+    }
+}
+
 fn campaign_update_body(c: &JsonCampaign, resource_name: &str, fields: &[String]) -> Value {
     let mut m = Map::new();
     m.insert("resourceName".into(), Value::String(resource_name.to_string()));
+    for f in fields {
+        put_tracking(&mut m, f, &c.final_url_suffix, &c.custom_parameters);
+    }
     let mut manual_cpc_sub: Option<Map<String, Value>> = None;
     let mut network_sub: Option<Map<String, Value>> = None;
     let mut geo_sub: Option<Map<String, Value>> = None;
@@ -1085,6 +1151,9 @@ fn ad_group_update_body(g: &JsonAdGroup, resource_name: &str, fields: &[String])
     let mut m = Map::new();
     m.insert("resourceName".into(), Value::String(resource_name.to_string()));
     for f in fields {
+        if put_tracking(&mut m, f, &g.final_url_suffix, &g.custom_parameters) {
+            continue;
+        }
         match f.as_str() {
             "name" => {
                 m.insert("name".into(), Value::String(g.name.clone()));
@@ -1123,12 +1192,20 @@ fn ad_group_update_body(g: &JsonAdGroup, resource_name: &str, fields: &[String])
 fn ad_group_ad_update_body(a: &JsonAdGroupAd, resource_name: &str, fields: &[String]) -> Value {
     let mut m = Map::new();
     m.insert("resourceName".into(), Value::String(resource_name.to_string()));
+    let mut ad_sub: Map<String, Value> = Map::new();
     for f in fields {
         if f == "status" {
             if let Some(s) = &a.status {
                 m.insert("status".into(), Value::String(s.clone()));
             }
+            continue;
         }
+        if let Some(inner) = f.strip_prefix("ad.") {
+            put_tracking(&mut ad_sub, inner, &a.ad.final_url_suffix, &a.ad.custom_parameters);
+        }
+    }
+    if !ad_sub.is_empty() {
+        m.insert("ad".into(), Value::Object(ad_sub));
     }
     Value::Object(m)
 }
@@ -1736,6 +1813,7 @@ fn campaign_create(c: &JsonCampaign, resource_name: &str, budget_rn: &str) -> Va
         );
     }
     m.insert("campaignBudget".into(), Value::String(budget_rn.to_string()));
+    put_tracking_all(&mut m, &c.final_url_suffix, &c.custom_parameters);
     let eu_political = c
         .contains_eu_political_advertising
         .clone()
@@ -1893,6 +1971,7 @@ fn ad_group_create(g: &JsonAdGroup, resource_name: &str, campaign_rn: &str) -> V
     if let Some(t) = &g.targeting_setting {
         m.insert("targetingSetting".into(), targeting_setting_value(Some(t)));
     }
+    put_tracking_all(&mut m, &g.final_url_suffix, &g.custom_parameters);
     Value::Object(m)
 }
 
@@ -1986,6 +2065,7 @@ fn ad_value(ad: &JsonAd, video_rns: &[String]) -> Value {
     if let Some(u) = &ad.display_url {
         m.insert("displayUrl".into(), Value::String(u.clone()));
     }
+    put_tracking_all(&mut m, &ad.final_url_suffix, &ad.custom_parameters);
     if let Some(rsa) = &ad.responsive_search_ad {
         m.insert("responsiveSearchAd".into(), rsa_value(rsa));
     }
@@ -2328,6 +2408,111 @@ mod tests {
                     .join("; ")
             ),
         }
+    }
+
+    fn update_diff(address: &str, kind: &'static str, fields: &[&str]) -> ResourceDiff {
+        ResourceDiff {
+            address: address.to_string(),
+            kind,
+            action: Action::Update {
+                live_id: "42".to_string(),
+                changed_fields: fields.iter().map(|f| FieldChange::named(f)).collect(),
+            },
+        }
+    }
+
+    fn noop_diff(address: &str, kind: &'static str, live_id: &str) -> ResourceDiff {
+        ResourceDiff {
+            address: address.to_string(),
+            kind,
+            action: Action::NoOp { live_id: live_id.to_string() },
+        }
+    }
+
+    fn report_of(diffs: Vec<ResourceDiff>) -> DiffReport {
+        let update_count = diffs
+            .iter()
+            .filter(|d| matches!(d.action, Action::Update { .. }))
+            .count();
+        let noop_count = diffs
+            .iter()
+            .filter(|d| matches!(d.action, Action::NoOp { .. }))
+            .count();
+        DiffReport { diffs, update_count, noop_count, ..Default::default() }
+    }
+
+    #[test]
+    fn a_custom_parameters_update_uses_the_api_field_name_in_its_mask() {
+        // bidsmith spells it `custom_parameters`; the mask path Google expects
+        // is `url_custom_parameters`, and a wrong path silently no-ops.
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "campaign_budgets": [{"id": "m.b", "name": "B", "amount_micros": 10000000}],
+            "campaigns": [{
+                "id": "m.c", "name": "C", "advertising_channel_type": "SEARCH",
+                "campaign_budget": "m.b",
+                "final_url_suffix": "utm_source=google",
+                "custom_parameters": [{"key": "region", "value": "eu"}]
+            }]
+        }))
+        .expect("valid ExportInput");
+        let report = report_of(vec![
+            noop_diff("m.b", "campaign_budget", "500"),
+            update_diff("m.c", "campaign", &["final_url_suffix", "custom_parameters"]),
+        ]);
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let op = plan.body["mutateOperations"]
+            .as_array()
+            .expect("ops")
+            .iter()
+            .find(|o| o.get("campaignOperation").is_some())
+            .expect("a campaign op");
+        let campaign = &op["campaignOperation"];
+        assert_eq!(
+            campaign["updateMask"],
+            json!("final_url_suffix,url_custom_parameters")
+        );
+        assert_eq!(campaign["update"]["finalUrlSuffix"], json!("utm_source=google"));
+        assert_eq!(
+            campaign["update"]["urlCustomParameters"],
+            json!([{"key": "region", "value": "eu"}])
+        );
+    }
+
+    #[test]
+    fn an_ads_tracking_update_reaches_into_the_ad_rather_than_recreating_it() {
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "ad_group_ads": [{
+                "id": "m.ad", "ad_group": "m.g",
+                "ad": {
+                    "final_urls": ["https://example.com"],
+                    "custom_parameters": [{"key": "slug", "value": "rsa_b"}]
+                }
+            }]
+        }))
+        .expect("valid ExportInput");
+        let report = report_of(vec![
+            noop_diff("m.g", "ad_group", "600"),
+            update_diff("m.ad", "ad_group_ad", &["ad.custom_parameters"]),
+        ]);
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let op = plan.body["mutateOperations"]
+            .as_array()
+            .expect("ops")
+            .iter()
+            .find(|o| o.get("adGroupAdOperation").is_some())
+            .expect("an ad op");
+        let ad = &op["adGroupAdOperation"];
+        assert_eq!(ad["updateMask"], json!("ad.url_custom_parameters"));
+        assert_eq!(
+            ad["update"]["ad"]["urlCustomParameters"],
+            json!([{"key": "slug", "value": "rsa_b"}])
+        );
+        assert!(
+            ad["update"]["ad"].get("responsiveSearchAd").is_none(),
+            "the creative is untouched: {ad}"
+        );
     }
 
     fn campaign_with_caps(caps: Value) -> ExportInput {

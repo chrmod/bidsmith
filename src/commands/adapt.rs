@@ -7,7 +7,7 @@ use crate::commands::export::{
     JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCriterion,
     JsonCustomerAsset, JsonAgeRange, JsonAudience, JsonCustomAudience, JsonCustomAudienceMember,
-    JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonGender,
+    JsonCustomParameter, JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonGender,
     JsonGeoTargetTypeSetting, JsonIncomeRange, JsonKeyword, JsonLanguage, JsonLocation,
     JsonManualCpc, JsonNetworkSettings, JsonParentalStatus, JsonPlacement, JsonProximity,
     JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedSet, JsonSitelinkAsset,
@@ -315,6 +315,8 @@ impl AdapterState {
                 contains_eu_political_advertising: None,
                 start_date: None,
                 end_date: None,
+                final_url_suffix: None,
+                custom_parameters: None,
                 manual_cpc: None,
                 manual_cpm: None,
                 manual_cpv: None,
@@ -440,6 +442,12 @@ impl AdapterState {
         if v.get("targetingSetting").is_some() {
             entry.targeting_setting = parse_targeting_setting(v);
         }
+        if let Some(s) = v.get("finalUrlSuffix").and_then(Value::as_str) {
+            entry.final_url_suffix = Some(s.to_string());
+        }
+        if let Some(params) = parse_custom_parameters(v) {
+            entry.custom_parameters = Some(params);
+        }
     }
 
     fn merge_ad_group(&mut self, v: &Value) {
@@ -464,6 +472,12 @@ impl AdapterState {
         }
         if let Some(s) = v.get("type").and_then(Value::as_str) {
             entry.ty = Some(s.to_string());
+        }
+        if let Some(s) = v.get("finalUrlSuffix").and_then(Value::as_str) {
+            entry.final_url_suffix = Some(s.to_string());
+        }
+        if let Some(params) = parse_custom_parameters(v) {
+            entry.custom_parameters = Some(params);
         }
         for (field, json) in crate::schema::AD_GROUP_BID_FIELDS {
             if let Some(n) = parse_i64(v.get(json)) {
@@ -509,6 +523,8 @@ impl AdapterState {
                     final_urls: Vec::new(),
                     final_mobile_urls: Vec::new(),
                     display_url: None,
+                    final_url_suffix: None,
+                    custom_parameters: None,
                     responsive_search_ad: None,
                     video_responsive_ad: None,
                     video_ad: None,
@@ -525,6 +541,12 @@ impl AdapterState {
         if let Some(ad) = v.get("ad") {
             if let Some(s) = ad.get("name").and_then(Value::as_str) {
                 entry.ad.name = Some(s.to_string());
+            }
+            if let Some(s) = ad.get("finalUrlSuffix").and_then(Value::as_str) {
+                entry.ad.final_url_suffix = Some(s.to_string());
+            }
+            if let Some(params) = parse_custom_parameters(ad) {
+                entry.ad.custom_parameters = Some(params);
             }
             if let Some(urls) = ad.get("finalUrls").and_then(Value::as_array) {
                 let urls: Vec<String> = urls
@@ -1252,6 +1274,23 @@ fn parse_frequency_cap(v: &Value) -> Option<JsonFrequencyCap> {
 /// opinion about, and reading those back as a declaration would put a dozen
 /// lines of boilerplate in every ad group (issue #135). Dimensions no `.bid` can
 /// declare are dropped, like the geo `UNKNOWN` sentinel above.
+/// `urlCustomParameters` as a sorted list, matching the order the importer
+/// builds from a map so the two sides of a diff line up.
+fn parse_custom_parameters(v: &Value) -> Option<Vec<JsonCustomParameter>> {
+    let arr = v.get("urlCustomParameters")?.as_array()?;
+    let mut out: Vec<JsonCustomParameter> = arr
+        .iter()
+        .filter_map(|p| {
+            Some(JsonCustomParameter {
+                key: p.get("key").and_then(Value::as_str)?.to_string(),
+                value: p.get("value").and_then(Value::as_str).unwrap_or("").to_string(),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.key.cmp(&b.key));
+    Some(out)
+}
+
 fn parse_targeting_setting(v: &Value) -> Option<JsonTargetingSetting> {
     let restrictions = v
         .get("targetingSetting")?

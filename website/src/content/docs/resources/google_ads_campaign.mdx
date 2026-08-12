@@ -229,6 +229,42 @@ Three notes:
 Converting an existing device trio to the inline form plans as a no-op:
 bidsmith matches live criteria by device type, not by address.
 
+## Tracking the click, not the landing page
+
+`final_url_suffix` is a query string Google appends to the landing page
+at click time, and `custom_parameters` fills in the `{_name}`
+placeholders it can reference:
+
+```hcl
+resource "google_ads_campaign" "cookies" {
+  name                     = "GH_Cookies — Search"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.cookies.id
+
+  final_url_suffix  = "utm_source=search&utm_campaign=GH_Cookies_0708-{_slug}"
+  custom_parameters = { region = "eu" }
+}
+```
+
+Both fields exist on the campaign, the ad group, and the ad body, and
+the most specific one wins — so a UTM convention lives on the campaign
+and each ad supplies only the part that varies.
+
+Two things worth knowing before you move a UTM query out of
+`final_urls`:
+
+- The suffix is **appended by Google**, not stored in the URL. It never
+  shows in the ad's displayed URL, so this changes live behaviour rather
+  than just tidying files. `plan` shows the change; check analytics
+  after the first clicks land.
+- An omitted attribute is unmanaged, as everywhere else. Writing
+  `custom_parameters = {}` is different — that is an explicit request to
+  clear them.
+
+See [Build tracking URLs from a shared
+prefix](/bidsmith/recipes/build-urls-from-a-shared-prefix/) for the full
+worked example.
+
 ## Channel and sub-type
 
 `advertising_channel_type` is the broad category — search, display,
