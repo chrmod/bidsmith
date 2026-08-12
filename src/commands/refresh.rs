@@ -649,6 +649,17 @@ fn frequency_cap_blocks(caps: &[JsonFrequencyCap]) -> Option<Vec<Block>> {
     (blocks.len() == caps.len()).then_some(blocks)
 }
 
+/// The entry in `fields` a dotted drift path names, or `None` when the path
+/// belongs to another block.
+fn block_field<'a>(
+    path: &str,
+    prefix: &str,
+    fields: &'a [(&'a str, &'a str)],
+) -> Option<&'a (&'a str, &'a str)> {
+    let name = path.strip_prefix(prefix)?;
+    fields.iter().find(|(field, _)| *field == name)
+}
+
 /// Map a resource's drifted field names to (source path, live value) edits.
 /// The second tuple element is the list of fields we can't reconcile in place
 /// (an unsupported resource kind, or a value cleared upstream).
@@ -732,26 +743,6 @@ fn collect_edits(
                             .and_then(|m| m.enhanced_cpc_enabled)
                             .map(Expression::from)
                     ),
-                    "network_settings.target_google_search" => opt!(
-                        f,
-                        vec!["network_settings", "target_google_search"],
-                        c.network_settings.as_ref().and_then(|n| n.target_google_search).map(Expression::from)
-                    ),
-                    "network_settings.target_search_network" => opt!(
-                        f,
-                        vec!["network_settings", "target_search_network"],
-                        c.network_settings.as_ref().and_then(|n| n.target_search_network).map(Expression::from)
-                    ),
-                    "network_settings.target_content_network" => opt!(
-                        f,
-                        vec!["network_settings", "target_content_network"],
-                        c.network_settings.as_ref().and_then(|n| n.target_content_network).map(Expression::from)
-                    ),
-                    "network_settings.target_partner_search_network" => opt!(
-                        f,
-                        vec!["network_settings", "target_partner_search_network"],
-                        c.network_settings.as_ref().and_then(|n| n.target_partner_search_network).map(Expression::from)
-                    ),
                     "frequency_caps" => match frequency_cap_blocks(&c.frequency_caps) {
                         Some(blocks) => push!(vec!["frequency_caps"], blocks),
                         None => skip.push(
@@ -759,20 +750,37 @@ fn collect_edits(
                                 .to_string(),
                         ),
                     },
-                    other => match other
-                        .strip_prefix("geo_target_type_setting.")
-                        .and_then(|name| {
-                            crate::schema::GEO_TARGET_TYPE_FIELDS
-                                .iter()
-                                .find(|(field, _)| *field == name)
-                        }) {
-                        Some((field, _)) => opt!(
-                            f,
-                            vec!["geo_target_type_setting", *field],
-                            c.geo_target_type_setting.as_ref().and_then(|g| g.get(field)).map(s)
-                        ),
-                        None => skip.push(other.to_string()),
-                    },
+                    other => {
+                        if let Some((field, _)) = block_field(
+                            other,
+                            "network_settings.",
+                            crate::schema::NETWORK_SETTINGS_FIELDS,
+                        ) {
+                            opt!(
+                                f,
+                                vec!["network_settings", *field],
+                                c.network_settings
+                                    .as_ref()
+                                    .and_then(|n| n.get(field))
+                                    .map(Expression::from)
+                            )
+                        } else if let Some((field, _)) = block_field(
+                            other,
+                            "geo_target_type_setting.",
+                            crate::schema::GEO_TARGET_TYPE_FIELDS,
+                        ) {
+                            opt!(
+                                f,
+                                vec!["geo_target_type_setting", *field],
+                                c.geo_target_type_setting
+                                    .as_ref()
+                                    .and_then(|g| g.get(field))
+                                    .map(s)
+                            )
+                        } else {
+                            skip.push(other.to_string())
+                        }
+                    }
                 }
             }
         }
@@ -1081,6 +1089,33 @@ resource "google_ads_campaign" "summer_search" {
         assert!(fields.contains(&"name".to_string()));
         assert!(fields.contains(&"status".to_string()));
         assert!(fields.contains(&"manual_cpc.enhanced_cpc_enabled".to_string()));
+    }
+
+    #[test]
+    fn a_drifted_network_setting_is_written_back() {
+        let src = CAMPAIGN_SRC.replace(
+            "  manual_cpc {\n    enhanced_cpc_enabled = false\n  }\n",
+            "  manual_cpc {\n    enhanced_cpc_enabled = false\n  }\n\n  \
+             network_settings {\n    target_youtube = false\n  }\n",
+        );
+        let live = r#"{
+          "customer_id": "1234567890",
+          "campaign_budgets": [
+            {"id":"111","name":"Budget","amount_micros":10000000,"delivery_method":"STANDARD"}
+          ],
+          "campaigns": [
+            {"id":"555","name":"Summer 2026","status":"ENABLED",
+             "advertising_channel_type":"SEARCH","campaign_budget":"111",
+             "managed_address":"main.google_ads_campaign.summer_search",
+             "manual_cpc":{"enhanced_cpc_enabled":false},
+             "network_settings":{"target_youtube":true}}
+          ]
+        }"#;
+        let (out, outcome) = run(&src, live);
+
+        assert!(out.contains("target_youtube = true"), "{out}");
+        let (_, fields) = &outcome.applied[0];
+        assert_eq!(fields, &["network_settings.target_youtube".to_string()]);
     }
 
     #[test]

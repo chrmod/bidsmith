@@ -235,7 +235,7 @@ impl JsonCampaign {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct JsonNetworkSettings {
     #[serde(default)]
     pub target_google_search: Option<bool>,
@@ -245,6 +245,37 @@ pub struct JsonNetworkSettings {
     pub target_content_network: Option<bool>,
     #[serde(default)]
     pub target_partner_search_network: Option<bool>,
+    #[serde(default)]
+    pub target_youtube: Option<bool>,
+    #[serde(default)]
+    pub target_google_tv_network: Option<bool>,
+}
+
+impl JsonNetworkSettings {
+    pub fn get(&self, field: &str) -> Option<bool> {
+        match field {
+            "target_google_search" => self.target_google_search,
+            "target_search_network" => self.target_search_network,
+            "target_content_network" => self.target_content_network,
+            "target_partner_search_network" => self.target_partner_search_network,
+            "target_youtube" => self.target_youtube,
+            "target_google_tv_network" => self.target_google_tv_network,
+            _ => None,
+        }
+    }
+
+    pub fn set(&mut self, field: &str, value: Option<bool>) {
+        let slot = match field {
+            "target_google_search" => &mut self.target_google_search,
+            "target_search_network" => &mut self.target_search_network,
+            "target_content_network" => &mut self.target_content_network,
+            "target_partner_search_network" => &mut self.target_partner_search_network,
+            "target_youtube" => &mut self.target_youtube,
+            "target_google_tv_network" => &mut self.target_google_tv_network,
+            _ => return,
+        };
+        *slot = value;
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -1594,14 +1625,9 @@ fn write_campaign(
     }
     if let Some(n) = &c.network_settings {
         out.push_str("\n  network_settings {\n");
-        for (k, v) in [
-            ("target_google_search", n.target_google_search),
-            ("target_search_network", n.target_search_network),
-            ("target_content_network", n.target_content_network),
-            ("target_partner_search_network", n.target_partner_search_network),
-        ] {
-            if let Some(v) = v {
-                write_attr(out, 2, k, &v.to_string());
+        for (field, _) in crate::schema::NETWORK_SETTINGS_FIELDS {
+            if let Some(v) = n.get(field) {
+                write_attr(out, 2, field, &v.to_string());
             }
         }
         out.push_str("  }\n");

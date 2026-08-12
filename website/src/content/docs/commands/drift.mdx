@@ -80,6 +80,24 @@ no plan will tell you. Whether that matters depends on the setting —
 `campaign.tracking_url_template` probably does, a hotel-campaign field on
 a Search account doesn't.
 
+### Blocks read in part
+
+One line comes before the settings list and is worth more attention than
+any single row:
+
+```
+campaign — 16 of 106 settable field(s) modelled
+  4 of 6 field(s) on 'campaign.network_settings' — the block reads as the whole setting; missing: target_youtube, target_google_tv_network
+```
+
+A setting bidsmith doesn't model at all is invisible, which at least
+looks like what it is. A **block** bidsmith models part of is worse: the
+`.bid` carries a `network_settings { … }` that reads as a complete
+statement of where ads serve, and for the missing fields it isn't one.
+This line is printed whether or not anything on the account has those
+fields set, because the gap is in the file's apparent meaning rather
+than in today's values.
+
 ### What "settable" means
 
 The count on each heading excludes fields you couldn't declare anyway —

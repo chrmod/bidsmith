@@ -780,6 +780,21 @@ resource type, any file layout, modules, schema validation.
   amount it declared. `export` renders only the amount the period uses,
   since a live custom-period budget can still carry a stale
   `amount_micros` and rendering both produces a file `validate` rejects.
+- **`network_settings` models every network, not most of them** (issue
+  #132). A partially-modelled block is a worse failure than an absent
+  one: the `.bid` carries what reads as a complete statement of where a
+  campaign's money goes, and for the missing fields it is not. All six
+  fields (`target_youtube` and `target_google_tv_network` included) come
+  from one `NETWORK_SETTINGS_FIELDS` list in `src/schema.rs` that the
+  schema, importer, adapter, differ, mutate builder, renderer, and
+  `refresh` all iterate — a seventh field is one line, not seven. Each
+  one is independently **unmanaged when omitted**, like `start_date` and
+  `geo_target_type_setting`: an update mask naming a field the body
+  leaves out is how Google Ads reads a *clear*, so modelling a network
+  must never become a reason to switch it off on a campaign whose file
+  never mentioned it. `drift` names blocks it reads in part on their own
+  line, whether or not the missing fields carry a value today, because
+  the gap is in the file's apparent meaning rather than in the values.
 - **The VIDEO channel is read-only through the Google Ads API** (issue
   #104, verified live): "You cannot create new Video campaigns or update
   existing ones using the Google Ads API"

@@ -508,20 +508,14 @@ fn import_manual_cpc(ctx: &Ctx, block: &Block) -> JsonManualCpc {
 }
 
 fn import_network_settings(ctx: &Ctx, block: &Block) -> JsonNetworkSettings {
-    let mut s = JsonNetworkSettings {
-        target_google_search: None,
-        target_search_network: None,
-        target_content_network: None,
-        target_partner_search_network: None,
-    };
+    let mut s = JsonNetworkSettings::default();
     for st in block.body.iter() {
         if let Structure::Attribute(a) = st {
-            match a.key.as_str() {
-                "target_google_search" => s.target_google_search = expect_bool(ctx, a),
-                "target_search_network" => s.target_search_network = expect_bool(ctx, a),
-                "target_content_network" => s.target_content_network = expect_bool(ctx, a),
-                "target_partner_search_network" => s.target_partner_search_network = expect_bool(ctx, a),
-                _ => {}
+            if crate::schema::NETWORK_SETTINGS_FIELDS
+                .iter()
+                .any(|(field, _)| *field == a.key.as_str())
+            {
+                s.set(a.key.as_str(), expect_bool(ctx, a));
             }
         }
     }
@@ -3104,6 +3098,88 @@ resource "google_ads_ad_group_criterion" "kw" {
                 ("ublock origin".to_string(), "PHRASE".to_string(), false),
             ]
         );
+    }
+
+    /// The block covering four of six networks read as a complete declaration
+    /// of where the money goes, and was not one (issue #132).
+    #[test]
+    fn youtube_and_google_tv_targeting_are_compared() {
+        let declared = import_str(
+            "network_youtube",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  manual_cpc {}
+
+  network_settings {
+    target_google_search     = true
+    target_youtube           = false
+    target_google_tv_network = false
+  }
+}
+"#,
+        );
+        assert_eq!(
+            declared.campaigns[0].network_settings.as_ref().and_then(|n| n.target_youtube),
+            Some(false)
+        );
+
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","manualCpc":{},"networkSettings":{"targetGoogleSearch":true,"targetYoutube":true,"targetGoogleTvNetwork":false}}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(changed_fields(&report), ["network_settings.target_youtube"]);
+    }
+
+    /// An update mask naming a field the body leaves out is how Google Ads
+    /// reads a clear, so a network the file never mentions must not reach the
+    /// mask — modelling a field cannot become a reason to switch it off.
+    #[test]
+    fn a_network_the_file_does_not_mention_is_left_alone() {
+        let declared = import_str(
+            "network_silent",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  manual_cpc {}
+
+  network_settings {
+    target_google_search = true
+  }
+}
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","manualCpc":{},"networkSettings":{"targetGoogleSearch":true,"targetYoutube":true}}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        assert!(changed_fields(&report).is_empty(), "{:?}", report.diffs);
     }
 
     #[test]
