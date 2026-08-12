@@ -102,14 +102,56 @@ resource "google_ads_campaign_criterion" "exclude_under_25" {
   reach.
 </Aside>
 
+## 5. Test two cohorts side by side
+
+Everything above targets the whole campaign. When you want to compare
+cohorts — the same creative shown to two different audiences — put the
+targeting on the **ad group** instead. Same blocks, same `negative`
+switch, on
+[`google_ads_ad_group_criterion`](/bidsmith/resources/google_ads_ad_group_criterion/):
+
+```hcl
+resource "google_ads_ad_group" "instream_35_up" {
+  name           = "In-stream — 35+"
+  campaign       = google_ads_campaign.instream.id
+  type           = "VIDEO_TRUE_VIEW_IN_STREAM"
+  cpv_bid_micros = 35000
+}
+
+resource "google_ads_ad_group_criterion" "cohort_35_44" {
+  ad_group = google_ads_ad_group.instream_35_up.id
+
+  age_range {
+    type = "AGE_RANGE_35_44"
+  }
+}
+
+resource "google_ads_ad_group_criterion" "cohort_privacy_intent" {
+  ad_group = google_ads_ad_group.instream_35_up.id
+
+  audience {
+    custom_audience = google_ads_custom_audience.privacy_searchers.id
+  }
+}
+```
+
+Two cohorts are then two ad groups in one campaign, sharing one budget
+and one set of results to compare — rather than two campaigns that
+happen to run the same video.
+
+Ad-group `location` and `language` work the same way, and **intersect**
+with the campaign's: a viewer has to match both. That's how one campaign
+holds one localized ad group per market.
+
 ## What bidsmith owns
 
-Once a campaign declares *any* criterion of a kind, bidsmith owns that
-kind on that campaign: a channel somebody added in the Google Ads
-website shows up in `plan` as something to remove, and deleting a block
-from your file removes the targeting. Kinds you never declare are left
+Once a campaign or ad group declares *any* criterion of a kind, bidsmith
+owns that kind there: a channel somebody added in the Google Ads website
+shows up in `plan` as something to remove, and deleting a block from
+your file removes the targeting. Kinds you never declare are left
 completely alone — declaring channels doesn't give bidsmith an opinion
-about your topics.
+about your topics, and ad-group targeting says nothing about the
+campaign's.
 
 That's the point: the file is the audience, and a change to the audience
 is a pull request.
@@ -117,6 +159,7 @@ is a pull request.
 ## See also
 
 - [`google_ads_campaign_criterion`](/bidsmith/resources/google_ads_campaign_criterion/) — every targeting block.
+- [`google_ads_ad_group_criterion`](/bidsmith/resources/google_ads_ad_group_criterion/) — the same blocks scoped to one ad group.
 - [`google_ads_custom_audience`](/bidsmith/resources/google_ads_custom_audience/) — building the segment.
 - [Cap how often people see your video ad](./cap-how-often-people-see-your-video/) — the other half of video control.
 - [Drift](/bidsmith/concepts/drift/) — why a website change shows up in `plan`.

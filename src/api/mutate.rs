@@ -7,7 +7,7 @@ use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
     JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
     JsonAudience, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
-    JsonCustomAudience, JsonCustomerAsset,
+    JsonCriterion, JsonCustomAudience, JsonCustomerAsset,
     JsonDemandGenVideoResponsiveAd, JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedSet,
     JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonVideoResponsiveAd, JsonYoutubeVideoAsset,
 };
@@ -395,9 +395,18 @@ pub fn build_mutate_with_diff(
                 Some(s) => s,
                 None => continue,
             };
+            let audience_rn =
+                match criterion_audience_rn(&cr.target, &refs, &create_set, &cr.id, &mut errors) {
+                    AudienceRef::Ready(rn) => rn,
+                    AudienceRef::Pending => {
+                        deferred.push(cr.id.clone());
+                        continue;
+                    }
+                    AudienceRef::Unresolvable => continue,
+                };
             mutate_ops.push(json!({
                 "adGroupCriterionOperation": {
-                    "create": ad_group_criterion_create(cr, rn, &ag_rn)
+                    "create": ad_group_criterion_create(cr, rn, &ag_rn, audience_rn)
                 }
             }));
             operations.push(PlanOperation { address: cr.id.clone(), kind: "ad_group_criterion" });
@@ -420,20 +429,15 @@ pub fn build_mutate_with_diff(
                 Some(s) => s,
                 None => continue,
             };
-            let audience_rn = match cr.audience.as_ref().and_then(JsonAudience::source) {
-                Some(("custom_audience", v)) if pending_custom_audience(&refs, &create_set, v) => {
-                    deferred.push(cr.id.clone());
-                    continue;
-                }
-                Some(("custom_audience", v)) => {
-                    match resolve_ref_or_literal(&refs, v, &cr.id, "custom_audience", &mut errors) {
-                        Some(rn) => Some(rn),
-                        None => continue,
+            let audience_rn =
+                match criterion_audience_rn(&cr.target, &refs, &create_set, &cr.id, &mut errors) {
+                    AudienceRef::Ready(rn) => rn,
+                    AudienceRef::Pending => {
+                        deferred.push(cr.id.clone());
+                        continue;
                     }
-                }
-                Some((_, v)) => Some(v.to_string()),
-                None => None,
-            };
+                    AudienceRef::Unresolvable => continue,
+                };
             mutate_ops.push(json!({
                 "campaignCriterionOperation": {
                     "create": campaign_criterion_create(cr, &camp_rn, audience_rn)
@@ -1136,6 +1140,13 @@ fn ad_group_criterion_update_body(
                     m.insert("cpcBidMicros".into(), Value::String(c.to_string()));
                 }
             }
+            "bid_modifier" => {
+                if let Some(bm) = cr.bid_modifier {
+                    if let Some(n) = serde_json::Number::from_f64(bm) {
+                        m.insert("bidModifier".into(), Value::Number(n));
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -1558,8 +1569,38 @@ fn resolve(
     }
 }
 
-/// Resolve a reference that may be either a typed address (looked up in `refs`)
-/// or a literal Google Ads resource-name string (`customers/…`), used passthrough.
+/// What the criterion's `audience` block resolves to on this pass.
+enum AudienceRef {
+    /// Nothing to resolve, or the resource name is in hand.
+    Ready(Option<String>),
+    /// A declared custom audience this run has not created yet — retry later.
+    Pending,
+    /// A reference that names nothing; the error is already recorded.
+    Unresolvable,
+}
+
+fn criterion_audience_rn(
+    cr: &JsonCriterion,
+    refs: &HashMap<String, String>,
+    create_set: &HashSet<String>,
+    owner: &str,
+    errors: &mut Vec<PlanBuildError>,
+) -> AudienceRef {
+    match cr.audience.as_ref().and_then(JsonAudience::source) {
+        Some(("custom_audience", v)) if pending_custom_audience(refs, create_set, v) => {
+            AudienceRef::Pending
+        }
+        Some(("custom_audience", v)) => {
+            match resolve_ref_or_literal(refs, v, owner, "custom_audience", errors) {
+                Some(rn) => AudienceRef::Ready(Some(rn)),
+                None => AudienceRef::Unresolvable,
+            }
+        }
+        Some((_, v)) => AudienceRef::Ready(Some(v.to_string())),
+        None => AudienceRef::Ready(None),
+    }
+}
+
 /// True when the reference names a declared custom audience whose real
 /// resource name this run does not have yet — the `validateOnly` case, where
 /// `CustomAudienceService` returns errors but no results.
@@ -1573,6 +1614,8 @@ fn pending_custom_audience(
         && !refs.contains_key(address)
 }
 
+/// Resolve a reference that may be either a typed address (looked up in `refs`)
+/// or a literal Google Ads resource-name string (`customers/…`), used passthrough.
 fn resolve_ref_or_literal(
     refs: &HashMap<String, String>,
     address: &str,
@@ -1916,6 +1959,7 @@ fn ad_group_criterion_create(
     cr: &JsonAdGroupCriterion,
     resource_name: &str,
     ag_rn: &str,
+    audience_rn: Option<String>,
 ) -> Value {
     let mut m = Map::new();
     m.insert("resourceName".into(), Value::String(resource_name.to_string()));
@@ -1929,10 +1973,12 @@ fn ad_group_criterion_create(
     if let Some(c) = cr.cpc_bid_micros {
         m.insert("cpcBidMicros".into(), Value::String(c.to_string()));
     }
-    let mut kw = Map::new();
-    kw.insert("text".into(), Value::String(cr.keyword.text.clone()));
-    kw.insert("matchType".into(), Value::String(cr.keyword.match_type.clone()));
-    m.insert("keyword".into(), Value::Object(kw));
+    if let Some(bm) = cr.bid_modifier {
+        if let Some(n) = serde_json::Number::from_f64(bm) {
+            m.insert("bidModifier".into(), Value::Number(n));
+        }
+    }
+    insert_criterion(&mut m, &cr.target, audience_rn);
     Value::Object(m)
 }
 
@@ -1955,6 +2001,14 @@ fn campaign_criterion_create(
             m.insert("bidModifier".into(), Value::Number(n));
         }
     }
+    insert_criterion(&mut m, &cr.target, audience_rn);
+    Value::Object(m)
+}
+
+/// The criterion `oneof` on a create op — the same wire shape on both criterion
+/// services. `audience_rn` is the already-resolved resource name of whichever
+/// audience message the `audience` block named.
+fn insert_criterion(m: &mut Map<String, Value>, cr: &JsonCriterion, audience_rn: Option<String>) {
     if let Some(kw) = &cr.keyword {
         let mut sub = Map::new();
         sub.insert("text".into(), Value::String(kw.text.clone()));
@@ -2015,6 +2069,9 @@ fn campaign_criterion_create(
     if let Some(t) = &cr.topic {
         m.insert("topic".into(), json!({ "topicConstant": t.topic_constant }));
     }
+    if let Some(p) = &cr.placement {
+        m.insert("placement".into(), json!({ "url": p.url }));
+    }
     if let Some(u) = &cr.user_interest {
         m.insert(
             "userInterest".into(),
@@ -2026,6 +2083,12 @@ fn campaign_criterion_create(
     }
     if let Some(g) = &cr.gender {
         m.insert("gender".into(), json!({ "type": g.ty }));
+    }
+    if let Some(p) = &cr.parental_status {
+        m.insert("parentalStatus".into(), json!({ "type": p.ty }));
+    }
+    if let Some(i) = &cr.income_range {
+        m.insert("incomeRange".into(), json!({ "type": i.ty }));
     }
     if let Some(audience) = &cr.audience {
         if let Some(rn) = &audience_rn {
@@ -2041,7 +2104,6 @@ fn campaign_criterion_create(
             }
         }
     }
-    Value::Object(m)
 }
 
 // "No resource name is expected for the new custom audience" — this service
@@ -2663,6 +2725,135 @@ mod tests {
         assert_eq!(
             creates[5]["userList"],
             json!({"userList": "customers/100/userLists/987"})
+        );
+    }
+
+    #[test]
+    fn an_ad_group_criterion_carries_every_targeting_axis_it_declares() {
+        // Issue #110: cohort narrowing belongs on the ad group for video, so the
+        // ad-group service has to accept the same criterion messages the
+        // campaign one does.
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "ad_group_criteria": [
+                {"id": "m.aud", "ad_group": "m.ag",
+                 "audience": {"user_list": "customers/100/userLists/987"}},
+                {"id": "m.age", "ad_group": "m.ag", "bid_modifier": 1.2,
+                 "age_range": {"type": "AGE_RANGE_35_44"}},
+                {"id": "m.place", "ad_group": "m.ag", "negative": true,
+                 "placement": {"url": "https://example.com/x"}},
+                {"id": "m.geo", "ad_group": "m.ag",
+                 "location": {"geo_target_constant": "geoTargetConstants/2702"}},
+                {"id": "m.income", "ad_group": "m.ag",
+                 "income_range": {"type": "INCOME_RANGE_90_UP"}},
+                {"id": "m.parent", "ad_group": "m.ag",
+                 "parental_status": {"type": "NOT_A_PARENT"}}
+            ]
+        }))
+        .expect("valid ExportInput");
+
+        let mut diffs = vec![ResourceDiff {
+            address: "m.ag".to_string(),
+            kind: "ad_group",
+            action: Action::NoOp { live_id: "42".to_string() },
+        }];
+        for id in ["m.aud", "m.age", "m.place", "m.geo", "m.income", "m.parent"] {
+            diffs.push(create_diff(id, "ad_group_criterion"));
+        }
+        let report = DiffReport {
+            diffs,
+            label_plans: Vec::new(),
+            claim_plans: Vec::new(),
+            noop_count: 1,
+            create_count: 6,
+            update_count: 0,
+            delete_count: 0,
+            adopt_count: 0,
+            ..DiffReport::default()
+        };
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let creates: Vec<&Value> = plan.body["mutateOperations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|op| op.get("adGroupCriterionOperation")?.get("create"))
+            .collect();
+        assert_eq!(creates.len(), 6);
+        assert_eq!(
+            creates[0]["userList"],
+            json!({"userList": "customers/100/userLists/987"})
+        );
+        assert_eq!(creates[1]["ageRange"], json!({"type": "AGE_RANGE_35_44"}));
+        assert_eq!(creates[1]["bidModifier"], json!(1.2));
+        assert_eq!(creates[2]["placement"], json!({"url": "https://example.com/x"}));
+        assert_eq!(creates[2]["negative"], json!(true));
+        assert_eq!(
+            creates[3]["location"],
+            json!({"geoTargetConstant": "geoTargetConstants/2702"})
+        );
+        assert_eq!(creates[4]["incomeRange"], json!({"type": "INCOME_RANGE_90_UP"}));
+        assert_eq!(creates[5]["parentalStatus"], json!({"type": "NOT_A_PARENT"}));
+    }
+
+    #[test]
+    fn an_ad_group_criterion_waits_for_the_segment_it_targets() {
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "custom_audiences": [{
+                "id": "m.seg", "name": "Ad blocker searchers", "type": "SEARCH",
+                "members": [{"keyword": "ad blocker"}]
+            }],
+            "ad_group_criteria": [{
+                "id": "m.cr", "ad_group": "m.ag",
+                "audience": {"custom_audience": "m.seg"}
+            }]
+        }))
+        .expect("valid ExportInput");
+        let report = DiffReport {
+            diffs: vec![
+                ResourceDiff {
+                    address: "m.ag".to_string(),
+                    kind: "ad_group",
+                    action: Action::NoOp { live_id: "42".to_string() },
+                },
+                create_diff("m.seg", "custom_audience"),
+                create_diff("m.cr", "ad_group_criterion"),
+            ],
+            label_plans: Vec::new(),
+            claim_plans: Vec::new(),
+            noop_count: 1,
+            create_count: 2,
+            update_count: 0,
+            delete_count: 0,
+            adopt_count: 0,
+            ..DiffReport::default()
+        };
+
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        assert_eq!(plan.deferred, vec!["m.cr".to_string()]);
+        assert!(
+            plan.body["mutateOperations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|op| op.get("adGroupCriterionOperation").is_none()),
+            "a criterion with an unresolvable audience must not sink the batch"
+        );
+
+        let created = HashMap::from([(
+            "m.seg".to_string(),
+            "customers/100/customAudiences/777".to_string(),
+        )]);
+        let plan = expect_plan(super::build_mutate_with_diff(&input, &report, false, &created));
+        let cr = plan.body["mutateOperations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|op| op.get("adGroupCriterionOperation")?.get("create"))
+            .expect("criterion op");
+        assert_eq!(
+            cr["customAudience"]["customAudience"],
+            json!("customers/100/customAudiences/777")
         );
     }
 

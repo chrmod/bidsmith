@@ -426,7 +426,10 @@ pub struct JsonAdGroupCriterion {
     pub negative: Option<bool>,
     #[serde(default)]
     pub cpc_bid_micros: Option<i64>,
-    pub keyword: JsonKeyword,
+    #[serde(default)]
+    pub bid_modifier: Option<f64>,
+    #[serde(flatten)]
+    pub target: JsonCriterion,
     #[serde(default)]
     pub managed_address: Option<String>,
 }
@@ -441,6 +444,16 @@ pub struct JsonCampaignCriterion {
     pub negative: Option<bool>,
     #[serde(default)]
     pub bid_modifier: Option<f64>,
+    #[serde(flatten)]
+    pub target: JsonCriterion,
+}
+
+/// What a criterion targets — the API models this as a `oneof`, so exactly one
+/// of these is ever set. Shared by ad-group and campaign criteria: the two
+/// resources differ in which of the axes they accept (the schema is what says
+/// so), not in how an axis is keyed, rendered, or mutated.
+#[derive(Deserialize, Default)]
+pub struct JsonCriterion {
     #[serde(default)]
     pub keyword: Option<JsonKeyword>,
     #[serde(default)]
@@ -458,13 +471,40 @@ pub struct JsonCampaignCriterion {
     #[serde(default)]
     pub topic: Option<JsonTopic>,
     #[serde(default)]
+    pub placement: Option<JsonPlacement>,
+    #[serde(default)]
     pub user_interest: Option<JsonUserInterest>,
     #[serde(default)]
     pub age_range: Option<JsonAgeRange>,
     #[serde(default)]
     pub gender: Option<JsonGender>,
     #[serde(default)]
+    pub parental_status: Option<JsonParentalStatus>,
+    #[serde(default)]
+    pub income_range: Option<JsonIncomeRange>,
+    #[serde(default)]
     pub audience: Option<JsonAudience>,
+}
+
+impl JsonCriterion {
+    /// True when no axis is set — a criterion resource that targets nothing.
+    pub fn is_unset(&self) -> bool {
+        self.keyword.is_none()
+            && self.location.is_none()
+            && self.language.is_none()
+            && self.proximity.is_none()
+            && self.device.is_none()
+            && self.youtube_channel.is_none()
+            && self.youtube_video.is_none()
+            && self.topic.is_none()
+            && self.placement.is_none()
+            && self.user_interest.is_none()
+            && self.age_range.is_none()
+            && self.gender.is_none()
+            && self.parental_status.is_none()
+            && self.income_range.is_none()
+            && self.audience.is_none()
+    }
 }
 
 #[derive(Deserialize)]
@@ -497,6 +537,24 @@ pub struct JsonAgeRange {
 pub struct JsonGender {
     #[serde(rename = "type")]
     pub ty: String,
+}
+
+#[derive(Deserialize)]
+pub struct JsonParentalStatus {
+    #[serde(rename = "type")]
+    pub ty: String,
+}
+
+#[derive(Deserialize)]
+pub struct JsonIncomeRange {
+    #[serde(rename = "type")]
+    pub ty: String,
+}
+
+/// A managed placement — one site, app, or YouTube URL an ad may run on.
+#[derive(Deserialize)]
+pub struct JsonPlacement {
+    pub url: String,
 }
 
 /// Exactly one field is ever set — three distinct API criterion messages that
@@ -1201,10 +1259,16 @@ fn write_campaign_tree(
         let name = names.allocate("google_ads_ad_group_ad", &base);
         write_ad_group_ad(out, &name, a, ad_group_addr, youtube_asset_addr, plan, i);
     }
-    for group in group_ad_group_criteria(&input.ad_group_criteria) {
+    let (keyword_groups, ag_singletons) = partition_ad_group_criteria(&input.ad_group_criteria);
+    for group in keyword_groups {
         let base = ad_group_criterion_group_base(&group, ad_group_addr);
         let name = names.allocate("google_ads_ad_group_criterion", &slugify(&base));
         write_ad_group_criterion_group(out, &name, &group, ad_group_addr);
+    }
+    for c in ag_singletons {
+        let base = ad_group_criterion_base(c, ad_group_addr);
+        let name = names.allocate("google_ads_ad_group_criterion", &slugify(&base));
+        write_ad_group_criterion(out, &name, c, ad_group_addr, custom_audience_addr);
     }
     let remaining: Vec<&JsonCampaignCriterion> = input
         .campaign_criteria
@@ -1218,7 +1282,7 @@ fn write_campaign_tree(
         write_campaign_negative_group(out, &name, &group, campaign_addr, plan);
     }
     for c in singletons {
-        let base = criterion_base(c);
+        let base = criterion_base(&c.target, &c.id);
         let name = names.allocate("google_ads_campaign_criterion", &slugify(&base));
         write_campaign_criterion(out, &name, c, campaign_addr, custom_audience_addr);
     }
@@ -1729,17 +1793,26 @@ fn write_template(out: &mut String, t: &TemplateDecl, plan: &FoldPlan) {
 
 type AdGroupCriterionKey = (String, bool, Option<String>, Option<i64>, Option<String>);
 
-fn group_ad_group_criteria(
+/// Keywords group into one resource per (ad group, polarity, status, bid, match
+/// type); every other axis is a singleton, for the same reason campaign criteria
+/// are — it carries its own polarity and would round-trip as positive targeting
+/// if folded into a grouped form.
+fn partition_ad_group_criteria(
     items: &[JsonAdGroupCriterion],
-) -> Vec<Vec<&JsonAdGroupCriterion>> {
+) -> (Vec<Vec<&JsonAdGroupCriterion>>, Vec<&JsonAdGroupCriterion>) {
     let mut groups: Vec<Vec<&JsonAdGroupCriterion>> = Vec::new();
     let mut index: HashMap<AdGroupCriterionKey, usize> = HashMap::new();
+    let mut singletons: Vec<&JsonAdGroupCriterion> = Vec::new();
     for c in items {
+        let Some(kw) = &c.target.keyword else {
+            singletons.push(c);
+            continue;
+        };
         let neg = c.negative.unwrap_or(false);
         let match_type_key = if neg {
             None
         } else {
-            Some(c.keyword.match_type.clone())
+            Some(kw.match_type.clone())
         };
         let key = (
             c.ad_group.clone(),
@@ -1759,7 +1832,14 @@ fn group_ad_group_criteria(
         };
         groups[idx].push(c);
     }
-    groups
+    (groups, singletons)
+}
+
+fn ad_group_slug<'a>(ad_group_addr: &'a HashMap<String, String>, ad_group: &'a str) -> &'a str {
+    ad_group_addr
+        .get(ad_group)
+        .and_then(|s| s.strip_prefix("google_ads_ad_group."))
+        .unwrap_or(ad_group)
 }
 
 fn ad_group_criterion_group_base(
@@ -1767,18 +1847,29 @@ fn ad_group_criterion_group_base(
     ad_group_addr: &HashMap<String, String>,
 ) -> String {
     let first = group[0];
-    let ag_slug = ad_group_addr
-        .get(&first.ad_group)
-        .and_then(|s| s.strip_prefix("google_ads_ad_group."))
-        .unwrap_or(&first.ad_group);
+    let ag_slug = ad_group_slug(ad_group_addr, &first.ad_group);
     if first.negative.unwrap_or(false) {
         format!("{ag_slug}_negatives")
     } else {
-        format!(
-            "{ag_slug}_{}",
-            first.keyword.match_type.to_ascii_lowercase()
-        )
+        let match_type = first
+            .target
+            .keyword
+            .as_ref()
+            .map(|kw| kw.match_type.to_ascii_lowercase())
+            .unwrap_or_default();
+        format!("{ag_slug}_{match_type}")
     }
+}
+
+fn ad_group_criterion_base(
+    c: &JsonAdGroupCriterion,
+    ad_group_addr: &HashMap<String, String>,
+) -> String {
+    format!(
+        "{}_{}",
+        ad_group_slug(ad_group_addr, &c.ad_group),
+        criterion_base(&c.target, &c.id),
+    )
 }
 
 fn write_ad_group_criterion_group(
@@ -1809,12 +1900,47 @@ fn write_ad_group_criterion_group(
         "keyword"
     };
     for c in group {
+        let Some(kw) = &c.target.keyword else { continue };
         out.push('\n');
         let _ = writeln!(out, "  {block_name} {{");
-        write_attr(out, 2, "text", &fmt_string(&c.keyword.text));
-        write_attr(out, 2, "match_type", &fmt_string(&c.keyword.match_type));
+        write_attr(out, 2, "text", &fmt_string(&kw.text));
+        write_attr(out, 2, "match_type", &fmt_string(&kw.match_type));
         out.push_str("  }\n");
     }
+    out.push_str("}\n\n");
+}
+
+/// A non-keyword ad-group criterion: audience, placement, demographic, or the
+/// geo / language axes that intersect with the campaign's own targeting.
+fn write_ad_group_criterion(
+    out: &mut String,
+    name: &str,
+    c: &JsonAdGroupCriterion,
+    ad_group_addr: &HashMap<String, String>,
+    custom_audience_addr: &HashMap<String, String>,
+) {
+    let _ = writeln!(
+        out,
+        "resource \"google_ads_ad_group_criterion\" \"{name}\" {{"
+    );
+    let ag_ref = match ad_group_addr.get(&c.ad_group) {
+        Some(addr) => format!("{addr}.id"),
+        None => format!("\"<unresolved ad_group {}>\"", c.ad_group),
+    };
+    write_attr(out, 1, "ad_group", &ag_ref);
+    if let Some(s) = &c.status {
+        write_attr(out, 1, "status", &fmt_string(s));
+    }
+    if c.negative.unwrap_or(false) {
+        write_attr(out, 1, "negative", "true");
+    }
+    if let Some(cpc) = c.cpc_bid_micros {
+        write_attr(out, 1, "cpc_bid_micros", &cpc.to_string());
+    }
+    if let Some(bm) = c.bid_modifier {
+        write_attr(out, 1, "bid_modifier", &format_number(bm));
+    }
+    write_criterion_blocks(out, &c.target, custom_audience_addr);
     out.push_str("}\n\n");
 }
 
@@ -1848,19 +1974,19 @@ fn compute_inline_targeting(input: &ExportInput) -> InlineTargeting {
         let foldable = !c.negative.unwrap_or(false)
             && matches!(c.status.as_deref(), None | Some("ENABLED"))
             && c.bid_modifier.is_none()
-            && c.keyword.is_none()
-            && c.proximity.is_none()
-            && c.device.is_none();
+            && c.target.keyword.is_none()
+            && c.target.proximity.is_none()
+            && c.target.device.is_none();
         if !foldable {
             continue;
         }
-        if let Some(loc) = &c.location {
+        if let Some(loc) = &c.target.location {
             let entry = crate::targeting::location_code(&loc.geo_target_constant)
                 .map(str::to_string)
                 .unwrap_or_else(|| loc.geo_target_constant.clone());
             t.locations.entry(c.campaign.clone()).or_default().push(entry);
             t.folded.insert(c.id.clone());
-        } else if let Some(lang) = &c.language {
+        } else if let Some(lang) = &c.target.language {
             let entry = crate::targeting::language_code(&lang.language_constant)
                 .map(str::to_string)
                 .unwrap_or_else(|| lang.language_constant.clone());
@@ -2079,7 +2205,7 @@ fn plan_negative_locals(input: &ExportInput, names: &mut NameAllocator, plan: &m
         if !c.negative.unwrap_or(false) {
             continue;
         }
-        let Some(kw) = &c.keyword else { continue };
+        let Some(kw) = &c.target.keyword else { continue };
         let key = (c.campaign.clone(), c.status.clone().unwrap_or_default());
         if !groups.contains_key(&key) {
             order.push(key.clone());
@@ -2170,7 +2296,7 @@ fn partition_campaign_criteria<'a>(
     let mut index: HashMap<(String, Option<String>), usize> = HashMap::new();
     let mut singletons: Vec<&'a JsonCampaignCriterion> = Vec::new();
     for &c in items {
-        let is_negative_keyword = c.negative.unwrap_or(false) && c.keyword.is_some();
+        let is_negative_keyword = c.negative.unwrap_or(false) && c.target.keyword.is_some();
         if is_negative_keyword {
             let key = (c.campaign.clone(), c.status.clone());
             let idx = match index.get(&key) {
@@ -2230,7 +2356,7 @@ fn write_campaign_negative_group(
         out.push_str("  }\n");
     } else {
         for c in group {
-            if let Some(kw) = &c.keyword {
+            if let Some(kw) = &c.target.keyword {
                 out.push_str("\n  negative_keyword {\n");
                 write_attr(out, 2, "text", &fmt_string(&kw.text));
                 write_attr(out, 2, "match_type", &fmt_string(&kw.match_type));
@@ -2269,6 +2395,18 @@ fn write_campaign_criterion(
     if let Some(bm) = c.bid_modifier {
         write_attr(out, 1, "bid_modifier", &format_number(bm));
     }
+    write_criterion_blocks(out, &c.target, custom_audience_addr);
+    out.push_str("}\n\n");
+}
+
+/// The `oneof` body of a criterion resource — one block for whichever axis is
+/// set. Shared by both criterion resources so a new axis renders the same way
+/// wherever it is declared.
+fn write_criterion_blocks(
+    out: &mut String,
+    c: &JsonCriterion,
+    custom_audience_addr: &HashMap<String, String>,
+) {
     if let Some(kw) = &c.keyword {
         write_keyword(out, kw);
     }
@@ -2320,6 +2458,11 @@ fn write_campaign_criterion(
         write_attr(out, 2, "topic_constant", &fmt_string(&t.topic_constant));
         out.push_str("  }\n");
     }
+    if let Some(p) = &c.placement {
+        out.push_str("\n  placement {\n");
+        write_attr(out, 2, "url", &fmt_string(&p.url));
+        out.push_str("  }\n");
+    }
     if let Some(u) = &c.user_interest {
         out.push_str("\n  user_interest {\n");
         write_attr(
@@ -2340,6 +2483,16 @@ fn write_campaign_criterion(
         write_attr(out, 2, "type", &fmt_string(&g.ty));
         out.push_str("  }\n");
     }
+    if let Some(p) = &c.parental_status {
+        out.push_str("\n  parental_status {\n");
+        write_attr(out, 2, "type", &fmt_string(&p.ty));
+        out.push_str("  }\n");
+    }
+    if let Some(i) = &c.income_range {
+        out.push_str("\n  income_range {\n");
+        write_attr(out, 2, "type", &fmt_string(&i.ty));
+        out.push_str("  }\n");
+    }
     if let Some((field, value)) = c.audience.as_ref().and_then(JsonAudience::source) {
         out.push_str("\n  audience {\n");
         let rendered = if field == "custom_audience" {
@@ -2350,7 +2503,6 @@ fn write_campaign_criterion(
         write_attr(out, 2, field, &rendered);
         out.push_str("  }\n");
     }
-    out.push_str("}\n\n");
 }
 
 /// A declared `google_ads_custom_audience.<name>.id` reference when the target
@@ -2682,7 +2834,7 @@ fn ad_ad_base(a: &JsonAdGroupAd, ad_group_addr: &HashMap<String, String>) -> Str
     slugify(&a.id)
 }
 
-fn criterion_base(c: &JsonCampaignCriterion) -> String {
+fn criterion_base(c: &JsonCriterion, fallback: &str) -> String {
     if let Some(kw) = &c.keyword {
         return format!("{}_{}", kw.match_type.to_ascii_lowercase(), kw.text);
     }
@@ -2711,6 +2863,9 @@ fn criterion_base(c: &JsonCampaignCriterion) -> String {
     if let Some(t) = &c.topic {
         return format!("topic_{}", last_segment(&t.topic_constant));
     }
+    if let Some(p) = &c.placement {
+        return format!("placement_{}", p.url);
+    }
     if let Some(u) = &c.user_interest {
         return format!("interest_{}", last_segment(&u.user_interest_category));
     }
@@ -2720,10 +2875,16 @@ fn criterion_base(c: &JsonCampaignCriterion) -> String {
     if let Some(g) = &c.gender {
         return format!("gender_{}", g.ty.to_ascii_lowercase());
     }
+    if let Some(p) = &c.parental_status {
+        return format!("parental_status_{}", p.ty.to_ascii_lowercase());
+    }
+    if let Some(i) = &c.income_range {
+        return i.ty.to_ascii_lowercase();
+    }
     if let Some((field, value)) = c.audience.as_ref().and_then(JsonAudience::source) {
         return format!("{field}_{}", last_segment(value));
     }
-    c.id.clone()
+    fallback.to_string()
 }
 
 fn last_segment(s: &str) -> &str {
@@ -2967,6 +3128,37 @@ mod tests {
         // A singleton exclusion has to carry its own polarity.
         assert!(out.contains("negative = true"), "{out}");
         assert!(out.contains("channel_id = \"UCabc\""), "{out}");
+    }
+
+    #[test]
+    fn ad_group_targeting_renders_one_resource_per_axis() {
+        // Issue #110: one video campaign, one ad group per cohort. Keywords
+        // still group; every other axis renders as its own resource.
+        let raw = r#"[{"results":[
+            { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget", "amountMicros": "5000000" } },
+            { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Preroll", "status": "PAUSED", "advertisingChannelType": "VIDEO", "campaignBudget": "customers/9/campaignBudgets/1001" } },
+            { "adGroup": { "resourceName": "customers/9/adGroups/3001", "id": "3001", "name": "Cohort 35 up", "campaign": "customers/9/campaigns/2001", "status": "ENABLED" } },
+            { "adGroupCriterion": { "resourceName": "customers/9/adGroupCriteria/3001~1", "adGroup": "customers/9/adGroups/3001", "status": "ENABLED", "negative": false, "bidModifier": 1.2, "ageRange": { "type": "AGE_RANGE_35_44" } } },
+            { "adGroupCriterion": { "resourceName": "customers/9/adGroupCriteria/3001~2", "adGroup": "customers/9/adGroups/3001", "status": "ENABLED", "negative": true, "placement": { "url": "https://example.com/x" } } },
+            { "adGroupCriterion": { "resourceName": "customers/9/adGroupCriteria/3001~3", "adGroup": "customers/9/adGroups/3001", "status": "ENABLED", "negative": false, "userList": { "userList": "customers/9/userLists/987" } } },
+            { "adGroupCriterion": { "resourceName": "customers/9/adGroupCriteria/3001~4", "adGroup": "customers/9/adGroups/3001", "status": "ENABLED", "negative": false, "location": { "geoTargetConstant": "geoTargetConstants/2702" } } }
+        ]}]"#;
+        let input = from_search_response(raw).expect("adapter");
+        let out = render(&input);
+
+        assert_eq!(
+            out.matches("resource \"google_ads_ad_group_criterion\"").count(),
+            4,
+            "{out}"
+        );
+        assert!(out.contains("bid_modifier = 1.2"), "{out}");
+        assert!(out.contains("age_range {"), "{out}");
+        assert!(out.contains("url = \"https://example.com/x\""), "{out}");
+        assert!(out.contains("user_list = \"customers/9/userLists/987\""), "{out}");
+        assert!(out.contains("geo_target_constant = \"geoTargetConstants/2702\""), "{out}");
+        // A singleton exclusion has to carry its own polarity.
+        assert_eq!(out.matches("negative = true").count(), 1, "{out}");
+        assert_fold_roundtrips(raw);
     }
 
     #[test]

@@ -381,7 +381,7 @@ fn rmf_table() -> Vec<RmfRow> {
         },
         RmfRow {
             requirement: "Show and edit audience / placement targeting",
-            satisfied_by: "Modelled as <code>google_ads_campaign_criterion</code> sub-blocks (<code>audience</code>, <code>youtube_channel</code>, <code>youtube_video</code>, <code>topic</code>, <code>user_interest</code>, <code>age_range</code>, <code>gender</code>), each usable as an exclusion via <code>negative = true</code>. Search-intent segments are built declaratively as <code>google_ads_custom_audience</code> via <code>CustomAudienceService</code>.",
+            satisfied_by: "Modelled as sub-blocks on <code>google_ads_campaign_criterion</code> and <code>google_ads_ad_group_criterion</code> (<code>audience</code>, <code>youtube_channel</code>, <code>youtube_video</code>, <code>topic</code>, <code>user_interest</code>, <code>age_range</code>, <code>gender</code>, plus <code>placement</code> / <code>parental_status</code> / <code>income_range</code> / <code>location</code> / <code>language</code> at ad-group scope), each usable as an exclusion via <code>negative = true</code>. Search-intent segments are built declaratively as <code>google_ads_custom_audience</code> via <code>CustomAudienceService</code>.",
         },
         RmfRow {
             requirement: "Pause / enable campaigns and ad groups",

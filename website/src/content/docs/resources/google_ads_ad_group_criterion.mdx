@@ -1,6 +1,6 @@
 ---
 title: google_ads_ad_group_criterion
-description: A keyword or negative keyword scoped to one ad group.
+description: Targeting scoped to one ad group — keywords, audiences, YouTube placements, demographics, geo and language.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -12,20 +12,36 @@ export const keyword = resource.blocks.find((b) => b.name === 'keyword');
 export const keywords = resource.blocks.find((b) => b.name === 'keywords');
 export const negative_keyword = resource.blocks.find((b) => b.name === 'negative_keyword');
 export const negative_keywords = resource.blocks.find((b) => b.name === 'negative_keywords');
+export const audience = resource.blocks.find((b) => b.name === 'audience');
+export const user_interest = resource.blocks.find((b) => b.name === 'user_interest');
+export const youtube_channel = resource.blocks.find((b) => b.name === 'youtube_channel');
+export const youtube_video = resource.blocks.find((b) => b.name === 'youtube_video');
+export const topic = resource.blocks.find((b) => b.name === 'topic');
+export const placement = resource.blocks.find((b) => b.name === 'placement');
+export const age_range = resource.blocks.find((b) => b.name === 'age_range');
+export const gender = resource.blocks.find((b) => b.name === 'gender');
+export const parental_status = resource.blocks.find((b) => b.name === 'parental_status');
+export const income_range = resource.blocks.find((b) => b.name === 'income_range');
+export const location = resource.blocks.find((b) => b.name === 'location');
+export const language = resource.blocks.find((b) => b.name === 'language');
 
-An **ad-group criterion** is a keyword (positive or negative) scoped to
-one ad group. Positive keywords trigger your ads; negative keywords
-prevent them from showing on irrelevant searches.
+An **ad-group criterion** is targeting scoped to one ad group: a keyword
+(positive or negative) on a search campaign, or — on a video campaign —
+the audience, channels, and demographics that decide who sees the ad.
 
-<Aside type="tip" title="Block vs. attribute form">
-  Bidsmith accepts two ways to mark a keyword as negative: either set
-  the `negative = true` attribute and use a `keyword` block, or use a
-  `negative_keyword` block (which sets negative for you). The
-  `negative_keyword` form is more readable and is the default in
-  bidsmith's own examples.
+Each resource targets exactly one thing. Keywords are the exception:
+one resource can carry a list of them, because they all say the same
+kind of thing.
+
+<Aside type="tip" title="Ad group or campaign?">
+  Anything that should apply to the whole campaign belongs on
+  [`google_ads_campaign_criterion`](./google_ads_campaign_criterion/).
+  Put targeting here when ad groups inside one campaign should differ —
+  a cohort per ad group, a market per ad group — so you can test them
+  side by side on one budget instead of splitting the campaign.
 </Aside>
 
-## Example
+## Keywords
 
 A positive phrase-match keyword:
 
@@ -74,6 +90,12 @@ resource "google_ads_ad_group_criterion" "summer_negatives" {
   }
 }
 ```
+
+Bidsmith accepts two ways to mark a keyword as negative: either set the
+`negative = true` attribute and use a `keyword` block, or use a
+`negative_keyword` block (which sets negative for you). The
+`negative_keyword` form is more readable and is the default in
+bidsmith's own examples.
 
 ### Compact form
 
@@ -128,6 +150,87 @@ Ads, so `plan` and `apply` see no difference between the compact and
 the per-keyword forms — they are purely an authoring convenience. Both
 forms can coexist in the same resource.
 
+## A cohort per ad group
+
+On a video campaign, who sees the ad is usually an ad-group decision.
+Two cohorts of the same creative are two ad groups in one campaign —
+one budget, one name, one set of results to compare:
+
+```hcl
+resource "google_ads_ad_group" "instream_35_up" {
+  name           = "In-stream — 35+"
+  campaign       = google_ads_campaign.preroll.id
+  type           = "VIDEO_TRUE_VIEW_IN_STREAM"
+  cpv_bid_micros = 35000
+}
+
+resource "google_ads_ad_group_criterion" "cohort_35_44" {
+  ad_group = google_ads_ad_group.instream_35_up.id
+
+  age_range {
+    type = "AGE_RANGE_35_44"
+  }
+}
+
+resource "google_ads_ad_group_criterion" "cohort_privacy_intent" {
+  ad_group = google_ads_ad_group.instream_35_up.id
+
+  audience {
+    custom_audience = google_ads_custom_audience.privacy_searchers.id
+  }
+}
+```
+
+Any of these can be an exclusion instead — set `negative = true` and
+the ad group stops showing to that slice:
+
+```hcl
+resource "google_ads_ad_group_criterion" "exclude_kids_channel" {
+  ad_group = google_ads_ad_group.instream_35_up.id
+  negative = true
+
+  youtube_channel {
+    channel_id = "UCXuqSBlHAE6Xw-yeJA0Tunw"
+  }
+}
+```
+
+`bid_modifier` nudges the bid for a slice rather than including or
+excluding it — `1.2` bids 20% more, `0.7` bids 30% less:
+
+```hcl
+resource "google_ads_ad_group_criterion" "bid_up_35_44" {
+  ad_group     = google_ads_ad_group.instream_35_up.id
+  bid_modifier = 1.2
+
+  age_range {
+    type = "AGE_RANGE_35_44"
+  }
+}
+```
+
+## A market per ad group
+
+Ad-group `location` and `language` **intersect** with the campaign's
+own targeting — a viewer has to match both. That makes one localized
+ad group per market possible inside a single campaign, instead of one
+campaign per market:
+
+```hcl
+resource "google_ads_ad_group_criterion" "singapore" {
+  ad_group = google_ads_ad_group.instream_sg.id
+
+  location {
+    geo_target_constant = "geoTargetConstants/2702"
+  }
+}
+```
+
+Because the two levels intersect, an ad-group location that the
+campaign does not target reaches nobody. Keep the campaign's
+[`locations`](./google_ads_campaign/#geo-and-language-targeting) list
+as the wide net and use ad-group locations to split it.
+
 ## Schema
 
 <AttributeTable block={resource} headingLevel={3} />
@@ -163,8 +266,85 @@ every resulting criterion negative for you.
 
 <AttributeTable block={negative_keywords} headingLevel={4} />
 
+### `audience`
+
+A cohort to narrow the ad group to. Set exactly one of the three:
+`custom_audience` (a
+[`google_ads_custom_audience`](./google_ads_custom_audience/) you
+declare, or a resource name), `user_list` (a remarketing list built in
+the Google Ads UI), or `combined_audience`.
+
+<AttributeTable block={audience} headingLevel={4} />
+
+### `user_interest`
+
+An affinity or in-market interest category, named by its constant
+(`userInterestConstants/<id>`).
+
+<AttributeTable block={user_interest} headingLevel={4} />
+
+### `youtube_channel`
+
+A YouTube channel to run on — the id from the channel URL.
+
+<AttributeTable block={youtube_channel} headingLevel={4} />
+
+### `youtube_video`
+
+A single YouTube video to run on.
+
+<AttributeTable block={youtube_video} headingLevel={4} />
+
+### `topic`
+
+A content topic, named by its constant (`topicConstants/<id>`).
+
+<AttributeTable block={topic} headingLevel={4} />
+
+### `placement`
+
+One site, app, or channel URL to run on — a managed placement.
+
+<AttributeTable block={placement} headingLevel={4} />
+
+### `age_range`
+
+An age bracket. Google reports `AGE_RANGE_UNDETERMINED` for a large
+share of viewers, so excluding it cuts far more reach than it looks —
+bidsmith warns when you do.
+
+<AttributeTable block={age_range} headingLevel={4} />
+
+### `gender`
+
+<AttributeTable block={gender} headingLevel={4} />
+
+### `parental_status`
+
+<AttributeTable block={parental_status} headingLevel={4} />
+
+### `income_range`
+
+A household income band, top-down: `INCOME_RANGE_90_UP` is the top 10%,
+`INCOME_RANGE_0_50` the lower half.
+
+<AttributeTable block={income_range} headingLevel={4} />
+
+### `location`
+
+A geo target for this ad group, intersected with the campaign's own.
+
+<AttributeTable block={location} headingLevel={4} />
+
+### `language`
+
+A language target for this ad group, intersected with the campaign's own.
+
+<AttributeTable block={language} headingLevel={4} />
+
 ## See also
 
 - [`google_ads_ad_group`](./google_ads_ad_group/) — required parent.
-- [`google_ads_campaign_criterion`](./google_ads_campaign_criterion/) — campaign-level criteria (negatives, geo, language).
+- [`google_ads_campaign_criterion`](./google_ads_campaign_criterion/) — the same targeting applied to a whole campaign.
+- [`google_ads_custom_audience`](./google_ads_custom_audience/) — build a search-intent segment to target here.
 - [`google_ads_shared_set`](./google_ads_shared_set/) — reusable negative lists across campaigns.

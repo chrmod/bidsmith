@@ -4,8 +4,8 @@ use crate::commands::export::{
     address_label_payload, ExportInput, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset,
     JsonAdGroupCriterion, JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign,
     JsonCampaignAsset, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
-    JsonAudience, JsonCustomAudience, JsonCustomerAsset, JsonSharedCriterion, JsonSharedSet,
-    JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonYoutubeVideoAsset,
+    JsonAudience, JsonCriterion, JsonCustomAudience, JsonCustomerAsset, JsonSharedCriterion,
+    JsonSharedSet, JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonYoutubeVideoAsset,
 };
 
 /// Claim category token for `Campaign.frequency_caps` — see `diff_campaign`.
@@ -591,45 +591,6 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         }
     }
 
-    // ---- ad_group_criteria (match by ad_group + keyword) -----------------
-    let live_ag_criteria: HashMap<(String, bool, String, String), &JsonAdGroupCriterion> = live
-        .ad_group_criteria
-        .iter()
-        .map(|c| {
-            (
-                (
-                    c.ad_group.clone(),
-                    c.negative.unwrap_or(false),
-                    c.keyword.text.clone(),
-                    c.keyword.match_type.clone(),
-                ),
-                c,
-            )
-        })
-        .collect();
-    for d in &declared.ad_group_criteria {
-        let action = match ad_group_match.get(&d.ad_group) {
-            Some(parent_id) => {
-                let key = (
-                    parent_id.clone(),
-                    d.negative.unwrap_or(false),
-                    d.keyword.text.clone(),
-                    d.keyword.match_type.clone(),
-                );
-                match live_ag_criteria.get(&key) {
-                    Some(l) => action_for_match(l.id.clone(), diff_ad_group_criterion(d, l)),
-                    None => Action::Create,
-                }
-            }
-            None => Action::Create,
-        };
-        diffs.push(ResourceDiff {
-            address: d.id.clone(),
-            kind: "ad_group_criterion",
-            action,
-        });
-    }
-
     // Ahead of the criteria that reference them: an `audience` criterion is
     // keyed on the live custom audience id, which this match supplies.
     let mut custom_audience_match: HashMap<String, String> = HashMap::new();
@@ -653,17 +614,50 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         });
     }
 
+    // ---- ad_group_criteria (match by ad_group + criterion key) -----------
+    let mut live_ag_criteria: HashMap<(String, String), &JsonAdGroupCriterion> = HashMap::new();
+    for c in &live.ad_group_criteria {
+        if let Some(key) = criterion_key(&c.target, c.negative.unwrap_or(false), &HashMap::new()) {
+            live_ag_criteria.insert((c.ad_group.clone(), key), c);
+        }
+    }
+    for d in &declared.ad_group_criteria {
+        let action = match (
+            ad_group_match.get(&d.ad_group),
+            criterion_key(
+                &d.target,
+                d.negative.unwrap_or(false),
+                &custom_audience_match,
+            ),
+        ) {
+            (Some(parent_id), Some(key)) => match live_ag_criteria.get(&(parent_id.clone(), key)) {
+                Some(l) => action_for_match(l.id.clone(), diff_ad_group_criterion(d, l)),
+                None => Action::Create,
+            },
+            _ => Action::Create,
+        };
+        diffs.push(ResourceDiff {
+            address: d.id.clone(),
+            kind: "ad_group_criterion",
+            action,
+        });
+    }
+
     // ---- campaign_criteria (match by campaign + criterion key) -----------
     let mut live_c_criteria: HashMap<(String, String), &JsonCampaignCriterion> = HashMap::new();
     for c in &live.campaign_criteria {
-        if let Some(key) = campaign_criterion_key(c, &HashMap::new()) {
+        if let Some(key) = criterion_key(&c.target, c.negative.unwrap_or(false), &HashMap::new()) {
             live_c_criteria.insert((c.campaign.clone(), key), c);
         }
     }
     for d in &declared.campaign_criteria {
         let action = match (
             campaign_match.get(&d.campaign),
-            campaign_criterion_key(d, &custom_audience_match),
+            criterion_key(
+                &d.target,
+                d.negative.unwrap_or(false),
+                &custom_audience_match,
+            ),
         ) {
             (Some(parent_id), Some(key)) => match live_c_criteria.get(&(parent_id.clone(), key)) {
                 Some(l) => action_for_match(l.id.clone(), diff_campaign_criterion(d, l)),
@@ -1013,9 +1007,12 @@ fn canonical_category(cat: &str) -> Option<&'static str> {
         "youtube_channel" => "youtube_channel",
         "youtube_video" => "youtube_video",
         "topic" => "topic",
+        "placement" => "placement",
         "user_interest" => "user_interest",
         "age_range" => "age_range",
         "gender" => "gender",
+        "parental_status" => "parental_status",
+        "income_range" => "income_range",
         "audience" => "audience",
         _ => return None,
     })
@@ -1050,7 +1047,11 @@ fn claim_plan_entries(
         declared.ad_groups.iter().map(|g| g.id.as_str()).collect();
     for d in &declared.ad_group_criteria {
         if declared_ags.contains(d.ad_group.as_str()) {
-            desired_ag.insert((&d.ad_group, polarity_category(d.negative.unwrap_or(false))));
+            if let Some(cat) =
+                canonical_category(criterion_category(&d.target, d.negative.unwrap_or(false)))
+            {
+                desired_ag.insert((&d.ad_group, cat));
+            }
         }
     }
 
@@ -1060,7 +1061,9 @@ fn claim_plan_entries(
         declared.campaigns.iter().map(|c| c.id.as_str()).collect();
     for d in &declared.campaign_criteria {
         if declared_cs.contains(d.campaign.as_str()) {
-            if let Some(cat) = canonical_category(campaign_criterion_category(d)) {
+            if let Some(cat) =
+                canonical_category(criterion_category(&d.target, d.negative.unwrap_or(false)))
+            {
                 desired_c.insert((&d.campaign, cat));
             }
         }
@@ -1158,14 +1161,18 @@ fn orphan_criteria_deletes(
         m.iter().map(|(addr, id)| (id.clone(), addr.clone())).collect()
     };
 
-    // ---- ad_group_criteria: category = negative polarity ----------------
+    // ---- ad_group_criteria: category = kw polarity / targeting axis ------
     {
         let matched = matched_live_ids("ad_group_criterion");
         let parent_addr = reverse(ad_group_match);
-        let mut managed: std::collections::HashSet<(String, bool)> = std::collections::HashSet::new();
+        let mut managed: std::collections::HashSet<(String, &'static str)> =
+            std::collections::HashSet::new();
         for d in &declared.ad_group_criteria {
             if let Some(live_ag) = ad_group_match.get(&d.ad_group) {
-                managed.insert((live_ag.clone(), d.negative.unwrap_or(false)));
+                managed.insert((
+                    live_ag.clone(),
+                    criterion_category(&d.target, d.negative.unwrap_or(false)),
+                ));
             }
         }
         for (live_id, cats) in &live.ad_group_claims {
@@ -1173,8 +1180,8 @@ fn orphan_criteria_deletes(
                 continue;
             }
             for cat in cats {
-                if let Some(negative) = [true, false].into_iter().find(|&n| cat == polarity_category(n)) {
-                    managed.insert((live_id.clone(), negative));
+                if let Some(tok) = canonical_category(cat) {
+                    managed.insert((live_id.clone(), tok));
                 }
             }
         }
@@ -1182,12 +1189,13 @@ fn orphan_criteria_deletes(
             if matched.contains(l.id.as_str()) {
                 continue;
             }
-            let polarity = l.negative.unwrap_or(false);
-            if !managed.contains(&(l.ad_group.clone(), polarity)) {
+            let negative = l.negative.unwrap_or(false);
+            if !managed.contains(&(l.ad_group.clone(), criterion_category(&l.target, negative))) {
                 continue;
             }
-            let word = if polarity { "negative_keyword" } else { "keyword" };
-            let descriptor = format!("{word} \"{}\" {}", l.keyword.text, l.keyword.match_type);
+            let Some(descriptor) = criterion_descriptor(&l.target, negative) else {
+                continue;
+            };
             out.push(delete_diff(
                 "ad_group_criterion",
                 parent_addr.get(&l.ad_group),
@@ -1207,7 +1215,10 @@ fn orphan_criteria_deletes(
             std::collections::HashSet::new();
         for d in &declared.campaign_criteria {
             if let Some(live_c) = campaign_match.get(&d.campaign) {
-                managed.insert((live_c.clone(), campaign_criterion_category(d)));
+                managed.insert((
+                    live_c.clone(),
+                    criterion_category(&d.target, d.negative.unwrap_or(false)),
+                ));
             }
         }
         for (live_id, cats) in &live.campaign_claims {
@@ -1224,11 +1235,12 @@ fn orphan_criteria_deletes(
             if matched.contains(l.id.as_str()) {
                 continue;
             }
-            let category = campaign_criterion_category(l);
+            let negative = l.negative.unwrap_or(false);
+            let category = criterion_category(&l.target, negative);
             if !managed.contains(&(l.campaign.clone(), category)) {
                 continue;
             }
-            let Some(descriptor) = campaign_criterion_descriptor(l) else {
+            let Some(descriptor) = criterion_descriptor(&l.target, negative) else {
                 continue;
             };
             // Device criteria can never be removed via the API, and Google
@@ -1356,13 +1368,11 @@ fn delete_diff(
     }
 }
 
-fn campaign_criterion_category(cr: &JsonCampaignCriterion) -> &'static str {
+/// The `bidsmith:owns` category a criterion falls in — the partition orphan
+/// pruning runs inside, so declaring one axis never deletes another.
+fn criterion_category(cr: &JsonCriterion, negative: bool) -> &'static str {
     if cr.keyword.is_some() {
-        if cr.negative.unwrap_or(false) {
-            "keyword_negative"
-        } else {
-            "keyword_positive"
-        }
+        polarity_category(negative)
     } else if cr.location.is_some() {
         "location"
     } else if cr.language.is_some() {
@@ -1377,12 +1387,18 @@ fn campaign_criterion_category(cr: &JsonCampaignCriterion) -> &'static str {
         "youtube_video"
     } else if cr.topic.is_some() {
         "topic"
+    } else if cr.placement.is_some() {
+        "placement"
     } else if cr.user_interest.is_some() {
         "user_interest"
     } else if cr.age_range.is_some() {
         "age_range"
     } else if cr.gender.is_some() {
         "gender"
+    } else if cr.parental_status.is_some() {
+        "parental_status"
+    } else if cr.income_range.is_some() {
+        "income_range"
     } else if cr.audience.is_some() {
         "audience"
     } else {
@@ -1390,13 +1406,9 @@ fn campaign_criterion_category(cr: &JsonCampaignCriterion) -> &'static str {
     }
 }
 
-fn campaign_criterion_descriptor(cr: &JsonCampaignCriterion) -> Option<String> {
+fn criterion_descriptor(cr: &JsonCriterion, negative: bool) -> Option<String> {
     if let Some(kw) = &cr.keyword {
-        let word = if cr.negative.unwrap_or(false) {
-            "negative_keyword"
-        } else {
-            "keyword"
-        };
+        let word = if negative { "negative_keyword" } else { "keyword" };
         Some(format!("{word} \"{}\" {}", kw.text, kw.match_type))
     } else if let Some(loc) = &cr.location {
         Some(format!("location {}", loc.geo_target_constant))
@@ -1410,12 +1422,18 @@ fn campaign_criterion_descriptor(cr: &JsonCampaignCriterion) -> Option<String> {
         Some(format!("youtube_video {}", v.video_id))
     } else if let Some(t) = &cr.topic {
         Some(format!("topic {}", t.topic_constant))
+    } else if let Some(p) = &cr.placement {
+        Some(format!("placement {}", p.url))
     } else if let Some(u) = &cr.user_interest {
         Some(format!("user_interest {}", u.user_interest_category))
     } else if let Some(a) = &cr.age_range {
         Some(format!("age_range {}", a.ty))
     } else if let Some(g) = &cr.gender {
         Some(format!("gender {}", g.ty))
+    } else if let Some(p) = &cr.parental_status {
+        Some(format!("parental_status {}", p.ty))
+    } else if let Some(i) = &cr.income_range {
+        Some(format!("income_range {}", i.ty))
     } else if let Some((field, value)) = cr.audience.as_ref().and_then(JsonAudience::source) {
         Some(format!("{field} {value}"))
     } else {
@@ -2001,7 +2019,10 @@ fn diff_ad_group_criterion(d: &JsonAdGroupCriterion, l: &JsonAdGroupCriterion) -
     if d.cpc_bid_micros != l.cpc_bid_micros {
         c.push(change("cpc_bid_micros", l.cpc_bid_micros, d.cpc_bid_micros));
     }
-    // keyword.text / match_type are creation-only.
+    if bid_modifier_changed(d.bid_modifier, l.bid_modifier) {
+        c.push(change("bid_modifier", l.bid_modifier, d.bid_modifier));
+    }
+    // What the criterion targets is creation-only; it is the match key.
     c
 }
 
@@ -2229,12 +2250,16 @@ fn canonical_audience(value: &str, custom_audience_match: &HashMap<String, Strin
     }
 }
 
-fn campaign_criterion_key(
-    cr: &JsonCampaignCriterion,
+/// The identity of a criterion within its parent — what a declared criterion
+/// and a live one have to agree on to be the same targeting. Shared by both
+/// criterion resources.
+fn criterion_key(
+    cr: &JsonCriterion,
+    negative: bool,
     custom_audience_match: &HashMap<String, String>,
 ) -> Option<String> {
     if let Some(kw) = &cr.keyword {
-        let polarity = if cr.negative.unwrap_or(false) { "neg" } else { "pos" };
+        let polarity = if negative { "neg" } else { "pos" };
         return Some(format!("kw:{polarity}:{}|{}", kw.match_type, kw.text));
     }
     if let Some(loc) = &cr.location {
@@ -2264,6 +2289,9 @@ fn campaign_criterion_key(
     if let Some(t) = &cr.topic {
         return Some(format!("topic:{}", t.topic_constant));
     }
+    if let Some(p) = &cr.placement {
+        return Some(format!("placement:{}", p.url));
+    }
     if let Some(u) = &cr.user_interest {
         return Some(format!("interest:{}", u.user_interest_category));
     }
@@ -2272,6 +2300,12 @@ fn campaign_criterion_key(
     }
     if let Some(g) = &cr.gender {
         return Some(format!("gender:{}", g.ty));
+    }
+    if let Some(p) = &cr.parental_status {
+        return Some(format!("parental:{}", p.ty));
+    }
+    if let Some(i) = &cr.income_range {
+        return Some(format!("income:{}", i.ty));
     }
     if let Some((field, value)) = cr.audience.as_ref().and_then(JsonAudience::source) {
         return Some(format!(
@@ -3295,6 +3329,87 @@ mod claim_tests {
         assert_eq!(
             report.claim_plans[0].stale_assoc_rn.as_deref(),
             Some("customers/1/campaignLabels/100~779")
+        );
+    }
+
+    #[test]
+    fn an_ad_group_audience_matches_live_and_never_prunes_its_keywords() {
+        // Issue #110: ad-group criteria partition by axis the way campaign ones
+        // do — declaring a cohort adopts the live cohort and leaves the ad
+        // group's keywords (a category the file says nothing about) alone.
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"m.c","name":"C","advertising_channel_type":"VIDEO","campaign_budget":"m.b"}],
+            "ad_groups": [{"id":"m.g","name":"G","campaign":"m.c"}],
+            "ad_group_criteria": [
+                {"id":"m.aud","ad_group":"m.g","audience":{"user_list":"customers/1/userLists/987"}}
+            ]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"100","name":"C","advertising_channel_type":"VIDEO","campaign_budget":"200"}],
+            "ad_groups": [{"id":"300","name":"G","campaign":"100"}],
+            "ad_group_criteria": [
+                {"id":"400","ad_group":"300","keyword":{"text":"shoes","match_type":"EXACT"}},
+                {"id":"401","ad_group":"300","audience":{"user_list":"customers/1/userLists/987"}}
+            ]
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        assert_eq!(
+            report.delete_count, 0,
+            "the live keyword is in a category this file never claims: {:?}",
+            report.diffs.iter().map(|d| (&d.address, &d.action)).collect::<Vec<_>>()
+        );
+        let aud = report
+            .diffs
+            .iter()
+            .find(|d| d.address == "m.aud")
+            .expect("the audience criterion");
+        assert!(
+            matches!(&aud.action, Action::NoOp { live_id } if live_id == "401"),
+            "the declared cohort should adopt the live one: {:?}",
+            aud.action
+        );
+    }
+
+    #[test]
+    fn an_ad_group_claim_destroys_the_axis_it_owns() {
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"m.c","name":"C","advertising_channel_type":"VIDEO","campaign_budget":"m.b"}],
+            "ad_groups": [{"id":"m.g","name":"G","campaign":"m.c"}]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"100","name":"C","advertising_channel_type":"VIDEO","campaign_budget":"200"}],
+            "ad_groups": [{"id":"300","name":"G","campaign":"100"}],
+            "ad_group_criteria": [
+                {"id":"400","ad_group":"300","youtube_channel":{"channel_id":"UCabc"}}
+            ],
+            "ad_group_claims": {"300": ["youtube_channel"]},
+            "claim_labels": {"youtube_channel": "customers/1/labels/781"}
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        assert_eq!(report.delete_count, 1, "{:?}", report.diffs);
+        let del = report
+            .diffs
+            .iter()
+            .find(|d| matches!(d.action, Action::Delete { .. }))
+            .expect("a destroy");
+        assert!(del.address.contains("m.g (removed youtube_channel UCabc)"));
+        assert_eq!(
+            report.claim_plans[0].stale_assoc_rn.as_deref(),
+            Some("customers/1/adGroupLabels/300~781")
         );
     }
 

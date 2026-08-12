@@ -210,6 +210,18 @@ const AGE_RANGE_TYPE: &[&str] = &[
     "AGE_RANGE_UNDETERMINED",
 ];
 const GENDER_TYPE: &[&str] = &["MALE", "FEMALE", "UNDETERMINED"];
+const PARENTAL_STATUS_TYPE: &[&str] = &["PARENT", "NOT_A_PARENT", "UNDETERMINED"];
+/// Household income percentile bands, top-down: `0_50` is the lower half,
+/// `90_UP` the top 10%.
+const INCOME_RANGE_TYPE: &[&str] = &[
+    "INCOME_RANGE_0_50",
+    "INCOME_RANGE_50_60",
+    "INCOME_RANGE_60_70",
+    "INCOME_RANGE_70_80",
+    "INCOME_RANGE_80_90",
+    "INCOME_RANGE_90_UP",
+    "INCOME_RANGE_UNDETERMINED",
+];
 const CONVERSION_ACTION_TYPE: &[&str] = &[
     "UNKNOWN",
     "AD_CALL",
@@ -473,6 +485,68 @@ fn negative_keyword_block() -> NestedBlockSchema {
     }
 }
 
+/// A criterion block whose whole body is one attribute naming what it targets.
+fn one_attr_block(
+    name: &'static str,
+    attribute: &'static str,
+    ty: FieldType,
+) -> NestedBlockSchema {
+    NestedBlockSchema {
+        name,
+        schema: BlockSchema {
+            attributes: vec![attr(attribute, ty, true)],
+            blocks: vec![],
+        },
+    }
+}
+
+fn location_block() -> NestedBlockSchema {
+    one_attr_block("location", "geo_target_constant", FieldType::String)
+}
+
+fn language_block() -> NestedBlockSchema {
+    one_attr_block("language", "language_constant", FieldType::String)
+}
+
+/// Three distinct API criterion messages, one block: they all answer "which
+/// audience?", and only one may be set. Enforced by `validate_exactly_one_of`,
+/// not expressible in the schema.
+fn audience_block() -> NestedBlockSchema {
+    NestedBlockSchema {
+        name: "audience",
+        schema: BlockSchema {
+            attributes: vec![
+                attr(
+                    "custom_audience",
+                    FieldType::RefOrResourceName(&["google_ads_custom_audience"]),
+                    false,
+                ),
+                attr("user_list", FieldType::String, false),
+                attr("combined_audience", FieldType::String, false),
+            ],
+            blocks: vec![],
+        },
+    }
+}
+
+/// The who-and-where axes both criterion resources accept: cohort narrowing,
+/// YouTube inventory, and demographics.
+fn audience_targeting_blocks() -> Vec<NestedBlockSchema> {
+    vec![
+        one_attr_block("youtube_channel", "channel_id", FieldType::String),
+        one_attr_block("youtube_video", "video_id", FieldType::String),
+        one_attr_block("topic", "topic_constant", FieldType::String),
+        one_attr_block(
+            "user_interest",
+            "user_interest_category",
+            FieldType::String,
+        ),
+        one_attr_block("age_range", "type", FieldType::Enum(AGE_RANGE_TYPE)),
+        one_attr_block("gender", "type", FieldType::Enum(GENDER_TYPE)),
+        audience_block(),
+    ]
+}
+
 // "exactly one of match_type / match_types" is not expressible here; enforced by validate_compact_keywords.
 fn compact_keywords_block(name: &'static str) -> NestedBlockSchema {
     NestedBlockSchema {
@@ -676,13 +750,35 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                     attr("negative", FieldType::Bool, false)
                         .with_default(DefaultValue::Bool(DEFAULT_NEGATIVE)),
                     attr("cpc_bid_micros", FieldType::Integer, false),
+                    attr("bid_modifier", FieldType::Number, false),
                 ],
-                blocks: vec![
-                    keyword_block(),
-                    compact_keywords_block("keywords"),
-                    negative_keyword_block(),
-                    compact_keywords_block("negative_keywords"),
-                ],
+                blocks: {
+                    let mut b = vec![
+                        keyword_block(),
+                        compact_keywords_block("keywords"),
+                        negative_keyword_block(),
+                        compact_keywords_block("negative_keywords"),
+                    ];
+                    b.extend(audience_targeting_blocks());
+                    // Ad-group-only axes. `placement` names one site, app, or
+                    // channel URL; the two demographics round out age / gender.
+                    b.push(one_attr_block("placement", "url", FieldType::String));
+                    b.push(one_attr_block(
+                        "parental_status",
+                        "type",
+                        FieldType::Enum(PARENTAL_STATUS_TYPE),
+                    ));
+                    b.push(one_attr_block(
+                        "income_range",
+                        "type",
+                        FieldType::Enum(INCOME_RANGE_TYPE),
+                    ));
+                    // Geo and language intersect with the campaign's own: a
+                    // viewer has to match both to be targeted.
+                    b.push(location_block());
+                    b.push(language_block());
+                    b
+                },
             },
         );
 
@@ -701,124 +797,34 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         .with_default(DefaultValue::Bool(DEFAULT_NEGATIVE)),
                     attr("bid_modifier", FieldType::Number, false),
                 ],
-                blocks: vec![
-                    keyword_block(),
-                    negative_keyword_block(),
-                    compact_keywords_block("negative_keywords"),
-                    NestedBlockSchema {
-                        name: "device",
-                        schema: BlockSchema {
-                            attributes: vec![attr(
-                                "type",
-                                FieldType::Enum(DEVICE_TYPE),
-                                true,
-                            )],
-                            blocks: vec![],
+                blocks: {
+                    let mut b = vec![
+                        keyword_block(),
+                        negative_keyword_block(),
+                        compact_keywords_block("negative_keywords"),
+                        one_attr_block("device", "type", FieldType::Enum(DEVICE_TYPE)),
+                        location_block(),
+                        language_block(),
+                        NestedBlockSchema {
+                            name: "proximity",
+                            schema: BlockSchema {
+                                attributes: vec![
+                                    attr("latitude", FieldType::Number, true),
+                                    attr("longitude", FieldType::Number, true),
+                                    attr("radius", FieldType::Number, true),
+                                    attr(
+                                        "radius_units",
+                                        FieldType::Enum(PROXIMITY_RADIUS_UNITS),
+                                        true,
+                                    ),
+                                ],
+                                blocks: vec![],
+                            },
                         },
-                    },
-                    NestedBlockSchema {
-                        name: "location",
-                        schema: BlockSchema {
-                            attributes: vec![attr(
-                                "geo_target_constant",
-                                FieldType::String,
-                                true,
-                            )],
-                            blocks: vec![],
-                        },
-                    },
-                    NestedBlockSchema {
-                        name: "language",
-                        schema: BlockSchema {
-                            attributes: vec![attr(
-                                "language_constant",
-                                FieldType::String,
-                                true,
-                            )],
-                            blocks: vec![],
-                        },
-                    },
-                    NestedBlockSchema {
-                        name: "proximity",
-                        schema: BlockSchema {
-                            attributes: vec![
-                                attr("latitude", FieldType::Number, true),
-                                attr("longitude", FieldType::Number, true),
-                                attr("radius", FieldType::Number, true),
-                                attr(
-                                    "radius_units",
-                                    FieldType::Enum(PROXIMITY_RADIUS_UNITS),
-                                    true,
-                                ),
-                            ],
-                            blocks: vec![],
-                        },
-                    },
-                    NestedBlockSchema {
-                        name: "youtube_channel",
-                        schema: BlockSchema {
-                            attributes: vec![attr("channel_id", FieldType::String, true)],
-                            blocks: vec![],
-                        },
-                    },
-                    NestedBlockSchema {
-                        name: "youtube_video",
-                        schema: BlockSchema {
-                            attributes: vec![attr("video_id", FieldType::String, true)],
-                            blocks: vec![],
-                        },
-                    },
-                    NestedBlockSchema {
-                        name: "topic",
-                        schema: BlockSchema {
-                            attributes: vec![attr("topic_constant", FieldType::String, true)],
-                            blocks: vec![],
-                        },
-                    },
-                    NestedBlockSchema {
-                        name: "user_interest",
-                        schema: BlockSchema {
-                            attributes: vec![attr(
-                                "user_interest_category",
-                                FieldType::String,
-                                true,
-                            )],
-                            blocks: vec![],
-                        },
-                    },
-                    NestedBlockSchema {
-                        name: "age_range",
-                        schema: BlockSchema {
-                            attributes: vec![attr("type", FieldType::Enum(AGE_RANGE_TYPE), true)],
-                            blocks: vec![],
-                        },
-                    },
-                    NestedBlockSchema {
-                        name: "gender",
-                        schema: BlockSchema {
-                            attributes: vec![attr("type", FieldType::Enum(GENDER_TYPE), true)],
-                            blocks: vec![],
-                        },
-                    },
-                    // Three distinct API criterion messages, one block: they all
-                    // answer "which audience?", and only one may be set.
-                    // Enforced by validate_audience_block, not expressible here.
-                    NestedBlockSchema {
-                        name: "audience",
-                        schema: BlockSchema {
-                            attributes: vec![
-                                attr(
-                                    "custom_audience",
-                                    FieldType::RefOrResourceName(&["google_ads_custom_audience"]),
-                                    false,
-                                ),
-                                attr("user_list", FieldType::String, false),
-                                attr("combined_audience", FieldType::String, false),
-                            ],
-                            blocks: vec![],
-                        },
-                    },
-                ],
+                    ];
+                    b.extend(audience_targeting_blocks());
+                    b
+                },
             },
         );
 
@@ -3945,6 +3951,74 @@ resource "google_ads_campaign_criterion" "no_kids" {
   negative = true
 
   age_range { type = "AGE_RANGE_18_24" }
+}
+"#,
+        );
+        assert!(
+            diags.is_empty(),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ad_group_targeting_criterion_blocks_validate() {
+        let diags = validate_str(
+            "ag_targeting",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "v" {
+  name                     = "V"
+  advertising_channel_type = "VIDEO"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+
+resource "google_ads_ad_group" "cohort" {
+  name     = "Cohort 35+"
+  campaign = google_ads_campaign.v.id
+  type     = "VIDEO_TRUE_VIEW_IN_STREAM"
+}
+
+resource "google_ads_ad_group_criterion" "cohort_list" {
+  ad_group     = google_ads_ad_group.cohort.id
+  bid_modifier = 1.2
+
+  audience { user_list = "customers/1/userLists/987" }
+}
+
+resource "google_ads_ad_group_criterion" "cohort_age" {
+  ad_group = google_ads_ad_group.cohort.id
+
+  age_range { type = "AGE_RANGE_35_44" }
+}
+
+resource "google_ads_ad_group_criterion" "cohort_income" {
+  ad_group = google_ads_ad_group.cohort.id
+
+  income_range { type = "INCOME_RANGE_90_UP" }
+}
+
+resource "google_ads_ad_group_criterion" "cohort_parents" {
+  ad_group = google_ads_ad_group.cohort.id
+  negative = true
+
+  parental_status { type = "PARENT" }
+}
+
+resource "google_ads_ad_group_criterion" "cohort_placement" {
+  ad_group = google_ads_ad_group.cohort.id
+
+  placement { url = "https://example.com/reviews" }
+}
+
+resource "google_ads_ad_group_criterion" "cohort_market" {
+  ad_group = google_ads_ad_group.cohort.id
+
+  location { geo_target_constant = "geoTargetConstants/2702" }
 }
 "#,
         );
