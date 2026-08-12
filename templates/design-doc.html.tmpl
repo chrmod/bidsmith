@@ -62,10 +62,54 @@ parties, authenticates no end users, and reads or writes no end-user data. Its p
 <strong>ad creation and management, and reporting</strong>.
 </p>
 
-<h2>2. Why we need API access</h2>
+<p>
+Section 2 describes {{ applicant_legal_entity }}&rsquo;s business and where {{ tool_name }} sits in
+it; §3 explains why Google Ads API access is functionally necessary for that business.
+</p>
+
+<h2>2. Business model</h2>
+
+{% for paragraph in core_business_paragraphs %}<p>{{ paragraph }}</p>
+{% endfor %}
+
+<p><strong>Primary customers:</strong> {{ primary_customers }}</p>
+
+<p><strong>Value exchange:</strong> {{ value_exchange }}</p>
+
+<p>
+{{ tool_name }} sits outside that value exchange. It is not the product, is not sold, licensed, or
+offered to anyone, and no transaction of any kind occurs &ldquo;on&rdquo; it. Google Ads is one of
+the marketing channels through which {{ applicant_legal_entity }} reaches the customers described
+above, and {{ tool_name }} is the internal tool its team uses to operate that channel safely.
+</p>
+
+<h2>3. Why the Google Ads API is essential</h2>
 
 {% for paragraph in why_this_tool_exists_paragraphs %}<p>{{ paragraph }}</p>
 {% endfor %}
+
+<p>
+That workflow exists only on top of the API. Each capability it depends on maps to a specific API
+service, and none of them has an equivalent in the Google Ads web interface or in Google Ads Editor:
+</p>
+
+<table>
+  <tr><th>Capability the workflow depends on</th><th>API service</th><th>Why nothing else substitutes</th></tr>
+  {% for n in api_necessity %}<tr><td>{{ n.capability | safe }}</td><td>{{ n.service | safe }}</td><td>{{ n.why | safe }}</td></tr>
+  {% endfor %}
+</table>
+
+<p>
+<strong>How API access directly improves the service:</strong> every change to a live campaign is
+authored as text, reviewed by a second person in a Git pull request, validated end-to-end by
+Google&rsquo;s own <code>validateOnly</code> pass, and applied as one atomic batch under a named
+operator&rsquo;s confirmation. That turns budget-affecting campaign edits from ad-hoc UI clicks into
+audited, peer-reviewed, reversible changes: fewer erroneous spend changes, a complete audit trail in
+both Git and the Google Ads change history, and campaign operations that stay reliable as the account
+grows. {{ tool_name }} has no fallback if API access is removed — it does not scrape the web
+interface or automate a browser; the plan/apply workflow described in §4 cannot be built on anything
+except these endpoints.
+</p>
 
 <p>
 <strong>Who uses it:</strong> {{ who_uses_it_operators }}. Changes to <code>.bid</code> files are
@@ -75,7 +119,15 @@ advertiser has access to the tool or to the credentials it carries — the OAuth
 account&rdquo; capability.
 </p>
 
-<h2>3. How it works</h2>
+<div class="callout">
+<strong>Access classification: internal tool.</strong> {{ tool_name }} is used only by
+{{ applicant_legal_entity }}&rsquo;s own employees and contractors, on
+{{ applicant_legal_entity }}&rsquo;s own accounts. It is not accessible to
+{{ applicant_legal_entity }}&rsquo;s customers, clients, or any other external user, and there is no
+hosted or multi-tenant deployment of it.
+</div>
+
+<h2>4. How it works</h2>
 
 <p>
 {{ tool_name }} is a single Rust binary with no server component and no background processes. Every
@@ -121,7 +173,7 @@ path, line number, and a source snippet (via the <code>miette</code> diagnostic 
 validation failure traces straight back to the <code>.bid</code> line that caused it.
 </p>
 
-<h2>4. Google Ads API usage</h2>
+<h2>5. Google Ads API usage</h2>
 
 <p>
 {{ tool_name }} uses the <strong>Google Ads REST API</strong> over HTTPS. The endpoint version is
@@ -142,7 +194,7 @@ currency ({% for q in gaql_queries %}<code>{{ q.label }}</code>{% if not loop.la
 ad-hoc reporting and the read-only <code>keyword-ideas</code> research call
 (<code>KeywordPlanIdeaService.GenerateKeywordIdeas</code>). Writes use <code>googleAds:mutate</code> — plus
 <code>CustomAudienceService.MutateCustomAudiences</code> for the one resource type that batch cannot
-carry — as described in §3.
+carry — as described in §4.
 </p>
 
 <p>
@@ -150,7 +202,7 @@ carry — as described in §3.
 day it reaches {{ volume_ceiling }} — well within the Basic Access limit of 15,000 operations per day.
 </p>
 
-<h2>5. Required Minimum Functionality</h2>
+<h2>6. Required Minimum Functionality</h2>
 
 <p>
 {{ tool_name }} is single-tenant and used only on {{ applicant_legal_entity }}&rsquo;s own accounts, so
@@ -165,7 +217,7 @@ is nonetheless fully present, exposed through the <code>.bid</code> source files
   {% endfor %}
 </table>
 
-<h2>6. Authentication and data handling</h2>
+<h2>7. Authentication and data handling</h2>
 
 <p>
 {{ tool_name }} uses the standard Google Ads credential set — a developer token, an OAuth 2.0
@@ -198,14 +250,14 @@ requested is <code>{{ oauth_scope }}</code> — no Drive, Gmail, Calendar, or Cl
       <code>googleads.googleapis.com</code> over HTTPS.</li>
 </ul>
 
-<h2>7. Source code</h2>
+<h2>8. Source code</h2>
 
 <p>
 The full source is published at <strong>{{ source_repo_url }}</strong> under the Mozilla Public
 License 2.0 (MPL-2.0). Reviewers can verify the behavior described above directly:
 <code>src/api/auth.rs</code> (OAuth handling, no logging of secrets),
 <code>src/api/client.rs</code> (every HTTP request {{ tool_name }} makes),
-<code>src/commands/apply.rs</code> (the prompt-before-mutate flow from §3),
+<code>src/commands/apply.rs</code> (the prompt-before-mutate flow from §4),
 <code>src/api/mutate.rs</code> (how diffs become mutate operations), and
 <code>DECISIONS.md</code> (the locked plan/apply safety model).
 </p>
@@ -213,7 +265,7 @@ License 2.0 (MPL-2.0). Reviewers can verify the behavior described above directl
 {% if closing_note %}<p>{{ closing_note }}</p>
 {% endif %}
 
-<h2>8. Contact</h2>
+<h2>9. Contact</h2>
 
 <p>
 <strong>{{ contact_name }}</strong> &middot; {{ contact_email }}<br>
