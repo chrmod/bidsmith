@@ -62,6 +62,55 @@ A nested block like `manual_cpc` overrides as a whole: declare it on
 the campaign and the default block is ignored entirely, so there's
 never a half-merged surprise.
 
+## When one shell doesn't fit the whole account
+
+An unnamed `defaults` block applies to **every** resource of its type in
+the tree. That is what you want when the account is all one kind of
+campaign. It stops being what you want the moment it isn't: an account
+that mixes search and video campaigns cannot factor the search shell
+this way, because the video campaigns — which say nothing about
+`network_settings` or `manual_cpc` — would silently inherit it.
+
+Give the block a name, and only the campaigns that ask for it get it:
+
+```hcl
+defaults "google_ads_campaign" "search_us" {
+  advertising_channel_type = "SEARCH"
+  languages = ["en"]
+  locations = ["US"]
+
+  network_settings {
+    target_google_search = true
+    target_search_network = false
+    target_content_network = false
+    target_partner_search_network = false
+  }
+}
+
+resource "google_ads_campaign" "cookies" {
+  defaults        = defaults.search_us
+  name            = "GH_Cookies — Search"
+  campaign_budget = google_ads_campaign_budget.cookies.id
+}
+```
+
+A campaign that doesn't name `defaults.search_us` is untouched by it —
+so the video campaigns in the same folder keep their own shape.
+
+Three things to know:
+
+- A named block **replaces** the unnamed one for the campaign that opts
+  in; it doesn't stack on top. One opt-in line tells the whole story, so
+  a reviewer reading the diff doesn't have to go hunting for a second
+  block that also applied.
+- You can declare as many named blocks per type as you like
+  (`search_us`, `search_de`, `video_shell`) — only the *name* has to be
+  unique. The one-per-type rule still holds for the unnamed block.
+- Naming a block that doesn't exist is an error, and bidsmith lists the
+  names that do. Inheriting the wrong shell silently is the failure this
+  attribute exists to prevent, so it will not fall back to the unnamed
+  block.
+
 ## Adopting it on a live account
 
 The merge happens when bidsmith reads your files, before anything is
@@ -71,9 +120,10 @@ refactor shows no changes; that's the point.
 
 ## What it can't hold
 
-- One `defaults` block per resource type. Two files both declaring
-  campaign defaults is an error — bidsmith tells you which files
-  collide.
+- One *unnamed* `defaults` block per resource type. Two files both
+  declaring campaign defaults is an error — bidsmith tells you which
+  files collide. Named blocks lift that limit: declare as many as you
+  need, one per name.
 - Ad bodies. Every ad declares its own `ad` block or points at an
   [ad_template](/bidsmith/recipes/reuse-an-ad-across-ad-groups/).
 - Resources that come in packs — like the mobile/tablet exclusion pair
