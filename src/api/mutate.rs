@@ -997,51 +997,24 @@ fn campaign_update_body(c: &JsonCampaign, resource_name: &str, fields: &[String]
                     m.insert(field.into(), body);
                 }
             }
-            "network_settings.target_google_search" => {
-                let sub = network_sub.get_or_insert_with(Map::new);
-                if let Some(v) = c
-                    .network_settings
-                    .as_ref()
-                    .and_then(|n| n.target_google_search)
-                {
-                    sub.insert("targetGoogleSearch".into(), Value::Bool(v));
-                }
-            }
-            "network_settings.target_search_network" => {
-                let sub = network_sub.get_or_insert_with(Map::new);
-                if let Some(v) = c
-                    .network_settings
-                    .as_ref()
-                    .and_then(|n| n.target_search_network)
-                {
-                    sub.insert("targetSearchNetwork".into(), Value::Bool(v));
-                }
-            }
-            "network_settings.target_content_network" => {
-                let sub = network_sub.get_or_insert_with(Map::new);
-                if let Some(v) = c
-                    .network_settings
-                    .as_ref()
-                    .and_then(|n| n.target_content_network)
-                {
-                    sub.insert("targetContentNetwork".into(), Value::Bool(v));
-                }
-            }
-            "network_settings.target_partner_search_network" => {
-                let sub = network_sub.get_or_insert_with(Map::new);
-                if let Some(v) = c
-                    .network_settings
-                    .as_ref()
-                    .and_then(|n| n.target_partner_search_network)
-                {
-                    sub.insert("targetPartnerSearchNetwork".into(), Value::Bool(v));
-                }
-            }
             // A repeated field is replaced wholesale; an empty list clears it.
             "frequency_caps" => {
                 m.insert("frequencyCaps".into(), frequency_caps_value(c));
             }
             other => {
+                if let Some((field, json)) = other
+                    .strip_prefix("network_settings.")
+                    .and_then(|f| {
+                        crate::schema::NETWORK_SETTINGS_FIELDS
+                            .iter()
+                            .find(|(field, _)| *field == f)
+                    })
+                {
+                    let sub = network_sub.get_or_insert_with(Map::new);
+                    if let Some(v) = c.network_settings.as_ref().and_then(|n| n.get(field)) {
+                        sub.insert((*json).into(), Value::Bool(v));
+                    }
+                }
                 if let Some((field, json)) = other
                     .strip_prefix("geo_target_type_setting.")
                     .and_then(|f| {
@@ -1732,17 +1705,10 @@ fn campaign_create(c: &JsonCampaign, resource_name: &str, budget_rn: &str) -> Va
     }
     if let Some(ns) = &c.network_settings {
         let mut sub = Map::new();
-        if let Some(v) = ns.target_google_search {
-            sub.insert("targetGoogleSearch".into(), Value::Bool(v));
-        }
-        if let Some(v) = ns.target_search_network {
-            sub.insert("targetSearchNetwork".into(), Value::Bool(v));
-        }
-        if let Some(v) = ns.target_content_network {
-            sub.insert("targetContentNetwork".into(), Value::Bool(v));
-        }
-        if let Some(v) = ns.target_partner_search_network {
-            sub.insert("targetPartnerSearchNetwork".into(), Value::Bool(v));
+        for (field, json) in crate::schema::NETWORK_SETTINGS_FIELDS {
+            if let Some(v) = ns.get(field) {
+                sub.insert((*json).into(), Value::Bool(v));
+            }
         }
         m.insert("networkSettings".into(), Value::Object(sub));
     }

@@ -96,6 +96,19 @@ pub fn campaign_bidding_mask_paths(field: &str) -> Option<&'static [&'static str
 /// empty field, so it round-trips as an omitted `end_date` (issue #113).
 pub const NO_END_DATE: &str = "2037-12-30";
 
+/// Every field of `Campaign.network_settings`, each paired with its Google Ads
+/// JSON name. All six are modelled on purpose: a block covering some of the
+/// networks a campaign serves on reads as a complete declaration of where the
+/// money goes, and is not one (issue #132).
+pub const NETWORK_SETTINGS_FIELDS: &[(&str, &str)] = &[
+    ("target_google_search", "targetGoogleSearch"),
+    ("target_search_network", "targetSearchNetwork"),
+    ("target_content_network", "targetContentNetwork"),
+    ("target_partner_search_network", "targetPartnerSearchNetwork"),
+    ("target_youtube", "targetYoutube"),
+    ("target_google_tv_network", "targetGoogleTvNetwork"),
+];
+
 /// The two fields of `Campaign.geo_target_type_setting`, each paired with its
 /// Google Ads JSON name. They decide whether a targeted location means "people
 /// there" or "people there plus people interested in there" (issue #114).
@@ -687,16 +700,10 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                     NestedBlockSchema {
                         name: "network_settings",
                         schema: BlockSchema {
-                            attributes: vec![
-                                attr("target_google_search", FieldType::Bool, false),
-                                attr("target_search_network", FieldType::Bool, false),
-                                attr("target_content_network", FieldType::Bool, false),
-                                attr(
-                                    "target_partner_search_network",
-                                    FieldType::Bool,
-                                    false,
-                                ),
-                            ],
+                            attributes: NETWORK_SETTINGS_FIELDS
+                                .iter()
+                                .map(|(field, _)| attr(field, FieldType::Bool, false))
+                                .collect(),
                             blocks: vec![],
                         },
                     },

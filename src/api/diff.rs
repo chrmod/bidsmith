@@ -1737,23 +1737,14 @@ fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign, caps_claimed: bool) -> Vec<
         }
         _ => {}
     }
-    let pairs = [
-        ("network_settings.target_google_search",
-            d.network_settings.as_ref().and_then(|n| n.target_google_search),
-            l.network_settings.as_ref().and_then(|n| n.target_google_search)),
-        ("network_settings.target_search_network",
-            d.network_settings.as_ref().and_then(|n| n.target_search_network),
-            l.network_settings.as_ref().and_then(|n| n.target_search_network)),
-        ("network_settings.target_content_network",
-            d.network_settings.as_ref().and_then(|n| n.target_content_network),
-            l.network_settings.as_ref().and_then(|n| n.target_content_network)),
-        ("network_settings.target_partner_search_network",
-            d.network_settings.as_ref().and_then(|n| n.target_partner_search_network),
-            l.network_settings.as_ref().and_then(|n| n.target_partner_search_network)),
-    ];
-    for (path, dv, lv) in pairs {
-        if dv != lv {
-            c.push(change(path, lv, dv));
+    // Omitted means unmanaged, one network at a time: a file that says nothing
+    // about YouTube is not asking to switch it off, and an update mask naming a
+    // field the body leaves out is exactly how Google Ads reads a clear.
+    for (field, _) in crate::schema::NETWORK_SETTINGS_FIELDS {
+        let dv = d.network_settings.as_ref().and_then(|n| n.get(field));
+        let lv = l.network_settings.as_ref().and_then(|n| n.get(field));
+        if dv.is_some() && dv != lv {
+            c.push(change(format!("network_settings.{field}"), lv, dv));
         }
     }
     // Omitted means unmanaged: a campaign that says nothing about how its geo

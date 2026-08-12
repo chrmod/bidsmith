@@ -258,7 +258,12 @@ bidding strategy — you set the max CPC, Google honors it).
 ### network_settings
 
 The `network_settings` block controls which Google networks ads can
-appear on.
+appear on — all six of them. Every field a Google Ads campaign has is
+here, deliberately: a block that covered some of the networks would read
+as a complete statement of where the money goes without being one.
+
+An omitted field is left as-is on the account rather than turned off, so
+a campaign you want fully pinned down should say all six.
 
 <AttributeTable block={networkSettings} headingLevel={4} />
 

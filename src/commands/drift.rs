@@ -161,6 +161,24 @@ pub struct ResourceCoverage {
     pub modelled: usize,
     /// Settable fields no `SELECT` in the live-state fetch names.
     pub unmodelled: Vec<String>,
+    /// Messages bidsmith models some of, ordered by path.
+    pub partial_blocks: Vec<PartialBlock>,
+}
+
+/// A message bidsmith reads part of. Worse than an absent one: the `.bid`
+/// carries a block that reads as the whole setting and is not (issue #132).
+pub struct PartialBlock {
+    /// The message path, e.g. `campaign.network_settings`.
+    pub path: String,
+    pub modelled: usize,
+    /// Leaf names — the block's own attribute names, not full paths.
+    pub missing: Vec<String>,
+}
+
+impl PartialBlock {
+    pub fn fields(&self) -> usize {
+        self.modelled + self.missing.len()
+    }
 }
 
 fn coverage(
@@ -179,11 +197,47 @@ fn coverage(
             ResourceCoverage {
                 settable: settable.len(),
                 modelled: modelled.len(),
+                partial_blocks: partial_blocks(resource, &modelled, &unmodelled),
                 unmodelled: unmodelled.into_iter().map(str::to_string).collect(),
             },
         );
     }
     Coverage { by_resource }
+}
+
+/// The messages with leaves on both sides of the line. A field directly on the
+/// resource has no block to be part of, so only paths one level deeper count.
+fn partial_blocks(resource: &str, modelled: &[&str], unmodelled: &[&str]) -> Vec<PartialBlock> {
+    let mut modelled_leaves: BTreeMap<&str, usize> = BTreeMap::new();
+    for field in modelled {
+        if let Some((path, _)) = block_leaf(resource, field) {
+            *modelled_leaves.entry(path).or_default() += 1;
+        }
+    }
+    let mut missing: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for field in unmodelled {
+        if let Some((path, leaf)) = block_leaf(resource, field) {
+            missing.entry(path).or_default().push(leaf.to_string());
+        }
+    }
+    missing
+        .into_iter()
+        .filter_map(|(path, missing)| {
+            let modelled = *modelled_leaves.get(path)?;
+            Some(PartialBlock {
+                path: path.to_string(),
+                modelled,
+                missing,
+            })
+        })
+        .collect()
+}
+
+/// Split `campaign.network_settings.target_youtube` into the message path and
+/// the leaf. `None` for a field the resource carries directly.
+fn block_leaf<'a>(resource: &str, field: &'a str) -> Option<(&'a str, &'a str)> {
+    let (path, leaf) = field.rsplit_once('.')?;
+    (path != resource).then_some((path, leaf))
 }
 
 /// Whether `plan` compares `field`. A `SELECT` may name a message whole or name
@@ -477,6 +531,17 @@ fn render_text(coverage: &Coverage, report: &ScanReport, show_all: bool) -> Stri
             "{resource} — {} of {} settable field(s) modelled",
             cov.modelled, cov.settable,
         );
+        for block in &cov.partial_blocks {
+            let _ = writeln!(
+                out,
+                "  {} of {} field(s) on '{}' — the block reads as the whole setting; \
+                 missing: {}",
+                block.modelled,
+                block.fields(),
+                block.path,
+                block.missing.join(", "),
+            );
+        }
         let sightings = report.sightings.get(resource).map(Vec::as_slice).unwrap_or(&[]);
         if sightings.is_empty() {
             let _ = writeln!(out, "  nothing set outside the modelled fields.");
@@ -534,7 +599,7 @@ fn render_markdown(coverage: &Coverage, report: &ScanReport, show_all: bool) -> 
     let mut any_rows = false;
     for (resource, cov) in &coverage.by_resource {
         let sightings = report.sightings.get(resource).map(Vec::as_slice).unwrap_or(&[]);
-        if sightings.is_empty() && !show_all {
+        if sightings.is_empty() && cov.partial_blocks.is_empty() && !show_all {
             continue;
         }
         any_rows = true;
@@ -543,6 +608,22 @@ fn render_markdown(coverage: &Coverage, report: &ScanReport, show_all: bool) -> 
             "### `{resource}` — {} of {} settable field(s) modelled\n",
             cov.modelled, cov.settable,
         );
+        for block in &cov.partial_blocks {
+            let _ = writeln!(
+                out,
+                "**`{}` is modelled in part** — {} of {} field(s); the block reads as the \
+                 whole setting. Missing: {}\n",
+                md_cell(&block.path),
+                block.modelled,
+                block.fields(),
+                block
+                    .missing
+                    .iter()
+                    .map(|f| format!("`{}`", md_cell(f)))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
         if sightings.is_empty() {
             let _ = writeln!(out, "Nothing set outside the modelled fields.\n");
         } else {
@@ -637,6 +718,48 @@ mod tests {
     }
 
     #[test]
+    fn a_block_read_in_part_is_reported_as_such() {
+        let blocks = partial_blocks(
+            "campaign",
+            &["campaign.name", "campaign.network_settings.target_google_search"],
+            &[
+                "campaign.network_settings.target_youtube",
+                "campaign.start_date",
+            ],
+        );
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].path, "campaign.network_settings");
+        assert_eq!(blocks[0].modelled, 1);
+        assert_eq!(blocks[0].fields(), 2);
+        assert_eq!(blocks[0].missing, ["target_youtube"]);
+    }
+
+    #[test]
+    fn a_block_nothing_is_read_from_is_not_a_partial_block() {
+        // Wholly unmodelled is the ordinary case the field list already covers;
+        // calling it "partial" would bury the one that misleads.
+        let blocks = partial_blocks(
+            "campaign",
+            &["campaign.name"],
+            &["campaign.tracking_setting.tracking_url"],
+        );
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn a_fully_modelled_block_is_not_reported() {
+        let blocks = partial_blocks(
+            "campaign",
+            &[
+                "campaign.geo_target_type_setting.positive_geo_target_type",
+                "campaign.geo_target_type_setting.negative_geo_target_type",
+            ],
+            &["campaign.start_date"],
+        );
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
     fn a_shared_prefix_that_is_not_a_path_boundary_is_not_coverage() {
         let sel = selected(&["ad_group.cpc_bid_micros"]);
         assert!(!is_compared("ad_group.cpc_bid_micros_extra", &sel));
@@ -721,6 +844,7 @@ mod tests {
                 settable: 10,
                 modelled: 4,
                 unmodelled: vec!["campaign.tracking_url_template".into()],
+                partial_blocks: Vec::new(),
             },
         );
         Coverage { by_resource }
@@ -805,6 +929,35 @@ mod tests {
     }
 
     #[test]
+    fn a_partial_block_is_reported_even_when_nothing_is_set() {
+        let mut by_resource = BTreeMap::new();
+        by_resource.insert(
+            "campaign".to_string(),
+            ResourceCoverage {
+                settable: 10,
+                modelled: 4,
+                unmodelled: Vec::new(),
+                partial_blocks: vec![PartialBlock {
+                    path: "campaign.network_settings".into(),
+                    modelled: 4,
+                    missing: vec!["target_youtube".into()],
+                }],
+            },
+        );
+        let coverage = Coverage { by_resource };
+
+        let text = render_text(&coverage, &ScanReport::default(), false);
+        assert!(text.contains("4 of 5 field(s) on 'campaign.network_settings'"), "{text}");
+        assert!(text.contains("missing: target_youtube"), "{text}");
+
+        // A clean scan otherwise skips the section entirely; the block being
+        // half-read is the finding, whatever the account happens to have set.
+        let md = render_markdown(&coverage, &ScanReport::default(), false);
+        assert!(md.contains("`campaign.network_settings` is modelled in part"), "{md}");
+        assert!(md.contains("`target_youtube`"), "{md}");
+    }
+
+    #[test]
     fn the_markdown_report_is_a_table_a_pr_comment_can_carry() {
         let out = render_markdown(&coverage_fixture(), &scan_fixture(), false);
         assert!(out.starts_with("## bidsmith drift"));
@@ -834,7 +987,12 @@ mod tests {
         let mut by_resource = BTreeMap::new();
         by_resource.insert(
             "campaign".to_string(),
-            ResourceCoverage { settable: 0, modelled: 0, unmodelled: Vec::new() },
+            ResourceCoverage {
+                settable: 0,
+                modelled: 0,
+                unmodelled: Vec::new(),
+                partial_blocks: Vec::new(),
+            },
         );
         let out = render_text(&Coverage { by_resource }, &ScanReport::default(), false);
         assert!(out.contains("not audited"));

@@ -372,14 +372,11 @@ impl AdapterState {
             entry.frequency_caps = caps.iter().filter_map(parse_frequency_cap).collect();
         }
         if let Some(ns) = v.get("networkSettings") {
-            entry.network_settings = Some(JsonNetworkSettings {
-                target_google_search: ns.get("targetGoogleSearch").and_then(Value::as_bool),
-                target_search_network: ns.get("targetSearchNetwork").and_then(Value::as_bool),
-                target_content_network: ns.get("targetContentNetwork").and_then(Value::as_bool),
-                target_partner_search_network: ns
-                    .get("targetPartnerSearchNetwork")
-                    .and_then(Value::as_bool),
-            });
+            let mut settings = JsonNetworkSettings::default();
+            for (field, json) in crate::schema::NETWORK_SETTINGS_FIELDS {
+                settings.set(field, ns.get(json).and_then(Value::as_bool));
+            }
+            entry.network_settings = Some(settings);
         }
         // Google reports a geo target type it has no value for as `UNKNOWN`,
         // which is not a setting anyone can declare — carrying it over would
