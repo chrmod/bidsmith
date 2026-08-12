@@ -454,9 +454,12 @@ Smaller follow-ups that can ride along:
   `plan` pay for the catalog fetch; and reconciling `drift` findings back
   into `.bid` files, which is the schema work each field needs anyway.
   **Verified live** on 0.26.0: the value scan found `campaign_budget`'s
-  unmodelled `period` / `type` / `total_amount_micros` and the unmodelled
-  `campaign.network_settings` leaves set on a real account, which is what
-  issues #131 and #132 closed.
+  unmodelled `period` / `type` / `total_amount_micros`, the unmodelled
+  `campaign.network_settings` leaves, and the unmodelled
+  `campaign.advertising_channel_sub_type` /
+  `campaign.video_campaign_settings.video_ad_inventory_control` leaves
+  set on a real account, which is what issues #131, #132 and #133
+  closed.
 - ✅ Budget period and type (issue #131, found by `drift`).
   `google_ads_campaign_budget` models `period`, `type`, and
   `total_amount_micros`, and a budget declares whichever amount its
@@ -471,6 +474,16 @@ Smaller follow-ups that can ride along:
   in part separately from wholly-unmodelled fields — "this block covers
   4 of 6" is a more dangerous statement than "this field is not
   modelled", and the report used to render them identically.
+- ✅ Video campaign format (issue #133, found by `drift`).
+  `advertising_channel_sub_type` and `video_campaign_settings {
+  video_ad_inventory_control { … } }` are declarable, so a `.bid` can
+  say which video format a campaign runs and which YouTube inventory it
+  serves on — the property a format experiment exists to hold still, and
+  the one that used to change in the UI without any plan noticing. The
+  sub-type is immutable, so it warns rather than updates, like the
+  channel and the budget's period. **Still unmodelled** inside the same
+  block: `video_ad_sequence` and `video_ad_format_control` — worth
+  picking up if `drift` finds them set.
 - ✅ Ad group bid fields (issue #109). `google_ads_ad_group` models all
   eight settable `AdGroup` bid fields, not just `cpc_bid_micros`, so the
   amount a CPV or CPM campaign actually bids is declarable and — more to

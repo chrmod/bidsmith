@@ -12,7 +12,8 @@ use crate::commands::export::{
     JsonManualCpc, JsonNetworkSettings, JsonParentalStatus, JsonPlacement, JsonProximity,
     JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedSet, JsonSitelinkAsset,
     JsonStructuredSnippetAsset, JsonTopic, JsonUserInterest, JsonValueSettings,
-    JsonVideoResponsiveAd, JsonYoutubeChannel, JsonYoutubeVideo, JsonYoutubeVideoAsset,
+    JsonVideoAdInventoryControl, JsonVideoCampaignSettings, JsonVideoResponsiveAd,
+    JsonYoutubeChannel, JsonYoutubeVideo, JsonYoutubeVideoAsset,
 };
 
 pub fn from_search_response(raw: &str) -> Result<ExportInput, String> {
@@ -308,6 +309,7 @@ impl AdapterState {
                 name: String::new(),
                 status: None,
                 advertising_channel_type: String::new(),
+                advertising_channel_sub_type: None,
                 campaign_budget: String::new(),
                 contains_eu_political_advertising: None,
                 start_date: None,
@@ -319,6 +321,7 @@ impl AdapterState {
                 target_cpv: None,
                 network_settings: None,
                 geo_target_type_setting: None,
+                video_campaign_settings: None,
                 frequency_caps: Vec::new(),
                 managed_address: None,
             });
@@ -330,6 +333,13 @@ impl AdapterState {
         }
         if let Some(s) = v.get("advertisingChannelType").and_then(Value::as_str) {
             entry.advertising_channel_type = s.to_string();
+        }
+        // A campaign that refines its channel no further reports `UNSPECIFIED`,
+        // which is a report rather than a setting — carrying it over would
+        // render a `.bid` the validator rejects.
+        if let Some(s) = v.get("advertisingChannelSubType").and_then(Value::as_str) {
+            entry.advertising_channel_sub_type = Some(s.to_string())
+                .filter(|s| crate::schema::is_advertising_channel_sub_type(s));
         }
         if let Some(s) = v.get("startDate").and_then(Value::as_str) {
             entry.start_date = Some(s.to_string());
@@ -394,6 +404,18 @@ impl AdapterState {
             if !setting.is_empty() {
                 entry.geo_target_type_setting = Some(setting);
             }
+        }
+        if let Some(ic) = v
+            .get("videoCampaignSettings")
+            .and_then(|s| s.get("videoAdInventoryControl"))
+        {
+            let mut control = JsonVideoAdInventoryControl::default();
+            for (field, json) in crate::schema::VIDEO_AD_INVENTORY_FIELDS {
+                control.set(field, ic.get(json).and_then(Value::as_bool));
+            }
+            entry.video_campaign_settings = Some(JsonVideoCampaignSettings {
+                video_ad_inventory_control: Some(control),
+            });
         }
     }
 

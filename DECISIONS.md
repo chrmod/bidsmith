@@ -795,6 +795,26 @@ resource type, any file layout, modules, schema validation.
   never mentioned it. `drift` names blocks it reads in part on their own
   line, whether or not the missing fields carry a value today, because
   the gap is in the file's apparent meaning rather than in the values.
+- **A video campaign's format is declarable** (issue #133). Two fields
+  together say what a video campaign *is*, and neither was modelled:
+  `advertising_channel_sub_type` (which variant — `VIDEO_NON_SKIPPABLE`
+  and friends) and `video_campaign_settings.video_ad_inventory_control`
+  (which YouTube inventory it may serve on — in-stream, in-feed, Shorts,
+  non-skippable in-stream). For a repo running format experiments that
+  is the one property the `.bid` most needs to pin down. The four
+  inventory fields come from one `VIDEO_AD_INVENTORY_FIELDS` list in
+  `src/schema.rs` that every stage iterates, and each is independently
+  **unmanaged when omitted**, like `network_settings`. The sub-type is
+  **immutable after create**, so it is treated like
+  `advertising_channel_type` and the budget's `period` / `type`:
+  compared but never updated, with a mismatch against the campaign a
+  file adopted raised as a plan warning rather than reported as a clean
+  match. Since a VIDEO campaign can only be adopted, inventory drift on
+  one hits the existing channel blocker — the plan refuses rather than
+  sending an update Google would reject. `video_campaign_settings` is
+  modelled as a container holding only `video_ad_inventory_control`;
+  `video_ad_sequence` and `video_ad_format_control` remain unread, and
+  `drift` reports them as the ordinary unmodelled fields they are.
 - **The VIDEO channel is read-only through the Google Ads API** (issue
   #104, verified live): "You cannot create new Video campaigns or update
   existing ones using the Google Ads API"
@@ -1414,7 +1434,12 @@ Validator covers (so far):
   `geoTargetConstants/NNNN` strings — to the API constants, plus an
   optional `geo_target_type_setting { positive_geo_target_type?,
   negative_geo_target_type? }` block deciding whether those locations
-  mean presence or presence-or-interest, plus a
+  mean presence or presence-or-interest, plus an optional immutable
+  `advertising_channel_sub_type` naming which variant of the channel the
+  campaign is, plus an optional `video_campaign_settings {
+  video_ad_inventory_control { allow_in_stream?, allow_in_feed?,
+  allow_shorts?, allow_non_skippable_in_stream? } }` block declaring
+  which YouTube inventory it may serve on, plus a
   repeatable `frequency_caps { event_type, time_unit, time_length,
   cap, level? }` block managed as a whole set once declared, with a
   validate-time guard against declaring the same axis both inline and as

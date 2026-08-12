@@ -109,6 +109,18 @@ pub const NETWORK_SETTINGS_FIELDS: &[(&str, &str)] = &[
     ("target_google_tv_network", "targetGoogleTvNetwork"),
 ];
 
+/// The four fields of
+/// `Campaign.video_campaign_settings.video_ad_inventory_control`, each paired
+/// with its Google Ads JSON name. Together they are the whole answer to which
+/// YouTube inventory a campaign may serve on, which is the property a format
+/// experiment exists to hold still (issue #133).
+pub const VIDEO_AD_INVENTORY_FIELDS: &[(&str, &str)] = &[
+    ("allow_in_stream", "allowInStream"),
+    ("allow_in_feed", "allowInFeed"),
+    ("allow_shorts", "allowShorts"),
+    ("allow_non_skippable_in_stream", "allowNonSkippableInStream"),
+];
+
 /// The two fields of `Campaign.geo_target_type_setting`, each paired with its
 /// Google Ads JSON name. They decide whether a targeted location means "people
 /// there" or "people there plus people interested in there" (issue #114).
@@ -121,6 +133,14 @@ pub const GEO_TARGET_TYPE_FIELDS: &[(&str, &str)] = &[
 /// the ones it has no value for as `UNKNOWN`, which is a report, not a setting.
 pub fn is_geo_target_type(value: &str) -> bool {
     GEO_TARGET_TYPE.contains(&value)
+}
+
+/// Whether a live channel sub-type is one a `.bid` can declare. `UNSPECIFIED`
+/// is what Google reports for a campaign that refines its channel no further,
+/// and `UNKNOWN` for a sub-type this API version has no name for — neither is
+/// something a file could say.
+pub fn is_advertising_channel_sub_type(value: &str) -> bool {
+    ADVERTISING_CHANNEL_SUB_TYPE.contains(&value)
 }
 
 /// The settable bid fields on `AdGroup`, each paired with its Google Ads JSON
@@ -312,6 +332,30 @@ const CALL_CONVERSION_REPORTING_STATE: &[&str] = &[
     "DISABLED",
     "USE_ACCOUNT_LEVEL_CALL_CONVERSION_ACTION",
     "USE_RESOURCE_LEVEL_CALL_CONVERSION_ACTION",
+];
+/// Every `AdvertisingChannelSubType` a campaign can be created with, in the
+/// order the v22 API lists them. `UNSPECIFIED` and `UNKNOWN` are deliberately
+/// absent — Google returns them, no file can declare them.
+const ADVERTISING_CHANNEL_SUB_TYPE: &[&str] = &[
+    "SEARCH_MOBILE_APP",
+    "DISPLAY_MOBILE_APP",
+    "SEARCH_EXPRESS",
+    "DISPLAY_EXPRESS",
+    "SHOPPING_SMART_ADS",
+    "DISPLAY_GMAIL_AD",
+    "DISPLAY_SMART_CAMPAIGN",
+    "VIDEO_ACTION",
+    "VIDEO_NON_SKIPPABLE",
+    "APP_CAMPAIGN",
+    "APP_CAMPAIGN_FOR_ENGAGEMENT",
+    "LOCAL_CAMPAIGN",
+    "SHOPPING_COMPARISON_LISTING_ADS",
+    "SMART_CAMPAIGN",
+    "VIDEO_SEQUENCE",
+    "APP_CAMPAIGN_FOR_PRE_REGISTRATION",
+    "VIDEO_REACH_TARGET_FREQUENCY",
+    "TRAVEL_ACTIVITIES",
+    "YOUTUBE_AUDIO",
 ];
 /// `PositiveGeoTargetType` / `NegativeGeoTargetType` share these two members.
 /// The deprecated `SEARCH_INTEREST` is deliberately absent: Google removed it
@@ -661,6 +705,14 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         ]),
                         true,
                     ),
+                    // Which variant of the channel this is. Immutable after
+                    // create, so a file that records it is the only thing that
+                    // can tell two video campaigns apart (issue #133).
+                    attr(
+                        "advertising_channel_sub_type",
+                        FieldType::Enum(ADVERTISING_CHANNEL_SUB_TYPE),
+                        false,
+                    ),
                     attr(
                         "campaign_budget",
                         FieldType::Ref(&["google_ads_campaign_budget"]),
@@ -726,6 +778,25 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                                 ),
                             ],
                             blocks: vec![],
+                        },
+                    },
+                    // Which YouTube inventory the campaign's responsive video
+                    // ads may serve on — the property a format experiment
+                    // exists to hold still (issue #133).
+                    NestedBlockSchema {
+                        name: "video_campaign_settings",
+                        schema: BlockSchema {
+                            attributes: vec![],
+                            blocks: vec![NestedBlockSchema {
+                                name: "video_ad_inventory_control",
+                                schema: BlockSchema {
+                                    attributes: VIDEO_AD_INVENTORY_FIELDS
+                                        .iter()
+                                        .map(|(field, _)| attr(field, FieldType::Bool, false))
+                                        .collect(),
+                                    blocks: vec![],
+                                },
+                            }],
                         },
                     },
                     // Repeatable: one block per cap, mapping to a single
@@ -4336,6 +4407,62 @@ resource "google_ads_campaign" "c" {{
         );
         let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
         assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn video_campaign_settings_and_sub_type_validate() {
+        let diags = validate_str(
+            "video_inventory_ok",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                         = "C"
+  advertising_channel_type     = "VIDEO"
+  advertising_channel_sub_type = "VIDEO_NON_SKIPPABLE"
+  campaign_budget              = google_ads_campaign_budget.b.id
+
+  target_cpm {{}}
+
+  video_campaign_settings {{
+    video_ad_inventory_control {{
+      allow_in_stream               = true
+      allow_in_feed                 = false
+      allow_shorts                  = false
+      allow_non_skippable_in_stream = false
+    }}
+  }}
+}}
+"#
+            ),
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn an_unknown_channel_sub_type_errors() {
+        let diags = validate_str(
+            "video_sub_type_bad",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                         = "C"
+  advertising_channel_type     = "VIDEO"
+  advertising_channel_sub_type = "VIDEO_OUTSTREAM"
+  campaign_budget              = google_ads_campaign_budget.b.id
+
+  target_cpm {{}}
+}}
+"#
+            ),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.is_error() && d.message.contains("VIDEO_OUTSTREAM")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]

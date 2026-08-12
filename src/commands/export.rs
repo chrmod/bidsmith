@@ -171,6 +171,8 @@ pub struct JsonCampaign {
     #[serde(default)]
     pub status: Option<String>,
     pub advertising_channel_type: String,
+    #[serde(default)]
+    pub advertising_channel_sub_type: Option<String>,
     pub campaign_budget: String,
     #[serde(default)]
     pub contains_eu_political_advertising: Option<String>,
@@ -192,6 +194,8 @@ pub struct JsonCampaign {
     pub network_settings: Option<JsonNetworkSettings>,
     #[serde(default)]
     pub geo_target_type_setting: Option<JsonGeoTargetTypeSetting>,
+    #[serde(default)]
+    pub video_campaign_settings: Option<JsonVideoCampaignSettings>,
     /// Repeated, and managed as a whole list: an empty list means "this
     /// campaign has no frequency caps", so caps set in the UI on a declared
     /// campaign read as drift rather than staying invisible.
@@ -232,6 +236,16 @@ impl JsonCampaign {
         } else {
             None
         }
+    }
+
+    /// One `video_ad_inventory_control` field, or `None` when the file left it
+    /// — or the whole block — unmanaged.
+    pub fn video_ad_inventory(&self, field: &str) -> Option<bool> {
+        self.video_campaign_settings
+            .as_ref()?
+            .video_ad_inventory_control
+            .as_ref()?
+            .get(field)
     }
 }
 
@@ -275,6 +289,65 @@ impl JsonNetworkSettings {
             _ => return,
         };
         *slot = value;
+    }
+}
+
+/// `Campaign.video_campaign_settings`. Only the inventory control is modelled;
+/// `video_ad_sequence` and `video_ad_format_control` are still unread, so the
+/// block is deliberately a container rather than a settings bag — a later field
+/// lands beside this one instead of changing what the existing lines mean.
+#[derive(Deserialize, Default)]
+pub struct JsonVideoCampaignSettings {
+    #[serde(default)]
+    pub video_ad_inventory_control: Option<JsonVideoAdInventoryControl>,
+}
+
+impl JsonVideoCampaignSettings {
+    pub fn is_empty(&self) -> bool {
+        self.video_ad_inventory_control
+            .as_ref()
+            .is_none_or(JsonVideoAdInventoryControl::is_empty)
+    }
+}
+
+#[derive(Deserialize, Default)]
+pub struct JsonVideoAdInventoryControl {
+    #[serde(default)]
+    pub allow_in_stream: Option<bool>,
+    #[serde(default)]
+    pub allow_in_feed: Option<bool>,
+    #[serde(default)]
+    pub allow_shorts: Option<bool>,
+    #[serde(default)]
+    pub allow_non_skippable_in_stream: Option<bool>,
+}
+
+impl JsonVideoAdInventoryControl {
+    pub fn get(&self, field: &str) -> Option<bool> {
+        match field {
+            "allow_in_stream" => self.allow_in_stream,
+            "allow_in_feed" => self.allow_in_feed,
+            "allow_shorts" => self.allow_shorts,
+            "allow_non_skippable_in_stream" => self.allow_non_skippable_in_stream,
+            _ => None,
+        }
+    }
+
+    pub fn set(&mut self, field: &str, value: Option<bool>) {
+        let slot = match field {
+            "allow_in_stream" => &mut self.allow_in_stream,
+            "allow_in_feed" => &mut self.allow_in_feed,
+            "allow_shorts" => &mut self.allow_shorts,
+            "allow_non_skippable_in_stream" => &mut self.allow_non_skippable_in_stream,
+            _ => return,
+        };
+        *slot = value;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        crate::schema::VIDEO_AD_INVENTORY_FIELDS
+            .iter()
+            .all(|(field, _)| self.get(field).is_none())
     }
 }
 
@@ -1582,6 +1655,9 @@ fn write_campaign(
         "advertising_channel_type",
         &fmt_string(&c.advertising_channel_type),
     );
+    if let Some(v) = &c.advertising_channel_sub_type {
+        write_attr(out, 1, "advertising_channel_sub_type", &fmt_string(v));
+    }
     let budget_ref = match budget_addr.get(&c.campaign_budget) {
         Some(addr) => format!("{addr}.id"),
         None => format!("\"<unresolved budget {}>\"", c.campaign_budget),
@@ -1638,6 +1714,19 @@ fn write_campaign(
             if let Some(v) = g.get(field) {
                 write_attr(out, 2, field, &fmt_string(v));
             }
+        }
+        out.push_str("  }\n");
+    }
+    if let Some(v) = c.video_campaign_settings.as_ref().filter(|v| !v.is_empty()) {
+        out.push_str("\n  video_campaign_settings {\n");
+        if let Some(i) = &v.video_ad_inventory_control {
+            out.push_str("    video_ad_inventory_control {\n");
+            for (field, _) in crate::schema::VIDEO_AD_INVENTORY_FIELDS {
+                if let Some(v) = i.get(field) {
+                    write_attr(out, 3, field, &v.to_string());
+                }
+            }
+            out.push_str("    }\n");
         }
         out.push_str("  }\n");
     }
@@ -3562,7 +3651,7 @@ mod tests {
             {
                 "results": [
                     { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Video Budget", "amountMicros": "5000000" } },
-                    { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Brand Awareness Video", "status": "ENABLED", "advertisingChannelType": "VIDEO", "campaignBudget": "customers/9/campaignBudgets/1001" } },
+                    { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Brand Awareness Video", "status": "ENABLED", "advertisingChannelType": "VIDEO", "advertisingChannelSubType": "VIDEO_NON_SKIPPABLE", "campaignBudget": "customers/9/campaignBudgets/1001", "videoCampaignSettings": { "videoAdInventoryControl": { "allowInStream": false, "allowInFeed": false, "allowShorts": false, "allowNonSkippableInStream": true } } } },
                     { "adGroup": { "resourceName": "customers/9/adGroups/3001", "id": "3001", "name": "Non-skippable", "campaign": "customers/9/campaigns/2001", "status": "ENABLED", "type": "VIDEO_NON_SKIPPABLE_IN_STREAM" } },
                     { "adGroup": { "resourceName": "customers/9/adGroups/3002", "id": "3002", "name": "Responsive", "campaign": "customers/9/campaigns/2001", "status": "ENABLED", "type": "VIDEO_RESPONSIVE" } },
                     { "conversionAction": { "resourceName": "customers/9/conversionActions/4001", "id": "4001", "name": "Engaged View", "type": "UNKNOWN", "category": "UNKNOWN", "status": "ENABLED" } },
@@ -3575,6 +3664,14 @@ mod tests {
         let (account, campaigns) = render_split(&input);
 
         assert!(!campaigns.contains("<unresolved"), "dangling ref:\n{campaigns}");
+        // The format the campaign runs, which is the thing an adopted video
+        // campaign most needs its file to record (issue #133).
+        assert!(
+            campaigns.contains(r#"advertising_channel_sub_type = "VIDEO_NON_SKIPPABLE""#),
+            "{campaigns}"
+        );
+        assert!(campaigns.contains("allow_non_skippable_in_stream = true"), "{campaigns}");
+        assert!(campaigns.contains("allow_shorts = false"), "{campaigns}");
 
         let dir = std::env::temp_dir()
             .join(format!("bidsmith-rs-test-video-{}", std::process::id()));

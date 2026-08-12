@@ -12,7 +12,8 @@ use crate::commands::export::{
     JsonManualCpc, JsonNetworkSettings, JsonParentalStatus, JsonPlacement, JsonProximity,
     JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedCriterion, JsonSharedSet, JsonSitelinkAsset,
     JsonStructuredSnippetAsset, JsonTopic, JsonUserInterest, JsonValueSettings,
-    JsonVideoResponsiveAd, JsonYoutubeChannel, JsonYoutubeVideo, JsonYoutubeVideoAsset,
+    JsonVideoAdInventoryControl, JsonVideoCampaignSettings, JsonVideoResponsiveAd,
+    JsonYoutubeChannel, JsonYoutubeVideo, JsonYoutubeVideoAsset,
 };
 use crate::diagnostics::Diag;
 use crate::parser::ParsedFile;
@@ -324,6 +325,7 @@ fn import_campaign(
     let mut name = None;
     let mut status = None;
     let mut channel = None;
+    let mut sub_type = None;
     let mut budget_ref = None;
     let mut eu_political = None;
     let mut start_date = None;
@@ -335,6 +337,7 @@ fn import_campaign(
     let mut target_cpv = None;
     let mut network_settings = None;
     let mut geo_target_type_setting = None;
+    let mut video_campaign_settings = None;
     let mut frequency_caps: Vec<JsonFrequencyCap> = Vec::new();
     let mut languages: Vec<String> = Vec::new();
     let mut locations: Vec<String> = Vec::new();
@@ -345,6 +348,7 @@ fn import_campaign(
                 "name" => name = expect_string_owned(ctx, a),
                 "status" => status = expect_string_owned(ctx, a),
                 "advertising_channel_type" => channel = expect_string_owned(ctx, a),
+                "advertising_channel_sub_type" => sub_type = expect_string_owned(ctx, a),
                 "campaign_budget" => budget_ref = extract_resource_ref(ctx, &a.value).map(|r| ctx.resolve_ref(&r)),
                 "contains_eu_political_advertising" => eu_political = expect_string_owned(ctx, a),
                 "start_date" => start_date = expect_string_owned(ctx, a),
@@ -362,6 +366,9 @@ fn import_campaign(
                 "network_settings" => network_settings = Some(import_network_settings(ctx, b)),
                 "geo_target_type_setting" => {
                     geo_target_type_setting = Some(import_geo_target_type_setting(ctx, b))
+                }
+                "video_campaign_settings" => {
+                    video_campaign_settings = Some(import_video_campaign_settings(ctx, b))
                 }
                 "frequency_caps" => frequency_caps.extend(import_frequency_cap(ctx, b)),
                 _ => {}
@@ -381,6 +388,7 @@ fn import_campaign(
             name,
             status,
             advertising_channel_type: channel,
+            advertising_channel_sub_type: sub_type,
             campaign_budget: budget,
             contains_eu_political_advertising: eu_political,
             start_date,
@@ -392,6 +400,7 @@ fn import_campaign(
             target_cpv,
             network_settings,
             geo_target_type_setting,
+            video_campaign_settings,
             frequency_caps,
             managed_address: None,
         },
@@ -535,6 +544,33 @@ fn import_geo_target_type_setting(ctx: &Ctx, block: &Block) -> JsonGeoTargetType
         }
     }
     g
+}
+
+fn import_video_campaign_settings(ctx: &Ctx, block: &Block) -> JsonVideoCampaignSettings {
+    let mut v = JsonVideoCampaignSettings::default();
+    for st in block.body.iter() {
+        if let Structure::Block(b) = st {
+            if b.ident.as_str() == "video_ad_inventory_control" {
+                v.video_ad_inventory_control = Some(import_video_ad_inventory_control(ctx, b));
+            }
+        }
+    }
+    v
+}
+
+fn import_video_ad_inventory_control(ctx: &Ctx, block: &Block) -> JsonVideoAdInventoryControl {
+    let mut i = JsonVideoAdInventoryControl::default();
+    for st in block.body.iter() {
+        if let Structure::Attribute(a) = st {
+            if crate::schema::VIDEO_AD_INVENTORY_FIELDS
+                .iter()
+                .any(|(field, _)| *field == a.key.as_str())
+            {
+                i.set(a.key.as_str(), expect_bool(ctx, a));
+            }
+        }
+    }
+    i
 }
 
 /// `None` when a required attribute is missing or non-literal — `validate`
@@ -3174,6 +3210,94 @@ resource "google_ads_campaign" "c" {
             r#"[{"results":[
               {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
               {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","manualCpc":{},"networkSettings":{"targetGoogleSearch":true,"targetYoutube":true}}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        assert!(changed_fields(&report).is_empty(), "{:?}", report.diffs);
+    }
+
+    /// The inventory a video campaign serves on is what a format experiment
+    /// holds still, and nothing in the `.bid` used to say what it was — so
+    /// Shorts being switched on in the UI was invisible (issue #133).
+    #[test]
+    fn video_ad_inventory_control_is_compared() {
+        let declared = import_str(
+            "video_inventory",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "DEMAND_GEN"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  target_cpm {}
+
+  video_campaign_settings {
+    video_ad_inventory_control {
+      allow_in_stream               = true
+      allow_in_feed                 = false
+      allow_shorts                  = false
+      allow_non_skippable_in_stream = false
+    }
+  }
+}
+"#,
+        );
+        assert_eq!(declared.campaigns[0].video_ad_inventory("allow_shorts"), Some(false));
+
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"DEMAND_GEN","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","biddingStrategyType":"TARGET_CPM","videoCampaignSettings":{"videoAdInventoryControl":{"allowInStream":true,"allowInFeed":false,"allowShorts":true,"allowNonSkippableInStream":false}}}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(
+            changed_fields(&report),
+            ["video_campaign_settings.video_ad_inventory_control.allow_shorts"]
+        );
+    }
+
+    /// Modelling an inventory must not become a reason to switch it off: an
+    /// update mask naming a field the body leaves out is how Google reads a
+    /// clear, so an inventory the file never mentions stays unmanaged.
+    #[test]
+    fn an_inventory_the_file_does_not_mention_is_left_alone() {
+        let declared = import_str(
+            "video_inventory_silent",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "DEMAND_GEN"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  target_cpm {}
+
+  video_campaign_settings {
+    video_ad_inventory_control {
+      allow_in_stream = true
+    }
+  }
+}
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"DEMAND_GEN","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","biddingStrategyType":"TARGET_CPM","videoCampaignSettings":{"videoAdInventoryControl":{"allowInStream":true,"allowShorts":true}}}}
             ]}]"#,
         )
         .expect("adapt live");
