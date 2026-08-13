@@ -1344,6 +1344,25 @@ resource type, any file layout, modules, schema validation.
     `validate` warns, and the API rejection stays the authority — the channel
     lists move with Google's product, and a hard local blocker on a moving list
     would refuse plans that the account would have accepted.
+- **AI Max is declared as ordinary scalar settings, one on the campaign and one
+  on the ad group** (issue #158). AI Max broadens which queries a Search
+  campaign matches and lets Google write creative for what it finds, which is
+  the same fence `asset_automation_settings` puts up — but the API shape is not
+  the same. `Campaign.ai_max_setting.enable_ai_max` and
+  `AdGroup.ai_max_ad_group_setting.disable_search_term_matching` are plain
+  booleans inside a message, not a repeated list, so each goes out under its own
+  leaf path in the update mask and neither drags a sibling field with it. Three
+  choices follow:
+  - **Omitted stays unmanaged, as everywhere else.** The gap the issue reports
+    is that the setting is *unset* on the campaigns that matter, so what AI Max
+    does there is whatever Google's default is on a given day. Declaring the
+    block is what pins it; a file that says nothing keeps saying nothing.
+  - **`bundling_required` is not modelled.** The API marks it `readOnly` — it is
+    Google's report on whether the campaign's AI Max features come as a set, not
+    a switch anyone throws — so declaring it would send a field the API refuses.
+  - **A block off its channel is a lint, for the same reason as above.** AI Max
+    is a Search-campaign feature and the ad-group half applies to search ad
+    groups; `validate` warns and the API stays the authority.
 
 ## Current state
 
@@ -1722,7 +1741,9 @@ Validator covers (so far):
   generate_image_enhancement?, generate_image_extraction?,
   generate_enhanced_youtube_videos? }` block (each `OPTED_IN` /
   `OPTED_OUT`) saying which assets Google may invent for the campaign,
-  managed as a whole list once declared, plus a
+  managed as a whole list once declared, plus an optional
+  `ai_max_setting { enable_ai_max? }` block saying whether Google may
+  broaden what the campaign matches and write creative for it, plus a
   optional `owns = ["automatically_created_assets"]` claiming what
   Google's automation attached to the campaign and its ad groups (paused
   on apply, since such a link is not bidsmith's to recreate), plus a
@@ -1738,7 +1759,9 @@ Validator covers (so far):
   `target_cpm_micros`, `target_cpv_micros`, `percent_cpc_bid_micros`,
   `fixed_cpm_micros` — of which the campaign's strategy decides which
   one carries the bid, plus the same `targeting_setting` block the
-  campaign carries), `google_ads_ad_group_ad`
+  campaign carries, plus an optional `ai_max_ad_group_setting
+  { disable_search_term_matching? }` block declaring the ad group's half
+  of AI Max), `google_ads_ad_group_ad`
   (with `ad` → `responsive_search_ad` → repeating
   `headline { text, pin? }` / `description { text, pin? }` blocks,
   plus an equivalent list-attribute form `headlines = [...]` /

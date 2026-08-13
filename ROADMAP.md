@@ -257,6 +257,14 @@ what closes the most user-facing gaps next:
    `asset_automation_settings { text_asset_automation = "OPTED_OUT" … }`
    declares which assets Google may invent for a campaign, so the
    opt-out lives in the repo and CI catches it being switched back on.
+   ✅ **AI Max declarable on both halves** (shipped, issue #158).
+   `ai_max_setting { enable_ai_max = false }` on a campaign and
+   `ai_max_ad_group_setting { disable_search_term_matching = true }` on
+   an ad group close the sibling gap `drift` was reporting: the setting
+   that broadens query matching and generates creative was unset on the
+   campaigns carrying the spend, so it followed Google's default rather
+   than the repo. Plain scalar fields, not the whole-list write asset
+   automation needs.
    ✅ **What the automation already attached is paused** (shipped,
    issue #153). The account-level switch behind dynamic sitelinks and
    the business name still has no API field, so it cannot be turned off

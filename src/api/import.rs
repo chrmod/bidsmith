@@ -4,6 +4,7 @@ use hcl_edit::structure::{Attribute, Block, Structure};
 
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
+    JsonAiMaxAdGroupSetting, JsonAiMaxSetting,
     JsonAssetAutomationSettings, JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset,
     JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCriterion,
@@ -392,6 +393,7 @@ fn import_campaign(
     let mut geo_target_type_setting = None;
     let mut video_campaign_settings = None;
     let mut asset_automation_settings = None;
+    let mut ai_max_setting = None;
     let mut targeting_setting = None;
     let mut frequency_caps: Vec<JsonFrequencyCap> = Vec::new();
     let mut languages: Vec<String> = Vec::new();
@@ -449,6 +451,7 @@ fn import_campaign(
                 "asset_automation_settings" => {
                     asset_automation_settings = Some(import_asset_automation_settings(ctx, b))
                 }
+                "ai_max_setting" => ai_max_setting = Some(import_ai_max_setting(ctx, b)),
                 "targeting_setting" => targeting_setting = Some(import_targeting_setting(ctx, b)),
                 "frequency_caps" => frequency_caps.extend(import_frequency_cap(ctx, b)),
                 "structured_snippet" => {
@@ -498,6 +501,7 @@ fn import_campaign(
             geo_target_type_setting,
             video_campaign_settings,
             asset_automation_settings,
+            ai_max_setting,
             targeting_setting,
             frequency_caps,
             owns_automatic_assets,
@@ -845,6 +849,30 @@ fn import_asset_automation_settings(ctx: &Ctx, block: &Block) -> JsonAssetAutoma
     a
 }
 
+fn import_ai_max_setting(ctx: &Ctx, block: &Block) -> JsonAiMaxSetting {
+    let mut a = JsonAiMaxSetting::default();
+    for st in block.body.iter() {
+        if let Structure::Attribute(attr) = st {
+            if attr.key.as_str() == "enable_ai_max" {
+                a.enable_ai_max = expect_bool(ctx, attr);
+            }
+        }
+    }
+    a
+}
+
+fn import_ai_max_ad_group_setting(ctx: &Ctx, block: &Block) -> JsonAiMaxAdGroupSetting {
+    let mut a = JsonAiMaxAdGroupSetting::default();
+    for st in block.body.iter() {
+        if let Structure::Attribute(attr) = st {
+            if attr.key.as_str() == "disable_search_term_matching" {
+                a.disable_search_term_matching = expect_bool(ctx, attr);
+            }
+        }
+    }
+    a
+}
+
 /// The block's presence is the claim, so an empty one imports as an empty list
 /// — "nothing here merely observes" is a statement, not an omission.
 fn import_targeting_setting(ctx: &Ctx, block: &Block) -> JsonTargetingSetting {
@@ -916,6 +944,7 @@ fn import_ad_group(
     let mut status = None;
     let mut ty = None;
     let mut targeting_setting = None;
+    let mut ai_max_ad_group_setting = None;
     let mut final_url_suffix = None;
     let mut custom_parameters = None;
     let mut callouts: Vec<String> = Vec::new();
@@ -946,6 +975,9 @@ fn import_ad_group(
             Structure::Block(b) if b.ident.as_str() == "targeting_setting" => {
                 targeting_setting = Some(import_targeting_setting(ctx, b))
             }
+            Structure::Block(b) if b.ident.as_str() == "ai_max_ad_group_setting" => {
+                ai_max_ad_group_setting = Some(import_ai_max_ad_group_setting(ctx, b))
+            }
             Structure::Block(b) if b.ident.as_str() == "structured_snippet" => {
                 if let Some(sn) = import_inline_snippet(ctx, b) {
                     snippets.push(sn);
@@ -964,6 +996,7 @@ fn import_ad_group(
         status,
         ty,
         targeting_setting,
+        ai_max_ad_group_setting,
         final_url_suffix,
         custom_parameters,
         ..Default::default()
@@ -4525,6 +4558,143 @@ resource "google_ads_campaign" "c" {
 
         let report = diff_after_defaults(declared, live);
         assert_eq!(changed_fields(&report), ["asset_automation_settings"]);
+    }
+
+    /// The campaigns that matter carry no `ai_max_setting` at all, so what AI
+    /// Max does on them is whatever Google's default is that day. Declaring the
+    /// switch is what turns "unset" into a value the account holds (issue #158).
+    #[test]
+    fn ai_max_is_compared_even_when_the_account_never_set_it() {
+        let declared = import_str(
+            "ai_max",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  manual_cpc {}
+
+  ai_max_setting {
+    enable_ai_max = false
+  }
+}
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","manualCpc":{}}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(changed_fields(&report), ["ai_max_setting.enable_ai_max"]);
+        let change = match &report.diffs.iter().find(|d| d.kind == "campaign").unwrap().action {
+            crate::api::diff::Action::Update { changed_fields, .. } => changed_fields[0].clone(),
+            other => panic!("expected an update, got {other:?}"),
+        };
+        assert_eq!(change.render(), "ai_max_setting.enable_ai_max: (unset) -> false");
+    }
+
+    /// Someone switching AI Max on in the web UI is the drift the opt-out
+    /// exists to catch.
+    #[test]
+    fn ai_max_switched_on_in_the_ui_is_drift() {
+        let declared = import_str(
+            "ai_max_on",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  manual_cpc {}
+
+  ai_max_setting {
+    enable_ai_max = false
+  }
+}
+
+resource "google_ads_ad_group" "ag" {
+  name     = "AG"
+  campaign = google_ads_campaign.c.id
+  type     = "SEARCH_STANDARD"
+
+  ai_max_ad_group_setting {
+    disable_search_term_matching = true
+  }
+}
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","manualCpc":{},"aiMaxSetting":{"enableAiMax":true}}},
+              {"adGroup":{"resourceName":"customers/9/adGroups/3","id":"3","name":"AG","status":"ENABLED","type":"SEARCH_STANDARD","campaign":"customers/9/campaigns/2","aiMaxAdGroupSetting":{"disableSearchTermMatching":false}}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(
+            changed_fields(&report),
+            [
+                "ai_max_setting.enable_ai_max",
+                "ai_max_ad_group_setting.disable_search_term_matching",
+            ]
+        );
+    }
+
+    /// A campaign that says nothing about AI Max leaves it to the account, the
+    /// same as every other setting bidsmith models one field at a time.
+    #[test]
+    fn ai_max_the_file_does_not_mention_is_left_alone() {
+        let declared = import_str(
+            "ai_max_silent",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  manual_cpc {}
+}
+
+resource "google_ads_ad_group" "ag" {
+  name     = "AG"
+  campaign = google_ads_campaign.c.id
+  type     = "SEARCH_STANDARD"
+}
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","manualCpc":{},"aiMaxSetting":{"enableAiMax":true}}},
+              {"adGroup":{"resourceName":"customers/9/adGroups/3","id":"3","name":"AG","status":"ENABLED","type":"SEARCH_STANDARD","campaign":"customers/9/campaigns/2","aiMaxAdGroupSetting":{"disableSearchTermMatching":true}}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        assert!(changed_fields(&report).is_empty(), "{:?}", report.diffs);
     }
 
     /// A campaign that says nothing about automation is not asking for Google's

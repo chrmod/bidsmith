@@ -84,6 +84,54 @@ Two limits worth knowing:
   and URL expansion, a Performance Max campaign starts opted **in** to
   everything, including image and video generation.
 
+## The sibling switch: AI Max
+
+Opting out of asset automation says *"do not write my ad copy."* AI Max
+is the setting that lets Google decide **which searches your ads answer**
+— and write copy for the ones your keywords never named. Same fence,
+different post, and a campaign that never mentions it follows whatever
+Google's default is on the day:
+
+```hcl
+resource "google_ads_campaign" "brand_search" {
+  name                     = "Brand — Search"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.brand.id
+
+  asset_automation_settings {
+    text_asset_automation                     = "OPTED_OUT"
+    final_url_expansion_text_asset_automation = "OPTED_OUT"
+  }
+
+  ai_max_setting {
+    enable_ai_max = false
+  }
+}
+
+resource "google_ads_ad_group" "brand" {
+  name     = "Brand terms"
+  campaign = google_ads_campaign.brand_search.id
+  type     = "SEARCH_STANDARD"
+
+  ai_max_ad_group_setting {
+    disable_search_term_matching = true
+  }
+}
+```
+
+The campaign-level switch is the one that matters; the ad-group one is
+there for the case where AI Max is on across the campaign and one ad
+group should keep matching only what it declares.
+
+```
+google_ads_campaign.brand_search                              ~ update
+    ai_max_setting.enable_ai_max: (unset) -> false
+```
+
+An `(unset)` on the left is the point of writing the line: the account
+was not saying no, it was saying nothing. AI Max is a Search-campaign
+feature — `validate` warns if the block turns up anywhere else.
+
 ## The switch that isn't in the file
 
 Dynamic sitelinks, dynamic callouts, and the business name and logo that

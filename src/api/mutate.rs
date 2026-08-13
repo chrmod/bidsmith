@@ -1118,6 +1118,11 @@ fn campaign_update_body(c: &JsonCampaign, resource_name: &str, fields: &[String]
                     asset_automation_value(c),
                 );
             }
+            "ai_max_setting.enable_ai_max" => {
+                if let Some(v) = c.ai_max_setting.as_ref().and_then(|a| a.enable_ai_max) {
+                    m.insert("aiMaxSetting".into(), json!({ "enableAiMax": v }));
+                }
+            }
             "targeting_setting.target_restrictions" => {
                 m.insert(
                     "targetingSetting".into(),
@@ -1211,6 +1216,18 @@ fn ad_group_update_body(g: &JsonAdGroup, resource_name: &str, fields: &[String])
                     "targetingSetting".into(),
                     targeting_setting_value(g.targeting_setting.as_ref()),
                 );
+            }
+            "ai_max_ad_group_setting.disable_search_term_matching" => {
+                if let Some(v) = g
+                    .ai_max_ad_group_setting
+                    .as_ref()
+                    .and_then(|a| a.disable_search_term_matching)
+                {
+                    m.insert(
+                        "aiMaxAdGroupSetting".into(),
+                        json!({ "disableSearchTermMatching": v }),
+                    );
+                }
             }
             other => {
                 if let Some((field, json)) = crate::schema::AD_GROUP_BID_FIELDS
@@ -1907,6 +1924,9 @@ fn campaign_create(c: &JsonCampaign, resource_name: &str, budget_rn: &str) -> Va
     if c.asset_automation_settings.as_ref().is_some_and(|a| !a.is_empty()) {
         m.insert("assetAutomationSettings".into(), asset_automation_value(c));
     }
+    if let Some(v) = c.ai_max_setting.as_ref().and_then(|a| a.enable_ai_max) {
+        m.insert("aiMaxSetting".into(), json!({ "enableAiMax": v }));
+    }
     if let Some(t) = &c.targeting_setting {
         m.insert("targetingSetting".into(), targeting_setting_value(Some(t)));
     }
@@ -2024,6 +2044,16 @@ fn ad_group_create(g: &JsonAdGroup, resource_name: &str, campaign_rn: &str) -> V
     }
     if let Some(t) = &g.targeting_setting {
         m.insert("targetingSetting".into(), targeting_setting_value(Some(t)));
+    }
+    if let Some(v) = g
+        .ai_max_ad_group_setting
+        .as_ref()
+        .and_then(|a| a.disable_search_term_matching)
+    {
+        m.insert(
+            "aiMaxAdGroupSetting".into(),
+            json!({ "disableSearchTermMatching": v }),
+        );
     }
     put_tracking_all(&mut m, &g.final_url_suffix, &g.custom_parameters);
     Value::Object(m)
@@ -2890,6 +2920,95 @@ mod tests {
             .find_map(|op| op.get("campaignOperation").and_then(|o| o.get("create")))
             .expect("campaign create op");
         assert!(campaign.get("assetAutomationSettings").is_none());
+    }
+
+    /// AI Max is an ordinary scalar field inside a message, not the whole-list
+    /// write asset automation is — so it goes out under its own leaf path and
+    /// nothing else in the message moves with it (issue #158).
+    #[test]
+    fn an_ai_max_update_goes_out_as_its_own_leaf_path() {
+        let op = campaign_update_op(
+            &campaign_bidding(
+                "SEARCH",
+                json!({"manual_cpc": {}, "ai_max_setting": {"enable_ai_max": false}}),
+            ),
+            &strategy_switch("ai_max_setting.enable_ai_max"),
+        );
+        assert_eq!(op["updateMask"], json!("ai_max_setting.enable_ai_max"));
+        assert_eq!(
+            op["update"]["aiMaxSetting"],
+            json!({"enableAiMax": false})
+        );
+    }
+
+    #[test]
+    fn a_new_campaign_creates_with_the_ai_max_switch_it_declares() {
+        let input = campaign_bidding(
+            "SEARCH",
+            json!({"manual_cpc": {}, "ai_max_setting": {"enable_ai_max": false}}),
+        );
+        let report = DiffReport {
+            diffs: vec![
+                create_diff("m.b", "campaign_budget"),
+                create_diff("m.c", "campaign"),
+            ],
+            create_count: 2,
+            ..DiffReport::default()
+        };
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let campaign = plan.body["mutateOperations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|op| op.get("campaignOperation").and_then(|o| o.get("create")))
+            .expect("campaign create op");
+        assert_eq!(campaign["aiMaxSetting"], json!({"enableAiMax": false}));
+    }
+
+    #[test]
+    fn an_ad_group_update_sends_its_half_of_ai_max() {
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "campaign_budgets": [{"id": "m.b", "name": "B", "amount_micros": 10000000}],
+            "campaigns": [{
+                "id": "m.c", "name": "C", "advertising_channel_type": "SEARCH",
+                "campaign_budget": "m.b"
+            }],
+            "ad_groups": [{
+                "id": "m.g", "name": "G", "campaign": "m.c",
+                "ai_max_ad_group_setting": {"disable_search_term_matching": true}
+            }],
+        }))
+        .expect("valid ExportInput");
+        let report = DiffReport {
+            diffs: vec![
+                noop_diff("m.b", "campaign_budget", "41"),
+                noop_diff("m.c", "campaign", "42"),
+                update_diff(
+                    "m.g",
+                    "ad_group",
+                    &["ai_max_ad_group_setting.disable_search_term_matching"],
+                ),
+            ],
+            noop_count: 2,
+            update_count: 1,
+            ..DiffReport::default()
+        };
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let op = plan.body["mutateOperations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|op| op.get("adGroupOperation").cloned())
+            .expect("ad group update op");
+        assert_eq!(
+            op["updateMask"],
+            json!("ai_max_ad_group_setting.disable_search_term_matching")
+        );
+        assert_eq!(
+            op["update"]["aiMaxAdGroupSetting"],
+            json!({"disableSearchTermMatching": true})
+        );
     }
 
     /// The mask names the repeated field, and the body carries the whole

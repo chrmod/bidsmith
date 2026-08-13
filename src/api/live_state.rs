@@ -82,6 +82,7 @@ pub const QUERIES: &[(&str, &str)] = &[
           campaign.video_campaign_settings.video_ad_inventory_control.allow_shorts,
           campaign.video_campaign_settings.video_ad_inventory_control.allow_non_skippable_in_stream,
           campaign.asset_automation_settings,
+          campaign.ai_max_setting.enable_ai_max,
           campaign.targeting_setting.target_restrictions,
           campaign.frequency_caps,
           campaign.final_url_suffix,
@@ -107,6 +108,7 @@ pub const QUERIES: &[(&str, &str)] = &[
           ad_group.percent_cpc_bid_micros,
           ad_group.fixed_cpm_micros,
           ad_group.targeting_setting.target_restrictions,
+          ad_group.ai_max_ad_group_setting.disable_search_term_matching,
           ad_group.final_url_suffix,
           ad_group.url_custom_parameters
         FROM ad_group
@@ -645,6 +647,15 @@ mod tests {
             !fields.iter().any(|f| f.contains('\n')),
             "field paths are trimmed of the query's indentation",
         );
+    }
+
+    /// `drift` reports what a query does not select, so selecting these is what
+    /// moves AI Max out of the "set but never compared" list (issue #158).
+    #[test]
+    fn both_halves_of_ai_max_are_selected() {
+        let fields = selected_fields();
+        assert!(fields.contains("campaign.ai_max_setting.enable_ai_max"));
+        assert!(fields.contains("ad_group.ai_max_ad_group_setting.disable_search_term_matching"));
     }
 
     #[test]

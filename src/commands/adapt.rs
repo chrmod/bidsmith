@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
+    JsonAiMaxAdGroupSetting, JsonAiMaxSetting,
     JsonAssetAutomationSettings, JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset,
     JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCriterion,
@@ -329,6 +330,7 @@ impl AdapterState {
                 geo_target_type_setting: None,
                 video_campaign_settings: None,
                 asset_automation_settings: None,
+                ai_max_setting: None,
                 targeting_setting: None,
                 frequency_caps: Vec::new(),
                 owns_automatic_assets: false,
@@ -474,6 +476,15 @@ impl AdapterState {
                 entry.asset_automation_settings = Some(settings);
             }
         }
+        if let Some(b) = v
+            .get("aiMaxSetting")
+            .and_then(|a| a.get("enableAiMax"))
+            .and_then(Value::as_bool)
+        {
+            entry.ai_max_setting = Some(JsonAiMaxSetting {
+                enable_ai_max: Some(b),
+            });
+        }
         if v.get("targetingSetting").is_some() {
             entry.targeting_setting = parse_targeting_setting(v);
         }
@@ -524,6 +535,15 @@ impl AdapterState {
         // selected it already read.
         if v.get("targetingSetting").is_some() {
             entry.targeting_setting = parse_targeting_setting(v);
+        }
+        if let Some(b) = v
+            .get("aiMaxAdGroupSetting")
+            .and_then(|a| a.get("disableSearchTermMatching"))
+            .and_then(Value::as_bool)
+        {
+            entry.ai_max_ad_group_setting = Some(JsonAiMaxAdGroupSetting {
+                disable_search_term_matching: Some(b),
+            });
         }
     }
 
