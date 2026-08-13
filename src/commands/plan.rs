@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use serde_json::Value;
@@ -181,7 +181,7 @@ pub fn prepare(
     offline: bool,
     inputs: &InputBindings,
 ) -> Result<Option<Prepared>, ExitCode> {
-    let program = load_and_validate(path, inputs, label)?;
+    let (program, files) = load_and_validate(path, inputs, label)?;
 
     let mut imported = match import::import_program(&program) {
         Ok(v) => v,
@@ -193,6 +193,8 @@ pub fn prepare(
             return Err(ExitCode::from(1));
         }
     };
+    imported.input.partial_modules =
+        crate::program::removable_modules(Path::new(path), &files);
 
     let total = imported.input.campaign_budgets.len()
         + imported.input.campaigns.len()
@@ -1393,11 +1395,13 @@ fn extract_policy_topics(err: &Value) -> Vec<String> {
     topics
 }
 
+/// The parsed program plus the files it came from — the second half is what
+/// tells a partial input apart from a whole-project one (issue #160).
 fn load_and_validate(
     path: &str,
     inputs: &InputBindings,
     label: &'static str,
-) -> Result<Program, ExitCode> {
+) -> Result<(Program, Vec<PathBuf>), ExitCode> {
     let target = Path::new(path);
     if !target.exists() {
         eprintln!("no such file or directory: {}", target.display());
@@ -1434,7 +1438,7 @@ fn load_and_validate(
         return Err(ExitCode::from(1));
     }
 
-    Ok(program)
+    Ok((program, files))
 }
 
 fn run_whoami() -> ExitCode {

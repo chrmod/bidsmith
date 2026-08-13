@@ -1283,6 +1283,7 @@ impl AdapterState {
             youtube_video_assets: self.youtube_video_assets.into_values().collect(),
             custom_audiences: self.custom_audiences.into_values().collect(),
             adopt_only: Default::default(),
+            partial_modules: None,
             owned_account_assets: Default::default(),
             owns_account_automatic_assets: false,
             labels: self.labels.into_iter().collect(),

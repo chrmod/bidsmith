@@ -115,23 +115,34 @@ negative keywords for an ad group, that negative list is treated as
 the complete set — but positive keywords you manage elsewhere (or in
 the Google Ads UI) are left untouched, and vice versa.
 
-## What apply doesn't yet do
+## Removing a whole campaign
 
-Two known gaps, both on the
-[roadmap](https://github.com/chrmod/bidsmith/blob/main/ROADMAP.md):
+Deleting a campaign, ad group, or ad block from a `.bid` file removes it
+from Google Ads. bidsmith tags everything it creates or adopts with a
+`bidsmith:address=…` label, so it can tell a campaign it manages from one
+somebody made in the Google Ads UI — the labeled one is destroyed when
+nothing declares it, and the unlabeled one is never touched.
 
-- **No label-based identity tracking.** bidsmith matches resources
-  by name. A future version will tag every managed resource with a
-  `bidsmith:address=…` label and match by that.
-- **No whole-resource `- destroy` yet.** Deleting an entire
-  campaign, ad group, or ad block from a `.bid` file doesn't remove it
-  from Google Ads — it's just "not managed anymore." (Removing
-  *members* of a surviving resource, like the negatives above, does
-  destroy them.) Whole-resource removal needs the labels work above.
+<Aside type="caution" title="Point apply at the whole project">
+  Absence is the instruction here, so it only means something against a
+  complete input. `bidsmith apply campaigns/brand.bid` speaks for that
+  **one file**: every other file's campaigns are left alone and counted
+  in a warning, rather than destroyed for not appearing in the file you
+  named.
 
-For now, the practical pattern is: to remove a campaign, set its
-`status = "REMOVED"` in the `.bid` file rather than deleting the
-block.
+  Which means the reverse is also true — deleting a file only removes its
+  campaigns on a run that covers the whole project (`bidsmith apply .`
+  from the root, which is what the CI workflow does). A partial run says
+  so:
+
+  ```
+  plan: warning: 3 labeled resource(s) belong to module(s) this run did
+  not read (brand, remarketing) and were left alone. …
+  ```
+
+  bidsmith finds the project root by looking for `bidsmith.toml` — the
+  file `bidsmith init` writes — so keep it at the top of the repo.
+</Aside>
 
 ## See also
 

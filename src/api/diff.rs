@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::commands::export::{
     address_label_payload, ExportInput, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset,
@@ -370,6 +370,10 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     let mut campaign_warnings: Vec<String> = Vec::new();
     let mut blockers: Vec<String> = Vec::new();
     let mut skipped_removal_count = 0usize;
+    // Modules a partial run left unread, collected so the plan says which
+    // files would have to be in the input for their resources to reconcile.
+    let mut out_of_scope_modules: BTreeSet<&str> = BTreeSet::new();
+    let mut out_of_scope_count = 0usize;
     // Live ids on the read-only VIDEO channel, so a removal the API would
     // refuse is dropped before it can poison the batch (issue #116).
     let live_video_campaigns: HashSet<&str> = live
@@ -489,6 +493,12 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         for (li, l) in live_campaigns.iter().enumerate() {
             if !claimed[li] && !is_removed(l.status.as_deref()) {
                 if let Some(addr) = &l.managed_address {
+                    if let Some(module) = unread_module(declared, addr) {
+                        out_of_scope_modules.insert(module);
+                        out_of_scope_count += 1;
+                        skipped_removal_count += 1;
+                        continue;
+                    }
                     if live_video_campaigns.contains(l.id.as_str()) {
                         campaign_warnings.push(video_removal_skipped_warning("a VIDEO campaign", addr));
                         skipped_removal_count += 1;
@@ -558,6 +568,12 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         for (li, l) in live_ad_groups.iter().enumerate() {
             if !claimed[li] && !is_removed(l.status.as_deref()) {
                 if let Some(addr) = &l.managed_address {
+                    if let Some(module) = unread_module(declared, addr) {
+                        out_of_scope_modules.insert(module);
+                        out_of_scope_count += 1;
+                        skipped_removal_count += 1;
+                        continue;
+                    }
                     if live_video_ad_groups.contains(l.id.as_str()) {
                         campaign_warnings.push(video_removal_skipped_warning("an ad group on a VIDEO campaign", addr));
                         skipped_removal_count += 1;
@@ -632,6 +648,12 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
             continue;
         }
         if let Some(addr) = &l.managed_address {
+            if let Some(module) = unread_module(declared, addr) {
+                out_of_scope_modules.insert(module);
+                out_of_scope_count += 1;
+                skipped_removal_count += 1;
+                continue;
+            }
             if live_video_ad_groups.contains(l.ad_group.as_str()) {
                 campaign_warnings.push(video_removal_skipped_warning("an ad on a VIDEO campaign", addr));
                 skipped_removal_count += 1;
@@ -1019,6 +1041,12 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     warnings.extend(link_warnings);
     warnings.extend(campaign_warnings);
     warnings.extend(shared_budget_warnings(declared));
+    if !out_of_scope_modules.is_empty() {
+        warnings.push(out_of_scope_warning(
+            out_of_scope_count,
+            &out_of_scope_modules,
+        ));
+    }
     blockers.extend(adopt_only_blockers(declared, &diffs));
 
     let mut noop_count = 0;
@@ -1814,6 +1842,33 @@ fn device_criterion_has_adjustment(cr: &JsonCampaignCriterion) -> bool {
 /// subsequent plan.
 fn is_removed(status: Option<&str>) -> bool {
     status == Some("REMOVED")
+}
+
+/// The module `address` belongs to when this run never read that module's
+/// file, or `None` when the resource is in scope and its absence from the
+/// declaration therefore means what it says.
+///
+/// A label payload is the address, truncated on the *tail* when it is too long
+/// for Google's 80-char cap, so the module segment at the head survives — a
+/// module name that did not survive matches nothing and the resource is left
+/// alone, which is the safe direction (issue #160).
+fn unread_module<'a>(declared: &ExportInput, address: &'a str) -> Option<&'a str> {
+    let read = declared.partial_modules.as_ref()?;
+    let module = address.split('.').next().unwrap_or(address);
+    (!read.contains(module)).then_some(module)
+}
+
+/// Said once per plan rather than per resource: the count is in the summary,
+/// and what a reader needs here is which files to add to the input.
+fn out_of_scope_warning(count: usize, modules: &BTreeSet<&str>) -> String {
+    let names: Vec<&str> = modules.iter().copied().collect();
+    format!(
+        "{count} labeled resource(s) belong to module(s) this run did not read ({}) and were \
+         left alone. Only an input that covers the whole project can tell \"deleted from the \
+         files\" apart from \"not in this file\" — point plan / apply at the project root to \
+         reconcile them.",
+        names.join(", "),
+    )
 }
 
 /// A whole labeled resource that is no longer declared — destroyed because its
@@ -3644,6 +3699,67 @@ mod label_match_tests {
         assert_eq!(report.delete_count, 1);
         assert_eq!(destroys.len(), 1);
         assert!(matches!(&destroys[0].action, Action::Delete { live_id } if live_id == "555"));
+    }
+
+    /// Applying one file of a per-campaign tree destroyed every other file's
+    /// campaign: "not declared in this file" was read as "not declared at all"
+    /// (issue #160). A partial run's removals stay inside the modules it read.
+    #[test]
+    fn a_partial_run_does_not_destroy_another_modules_campaign() {
+        let mut declared = input(
+            r#"{"customer_id":"100","campaign_budgets":[{"id":"campaign_b.b","name":"B","amount_micros":1000}]}"#,
+        );
+        declared.partial_modules = Some(["campaign_b".to_string()].into_iter().collect());
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "campaigns": [
+                {"id":"555","name":"A","advertising_channel_type":"SEARCH","campaign_budget":"999","managed_address":"campaign_a.google_ads_campaign.a"},
+                {"id":"556","name":"B gone","advertising_channel_type":"SEARCH","campaign_budget":"999","managed_address":"campaign_b.google_ads_campaign.old"}
+            ],
+            "labels": {
+                "campaign_a.google_ads_campaign.a":"customers/100/labels/777",
+                "campaign_b.google_ads_campaign.old":"customers/100/labels/778"
+            }
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        // The campaign in the module this run *did* read is still reconciled —
+        // scoping is not a mute button on removal.
+        assert_eq!(report.delete_count, 1, "{:?}", report.diffs);
+        let destroy = report
+            .diffs
+            .iter()
+            .find(|d| matches!(d.action, Action::Delete { .. }))
+            .unwrap();
+        assert!(matches!(&destroy.action, Action::Delete { live_id } if live_id == "556"));
+        assert_eq!(report.skipped_removal_count, 1);
+        assert!(
+            report.warnings.iter().any(|w| w.contains("campaign_a")),
+            "the skip names the module whose file to add: {:?}",
+            report.warnings
+        );
+    }
+
+    /// A run that read the whole project still prunes what a deleted file used
+    /// to declare — otherwise removing a campaign would have no gesture at all.
+    #[test]
+    fn a_whole_project_run_still_destroys_a_deleted_files_campaign() {
+        let declared = input(
+            r#"{"customer_id":"100","campaign_budgets":[{"id":"campaign_b.b","name":"B","amount_micros":1000}]}"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "campaigns": [{"id":"555","name":"A","advertising_channel_type":"SEARCH","campaign_budget":"999","managed_address":"campaign_a.google_ads_campaign.a"}],
+            "labels": {"campaign_a.google_ads_campaign.a":"customers/100/labels/777"}
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        assert_eq!(report.delete_count, 1, "{:?}", report.diffs);
+        assert_eq!(report.skipped_removal_count, 0);
     }
 
     #[test]

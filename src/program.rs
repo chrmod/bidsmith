@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -560,6 +560,55 @@ pub fn collect_bid_files(target: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(out)
 }
 
+/// The modules a run may destroy out of, or `None` when it read every `.bid`
+/// file the project has and "nothing declares this" is therefore a fact about
+/// the account rather than about the input.
+///
+/// Destroying a labeled live resource is authorized by its absence from the
+/// declaration, and absence only means something against a complete input.
+/// Applying one file of a per-campaign tree read "not declared here" as "not
+/// declared anywhere" and destroyed every other file's campaign (issue #160).
+/// A partial run keeps its removals inside the modules it actually read; a
+/// whole-project run still prunes a resource whose file was deleted, which is
+/// the gesture that would otherwise have no way to be expressed.
+pub fn removable_modules(target: &Path, read: &[PathBuf]) -> Option<BTreeSet<String>> {
+    let all = collect_bid_files(&project_root(target)).unwrap_or_default();
+    let read_set: HashSet<PathBuf> = read.iter().map(|p| normalize(p)).collect();
+    if all.iter().all(|p| read_set.contains(&normalize(p))) {
+        return None;
+    }
+    Some(read.iter().map(|p| crate::parser::module_name(p)).collect())
+}
+
+/// The directory a run's completeness is judged against: the nearest ancestor
+/// carrying `bidsmith.toml`, which is the marker `init` writes at the root of
+/// a project. Without one, a directory target answers for itself and a single
+/// file answers for its directory — so pointing at one file of several is
+/// partial either way.
+fn project_root(target: &Path) -> PathBuf {
+    let start = if target.is_dir() {
+        target.to_path_buf()
+    } else {
+        target.parent().unwrap_or(Path::new(".")).to_path_buf()
+    };
+    let mut dir = normalize(&start);
+    loop {
+        if dir.join(crate::api::creds::PROJECT_CONFIG_NAME).is_file() {
+            return dir;
+        }
+        if !dir.pop() {
+            return start;
+        }
+    }
+}
+
+/// Absolute where the filesystem allows it, so two spellings of one path
+/// compare equal. A path that cannot be canonicalized (it may not exist) is
+/// compared as written rather than dropped.
+fn normalize(p: &Path) -> PathBuf {
+    p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+}
+
 fn walk_bid_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -1097,6 +1146,58 @@ resource "google_ads_campaign" "root" {
             .collect();
 
         assert_eq!(rel, vec!["account.bid", "campaigns/search/brand.bid"]);
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The scope that authorizes a destroy (issue #160). Applying one file of a
+    /// per-campaign tree must not speak for the files it never opened.
+    #[test]
+    fn one_file_of_a_tree_is_a_partial_run() {
+        let root = std::env::temp_dir().join("bidsmith-removable-modules-test");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("campaign-a.bid"), "").unwrap();
+        fs::write(root.join("campaign-b.bid"), "").unwrap();
+
+        let one = root.join("campaign-b.bid");
+        assert_eq!(
+            removable_modules(&one, std::slice::from_ref(&one)),
+            Some(["campaign_b".to_string()].into_iter().collect()),
+        );
+
+        let all = collect_bid_files(&root).unwrap();
+        assert_eq!(
+            removable_modules(&root, &all),
+            None,
+            "the whole tree still reconciles what a deleted file used to declare",
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// `bidsmith.toml` is what `init` writes at the root, so a subdirectory
+    /// answers for the project rather than for itself — without it, applying
+    /// `campaigns/search/` would speak for `campaigns/display/` too.
+    #[test]
+    fn a_subdirectory_of_a_marked_project_is_a_partial_run() {
+        let root = std::env::temp_dir().join("bidsmith-project-root-test");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("search")).unwrap();
+        fs::create_dir_all(root.join("display")).unwrap();
+        fs::write(root.join("bidsmith.toml"), "").unwrap();
+        fs::write(root.join("search/brand.bid"), "").unwrap();
+        fs::write(root.join("display/remarketing.bid"), "").unwrap();
+
+        let sub = root.join("search");
+        let read = collect_bid_files(&sub).unwrap();
+        assert_eq!(
+            removable_modules(&sub, &read),
+            Some(["brand".to_string()].into_iter().collect()),
+        );
+
+        let all = collect_bid_files(&root).unwrap();
+        assert_eq!(removable_modules(&root, &all), None);
 
         fs::remove_dir_all(&root).unwrap();
     }
