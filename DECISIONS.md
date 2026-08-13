@@ -369,8 +369,17 @@ resource type, any file layout, modules, schema validation.
   nested block (`manual_cpc`, `network_settings`) overrides
   **wholesale**, never deep-merged, so override behavior stays
   predictable. One defaults block per resource type per scope
-  (duplicate → error citing both files); module scopes don't inherit
-  the caller's defaults (modules stay isolation boundaries). The
+  (duplicate → error citing both files). **A module body sees the root
+  tree's `defaults` blocks** (issue #148): a `defaults` block is a
+  type-scoped shell, not a value, so factoring campaigns into
+  `templates/` must not force the shell to be written out once per
+  template — the duplication `defaults` exists to remove. The module's
+  own block for the same `(type, name)` shadows the inherited one, a
+  block declared inside a template stays private to it, and the
+  inherited block is validated once at its declaration rather than once
+  per instance. This is the one thing that crosses the boundary;
+  `locals` and `variable` values still don't (those are the module's
+  interface, and a module gets them through its inputs). The
   defaults body is schema-validated at its declaration (correct spans,
   no required-attr enforcement — it legitimately provides a subset),
   required attributes on resources count defaults as present, and the
@@ -1408,12 +1417,15 @@ Verified locally:
   (`…cookies_device_exclusions["MOBILE"]`);
   `fmt --check examples/resource-for-each` is a no-op.
 - `cargo run -- validate examples/modules-for-each` →
-  `OK: 4 file(s) valid.` — exercises `for_each` on a `module` block.
+  `OK: 5 file(s) valid.` — exercises `for_each` on a `module` block.
   `examples/modules-for-each/main.bid` instantiates
   `templates/preroll-campaign.bid` three times (one per `for_each`
   entry) with a shared `geo` and per-entry `campaign_name` / `final_url`;
   resources get addresses `ghostery_search.<key>.<type>.<name>`
-  (`ghostery_search.privacy.google_ads_campaign.search`, …).
+  (`ghostery_search.privacy.google_ads_campaign.search`, …). The
+  template's campaign shell comes from a `defaults.search_shell` block
+  in `shared.bid` at the root, which is what a module inheriting the
+  caller's `defaults` buys (issue #148).
   `fmt --check examples/modules-for-each` is a no-op.
 - `cargo run -- validate examples/broken` → exit 1 with 11 errors and
   5 warnings (parse failure, type mismatch, enum violation, dangling

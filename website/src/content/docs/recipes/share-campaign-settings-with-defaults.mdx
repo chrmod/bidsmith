@@ -111,6 +111,29 @@ Three things to know:
   attribute exists to prevent, so it will not fall back to the unnamed
   block.
 
+## Campaigns built from a template
+
+Campaigns instantiated through a
+[`module` block](/bidsmith/concepts/modules/) get the same shell. The
+template names the block; the block itself stays in `shared.bid` at the
+root of the tree:
+
+```hcl
+# templates/preroll-campaign.bid
+resource "google_ads_campaign" "search" {
+  name            = var.campaign_name
+  status          = "ENABLED"
+  defaults        = defaults.search_shell
+  campaign_budget = google_ads_campaign_budget.budget.id
+}
+```
+
+So a folder that mixes hand-written campaigns and templated ones keeps
+one copy of the shell, not two that can drift apart. A `defaults` block
+declared *inside* a template is private to it, and wins over an outer
+block of the same name — handy when one template genuinely needs its
+own shape.
+
 ## Adopting it on a live account
 
 The merge happens when bidsmith reads your files, before anything is

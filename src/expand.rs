@@ -29,12 +29,7 @@ fn expand_file(file: &ParsedFile, bindings: &Bindings, diags: &mut Vec<Diag>) ->
         matches!(s, Structure::Block(b) if is_for_each_resource(b))
     });
     if !needs_expansion {
-        return ParsedFile {
-            path: file.path.clone(),
-            src: file.src.clone(),
-            body: file.body.clone(),
-            module: file.module.clone(),
-        };
+        return file.clone();
     }
 
     let mut body = Body::new();
@@ -49,10 +44,8 @@ fn expand_file(file: &ParsedFile, bindings: &Bindings, diags: &mut Vec<Diag>) ->
         }
     }
     ParsedFile {
-        path: file.path.clone(),
-        src: file.src.clone(),
         body,
-        module: file.module.clone(),
+        ..file.clone()
     }
 }
 

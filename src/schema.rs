@@ -1954,47 +1954,13 @@ impl DefaultsRegistry {
                 if b.ident.as_str() != "defaults" {
                     continue;
                 }
-                if b.labels.is_empty() || b.labels.len() > 2 {
-                    diags.push(Diag::new(
-                        f.src.clone(),
-                        span_of(b.ident.span()),
-                        format!(
-                            "'defaults' block takes the resource type, plus an optional name \
-                             resources opt into with 'defaults = defaults.<name>' — got {} label(s)",
-                            b.labels.len()
-                        ),
-                    ));
-                    continue;
-                }
-                let ty = b.labels[0].as_str().to_string();
-                let decl_name = b.labels.get(1).map(|l| l.as_str().to_string());
-                if !resource_schemas().contains_key(ty.as_str()) {
-                    diags.push(Diag::new(
-                        f.src.clone(),
-                        span_of(b.labels[0].span()),
-                        format!("unknown resource type '{ty}' in defaults block"),
-                    ));
-                    continue;
-                }
-                if ty == "google_ads_ad_group_ad" {
-                    let offending = b.body.iter().find_map(|s| match s {
-                        Structure::Attribute(a) if a.key.as_str() == "template" => {
-                            Some(span_of(a.key.span()))
-                        }
-                        Structure::Block(ib) if ib.ident.as_str() == "ad" => {
-                            Some(span_of(ib.ident.span()))
-                        }
-                        _ => None,
-                    });
-                    if let Some(span) = offending {
-                        diags.push(Diag::new(
-                            f.src.clone(),
-                            span,
-                            "defaults cannot provide an ad body: declare 'ad' or 'template' on each google_ads_ad_group_ad (use ad_template for reusable bodies)".to_string(),
-                        ));
+                let (ty, decl_name) = match defaults_slot(b) {
+                    Ok(slot) => slot,
+                    Err((span, message)) => {
+                        diags.push(Diag::new(f.src.clone(), span, message));
                         continue;
                     }
-                }
+                };
                 let decl = DefaultsDecl {
                     file: f.path.display().to_string(),
                     block: b.clone(),
@@ -2031,8 +1997,70 @@ impl DefaultsRegistry {
                 }
             }
         }
+
+        // Root-tree blocks a module instance inherits fill only the slots the
+        // module left empty, so a template's own `defaults` shadows the shared
+        // one instead of colliding with it. They are already validated (and any
+        // error already reported) where they are declared, so nothing here
+        // diagnoses them a second time.
+        for f in files {
+            for inherited in &f.inherited_defaults {
+                let Ok((ty, decl_name)) = defaults_slot(&inherited.block) else {
+                    continue;
+                };
+                let decl = DefaultsDecl {
+                    file: inherited.file.clone(),
+                    block: inherited.block.clone(),
+                };
+                match decl_name {
+                    Some(name) => {
+                        registry.by_name.entry((ty, name)).or_insert(decl);
+                    }
+                    None => {
+                        registry.by_type.entry(ty).or_insert(decl);
+                    }
+                }
+            }
+        }
+
         (registry, diags)
     }
+}
+
+/// The `(type, name)` slot a `defaults` block claims, or the span + message for
+/// the first thing wrong with its shape.
+fn defaults_slot(b: &Block) -> Result<(String, Option<String>), (std::ops::Range<usize>, String)> {
+    if b.labels.is_empty() || b.labels.len() > 2 {
+        return Err((
+            span_of(b.ident.span()),
+            format!(
+                "'defaults' block takes the resource type, plus an optional name \
+                 resources opt into with 'defaults = defaults.<name>' — got {} label(s)",
+                b.labels.len()
+            ),
+        ));
+    }
+    let ty = b.labels[0].as_str().to_string();
+    if !resource_schemas().contains_key(ty.as_str()) {
+        return Err((
+            span_of(b.labels[0].span()),
+            format!("unknown resource type '{ty}' in defaults block"),
+        ));
+    }
+    if ty == "google_ads_ad_group_ad" {
+        let offending = b.body.iter().find_map(|s| match s {
+            Structure::Attribute(a) if a.key.as_str() == "template" => Some(span_of(a.key.span())),
+            Structure::Block(ib) if ib.ident.as_str() == "ad" => Some(span_of(ib.ident.span())),
+            _ => None,
+        });
+        if let Some(span) = offending {
+            return Err((
+                span,
+                "defaults cannot provide an ad body: declare 'ad' or 'template' on each google_ads_ad_group_ad (use ad_template for reusable bodies)".to_string(),
+            ));
+        }
+    }
+    Ok((ty, b.labels.get(1).map(|l| l.as_str().to_string())))
 }
 
 /// The `<name>` in an `ad_template.<name>` traversal, else `None`.

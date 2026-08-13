@@ -1085,6 +1085,7 @@ fn revalidate_reconcile(scopes: &[Scope], rendered: &[(PathBuf, String)]) -> Res
             match parse_str(&f.path, &content) {
                 Ok(mut pf) => {
                     pf.module = f.module.clone();
+                    pf.inherited_defaults = f.inherited_defaults.clone();
                     reparsed.push(pf);
                 }
                 Err(d) => {

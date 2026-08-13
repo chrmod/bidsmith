@@ -1,10 +1,20 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use hcl_edit::structure::Body;
+use hcl_edit::structure::{Block, Body};
 use miette::NamedSource;
 
 use crate::diagnostics::Diag;
+
+/// A `defaults` block declared in the root tree that a module instance's scope
+/// can see. Carried alongside the module's own body rather than spliced into
+/// it, so the block is validated once at its declaration and not again per
+/// instance (issue #148).
+#[derive(Clone)]
+pub struct InheritedDefaults {
+    pub file: String,
+    pub block: Block,
+}
 
 #[derive(Clone)]
 pub struct ParsedFile {
@@ -12,6 +22,7 @@ pub struct ParsedFile {
     pub src: Arc<NamedSource<String>>,
     pub body: Body,
     pub module: String,
+    pub inherited_defaults: Vec<InheritedDefaults>,
 }
 
 pub fn parse_file(path: &Path) -> Result<ParsedFile, Diag> {
@@ -33,6 +44,7 @@ pub fn parse_str(path: &Path, raw: &str) -> Result<ParsedFile, Diag> {
             src,
             body,
             module,
+            inherited_defaults: Vec::new(),
         }),
         Err(e) => {
             let (span, message) = parse_error_span(&e, raw.len());
