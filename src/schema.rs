@@ -135,6 +135,11 @@ pub const VIDEO_AD_INVENTORY_FIELDS: &[(&str, &str)] = &[
     ("allow_non_skippable_in_stream", "allowNonSkippableInStream"),
 ];
 
+/// The channel whose campaigns can carry a dynamic search ads setting. DSA has
+/// Google crawl the advertiser's own site and write headlines and landing pages
+/// from it, which is a Search-campaign mode and nothing else (issue #159).
+pub const DYNAMIC_SEARCH_ADS_CHANNELS: &[&str] = &["SEARCH"];
+
 /// The channels whose campaigns AI Max is offered on. It broadens which queries
 /// a Search campaign matches and lets Google write creative for them, and there
 /// is nothing for it to broaden anywhere else (issue #158).
@@ -1048,6 +1053,21 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                                     attr(field, FieldType::Enum(ASSET_AUTOMATION_STATUS), false)
                                 })
                                 .collect(),
+                            blocks: vec![],
+                        },
+                    },
+                    // Which site Google may crawl to write this campaign's ads
+                    // and pick their landing pages. Both identifiers are
+                    // required by the API, not merely by this schema — a domain
+                    // without a language is not a scope (issue #159).
+                    NestedBlockSchema {
+                        name: "dynamic_search_ads_setting",
+                        schema: BlockSchema {
+                            attributes: vec![
+                                attr("domain_name", FieldType::String, true),
+                                attr("language_code", FieldType::String, true),
+                                attr("use_supplied_urls_only", FieldType::Bool, false),
+                            ],
                             blocks: vec![],
                         },
                     },
@@ -5511,6 +5531,59 @@ resource "google_ads_campaign" "c" {{
         );
         let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
         assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn dynamic_search_ads_setting_validates() {
+        let diags = validate_str(
+            "dsa_ok",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  dynamic_search_ads_setting {{
+    domain_name            = "example.com"
+    language_code          = "en"
+    use_supplied_urls_only = true
+  }}
+}}
+"#
+            ),
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    /// A domain with no language is not a scope — the API requires both, so
+    /// half a block must not reach it.
+    #[test]
+    fn a_dsa_domain_without_its_language_errors() {
+        let diags = validate_str(
+            "dsa_half",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  dynamic_search_ads_setting {{
+    domain_name = "example.com"
+  }}
+}}
+"#
+            ),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.is_error() && d.message.contains("language_code")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]

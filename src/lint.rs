@@ -73,6 +73,7 @@ fn lint_resource(file: &ParsedFile, block: &Block, bindings: &Bindings, diags: &
         lint_flight_window(file, block, &address, bindings, diags);
         lint_asset_automation(file, block, &address, bindings, diags);
         lint_ai_max(file, block, &address, bindings, diags);
+        lint_dynamic_search_ads(file, block, &address, bindings, diags);
     }
 
     if ty == "google_ads_ad_group" {
@@ -205,6 +206,32 @@ fn lint_asset_automation(
             span_of(settings.ident.span()),
             format!(
                 "{address} sets asset_automation_settings on a {channel} campaign: Google Ads carries these settings on Search and Performance Max campaigns only, so `apply` will be rejected"
+            ),
+        ));
+    }
+}
+
+fn lint_dynamic_search_ads(
+    file: &ParsedFile,
+    block: &Block,
+    address: &str,
+    bindings: &Bindings,
+    diags: &mut Vec<Diag>,
+) {
+    let Some(setting) = find_block(&block.body, "dynamic_search_ads_setting") else {
+        return;
+    };
+    let Some(channel) = find_attr(&block.body, "advertising_channel_type")
+        .and_then(|a| eval_str(bindings, &file.module, &a.value))
+    else {
+        return;
+    };
+    if !crate::schema::DYNAMIC_SEARCH_ADS_CHANNELS.contains(&channel.as_str()) {
+        diags.push(Diag::warning(
+            file.src.clone(),
+            span_of(setting.ident.span()),
+            format!(
+                "{address} sets dynamic_search_ads_setting on a {channel} campaign: Google Ads carries dynamic search ads on Search campaigns only, so `apply` will be rejected"
             ),
         ));
     }
@@ -737,6 +764,29 @@ resource "google_ads_campaign" "c" {{
 "#
             ),
         )
+    }
+
+    #[test]
+    fn dynamic_search_ads_off_its_channel_warns() {
+        let msgs = lint_str(
+            "dsa_display",
+            r#"
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "DISPLAY"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  dynamic_search_ads_setting {
+    domain_name   = "example.com"
+    language_code = "en"
+  }
+}
+"#,
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("Search campaigns only")),
+            "{msgs:?}"
+        );
     }
 
     #[test]

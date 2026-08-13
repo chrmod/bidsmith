@@ -132,6 +132,50 @@ An `(unset)` on the left is the point of writing the line: the account
 was not saying no, it was saying nothing. AI Max is a Search-campaign
 feature — `validate` warns if the block turns up anywhere else.
 
+## The third one: dynamic search ads
+
+Asset automation writes copy for the ads you declared. AI Max decides
+which searches they answer. **Dynamic search ads** skip the ads entirely:
+Google crawls your site and generates a headline and a landing page per
+search.
+
+It is not an on/off flag but a targeting mode, so it is declared as the
+scope it is:
+
+```hcl
+resource "google_ads_campaign" "site_wide" {
+  name                     = "Site — dynamic"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.site.id
+
+  dynamic_search_ads_setting {
+    domain_name            = "example.com"
+    language_code          = "en"
+    use_supplied_urls_only = true
+  }
+}
+```
+
+`use_supplied_urls_only = true` is the important line: Google may still
+generate headlines, but only against landing pages you supplied, instead
+of anything it finds on the domain.
+
+The case worth checking for is a campaign that has this and never
+mentions it — often a paused one nobody has looked at in a while, where
+nothing is serving today and enabling it would start generated ads with
+no diff anywhere. `plan` will not switch it off (a setting no file
+declares is not bidsmith's to clear), but it does say so every run:
+
+```
+plan: warning: google_ads_campaign.site_wide has dynamic search ads
+configured live (example.com (en)) and declares no
+`dynamic_search_ads_setting` block: Google writes headlines and picks
+landing pages from that site, and nothing in the file says so.
+```
+
+Run `bidsmith refresh --in-place .` to write the live values into the
+file, and it is under review like everything else.
+
 ## The switch that isn't in the file
 
 Dynamic sitelinks, dynamic callouts, and the business name and logo that

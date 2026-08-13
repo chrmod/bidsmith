@@ -257,6 +257,13 @@ what closes the most user-facing gaps next:
    `asset_automation_settings { text_asset_automation = "OPTED_OUT" … }`
    declares which assets Google may invent for a campaign, so the
    opt-out lives in the repo and CI catches it being switched back on.
+   ✅ **Dynamic search ads declarable** (shipped, issue #159).
+   `dynamic_search_ads_setting { domain_name, language_code,
+   use_supplied_urls_only }` puts the broadest of the "Google writes the
+   ad" switches under review. A managed campaign with the setting live
+   and no block in the file keeps its setting — unmanaged means
+   unmanaged — but says so in a warning on every plan, which is the half
+   the issue was actually about.
    ✅ **AI Max declarable on both halves** (shipped, issue #158).
    `ai_max_setting { enable_ai_max = false }` on a campaign and
    `ai_max_ad_group_setting { disable_search_term_matching = true }` on

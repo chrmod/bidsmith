@@ -4,7 +4,7 @@ use hcl_edit::structure::{Attribute, Block, Structure};
 
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
-    JsonAiMaxAdGroupSetting, JsonAiMaxSetting,
+    JsonAiMaxAdGroupSetting, JsonAiMaxSetting, JsonDynamicSearchAdsSetting,
     JsonAssetAutomationSettings, JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset,
     JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCriterion,
@@ -396,6 +396,7 @@ fn import_campaign(
     let mut video_campaign_settings = None;
     let mut asset_automation_settings = None;
     let mut ai_max_setting = None;
+    let mut dynamic_search_ads_setting = None;
     let mut targeting_setting = None;
     let mut frequency_caps: Vec<JsonFrequencyCap> = Vec::new();
     let mut languages: Vec<String> = Vec::new();
@@ -454,6 +455,9 @@ fn import_campaign(
                     asset_automation_settings = Some(import_asset_automation_settings(ctx, b))
                 }
                 "ai_max_setting" => ai_max_setting = Some(import_ai_max_setting(ctx, b)),
+                "dynamic_search_ads_setting" => {
+                    dynamic_search_ads_setting = Some(import_dynamic_search_ads_setting(ctx, b))
+                }
                 "targeting_setting" => targeting_setting = Some(import_targeting_setting(ctx, b)),
                 "frequency_caps" => frequency_caps.extend(import_frequency_cap(ctx, b)),
                 "structured_snippet" => {
@@ -504,6 +508,7 @@ fn import_campaign(
             video_campaign_settings,
             asset_automation_settings,
             ai_max_setting,
+            dynamic_search_ads_setting,
             targeting_setting,
             frequency_caps,
             owns_automatic_assets,
@@ -861,6 +866,20 @@ fn import_ai_max_setting(ctx: &Ctx, block: &Block) -> JsonAiMaxSetting {
         }
     }
     a
+}
+
+fn import_dynamic_search_ads_setting(ctx: &Ctx, block: &Block) -> JsonDynamicSearchAdsSetting {
+    let mut d = JsonDynamicSearchAdsSetting::default();
+    for st in block.body.iter() {
+        let Structure::Attribute(attr) = st else { continue };
+        match attr.key.as_str() {
+            "domain_name" => d.domain_name = expect_string_owned(ctx, attr),
+            "language_code" => d.language_code = expect_string_owned(ctx, attr),
+            "use_supplied_urls_only" => d.use_supplied_urls_only = expect_bool(ctx, attr),
+            _ => {}
+        }
+    }
+    d
 }
 
 fn import_ai_max_ad_group_setting(ctx: &Ctx, block: &Block) -> JsonAiMaxAdGroupSetting {
@@ -4561,6 +4580,96 @@ resource "google_ads_campaign" "c" {
 
         let report = diff_after_defaults(declared, live);
         assert_eq!(changed_fields(&report), ["asset_automation_settings"]);
+    }
+
+    /// DSA has Google crawl the advertiser's site and write the ads from it,
+    /// and the file could not say so — a `plan` called such a campaign
+    /// `unchanged` while saying nothing about what decides its copy (issue #159).
+    #[test]
+    fn a_declared_dsa_scope_is_compared() {
+        let declared = import_str(
+            "dsa",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  manual_cpc {}
+
+  dynamic_search_ads_setting {
+    domain_name            = "example.com"
+    language_code          = "en"
+    use_supplied_urls_only = true
+  }
+}
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","manualCpc":{},"dynamicSearchAdsSetting":{"domainName":"example.com","languageCode":"en","useSuppliedUrlsOnly":false}}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(
+            changed_fields(&report),
+            ["dynamic_search_ads_setting.use_supplied_urls_only"]
+        );
+    }
+
+    /// The case the issue is actually about: seeing it and not having it. The
+    /// setting stays unmanaged — bidsmith does not clear what nobody declared —
+    /// but a plan that called the campaign `unchanged` and said nothing was the
+    /// gap worth closing.
+    #[test]
+    fn live_dsa_on_a_file_that_never_mentions_it_warns() {
+        let declared = import_str(
+            "dsa_silent",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  manual_cpc {}
+}
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","manualCpc":{},"dynamicSearchAdsSetting":{"domainName":"example.com","languageCode":"en","useSuppliedUrlsOnly":false}}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        assert!(
+            changed_fields(&report).is_empty(),
+            "unmanaged means unmanaged: {:?}",
+            report.diffs
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("example.com (en)") && w.contains("dynamic_search_ads_setting")),
+            "{:?}",
+            report.warnings
+        );
     }
 
     /// The campaigns that matter carry no `ai_max_setting` at all, so what AI

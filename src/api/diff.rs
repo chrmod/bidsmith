@@ -459,6 +459,9 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
                     claimed[*li] = true;
                     campaign_match.insert(d.id.clone(), l.id.clone());
                     campaign_warnings.extend(campaign_immutable_warnings(&d.id, d, l));
+                    if let Some(w) = undeclared_dsa_warning(&d.id, d, l) {
+                        campaign_warnings.push(w);
+                    }
                     let caps_claimed = live
                         .campaign_claims
                         .get(&l.id)
@@ -2036,6 +2039,25 @@ fn shared_budget_warnings(declared: &ExportInput) -> Vec<String> {
 /// them — which would let a file describing a daily budget adopt a lifetime one
 /// and still report a clean plan, with the declared `amount_micros` silently
 /// ignored by Google Ads (issue #131).
+/// A live campaign set up to have Google crawl a site and write its ads, on a
+/// file that never mentions it. Unmanaged is the right *behaviour* — bidsmith
+/// does not switch off a setting nobody declared — but staying quiet about it
+/// would let a `plan` call the campaign `unchanged` while saying nothing about
+/// the thing that decides what its ads say (issue #159).
+fn undeclared_dsa_warning(address: &str, d: &JsonCampaign, l: &JsonCampaign) -> Option<String> {
+    if d.dynamic_search_ads_setting.is_some() {
+        return None;
+    }
+    let shown = l.dynamic_search_ads_setting.as_ref()?.shown()?;
+    Some(format!(
+        "{address} has dynamic search ads configured live ({shown}) and declares no \
+         `dynamic_search_ads_setting` block: Google writes headlines and picks landing pages \
+         from that site, and nothing in the file says so. Declare the block to manage it — \
+         `plan` cannot turn it off for you, because a setting no file mentions is not \
+         bidsmith's to clear."
+    ))
+}
+
 fn budget_immutable_warnings(address: &str, d: &JsonBudget, l: &JsonBudget) -> Vec<String> {
     let mut out = Vec::new();
     if let (Some(dp), Some(lp)) = (d.period.as_deref(), l.period.as_deref()) {
@@ -2429,6 +2451,43 @@ fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign, caps_claimed: bool) -> Vec<
                 shown_asset_automation(Some(a), carried),
             ));
         }
+    }
+    // Omitted means unmanaged, one field at a time. A campaign whose file says
+    // nothing about DSA is not asking for it to be switched off — but it is not
+    // saying it wants it either, which is why an undeclared live setting gets a
+    // warning of its own rather than passing as `unchanged` (issue #159).
+    let (dsa_d, dsa_l) = (
+        d.dynamic_search_ads_setting.as_ref(),
+        l.dynamic_search_ads_setting.as_ref(),
+    );
+    for (field, desired, live) in [
+        (
+            "domain_name",
+            dsa_d.and_then(|s| s.domain_name.as_deref()),
+            dsa_l.and_then(|s| s.domain_name.as_deref()),
+        ),
+        (
+            "language_code",
+            dsa_d.and_then(|s| s.language_code.as_deref()),
+            dsa_l.and_then(|s| s.language_code.as_deref()),
+        ),
+    ] {
+        if desired.is_some() && desired != live {
+            c.push(change(
+                format!("dynamic_search_ads_setting.{field}"),
+                live,
+                desired,
+            ));
+        }
+    }
+    let supplied_d = dsa_d.and_then(|s| s.use_supplied_urls_only);
+    let supplied_l = dsa_l.and_then(|s| s.use_supplied_urls_only);
+    if supplied_d.is_some() && supplied_d != supplied_l {
+        c.push(change(
+            "dynamic_search_ads_setting.use_supplied_urls_only",
+            supplied_l,
+            supplied_d,
+        ));
     }
     // Omitted means unmanaged, as everywhere else — and here that is the state
     // the issue is about: Google decides what an undeclared campaign does, and
