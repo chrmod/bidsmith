@@ -144,6 +144,32 @@ nothing declares it, and the unlabeled one is never touched.
   file `bidsmith init` writes — so keep it at the top of the repo.
 </Aside>
 
+## When a change is too big for one request
+
+Everything in an apply goes to Google as a single atomic request, and
+Google puts a deadline on how long it will spend on one. A first apply
+that creates a whole account — several campaigns, their ad groups, and a
+thousand-odd keywords and ads — can run past it:
+
+```
+apply: Google did not finish this batch in time — 1300 operation(s) went
+out as one atomic request, so nothing was written and nothing needs
+undoing. …
+```
+
+Nothing was written: that is what atomic means, and it is why there is
+nothing to clean up before trying again. Re-running sometimes gets
+through. What reliably works is applying **one file at a time** — a run
+pointed at a single file only touches that file's resources, so a
+per-campaign layout gives you natural batches:
+
+```sh
+for f in campaigns/*.bid; do bidsmith apply --auto-approve "$f"; done
+```
+
+Then go back to `bidsmith apply .` for everyday changes, which is also
+what makes removals work.
+
 ## See also
 
 - [`bidsmith plan`](/bidsmith/commands/plan/) — same diff, no mutate.
