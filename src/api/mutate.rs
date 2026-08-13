@@ -1118,6 +1118,14 @@ fn campaign_update_body(c: &JsonCampaign, resource_name: &str, fields: &[String]
                     asset_automation_value(c),
                 );
             }
+            f2 if f2.starts_with("dynamic_search_ads_setting.") => {
+                // Google requires the domain and its language together, so a
+                // change to either sends the whole message; the mask still
+                // limits what it applies.
+                if let Some(v) = dynamic_search_ads_value(c) {
+                    m.insert("dynamicSearchAdsSetting".into(), v);
+                }
+            }
             "ai_max_setting.enable_ai_max" => {
                 if let Some(v) = c.ai_max_setting.as_ref().and_then(|a| a.enable_ai_max) {
                     m.insert("aiMaxSetting".into(), json!({ "enableAiMax": v }));
@@ -1927,10 +1935,30 @@ fn campaign_create(c: &JsonCampaign, resource_name: &str, budget_rn: &str) -> Va
     if let Some(v) = c.ai_max_setting.as_ref().and_then(|a| a.enable_ai_max) {
         m.insert("aiMaxSetting".into(), json!({ "enableAiMax": v }));
     }
+    if let Some(v) = dynamic_search_ads_value(c) {
+        m.insert("dynamicSearchAdsSetting".into(), v);
+    }
     if let Some(t) = &c.targeting_setting {
         m.insert("targetingSetting".into(), targeting_setting_value(Some(t)));
     }
     Value::Object(m)
+}
+
+/// The declared DSA setting as the API's message, or `None` when the file
+/// declares no block at all.
+fn dynamic_search_ads_value(c: &JsonCampaign) -> Option<Value> {
+    let d = c.dynamic_search_ads_setting.as_ref()?;
+    let mut sub = Map::new();
+    if let Some(v) = &d.domain_name {
+        sub.insert("domainName".into(), Value::String(v.clone()));
+    }
+    if let Some(v) = &d.language_code {
+        sub.insert("languageCode".into(), Value::String(v.clone()));
+    }
+    if let Some(v) = d.use_supplied_urls_only {
+        sub.insert("useSuppliedUrlsOnly".into(), Value::Bool(v));
+    }
+    (!sub.is_empty()).then(|| Value::Object(sub))
 }
 
 /// The declared automations as the API's repeated `(type, status)` list. The
@@ -2920,6 +2948,60 @@ mod tests {
             .find_map(|op| op.get("campaignOperation").and_then(|o| o.get("create")))
             .expect("campaign create op");
         assert!(campaign.get("assetAutomationSettings").is_none());
+    }
+
+    /// Google requires the domain and its language together, so a change to
+    /// either sends the whole message and the mask limits what it applies
+    /// (issue #159).
+    #[test]
+    fn a_dsa_update_sends_the_whole_message_under_the_changed_path() {
+        let op = campaign_update_op(
+            &campaign_bidding(
+                "SEARCH",
+                json!({
+                    "manual_cpc": {},
+                    "dynamic_search_ads_setting": {
+                        "domain_name": "example.com",
+                        "language_code": "en",
+                        "use_supplied_urls_only": true,
+                    },
+                }),
+            ),
+            &strategy_switch("dynamic_search_ads_setting.use_supplied_urls_only"),
+        );
+        assert_eq!(
+            op["updateMask"],
+            json!("dynamic_search_ads_setting.use_supplied_urls_only")
+        );
+        assert_eq!(
+            op["update"]["dynamicSearchAdsSetting"],
+            json!({
+                "domainName": "example.com",
+                "languageCode": "en",
+                "useSuppliedUrlsOnly": true,
+            })
+        );
+    }
+
+    #[test]
+    fn a_campaign_without_a_dsa_block_sends_no_dsa_setting() {
+        let input = campaign_bidding("SEARCH", json!({"manual_cpc": {}}));
+        let report = DiffReport {
+            diffs: vec![
+                create_diff("m.b", "campaign_budget"),
+                create_diff("m.c", "campaign"),
+            ],
+            create_count: 2,
+            ..DiffReport::default()
+        };
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let campaign = plan.body["mutateOperations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|op| op.get("campaignOperation").and_then(|o| o.get("create")))
+            .expect("campaign create op");
+        assert!(campaign.get("dynamicSearchAdsSetting").is_none());
     }
 
     /// AI Max is an ordinary scalar field inside a message, not the whole-list

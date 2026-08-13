@@ -235,6 +235,8 @@ pub struct JsonCampaign {
     #[serde(default)]
     pub ai_max_setting: Option<JsonAiMaxSetting>,
     #[serde(default)]
+    pub dynamic_search_ads_setting: Option<JsonDynamicSearchAdsSetting>,
+    #[serde(default)]
     pub targeting_setting: Option<JsonTargetingSetting>,
     /// Repeated, and managed as a whole list: an empty list means "this
     /// campaign has no frequency caps", so caps set in the UI on a declared
@@ -508,6 +510,37 @@ pub struct JsonAiMaxSetting {
 pub struct JsonAiMaxAdGroupSetting {
     #[serde(default)]
     pub disable_search_term_matching: Option<bool>,
+}
+
+/// `Campaign.dynamic_search_ads_setting` — the site Google may crawl to write
+/// this campaign's ads, the language it reads it in, and whether it may pick
+/// landing pages of its own or only the ones the file supplies.
+#[derive(Deserialize, Default)]
+pub struct JsonDynamicSearchAdsSetting {
+    #[serde(default)]
+    pub domain_name: Option<String>,
+    #[serde(default)]
+    pub language_code: Option<String>,
+    #[serde(default)]
+    pub use_supplied_urls_only: Option<bool>,
+}
+
+impl JsonDynamicSearchAdsSetting {
+    /// The two identifiers as a reviewer reads them: `example.com (en)`, or
+    /// `None` when the live campaign carries no setting worth naming.
+    pub fn shown(&self) -> Option<String> {
+        let domain = self.domain_name.as_deref()?;
+        Some(match self.language_code.as_deref() {
+            Some(lang) => format!("{domain} ({lang})"),
+            None => domain.to_string(),
+        })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.domain_name.is_none()
+            && self.language_code.is_none()
+            && self.use_supplied_urls_only.is_none()
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -2377,6 +2410,19 @@ fn write_campaign(
         }
         out.push_str("  }\n");
     }
+    if let Some(d) = c.dynamic_search_ads_setting.as_ref().filter(|d| !d.is_empty()) {
+        out.push_str("\n  dynamic_search_ads_setting {\n");
+        if let Some(v) = &d.domain_name {
+            write_attr(out, 2, "domain_name", &fmt_string(v));
+        }
+        if let Some(v) = &d.language_code {
+            write_attr(out, 2, "language_code", &fmt_string(v));
+        }
+        if let Some(v) = d.use_supplied_urls_only {
+            write_attr(out, 2, "use_supplied_urls_only", &v.to_string());
+        }
+        out.push_str("  }\n");
+    }
     if let Some(v) = c.ai_max_setting.as_ref().and_then(|a| a.enable_ai_max) {
         out.push_str("\n  ai_max_setting {\n");
         write_attr(out, 2, "enable_ai_max", &v.to_string());
@@ -4187,6 +4233,22 @@ mod tests {
             out.contains("final_url_expansion_text_asset_automation = \"OPTED_OUT\""),
             "{out}"
         );
+    }
+
+    /// Pulling an account is how a DSA setting nobody declared gets into the
+    /// repo, which is the first step to managing it (issue #159).
+    #[test]
+    fn dynamic_search_ads_renders_as_the_block_that_declares_it() {
+        let raw = r#"[{"results":[
+            { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget", "amountMicros": "5000000" } },
+            { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Site wide", "status": "ENABLED", "advertisingChannelType": "SEARCH", "campaignBudget": "customers/9/campaignBudgets/1001", "dynamicSearchAdsSetting": { "domainName": "example.com", "languageCode": "en", "useSuppliedUrlsOnly": false } } }
+        ]}]"#;
+        let input = from_search_response(raw).expect("adapter");
+        let out = render(&input);
+        assert!(out.contains("dynamic_search_ads_setting {"), "{out}");
+        assert!(out.contains("domain_name = \"example.com\""), "{out}");
+        assert!(out.contains("language_code = \"en\""), "{out}");
+        assert!(out.contains("use_supplied_urls_only = false"), "{out}");
     }
 
     /// Pulling an account that has AI Max explicitly off is how the opt-out

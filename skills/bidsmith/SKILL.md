@@ -389,6 +389,11 @@ flow one way — insights never justify mutating outside plan/apply.
   one that matters. Search and Performance Max campaigns only. It does
   not cover dynamic sitelinks or the business name Google attaches:
   that switch is account-level and absent from the API.
+- `dynamic_search_ads_setting { domain_name, language_code,
+  use_supplied_urls_only }` is the third of these: Google crawling the
+  advertiser's site and generating ads from it. A campaign with the
+  setting live and no block in the file keeps it, but `plan` warns every
+  run — declare the block (or `refresh --in-place`) to manage it.
 - AI Max is the sibling fence: `ai_max_setting { enable_ai_max = false }`
   on a Search campaign and `ai_max_ad_group_setting
   { disable_search_term_matching = true }` on its ad groups. Ordinary

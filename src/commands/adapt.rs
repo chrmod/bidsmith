@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
-    JsonAiMaxAdGroupSetting, JsonAiMaxSetting,
+    JsonAiMaxAdGroupSetting, JsonAiMaxSetting, JsonDynamicSearchAdsSetting,
     JsonAssetAutomationSettings, JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset,
     JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCriterion,
@@ -335,6 +335,7 @@ impl AdapterState {
                 video_campaign_settings: None,
                 asset_automation_settings: None,
                 ai_max_setting: None,
+                dynamic_search_ads_setting: None,
                 targeting_setting: None,
                 frequency_caps: Vec::new(),
                 owns_automatic_assets: false,
@@ -478,6 +479,23 @@ impl AdapterState {
             }
             if !settings.is_empty() || !settings.unmodelled.is_empty() {
                 entry.asset_automation_settings = Some(settings);
+            }
+        }
+        // Both identifiers are required by the API, so a live setting always
+        // carries them; `use_supplied_urls_only` is the one that can be absent.
+        if let Some(dsa) = v.get("dynamicSearchAdsSetting") {
+            let setting = JsonDynamicSearchAdsSetting {
+                domain_name: dsa.get("domainName").and_then(Value::as_str).map(str::to_string),
+                language_code: dsa
+                    .get("languageCode")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                use_supplied_urls_only: dsa
+                    .get("useSuppliedUrlsOnly")
+                    .and_then(Value::as_bool),
+            };
+            if !setting.is_empty() {
+                entry.dynamic_search_ads_setting = Some(setting);
             }
         }
         if let Some(b) = v

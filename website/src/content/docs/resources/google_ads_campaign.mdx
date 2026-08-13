@@ -17,6 +17,7 @@ export const videoCampaignSettings = resource.blocks.find((b) => b.name === 'vid
 export const videoAdInventoryControl = videoCampaignSettings.blocks.find((b) => b.name === 'video_ad_inventory_control');
 export const assetAutomationSettings = resource.blocks.find((b) => b.name === 'asset_automation_settings');
 export const aiMaxSetting = resource.blocks.find((b) => b.name === 'ai_max_setting');
+export const dynamicSearchAdsSetting = resource.blocks.find((b) => b.name === 'dynamic_search_ads_setting');
 export const frequencyCaps = resource.blocks.find((b) => b.name === 'frequency_caps');
 export const targetingSetting = resource.blocks.find((b) => b.name === 'targeting_setting');
 export const targetRestriction = targetingSetting.blocks.find((b) => b.name === 'target_restriction');
@@ -642,6 +643,55 @@ URL expansion start off; on Performance Max, everything starts on.
   serving. To stop them being made at all, turn the setting off in the
   Google Ads UI, under Admin → Account settings.
 </Aside>
+
+### dynamic_search_ads_setting
+
+Dynamic search ads are the third way Google writes your ads for you, and
+the broadest: instead of matching keywords you chose, it crawls your site
+and generates a headline and a landing page per search. `use_supplied_urls_only`
+is the line that decides how much of the site is in play.
+
+```hcl
+resource "google_ads_campaign" "site_wide" {
+  name                     = "Site — dynamic"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.site.id
+
+  dynamic_search_ads_setting {
+    domain_name            = "example.com"
+    language_code          = "en"
+    use_supplied_urls_only = true
+  }
+}
+```
+
+<AttributeTable block={dynamicSearchAdsSetting} headingLevel={4} />
+
+`domain_name` and `language_code` are both required: a domain without the
+language Google should read it in is not a scope, and the API rejects
+half a setting.
+
+<Aside type="caution" title="A campaign that has it and doesn't say so">
+  If a campaign in your account has dynamic search ads configured and your
+  file declares no block, `plan` will not switch it off — an undeclared
+  setting is never bidsmith's to clear. But it does say so, on every run:
+
+  ```
+  plan: warning: google_ads_campaign.site_wide has dynamic search ads
+  configured live (example.com (en)) and declares no
+  `dynamic_search_ads_setting` block: Google writes headlines and picks
+  landing pages from that site, and nothing in the file says so.
+  ```
+
+  That is the case worth watching for on a campaign nobody has looked at
+  in a while — especially a paused one, where nothing is serving today and
+  enabling it would start generated ads with no diff anywhere. Declare the
+  block to bring it under review; `bidsmith refresh --in-place` writes the
+  live values into the file for you.
+</Aside>
+
+Dynamic search ads are a **Search** campaign feature; `validate` warns if
+the block turns up on another channel.
 
 ### ai_max_setting
 

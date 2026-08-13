@@ -1366,6 +1366,23 @@ resource type, any file layout, modules, schema validation.
     `validate` warns, and the API rejection stays the authority — the channel
     lists move with Google's product, and a hard local blocker on a moving list
     would refuse plans that the account would have accepted.
+- **Dynamic search ads are declarable, and an undeclared live one is reported**
+  (issue #159). DSA is the broadest of the "Google writes the ad" switches: it
+  crawls the advertiser's own site and generates a headline and a landing page
+  per search, and `use_supplied_urls_only = false` puts the whole site in scope.
+  `dynamic_search_ads_setting { domain_name, language_code,
+  use_supplied_urls_only? }` makes it a campaign setting like any other. Two
+  choices:
+  - **Both identifiers are required, by the API and so by the schema.** A domain
+    with no language to read it in is not a scope, and half a message is an API
+    rejection rather than a partial setting.
+  - **Omitted still means unmanaged — but no longer means silent.** The issue
+    asks for the absence of a block to *be* drift, which would invert the rule
+    every other setting follows. What it gets instead is a warning naming the
+    domain, on every plan, for a managed campaign whose live setting the file
+    never mentions. That covers the risk the issue is actually about — a paused
+    campaign nobody has looked at, where `unchanged` said nothing about what
+    decides its copy — without making bidsmith clear a setting nobody declared.
 - **AI Max is declared as ordinary scalar settings, one on the campaign and one
   on the ad group** (issue #158). AI Max broadens which queries a Search
   campaign matches and lets Google write creative for what it finds, which is
@@ -1790,7 +1807,10 @@ Validator covers (so far):
   `OPTED_OUT`) saying which assets Google may invent for the campaign,
   managed as a whole list once declared, plus an optional
   `ai_max_setting { enable_ai_max? }` block saying whether Google may
-  broaden what the campaign matches and write creative for it, plus a
+  broaden what the campaign matches and write creative for it, plus an
+  optional `dynamic_search_ads_setting { domain_name, language_code,
+  use_supplied_urls_only? }` block naming the site Google may crawl to
+  write the campaign's ads, plus a
   optional `owns = ["automatically_created_assets"]` claiming what
   Google's automation attached to the campaign and its ad groups (paused
   on apply, since such a link is not bidsmith's to recreate), plus a

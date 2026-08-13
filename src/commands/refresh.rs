@@ -841,6 +841,30 @@ fn collect_edits(
                             None => skip.push(ASSET_AUTOMATION_UNWRITABLE.to_string()),
                         }
                     }
+                    "dynamic_search_ads_setting.domain_name" => opt!(
+                        f,
+                        vec!["dynamic_search_ads_setting", "domain_name"],
+                        c.dynamic_search_ads_setting
+                            .as_ref()
+                            .and_then(|x| x.domain_name.as_deref())
+                            .map(s)
+                    ),
+                    "dynamic_search_ads_setting.language_code" => opt!(
+                        f,
+                        vec!["dynamic_search_ads_setting", "language_code"],
+                        c.dynamic_search_ads_setting
+                            .as_ref()
+                            .and_then(|x| x.language_code.as_deref())
+                            .map(s)
+                    ),
+                    "dynamic_search_ads_setting.use_supplied_urls_only" => opt!(
+                        f,
+                        vec!["dynamic_search_ads_setting", "use_supplied_urls_only"],
+                        c.dynamic_search_ads_setting
+                            .as_ref()
+                            .and_then(|x| x.use_supplied_urls_only)
+                            .map(Expression::from)
+                    ),
                     "ai_max_setting.enable_ai_max" => opt!(
                         f,
                         vec!["ai_max_setting", "enable_ai_max"],
