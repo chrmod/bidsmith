@@ -559,6 +559,15 @@ resource type, any file layout, modules, schema validation.
   `ad_group_ad` orphaned under an ad group that is gone from live state:
   removing an ad group leaves its ads addressable but un-mutatable, so
   the doomed per-ad destroy is dropped and the parent removal stands.
+  A `REMOVED` resource is likewise not something the file can be
+  *matched* against, which is the same rule read from the other end
+  (issue #161): Google auto-removes a non-shared budget with the last
+  campaign that used it, and matching that corpse by name planned the
+  declared budget as `unchanged`, so re-creating the campaign pointed at
+  a dead resource name and the API refused the whole atomic batch. The
+  `campaign_budget` query filters `status != 'REMOVED'` like every other
+  resource query, and selects the status so a row that reaches the
+  matcher can still be judged rather than trusted.
 - **Rename = `bidsmith mv`, source-only**: renaming a resource's
   address (the `<name>` in `resource "<type>" "<name>"`) is a pure
   source rewrite — `mv` renames the block label and every reference

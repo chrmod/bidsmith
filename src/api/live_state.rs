@@ -47,8 +47,10 @@ pub const QUERIES: &[(&str, &str)] = &[
           campaign_budget.period,
           campaign_budget.type,
           campaign_budget.delivery_method,
-          campaign_budget.explicitly_shared
-        FROM campaign_budget",
+          campaign_budget.explicitly_shared,
+          campaign_budget.status
+        FROM campaign_budget
+        WHERE campaign_budget.status != 'REMOVED'",
     ),
     (
         "campaign",
@@ -656,6 +658,20 @@ mod tests {
         let fields = selected_fields();
         assert!(fields.contains("campaign.ai_max_setting.enable_ai_max"));
         assert!(fields.contains("ad_group.ai_max_ad_group_setting.disable_search_term_matching"));
+    }
+
+    /// A budget Google removed alongside its last campaign used to stay in
+    /// live state and shadow the declared one by name, so the campaign could
+    /// not be re-created (issue #161). The status is selected as well as
+    /// filtered on, so a row that reaches the matcher can still be judged.
+    #[test]
+    fn removed_budgets_are_filtered_out_and_their_status_is_readable() {
+        let (_, budgets) = QUERIES
+            .iter()
+            .find(|(label, _)| *label == "campaign_budget")
+            .expect("a campaign_budget query");
+        assert!(budgets.contains("campaign_budget.status != 'REMOVED'"), "{budgets}");
+        assert!(selected_fields().contains("campaign_budget.status"));
     }
 
     #[test]

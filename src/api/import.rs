@@ -357,6 +357,7 @@ fn import_budget(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonBudget, 
         ty,
         delivery_method,
         explicitly_shared,
+        status: None,
     })
 }
 

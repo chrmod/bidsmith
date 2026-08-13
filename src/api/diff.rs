@@ -412,9 +412,15 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     }
 
     // ---- campaign_budgets (match by name) --------------------------------
+    // A removed budget is not a budget the file can be matched against: Google
+    // auto-removes one with the last campaign that used it, and matching the
+    // corpse by name planned the declared budget as `unchanged`, so re-creating
+    // the campaign pointed at a dead resource name and the API refused the
+    // whole batch (issue #161).
     let live_budgets: HashMap<&str, &JsonBudget> = live
         .campaign_budgets
         .iter()
+        .filter(|b| !is_removed(b.status.as_deref()))
         .map(|b| (b.name.as_str(), b))
         .collect();
     for d in &declared.campaign_budgets {
@@ -5273,6 +5279,38 @@ mod budget_period_tests {
         input(&format!(
             r#"{{"customer_id":"1","campaign_budgets":[{budget}]}}"#
         ))
+    }
+
+    /// Google auto-removes a non-shared budget with the last campaign that used
+    /// it. Matching the corpse by name planned the declared budget as
+    /// `unchanged`, so re-creating the campaign pointed at a dead resource name
+    /// and the API refused the whole batch (issue #161).
+    #[test]
+    fn a_removed_budget_does_not_shadow_the_declared_one() {
+        let report = diff(
+            &declared(r#"{"id":"m.b","name":"Brand","amount_micros":5000000}"#),
+            &input(
+                r#"{"customer_id":"1","campaign_budgets":[{"id":"900","name":"Brand",
+                  "amount_micros":5000000,"status":"REMOVED"}]}"#,
+            ),
+        );
+        assert!(
+            matches!(report.diffs[0].action, Action::Create),
+            "the declared budget has to be created, not matched: {:?}",
+            report.diffs[0].action
+        );
+    }
+
+    #[test]
+    fn a_live_budget_still_matches_while_it_is_enabled() {
+        let report = diff(
+            &declared(r#"{"id":"m.b","name":"Brand","amount_micros":5000000}"#),
+            &input(
+                r#"{"customer_id":"1","campaign_budgets":[{"id":"900","name":"Brand",
+                  "amount_micros":5000000,"status":"ENABLED"}]}"#,
+            ),
+        );
+        assert!(matches!(&report.diffs[0].action, Action::NoOp { live_id } if live_id == "900"));
     }
 
     #[test]
