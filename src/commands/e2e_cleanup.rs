@@ -119,7 +119,7 @@ pub fn run(prefix: &str, verbose: bool) -> ExitCode {
     }
 
     let body = mutate::build_remove_only_mutate(&targets, false);
-    let response = match client.googleads_mutate(&token.token, &body) {
+    let response = match client.googleads_mutate(&token.token, &body, /* validate_only */ false) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("_e2e-cleanup: mutate failed: {e}");

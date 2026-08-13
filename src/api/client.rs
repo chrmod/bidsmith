@@ -7,6 +7,13 @@ use crate::api::creds;
 const DEFAULT_API_VERSION: &str = "v22";
 const USER_AGENT: &str = concat!("bidsmith/", env!("CARGO_PKG_VERSION"));
 const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
+/// A mutate is one request Google works through server-side, and a batch of a
+/// thousand-odd operations takes minutes. At 60s the client hung up long before
+/// the API's own deadline and the whole apply failed as a send error, on a
+/// batch the server was still willing to finish (issue #162). Matching Google's
+/// deadline for the method means bidsmith never gives up first — if the work
+/// really is too much, the answer comes back as `DEADLINE_EXCEEDED` and says so.
+const MUTATE_TIMEOUT: Duration = Duration::from_secs(3600);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_RETRIES: u32 = 3;
 const PAGE_SIZE: u32 = 10_000;
@@ -79,14 +86,18 @@ impl Client {
         })
     }
 
+    /// `validate_only` is also the answer to "may this be retried": a
+    /// validate-only mutate commits nothing, so a transient failure on the pass
+    /// `plan` makes is worth another attempt. A real write is not idempotent
+    /// and a timed-out one must never be resent.
     #[allow(dead_code)]
     pub fn googleads_mutate(
         &self,
         access_token: &str,
         body: &Value,
+        validate_only: bool,
     ) -> Result<MutateResponse, ApiError> {
-        // Mutations aren't idempotent, so a timed-out write must not be retried.
-        self.post_json(access_token, "googleAds:mutate", body, false)
+        self.post_mutate(access_token, "googleAds:mutate", body, validate_only)
     }
 
     /// A resource-specific `…:mutate` for the types `GoogleAdsService.Mutate`
@@ -96,8 +107,9 @@ impl Client {
         access_token: &str,
         endpoint: &str,
         body: &Value,
+        validate_only: bool,
     ) -> Result<MutateResponse, ApiError> {
-        self.post_json(access_token, endpoint, body, false)
+        self.post_mutate(access_token, endpoint, body, validate_only)
     }
 
     pub fn search_stream(
@@ -123,7 +135,7 @@ impl Client {
             "https://googleads.googleapis.com/{version}/customers/{}:generateKeywordIdeas",
             self.customer_id,
         );
-        self.send_with_retry(access_token, &url, body, true)
+        self.send_with_retry(access_token, &url, body, true, HTTP_TIMEOUT)
     }
 
     /// `GoogleAdsFieldService.SearchGoogleAdsFields` — the API's own metadata:
@@ -142,7 +154,7 @@ impl Client {
         }
         let version = api_version();
         let url = format!("https://googleads.googleapis.com/{version}/googleAdsFields:search");
-        self.send_with_retry(access_token, &url, &body, true)
+        self.send_with_retry(access_token, &url, &body, true, HTTP_TIMEOUT)
     }
 
     fn post_json(
@@ -157,7 +169,24 @@ impl Client {
             "https://googleads.googleapis.com/{version}/customers/{}/{endpoint}",
             self.customer_id,
         );
-        self.send_with_retry(access_token, &url, body, retry)
+        self.send_with_retry(access_token, &url, body, retry, HTTP_TIMEOUT)
+    }
+
+    /// The write path, on the API's own deadline rather than the one an
+    /// ordinary read gets.
+    fn post_mutate(
+        &self,
+        access_token: &str,
+        endpoint: &str,
+        body: &Value,
+        validate_only: bool,
+    ) -> Result<MutateResponse, ApiError> {
+        let version = api_version();
+        let url = format!(
+            "https://googleads.googleapis.com/{version}/customers/{}/{endpoint}",
+            self.customer_id,
+        );
+        self.send_with_retry(access_token, &url, body, validate_only, MUTATE_TIMEOUT)
     }
 
     fn send_with_retry(
@@ -166,6 +195,7 @@ impl Client {
         url: &str,
         body: &Value,
         retry: bool,
+        timeout: Duration,
     ) -> Result<MutateResponse, ApiError> {
         let max = if retry { MAX_RETRIES } else { 0 };
         let mut attempt = 0;
@@ -173,6 +203,7 @@ impl Client {
             let mut req = self
                 .http
                 .post(url)
+                .timeout(timeout)
                 .bearer_auth(access_token)
                 .header("developer-token", &self.developer_token);
             if let Some(login) = &self.login_customer_id {
@@ -287,5 +318,17 @@ mod tests {
     fn backoff_increases_each_attempt() {
         assert!(backoff(1) < backoff(2));
         assert!(backoff(2) < backoff(3));
+    }
+
+    /// A batch of a thousand-odd operations is minutes of server-side work, and
+    /// hanging up at the read timeout failed applies the API was still willing
+    /// to finish (issue #162).
+    #[test]
+    fn a_mutate_waits_far_longer_than_a_read() {
+        assert!(
+            MUTATE_TIMEOUT >= Duration::from_secs(600),
+            "a large batch needs minutes, not {MUTATE_TIMEOUT:?}",
+        );
+        assert!(MUTATE_TIMEOUT > HTTP_TIMEOUT);
     }
 }

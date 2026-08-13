@@ -1377,6 +1377,31 @@ resource type, any file layout, modules, schema validation.
     is a Search-campaign feature and the ad-group half applies to search ad
     groups; `validate` warns and the API stays the authority.
 
+- **The mutate keeps the API's deadline, and stays one atomic batch**
+  (issue #162). An apply of ~1300 operations failed two ways on
+  consecutive runs — Google's own `DEADLINE_EXCEEDED` annotated onto
+  every operation, and a client-side send failure — while batches of
+  100–550 from the same account went through. Three choices:
+  - **A mutate waits as long as Google will work.** The 60s read timeout
+    applied to writes too, so bidsmith hung up minutes before the API's
+    deadline on a batch the server was still willing to finish. Writes
+    now use the method's own deadline, which means bidsmith never gives
+    up first: if the work really is too much, the answer is Google's
+    `DEADLINE_EXCEEDED` rather than an ambiguous local timeout.
+  - **`validate_only` is also the retry policy.** A validate-only mutate
+    commits nothing, so the pass `plan` makes — and the one `apply` runs
+    before prompting — retries transient failures like any read. The
+    real write still never retries: it is not idempotent, and a timed-out
+    one may well have committed.
+  - **No chunking.** Splitting the batch would trade the atomicity
+    guarantee ("either every operation commits, or none") for a size
+    limit, and a half-applied account is a worse failure than a refused
+    one — particularly since a partial apply is exactly what an atomic
+    batch exists to prevent. What a too-large batch gets instead is a
+    plan line saying nothing was written and that applying one file at a
+    time is the reliable way through, which the removal scoping from
+    issue #160 now makes safe.
+
 ## Current state
 
 ```

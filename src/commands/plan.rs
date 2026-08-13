@@ -481,7 +481,7 @@ pub fn execute(
         eprintln!("{}", serde_json::to_string_pretty(&plan_body.body).unwrap_or_default());
     }
 
-    let response = match client.googleads_mutate(&token.token, &plan_body.body) {
+    let response = match client.googleads_mutate(&token.token, &plan_body.body, validate_only) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("{label}: {e}");
@@ -511,6 +511,13 @@ pub fn execute(
                  Try BIDSMITH_API_VERSION=v22 (or current).",
             );
             return ExitCode::from(1);
+        }
+        if let Some(hint) = batch_deadline_hint(
+            response.status,
+            &parsed_errors,
+            plan_body.operations.len(),
+        ) {
+            eprintln!("{label}: {hint}");
         }
         for err in &parsed_errors {
             if let Some(addr) = err
@@ -1209,7 +1216,7 @@ fn run_service_mutations(
         eprintln!("{}", serde_json::to_string_pretty(&pass.body).unwrap_or_default());
     }
 
-    let response = match client.service_mutate(access_token, pass.endpoint, &pass.body) {
+    let response = match client.service_mutate(access_token, pass.endpoint, &pass.body, validate_only) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("{label}: {} — {e}", pass.label);
@@ -1297,6 +1304,33 @@ fn looks_like_stale_state(code: Option<&str>, message: &str) -> bool {
         || m.contains("no longer exists")
         || m.contains("already exists")
         || m.contains("was not found")
+}
+
+/// Google giving up on the whole batch rather than rejecting anything in it.
+/// Every operation comes back carrying the same "took too long", which reads as
+/// a thousand separate faults in the author's own file unless the plan says
+/// otherwise. The batch is atomic, so nothing was written and there is nothing
+/// to undo — what is left is that this much work does not fit in one request
+/// (issue #162).
+fn batch_deadline_hint(
+    status: u16,
+    errors: &[GoogleAdsErrorEntry],
+    ops: usize,
+) -> Option<String> {
+    let deadline = status == 504
+        || errors.iter().any(|e| {
+            e.code.as_deref() == Some("DEADLINE_EXCEEDED")
+                || e.message.to_ascii_lowercase().contains("took too long")
+        });
+    if !deadline {
+        return None;
+    }
+    Some(format!(
+        "Google did not finish this batch in time — {ops} operation(s) went out as one atomic \
+         request, so nothing was written and nothing needs undoing. The deadline is Google's, \
+         not bidsmith's: re-running may get through, and splitting the change into smaller \
+         applies (one file at a time, which only touches that file's resources) reliably will.",
+    ))
 }
 
 fn extract_google_ads_errors(body: &Value) -> Vec<GoogleAdsErrorEntry> {
@@ -1515,7 +1549,8 @@ fn tail(s: &str, n: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::{
-        claim_details, display_address, extract_error_code, extract_google_ads_errors,
+        batch_deadline_hint, claim_details, display_address, extract_error_code,
+        extract_google_ads_errors,
         looks_like_stale_state, md_action, md_cell, module_of, row_is_visible, split_module,
         state_notes, verb_detail, DisplayMode,
     };
@@ -1762,6 +1797,31 @@ mod tests {
         });
         assert_eq!(extract_error_code(&err).as_deref(), Some("CANNOT_MODIFY_REMOVED_AD"));
         assert_eq!(extract_error_code(&serde_json::json!({"message": "x"})), None);
+    }
+
+    /// Google timing out on a big batch annotates every operation with the same
+    /// "took too long", which reads as a thousand faults in the file rather
+    /// than one fault in the request size (issue #162).
+    #[test]
+    fn a_timed_out_batch_is_named_as_one_failure_not_a_thousand() {
+        let errors = extract_google_ads_errors(&serde_json::json!({
+            "error": {"code": 4, "status": "DEADLINE_EXCEEDED", "details": [{"errors": [{
+                "errorCode": {"internalError": "DEADLINE_EXCEEDED"},
+                "message": "The request took too long to respond.",
+            }]}]}
+        }));
+        let hint = batch_deadline_hint(400, &errors, 1300).expect("a deadline hint");
+        assert!(hint.contains("1300 operation(s)"), "{hint}");
+        assert!(hint.contains("nothing was written"), "{hint}");
+
+        assert!(
+            batch_deadline_hint(504, &[], 1300).is_some(),
+            "a gateway timeout is the same failure without a parsed body",
+        );
+        assert!(
+            batch_deadline_hint(400, &[], 12).is_none(),
+            "an ordinary rejection is not a deadline",
+        );
     }
 
     #[test]
