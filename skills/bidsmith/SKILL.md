@@ -389,6 +389,11 @@ flow one way — insights never justify mutating outside plan/apply.
   one that matters. Search and Performance Max campaigns only. It does
   not cover dynamic sitelinks or the business name Google attaches:
   that switch is account-level and absent from the API.
+- AI Max is the sibling fence: `ai_max_setting { enable_ai_max = false }`
+  on a Search campaign and `ai_max_ad_group_setting
+  { disable_search_term_matching = true }` on its ad groups. Ordinary
+  scalar fields — each is unmanaged until declared, and left undeclared
+  the campaign follows whatever Google's default is that day.
 - What Google's automation already attached is **paused**, never
   destroyed — bidsmith cannot recreate one, so a destroy is reattached
   and never converges. Inside a kind the file already declares this

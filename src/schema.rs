@@ -135,6 +135,15 @@ pub const VIDEO_AD_INVENTORY_FIELDS: &[(&str, &str)] = &[
     ("allow_non_skippable_in_stream", "allowNonSkippableInStream"),
 ];
 
+/// The channels whose campaigns AI Max is offered on. It broadens which queries
+/// a Search campaign matches and lets Google write creative for them, and there
+/// is nothing for it to broaden anywhere else (issue #158).
+pub const AI_MAX_CHANNELS: &[&str] = &["SEARCH"];
+
+/// The ad group types AI Max's search-term matching applies to, for the same
+/// reason `AI_MAX_CHANNELS` has one entry.
+pub const AI_MAX_AD_GROUP_TYPES: &[&str] = &["SEARCH_STANDARD"];
+
 /// Every `AssetAutomationType` the API accepts on a campaign, as the attribute
 /// a `.bid` writes paired with the enum value Google reads. The rest of the
 /// enum is set on an ad, not a campaign (issue #152).
@@ -1042,6 +1051,16 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                             blocks: vec![],
                         },
                     },
+                    // Whether Google may broaden what this campaign matches and
+                    // write creative for the queries it finds. `bundling_required`
+                    // is the API's own report and not settable (issue #158).
+                    NestedBlockSchema {
+                        name: "ai_max_setting",
+                        schema: BlockSchema {
+                            attributes: vec![attr("enable_ai_max", FieldType::Bool, false)],
+                            blocks: vec![],
+                        },
+                    },
                     targeting_setting_block(),
                     // Repeatable: one block per cap, mapping to a single
                     // `FrequencyCapEntry` in `Campaign.frequency_caps`.
@@ -1223,7 +1242,23 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                     a.push(attr("callouts", FieldType::list_of(FieldType::String), false));
                     a
                 },
-                blocks: vec![targeting_setting_block(), inline_snippet_block()],
+                blocks: vec![
+                    targeting_setting_block(),
+                    inline_snippet_block(),
+                    // The ad group's half of AI Max: whether it keeps matching
+                    // the queries the campaign-level switch opened up.
+                    NestedBlockSchema {
+                        name: "ai_max_ad_group_setting",
+                        schema: BlockSchema {
+                            attributes: vec![attr(
+                                "disable_search_term_matching",
+                                FieldType::Bool,
+                                false,
+                            )],
+                            blocks: vec![],
+                        },
+                    },
+                ],
             },
         );
 
@@ -5476,6 +5511,67 @@ resource "google_ads_campaign" "c" {{
         );
         let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
         assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn ai_max_settings_validate() {
+        let diags = validate_str(
+            "ai_max_ok",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  ai_max_setting {{
+    enable_ai_max = false
+  }}
+}}
+
+resource "google_ads_ad_group" "ag" {{
+  name     = "AG"
+  campaign = google_ads_campaign.c.id
+  type     = "SEARCH_STANDARD"
+
+  ai_max_ad_group_setting {{
+    disable_search_term_matching = true
+  }}
+}}
+"#
+            ),
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    /// `bundling_required` is Google's report on the campaign, not a switch —
+    /// declaring it would send a field the API refuses to be told.
+    #[test]
+    fn the_ai_max_field_google_only_reports_is_not_declarable() {
+        let diags = validate_str(
+            "ai_max_readonly",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  ai_max_setting {{
+    bundling_required = true
+  }}
+}}
+"#
+            ),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.is_error() && d.message.contains("bundling_required")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]

@@ -72,6 +72,11 @@ fn lint_resource(file: &ParsedFile, block: &Block, bindings: &Bindings, diags: &
         lint_frequency_caps(file, block, &address, bindings, diags);
         lint_flight_window(file, block, &address, bindings, diags);
         lint_asset_automation(file, block, &address, bindings, diags);
+        lint_ai_max(file, block, &address, bindings, diags);
+    }
+
+    if ty == "google_ads_ad_group" {
+        lint_ai_max_ad_group(file, block, &address, bindings, diags);
     }
 
     if matches!(
@@ -200,6 +205,58 @@ fn lint_asset_automation(
             span_of(settings.ident.span()),
             format!(
                 "{address} sets asset_automation_settings on a {channel} campaign: Google Ads carries these settings on Search and Performance Max campaigns only, so `apply` will be rejected"
+            ),
+        ));
+    }
+}
+
+fn lint_ai_max(
+    file: &ParsedFile,
+    block: &Block,
+    address: &str,
+    bindings: &Bindings,
+    diags: &mut Vec<Diag>,
+) {
+    let Some(setting) = find_block(&block.body, "ai_max_setting") else {
+        return;
+    };
+    let Some(channel) = find_attr(&block.body, "advertising_channel_type")
+        .and_then(|a| eval_str(bindings, &file.module, &a.value))
+    else {
+        return;
+    };
+    if !crate::schema::AI_MAX_CHANNELS.contains(&channel.as_str()) {
+        diags.push(Diag::warning(
+            file.src.clone(),
+            span_of(setting.ident.span()),
+            format!(
+                "{address} sets ai_max_setting on a {channel} campaign: Google Ads offers AI Max on Search campaigns only, so the setting has no effect"
+            ),
+        ));
+    }
+}
+
+fn lint_ai_max_ad_group(
+    file: &ParsedFile,
+    block: &Block,
+    address: &str,
+    bindings: &Bindings,
+    diags: &mut Vec<Diag>,
+) {
+    let Some(setting) = find_block(&block.body, "ai_max_ad_group_setting") else {
+        return;
+    };
+    let Some(ty) =
+        find_attr(&block.body, "type").and_then(|a| eval_str(bindings, &file.module, &a.value))
+    else {
+        return;
+    };
+    if !crate::schema::AI_MAX_AD_GROUP_TYPES.contains(&ty.as_str()) {
+        diags.push(Diag::warning(
+            file.src.clone(),
+            span_of(setting.ident.span()),
+            format!(
+                "{address} sets ai_max_ad_group_setting on a {ty} ad group: AI Max broadens what a search ad group matches, so the setting has no effect here"
             ),
         ));
     }
@@ -659,6 +716,62 @@ resource "google_ads_campaign" "c" {{
         let msgs = campaign_with_automation("automation_search", "SEARCH");
         assert!(
             !msgs.iter().any(|m| m.contains("asset_automation_settings")),
+            "{msgs:?}"
+        );
+    }
+
+    fn campaign_with_ai_max(name: &str, channel: &str) -> Vec<String> {
+        lint_str(
+            name,
+            &format!(
+                r#"
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "{channel}"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  ai_max_setting {{
+    enable_ai_max = false
+  }}
+}}
+"#
+            ),
+        )
+    }
+
+    #[test]
+    fn ai_max_off_its_channel_warns() {
+        let msgs = campaign_with_ai_max("ai_max_display", "DISPLAY");
+        assert!(
+            msgs.iter().any(|m| m.contains("AI Max on Search campaigns only")),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn ai_max_on_search_is_quiet() {
+        let msgs = campaign_with_ai_max("ai_max_search", "SEARCH");
+        assert!(!msgs.iter().any(|m| m.contains("ai_max_setting")), "{msgs:?}");
+    }
+
+    #[test]
+    fn ai_max_on_a_display_ad_group_warns() {
+        let msgs = lint_str(
+            "ai_max_display_ad_group",
+            r#"
+resource "google_ads_ad_group" "g" {
+  name     = "G"
+  campaign = google_ads_campaign.c.id
+  type     = "DISPLAY_STANDARD"
+
+  ai_max_ad_group_setting {
+    disable_search_term_matching = true
+  }
+}
+"#,
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("search ad group")),
             "{msgs:?}"
         );
     }

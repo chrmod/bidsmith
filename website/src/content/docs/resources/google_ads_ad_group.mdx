@@ -10,6 +10,7 @@ import schema from '~/data/schema.json';
 export const resource = schema.resources['google_ads_ad_group'];
 export const targetingSetting = resource.blocks.find((b) => b.name === 'targeting_setting');
 export const targetRestriction = targetingSetting.blocks.find((b) => b.name === 'target_restriction');
+export const aiMaxAdGroupSetting = resource.blocks.find((b) => b.name === 'ai_max_ad_group_setting');
 
 An **ad group** is a bucket inside a campaign. It holds the keywords
 people search for and the ads that show in response. Every campaign
@@ -182,6 +183,32 @@ its own.
 
 `KEYWORD` is deliberately absent from `targeting_dimension`: keywords
 always restrict, so Google Ads has no observation mode for them.
+
+### ai_max_ad_group_setting
+
+AI Max is switched on at the campaign — see
+[`ai_max_setting`](./google_ads_campaign/#ai_max_setting) — but which
+queries it is allowed to broaden into is decided per ad group. This
+block is where an ad group opts out of that while the rest of the
+campaign keeps it:
+
+```hcl
+resource "google_ads_ad_group" "brand" {
+  name     = "Brand terms"
+  campaign = google_ads_campaign.brand_search.id
+  type     = "SEARCH_STANDARD"
+
+  ai_max_ad_group_setting {
+    disable_search_term_matching = true
+  }
+}
+```
+
+<AttributeTable block={aiMaxAdGroupSetting} headingLevel={4} />
+
+Leave the block out and the ad group follows whatever the account is
+doing. Write it, and someone changing it in the Google Ads UI shows up
+as drift on the next `plan`.
 
 ## See also
 

@@ -841,6 +841,14 @@ fn collect_edits(
                             None => skip.push(ASSET_AUTOMATION_UNWRITABLE.to_string()),
                         }
                     }
+                    "ai_max_setting.enable_ai_max" => opt!(
+                        f,
+                        vec!["ai_max_setting", "enable_ai_max"],
+                        c.ai_max_setting
+                            .as_ref()
+                            .and_then(|a| a.enable_ai_max)
+                            .map(Expression::from)
+                    ),
                     "targeting_setting.target_restrictions" => {
                         match target_restriction_blocks(c.targeting_setting.as_ref()) {
                             Some(blocks) => {
@@ -914,6 +922,14 @@ fn collect_edits(
                             None => skip.push(TARGET_RESTRICTIONS_UNWRITABLE.to_string()),
                         }
                     }
+                    "ai_max_ad_group_setting.disable_search_term_matching" => opt!(
+                        f,
+                        vec!["ai_max_ad_group_setting", "disable_search_term_matching"],
+                        g.ai_max_ad_group_setting
+                            .as_ref()
+                            .and_then(|a| a.disable_search_term_matching)
+                            .map(Expression::from)
+                    ),
                     other => match crate::schema::AD_GROUP_BID_FIELDS
                         .iter()
                         .find(|(field, _)| *field == other)
@@ -1271,6 +1287,35 @@ resource "google_ads_campaign" "summer_search" {
             fields,
             &["video_campaign_settings.video_ad_inventory_control.allow_shorts".to_string()]
         );
+    }
+
+    /// Adopting the account's own AI Max switch rather than fighting it — the
+    /// other half of declaring it, for whoever decides Google was right.
+    #[test]
+    fn a_drifted_ai_max_switch_is_written_back() {
+        let src = CAMPAIGN_SRC.replace(
+            "  manual_cpc {\n    enhanced_cpc_enabled = false\n  }\n",
+            "  manual_cpc {\n    enhanced_cpc_enabled = false\n  }\n\n  \
+             ai_max_setting {\n    enable_ai_max = false\n  }\n",
+        );
+        let live = r#"{
+          "customer_id": "1234567890",
+          "campaign_budgets": [
+            {"id":"111","name":"Budget","amount_micros":10000000,"delivery_method":"STANDARD"}
+          ],
+          "campaigns": [
+            {"id":"555","name":"Summer 2026","status":"ENABLED",
+             "advertising_channel_type":"SEARCH","campaign_budget":"111",
+             "managed_address":"main.google_ads_campaign.summer_search",
+             "manual_cpc":{"enhanced_cpc_enabled":false},
+             "ai_max_setting":{"enable_ai_max":true}}
+          ]
+        }"#;
+        let (out, outcome) = run(&src, live);
+
+        assert!(out.contains("enable_ai_max = true"), "{out}");
+        let (_, fields) = &outcome.applied[0];
+        assert_eq!(fields, &["ai_max_setting.enable_ai_max".to_string()]);
     }
 
     #[test]

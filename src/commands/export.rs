@@ -220,6 +220,8 @@ pub struct JsonCampaign {
     #[serde(default)]
     pub asset_automation_settings: Option<JsonAssetAutomationSettings>,
     #[serde(default)]
+    pub ai_max_setting: Option<JsonAiMaxSetting>,
+    #[serde(default)]
     pub targeting_setting: Option<JsonTargetingSetting>,
     /// Repeated, and managed as a whole list: an empty list means "this
     /// campaign has no frequency caps", so caps set in the UI on a declared
@@ -479,6 +481,22 @@ impl JsonAssetAutomationSettings {
     }
 }
 
+/// `Campaign.ai_max_setting`. The read-only `bundling_required` is Google's
+/// report of whether the campaign's AI Max features come as a set, not a switch
+/// anyone can throw, so `enable_ai_max` is the whole message a `.bid` declares.
+#[derive(Deserialize, Default)]
+pub struct JsonAiMaxSetting {
+    #[serde(default)]
+    pub enable_ai_max: Option<bool>,
+}
+
+/// `AdGroup.ai_max_ad_group_setting`.
+#[derive(Deserialize, Default)]
+pub struct JsonAiMaxAdGroupSetting {
+    #[serde(default)]
+    pub disable_search_term_matching: Option<bool>,
+}
+
 #[derive(Deserialize, Default)]
 pub struct JsonGeoTargetTypeSetting {
     #[serde(default)]
@@ -611,6 +629,8 @@ pub struct JsonAdGroup {
     pub custom_parameters: Option<Vec<JsonCustomParameter>>,
     #[serde(default)]
     pub targeting_setting: Option<JsonTargetingSetting>,
+    #[serde(default)]
+    pub ai_max_ad_group_setting: Option<JsonAiMaxAdGroupSetting>,
     #[serde(default)]
     pub managed_address: Option<String>,
 }
@@ -2344,6 +2364,11 @@ fn write_campaign(
         }
         out.push_str("  }\n");
     }
+    if let Some(v) = c.ai_max_setting.as_ref().and_then(|a| a.enable_ai_max) {
+        out.push_str("\n  ai_max_setting {\n");
+        write_attr(out, 2, "enable_ai_max", &v.to_string());
+        out.push_str("  }\n");
+    }
     write_targeting_setting(out, c.targeting_setting.as_ref());
     for f in &c.frequency_caps {
         out.push_str("\n  frequency_caps {\n");
@@ -2395,6 +2420,15 @@ fn write_ad_group(
     write_tracking(out, 1, &g.final_url_suffix, &g.custom_parameters);
     write_inline_text_assets(out, callouts, snippets);
     write_targeting_setting(out, g.targeting_setting.as_ref());
+    if let Some(v) = g
+        .ai_max_ad_group_setting
+        .as_ref()
+        .and_then(|a| a.disable_search_term_matching)
+    {
+        out.push_str("\n  ai_max_ad_group_setting {\n");
+        write_attr(out, 2, "disable_search_term_matching", &v.to_string());
+        out.push_str("  }\n");
+    }
     out.push_str("}\n\n");
 }
 
@@ -4140,6 +4174,36 @@ mod tests {
             out.contains("final_url_expansion_text_asset_automation = \"OPTED_OUT\""),
             "{out}"
         );
+    }
+
+    /// Pulling an account that has AI Max explicitly off is how the opt-out
+    /// reaches the repo, on both halves of the setting (issue #158).
+    #[test]
+    fn ai_max_renders_as_the_blocks_that_declare_it() {
+        let raw = r#"[{"results":[
+            { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget", "amountMicros": "5000000" } },
+            { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Brand", "status": "ENABLED", "advertisingChannelType": "SEARCH", "campaignBudget": "customers/9/campaignBudgets/1001", "aiMaxSetting": { "enableAiMax": false } } },
+            { "adGroup": { "resourceName": "customers/9/adGroups/3001", "id": "3001", "name": "Brand terms", "campaign": "customers/9/campaigns/2001", "type": "SEARCH_STANDARD", "aiMaxAdGroupSetting": { "disableSearchTermMatching": true } } }
+        ]}]"#;
+        let input = from_search_response(raw).expect("adapter");
+        let out = render(&input);
+        assert!(out.contains("ai_max_setting {"), "{out}");
+        assert!(out.contains("enable_ai_max = false"), "{out}");
+        assert!(out.contains("ai_max_ad_group_setting {"), "{out}");
+        assert!(out.contains("disable_search_term_matching = true"), "{out}");
+    }
+
+    /// A campaign the account never set AI Max on has nothing to render — an
+    /// empty block would read as a declaration nobody made.
+    #[test]
+    fn an_unset_ai_max_renders_nothing() {
+        let raw = r#"[{"results":[
+            { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget", "amountMicros": "5000000" } },
+            { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Brand", "status": "ENABLED", "advertisingChannelType": "SEARCH", "campaignBudget": "customers/9/campaignBudgets/1001" } }
+        ]}]"#;
+        let input = from_search_response(raw).expect("adapter");
+        let out = render(&input);
+        assert!(!out.contains("ai_max_setting"), "{out}");
     }
 
     /// The automations this build has no attribute for are remembered off the

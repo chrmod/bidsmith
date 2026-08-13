@@ -2369,6 +2369,19 @@ fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign, caps_claimed: bool) -> Vec<
             ));
         }
     }
+    // Omitted means unmanaged, as everywhere else — and here that is the state
+    // the issue is about: Google decides what an undeclared campaign does, and
+    // may decide differently tomorrow. A campaign that declares the switch has
+    // pinned it, either way (issue #158).
+    let desired_ai_max = d.ai_max_setting.as_ref().and_then(|a| a.enable_ai_max);
+    let live_ai_max = l.ai_max_setting.as_ref().and_then(|a| a.enable_ai_max);
+    if desired_ai_max.is_some() && desired_ai_max != live_ai_max {
+        c.push(change(
+            "ai_max_setting.enable_ai_max",
+            live_ai_max,
+            desired_ai_max,
+        ));
+    }
     c.extend(diff_targeting_setting(
         d.targeting_setting.as_ref(),
         l.targeting_setting.as_ref(),
@@ -2496,6 +2509,21 @@ fn diff_ad_group(d: &JsonAdGroup, l: &JsonAdGroup) -> Vec<FieldChange> {
         d.targeting_setting.as_ref(),
         l.targeting_setting.as_ref(),
     ));
+    let desired_matching = d
+        .ai_max_ad_group_setting
+        .as_ref()
+        .and_then(|a| a.disable_search_term_matching);
+    let live_matching = l
+        .ai_max_ad_group_setting
+        .as_ref()
+        .and_then(|a| a.disable_search_term_matching);
+    if desired_matching.is_some() && desired_matching != live_matching {
+        c.push(change(
+            "ai_max_ad_group_setting.disable_search_term_matching",
+            live_matching,
+            desired_matching,
+        ));
+    }
     c
 }
 
