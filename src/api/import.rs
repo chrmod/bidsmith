@@ -4,7 +4,8 @@ use hcl_edit::structure::{Attribute, Block, Structure};
 
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
-    JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
+    JsonAssetAutomationSettings, JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset,
+    JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCriterion,
     JsonCustomerAsset, JsonAgeRange, JsonAudience, JsonCustomAudience, JsonCustomAudienceMember,
     JsonCustomParameter, JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonGender,
@@ -387,6 +388,7 @@ fn import_campaign(
     let mut network_settings = None;
     let mut geo_target_type_setting = None;
     let mut video_campaign_settings = None;
+    let mut asset_automation_settings = None;
     let mut targeting_setting = None;
     let mut frequency_caps: Vec<JsonFrequencyCap> = Vec::new();
     let mut languages: Vec<String> = Vec::new();
@@ -434,6 +436,9 @@ fn import_campaign(
                 }
                 "video_campaign_settings" => {
                     video_campaign_settings = Some(import_video_campaign_settings(ctx, b))
+                }
+                "asset_automation_settings" => {
+                    asset_automation_settings = Some(import_asset_automation_settings(ctx, b))
                 }
                 "targeting_setting" => targeting_setting = Some(import_targeting_setting(ctx, b)),
                 "frequency_caps" => frequency_caps.extend(import_frequency_cap(ctx, b)),
@@ -483,6 +488,7 @@ fn import_campaign(
             network_settings,
             geo_target_type_setting,
             video_campaign_settings,
+            asset_automation_settings,
             targeting_setting,
             frequency_caps,
             managed_address: None,
@@ -812,6 +818,21 @@ fn import_video_ad_inventory_control(ctx: &Ctx, block: &Block) -> JsonVideoAdInv
         }
     }
     i
+}
+
+fn import_asset_automation_settings(ctx: &Ctx, block: &Block) -> JsonAssetAutomationSettings {
+    let mut a = JsonAssetAutomationSettings::default();
+    for st in block.body.iter() {
+        if let Structure::Attribute(attr) = st {
+            if crate::schema::ASSET_AUTOMATION_FIELDS
+                .iter()
+                .any(|(field, _)| *field == attr.key.as_str())
+            {
+                a.set(attr.key.as_str(), expect_string_owned(ctx, attr));
+            }
+        }
+    }
+    a
 }
 
 /// The block's presence is the claim, so an empty one imports as an empty list
@@ -4445,6 +4466,184 @@ resource "google_ads_campaign" "c" {
 
         let report = diff_after_defaults(declared, live);
         assert!(changed_fields(&report).is_empty(), "{:?}", report.diffs);
+    }
+
+    /// The switch that lets Google write copy into a campaign's ads was the one
+    /// thing a `.bid` could not say, so opting out held only until someone
+    /// opened the UI (issue #152).
+    #[test]
+    fn asset_automation_opt_out_is_compared() {
+        let declared = import_str(
+            "asset_automation",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  manual_cpc {}
+
+  asset_automation_settings {
+    text_asset_automation = "OPTED_OUT"
+  }
+}
+"#,
+        );
+        assert_eq!(
+            declared.campaigns[0].asset_automation_list(),
+            [("TEXT_ASSET_AUTOMATION", "OPTED_OUT")]
+        );
+
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","manualCpc":{},"assetAutomationSettings":[{"assetAutomationType":"TEXT_ASSET_AUTOMATION","assetAutomationStatus":"OPTED_IN"}]}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(changed_fields(&report), ["asset_automation_settings"]);
+    }
+
+    /// A campaign that says nothing about automation is not asking for Google's
+    /// defaults to be written back at it.
+    #[test]
+    fn automation_the_file_does_not_mention_is_left_alone() {
+        let declared = import_str(
+            "asset_automation_silent",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  manual_cpc {}
+}
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","manualCpc":{},"assetAutomationSettings":[{"assetAutomationType":"TEXT_ASSET_AUTOMATION","assetAutomationStatus":"OPTED_IN"}]}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        assert!(changed_fields(&report).is_empty(), "{:?}", report.diffs);
+    }
+
+    /// Google reports an automation for every type it has an opinion about, so
+    /// a block naming one of five must not read the other four as drift — that
+    /// would propose the same write on every plan and never converge. What the
+    /// write does to them is a matter for the plan row, not for the trigger.
+    #[test]
+    fn an_automation_the_block_does_not_name_is_not_drift() {
+        let declared = import_str(
+            "asset_automation_drop",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  manual_cpc {}
+
+  asset_automation_settings {
+    text_asset_automation = "OPTED_OUT"
+  }
+}
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","manualCpc":{},"assetAutomationSettings":[{"assetAutomationType":"TEXT_ASSET_AUTOMATION","assetAutomationStatus":"OPTED_OUT"},{"assetAutomationType":"FINAL_URL_EXPANSION_TEXT_ASSET_AUTOMATION","assetAutomationStatus":"OPTED_IN"}]}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        assert!(changed_fields(&report).is_empty(), "{:?}", report.diffs);
+    }
+
+    /// The write replaces the whole list, so the row shows the whole list —
+    /// both what the campaign holds now and what it holds after, including the
+    /// automation the write drops back to Google's default.
+    #[test]
+    fn the_plan_row_shows_the_list_the_write_leaves_behind() {
+        let declared = import_str(
+            "asset_automation_row",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  manual_cpc {}
+
+  asset_automation_settings {
+    text_asset_automation = "OPTED_OUT"
+  }
+}
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","manualCpc":{},"assetAutomationSettings":[{"assetAutomationType":"TEXT_ASSET_AUTOMATION","assetAutomationStatus":"OPTED_IN"},{"assetAutomationType":"FINAL_URL_EXPANSION_TEXT_ASSET_AUTOMATION","assetAutomationStatus":"OPTED_OUT"}]}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        let change = match &report.diffs.iter().find(|d| d.kind == "campaign").unwrap().action {
+            crate::api::diff::Action::Update { changed_fields, .. } => changed_fields[0].clone(),
+            other => panic!("expected an update, got {other:?}"),
+        };
+        assert!(
+            change
+                .live
+                .starts_with("text_asset_automation=OPTED_IN, final_url_expansion_text_"),
+            "{}",
+            change.live
+        );
+        assert_eq!(change.desired, "text_asset_automation=OPTED_OUT");
+    }
+
+    /// An automation type this build has no attribute for is a report, not a
+    /// setting — carrying it over would render a `.bid` the validator rejects
+    /// and drift no edit could resolve.
+    #[test]
+    fn an_unmodelled_automation_type_is_not_read_back() {
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","assetAutomationSettings":[{"assetAutomationType":"GENERATE_LANDING_PAGE_PREVIEW","assetAutomationStatus":"OPTED_IN"},{"assetAutomationType":"TEXT_ASSET_AUTOMATION","assetAutomationStatus":"UNKNOWN"}]}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+        assert!(live.campaigns[0].asset_automation_settings.is_none());
     }
 
     #[test]

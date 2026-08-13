@@ -135,6 +135,46 @@ pub const VIDEO_AD_INVENTORY_FIELDS: &[(&str, &str)] = &[
     ("allow_non_skippable_in_stream", "allowNonSkippableInStream"),
 ];
 
+/// Every `AssetAutomationType` the API accepts on a campaign, as the attribute
+/// a `.bid` writes paired with the enum value Google reads. The rest of the
+/// enum is set on an ad, not a campaign (issue #152).
+pub const ASSET_AUTOMATION_FIELDS: &[(&str, &str)] = &[
+    ("text_asset_automation", "TEXT_ASSET_AUTOMATION"),
+    (
+        "final_url_expansion_text_asset_automation",
+        "FINAL_URL_EXPANSION_TEXT_ASSET_AUTOMATION",
+    ),
+    ("generate_image_enhancement", "GENERATE_IMAGE_ENHANCEMENT"),
+    ("generate_image_extraction", "GENERATE_IMAGE_EXTRACTION"),
+    (
+        "generate_enhanced_youtube_videos",
+        "GENERATE_ENHANCED_YOUTUBE_VIDEOS",
+    ),
+];
+
+/// The two `AssetAutomationStatus` values a file can declare. Google reports
+/// `UNKNOWN` for a status this API version has no name for, which is a report
+/// rather than a setting.
+pub const ASSET_AUTOMATION_STATUS: &[&str] = &["OPTED_IN", "OPTED_OUT"];
+
+/// The channels whose campaigns carry asset automation settings at all. On any
+/// other channel the API has nowhere to put them.
+pub const ASSET_AUTOMATION_CHANNELS: &[&str] = &["SEARCH", "PERFORMANCE_MAX"];
+
+/// The attribute a live `asset_automation_type` maps to, or `None` for one this
+/// build does not model — an ad-level automation, or a type newer than it.
+pub fn asset_automation_field(api_type: &str) -> Option<&'static str> {
+    ASSET_AUTOMATION_FIELDS
+        .iter()
+        .find(|(_, api)| *api == api_type)
+        .map(|(field, _)| *field)
+}
+
+/// Whether a live opt-in status is one a `.bid` can declare.
+pub fn is_asset_automation_status(value: &str) -> bool {
+    ASSET_AUTOMATION_STATUS.contains(&value)
+}
+
 /// The two fields of `Campaign.geo_target_type_setting`, each paired with its
 /// Google Ads JSON name. They decide whether a targeted location means "people
 /// there" or "people there plus people interested in there" (issue #114).
@@ -981,6 +1021,21 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                                     blocks: vec![],
                                 },
                             }],
+                        },
+                    },
+                    // Which assets Google may invent for this campaign. The
+                    // block is the whole list the API holds, because the API
+                    // replaces it wholesale (issue #152).
+                    NestedBlockSchema {
+                        name: "asset_automation_settings",
+                        schema: BlockSchema {
+                            attributes: ASSET_AUTOMATION_FIELDS
+                                .iter()
+                                .map(|(field, _)| {
+                                    attr(field, FieldType::Enum(ASSET_AUTOMATION_STATUS), false)
+                                })
+                                .collect(),
+                            blocks: vec![],
                         },
                     },
                     targeting_setting_block(),
@@ -5374,6 +5429,54 @@ resource "google_ads_campaign" "c" {{
             diags
                 .iter()
                 .any(|d| d.is_error() && d.message.contains("VIDEO_OUTSTREAM")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn asset_automation_settings_validate() {
+        let diags = validate_str(
+            "asset_automation_ok",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  asset_automation_settings {{
+    text_asset_automation                     = "OPTED_OUT"
+    final_url_expansion_text_asset_automation = "OPTED_OUT"
+  }}
+}}
+"#
+            ),
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn an_asset_automation_status_the_api_has_no_name_for_errors() {
+        let diags = validate_str(
+            "asset_automation_bad",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  asset_automation_settings {{
+    text_asset_automation = "OFF"
+  }}
+}}
+"#
+            ),
+        );
+        assert!(
+            diags.iter().any(|d| d.is_error() && d.message.contains("OFF")),
             "{:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );

@@ -383,6 +383,13 @@ flow one way — insights never justify mutating outside plan/apply.
   sitelink (or callout, or snippet), a live one of that kind it does
   not declare plans as `- destroy`. Adopt what should survive with
   `bidsmith import` *before* adding the first block of a kind.
+- A campaign's `asset_automation_settings` block is compared per
+  automation but written whole, so an automation it does not name goes
+  back to Google's default as soon as a named one drifts — name every
+  one that matters. Search and Performance Max campaigns only. It does
+  not cover dynamic sitelinks or the business name Google attaches:
+  that switch is account-level and absent from the API, so `plan` only
+  warns about what it created.
 - Resource addresses are stable identifiers; renaming a resource means
   Google Ads sees a delete + create. The full address is
   `<module>.<type>.<name>` (module = file basename), but inside the

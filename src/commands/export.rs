@@ -212,6 +212,8 @@ pub struct JsonCampaign {
     #[serde(default)]
     pub video_campaign_settings: Option<JsonVideoCampaignSettings>,
     #[serde(default)]
+    pub asset_automation_settings: Option<JsonAssetAutomationSettings>,
+    #[serde(default)]
     pub targeting_setting: Option<JsonTargetingSetting>,
     /// Repeated, and managed as a whole list: an empty list means "this
     /// campaign has no frequency caps", so caps set in the UI on a declared
@@ -283,6 +285,19 @@ impl JsonCampaign {
             .video_ad_inventory_control
             .as_ref()?
             .get(field)
+    }
+
+    /// The campaign's asset automation as the API holds it: one
+    /// `(automation type, status)` pair per opt-in the campaign carries, in the
+    /// schema's order so two sides compare as sets rather than as orderings.
+    pub fn asset_automation_list(&self) -> Vec<(&'static str, &str)> {
+        let Some(s) = self.asset_automation_settings.as_ref() else {
+            return Vec::new();
+        };
+        crate::schema::ASSET_AUTOMATION_FIELDS
+            .iter()
+            .filter_map(|(field, api)| s.get(field).map(|status| (*api, status)))
+            .collect()
     }
 }
 
@@ -383,6 +398,58 @@ impl JsonVideoAdInventoryControl {
 
     pub fn is_empty(&self) -> bool {
         crate::schema::VIDEO_AD_INVENTORY_FIELDS
+            .iter()
+            .all(|(field, _)| self.get(field).is_none())
+    }
+}
+
+/// `Campaign.asset_automation_settings`, flattened: the API's repeated
+/// `(type, status)` list has one entry per type at most, so it reads as a
+/// settings bag and a file can name only the automations it has an opinion on.
+#[derive(Deserialize, Default)]
+pub struct JsonAssetAutomationSettings {
+    #[serde(default)]
+    pub text_asset_automation: Option<String>,
+    #[serde(default)]
+    pub final_url_expansion_text_asset_automation: Option<String>,
+    #[serde(default)]
+    pub generate_image_enhancement: Option<String>,
+    #[serde(default)]
+    pub generate_image_extraction: Option<String>,
+    #[serde(default)]
+    pub generate_enhanced_youtube_videos: Option<String>,
+}
+
+impl JsonAssetAutomationSettings {
+    pub fn get(&self, field: &str) -> Option<&str> {
+        match field {
+            "text_asset_automation" => self.text_asset_automation.as_deref(),
+            "final_url_expansion_text_asset_automation" => {
+                self.final_url_expansion_text_asset_automation.as_deref()
+            }
+            "generate_image_enhancement" => self.generate_image_enhancement.as_deref(),
+            "generate_image_extraction" => self.generate_image_extraction.as_deref(),
+            "generate_enhanced_youtube_videos" => self.generate_enhanced_youtube_videos.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn set(&mut self, field: &str, value: Option<String>) {
+        let slot = match field {
+            "text_asset_automation" => &mut self.text_asset_automation,
+            "final_url_expansion_text_asset_automation" => {
+                &mut self.final_url_expansion_text_asset_automation
+            }
+            "generate_image_enhancement" => &mut self.generate_image_enhancement,
+            "generate_image_extraction" => &mut self.generate_image_extraction,
+            "generate_enhanced_youtube_videos" => &mut self.generate_enhanced_youtube_videos,
+            _ => return,
+        };
+        *slot = value;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        crate::schema::ASSET_AUTOMATION_FIELDS
             .iter()
             .all(|(field, _)| self.get(field).is_none())
     }
@@ -2185,6 +2252,15 @@ fn write_campaign(
         }
         out.push_str("  }\n");
     }
+    if let Some(a) = c.asset_automation_settings.as_ref().filter(|a| !a.is_empty()) {
+        out.push_str("\n  asset_automation_settings {\n");
+        for (field, _) in crate::schema::ASSET_AUTOMATION_FIELDS {
+            if let Some(v) = a.get(field) {
+                write_attr(out, 2, field, &fmt_string(v));
+            }
+        }
+        out.push_str("  }\n");
+    }
     write_targeting_setting(out, c.targeting_setting.as_ref());
     for f in &c.frequency_caps {
         out.push_str("\n  frequency_caps {\n");
@@ -3959,6 +4035,28 @@ mod tests {
         // The default level stays implicit; a non-default one is written out.
         assert_eq!(out.matches("level = ").count(), 1, "{out}");
         assert!(out.contains("level = \"AD_GROUP\""), "{out}");
+    }
+
+    /// Pulling an account is how the opt-out gets into the repo in the first
+    /// place, so what Google reports has to come back as a block someone can
+    /// commit and CI can hold to (issue #152).
+    #[test]
+    fn asset_automation_renders_as_the_block_that_declares_it() {
+        let raw = r#"[{"results":[
+            { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget", "amountMicros": "5000000" } },
+            { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Brand", "status": "ENABLED", "advertisingChannelType": "SEARCH", "campaignBudget": "customers/9/campaignBudgets/1001", "assetAutomationSettings": [
+                { "assetAutomationType": "FINAL_URL_EXPANSION_TEXT_ASSET_AUTOMATION", "assetAutomationStatus": "OPTED_OUT" },
+                { "assetAutomationType": "TEXT_ASSET_AUTOMATION", "assetAutomationStatus": "OPTED_IN" }
+            ] } }
+        ]}]"#;
+        let input = from_search_response(raw).expect("adapter");
+        let out = render(&input);
+        assert_eq!(out.matches("asset_automation_settings {").count(), 1, "{out}");
+        assert!(out.contains("text_asset_automation = \"OPTED_IN\""), "{out}");
+        assert!(
+            out.contains("final_url_expansion_text_asset_automation = \"OPTED_OUT\""),
+            "{out}"
+        );
     }
 
     /// Google fills in a restriction for every dimension it has an opinion

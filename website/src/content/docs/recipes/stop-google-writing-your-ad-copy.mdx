@@ -1,0 +1,126 @@
+---
+title: Stop Google writing your ad copy
+description: Opt a campaign out of automatically created headlines and descriptions from your .bid, and have CI catch it if someone switches them back on.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Your ads are running headlines nobody wrote. They read like your
+landing page, roughly, with the odd sentence that runs on past where a
+person would have stopped — and they change without a PR.
+
+That's **asset automation**: Google Ads generating headlines and
+descriptions for your campaign out of your landing pages, your existing
+ads, and generative AI. It's a campaign setting, so you can declare it
+off in your `.bid` and keep it off.
+
+## Say no in the file
+
+```hcl
+resource "google_ads_campaign" "brand_search" {
+  name                     = "Brand — Search"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.brand.id
+
+  asset_automation_settings {
+    text_asset_automation                     = "OPTED_OUT"
+    final_url_expansion_text_asset_automation = "OPTED_OUT"
+  }
+}
+```
+
+```
+bidsmith plan .
+```
+
+```
+google_ads_campaign.brand_search                              ~ update
+    asset_automation_settings: text_asset_automation=OPTED_IN -> text_asset_automation=OPTED_OUT, fi…
+
+Plan: 0 to create, 1 to update, 0 to destroy, 12 unchanged.
+```
+
+`bidsmith apply .` sends it. From then on the campaign's ads say what
+your files say.
+
+The two settings do different things:
+
+- **`text_asset_automation`** — the one most people mean. Google writes
+  extra headlines and descriptions across the campaign's ads.
+- **`final_url_expansion_text_asset_automation`** — Google sends clicks
+  to landing pages it picks from your site, and writes copy to match
+  whichever page it picked. Turning this off is also what makes turning
+  the first one off complete: while URL expansion runs, generated text
+  comes with it.
+
+## Keeping it off
+
+The value of declaring it is what happens *next* time. Someone opens the
+Google Ads UI, switches text customization back on, and the next `plan`
+says so:
+
+```
+google_ads_campaign.brand_search                              ~ update
+    asset_automation_settings: text_asset_automation=OPTED_IN, fi… -> text_asset_automation=OPTED_O…
+```
+
+Run `bidsmith plan --detailed-exitcode .` in CI and that drift fails the
+build. Nothing has to be noticed by a person.
+
+<Aside type="caution" title="Name every automation you care about">
+  bidsmith compares the automations you name, and a campaign with no
+  block at all is left alone. But once one of them drifts, the **whole**
+  list is written — replacing it wholesale is the only update the Google
+  Ads API offers here — so an automation you didn't name goes back to
+  Google's default at that point. The plan row shows the full
+  before-and-after, so nothing happens that you didn't approve.
+</Aside>
+
+Two limits worth knowing:
+
+- These settings exist on **Search** and **Performance Max** campaigns
+  only. `bidsmith validate` warns if you put the block on anything else.
+- Defaults differ: a Search campaign starts opted out of text automation
+  and URL expansion, a Performance Max campaign starts opted **in** to
+  everything, including image and video generation.
+
+## The switch that isn't in the file
+
+Dynamic sitelinks, dynamic callouts, and the business name and logo that
+Google attaches by itself are a **different** feature: an account-level
+"automatically created assets" setting that the Google Ads API does not
+expose at all. No `.bid` can turn it off.
+
+What bidsmith can do is tell you it's on:
+
+```
+plan: warning: account: Google's asset automation is serving 6 asset(s)
+nothing declares (4 SITELINK, 2 CALLOUT). The account-level "automatically
+created assets" switch that makes them is not in the Google Ads API, so
+bidsmith can only report it — turn it off in the Google Ads UI. What a
+campaign can declare is its own automation: `asset_automation_settings`.
+```
+
+That line comes back on every plan while the switch is on, so flipping it
+in the UI is caught on the next run even though bidsmith can't undo it.
+
+<Steps>
+
+1. **Turn it off in the Google Ads UI.** Admin → Account settings →
+   Automatically created assets.
+
+2. **Run `bidsmith plan .`** and check the warning is gone.
+
+3. **Prune what's left.** The assets Google already attached stay until
+   something removes them — see [Serve only the extensions you
+   declared](./serve-only-the-extensions-you-declared/).
+
+</Steps>
+
+## See also
+
+- [Serve only the extensions you declared](./serve-only-the-extensions-you-declared/) —
+  removing sitelinks and callouts nobody declared.
+- [`google_ads_campaign`](/bidsmith/resources/google_ads_campaign/) —
+  the full `asset_automation_settings` reference.
+- [`bidsmith plan`](/bidsmith/commands/plan/) — reading an update row.

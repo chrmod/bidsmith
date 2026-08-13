@@ -1,8 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::commands::export::{
     address_label_payload, ExportInput, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset,
-    JsonAdGroupCriterion, JsonBudget, JsonCallAsset, JsonCampaign,
+    JsonAdGroupCriterion, JsonAssetAutomationSettings, JsonBudget, JsonCallAsset, JsonCampaign,
     JsonCampaignAsset, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
     JsonAudience, JsonCriterion, JsonCustomAudience, JsonCustomParameter, JsonCustomerAsset,
     JsonSharedCriterion,
@@ -1409,6 +1409,7 @@ fn orphan_asset_link_deletes(
     let mut out: Vec<ResourceDiff> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
     let mut skipped = 0usize;
+    let mut automatic: BTreeMap<&str, usize> = BTreeMap::new();
 
     let matched_live_ids = |kind: &str| -> HashSet<&str> {
         diffs
@@ -1453,10 +1454,12 @@ fn orphan_asset_link_deletes(
             if matched.contains(l.id.as_str()) || is_removed(l.status.as_deref()) {
                 continue;
             }
-            let Some(cat) = asset_link_category(&l.field_type) else {
-                continue;
-            };
-            if !managed.contains(&(l.campaign.clone(), cat)) {
+            let owned = asset_link_category(&l.field_type)
+                .is_some_and(|cat| managed.contains(&(l.campaign.clone(), cat)));
+            if !owned {
+                if parent_addr.contains_key(&l.campaign) {
+                    note_automatic(&mut automatic, l.source.as_deref(), &l.field_type);
+                }
                 continue;
             }
             let descriptor = describe(&l.asset, &l.field_type);
@@ -1513,10 +1516,12 @@ fn orphan_asset_link_deletes(
             if matched.contains(l.id.as_str()) || is_removed(l.status.as_deref()) {
                 continue;
             }
-            let Some(cat) = asset_link_category(&l.field_type) else {
-                continue;
-            };
-            if !managed.contains(&(l.ad_group.clone(), cat)) {
+            let owned = asset_link_category(&l.field_type)
+                .is_some_and(|cat| managed.contains(&(l.ad_group.clone(), cat)));
+            if !owned {
+                if parent_addr.contains_key(&l.ad_group) {
+                    note_automatic(&mut automatic, l.source.as_deref(), &l.field_type);
+                }
                 continue;
             }
             let descriptor = describe(&l.asset, &l.field_type);
@@ -1555,6 +1560,7 @@ fn orphan_asset_link_deletes(
                 continue;
             }
             if !declared.owned_account_assets.contains(&l.field_type) {
+                note_automatic(&mut automatic, l.source.as_deref(), &l.field_type);
                 continue;
             }
             let descriptor = format!("account-level {}", describe(&l.asset, &l.field_type));
@@ -1573,7 +1579,44 @@ fn orphan_asset_link_deletes(
         }
     }
 
+    warnings.extend(automatic_asset_warning(&automatic));
     (out, warnings, skipped)
+}
+
+/// Count one live link Google attached and nothing declared, where no ownership
+/// rule reaches it — so it would otherwise leave no trace in the plan at all.
+fn note_automatic<'a>(
+    counts: &mut BTreeMap<&'a str, usize>,
+    source: Option<&str>,
+    field_type: &'a str,
+) {
+    if source == Some(AUTOMATICALLY_CREATED) {
+        *counts.entry(field_type).or_default() += 1;
+    }
+}
+
+/// What Google's automation is serving on the resources bidsmith manages. The
+/// account-level switch behind these has no field in the Google Ads API — not
+/// on `customer`, not anywhere — so reporting it on every plan is the whole of
+/// what bidsmith can do about it, and is what catches someone flipping it back
+/// on in the UI (issue #152).
+fn automatic_asset_warning(counts: &BTreeMap<&str, usize>) -> Option<String> {
+    let total: usize = counts.values().sum();
+    if total == 0 {
+        return None;
+    }
+    let breakdown = counts
+        .iter()
+        .map(|(field_type, n)| format!("{n} {field_type}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "account: Google's asset automation is serving {total} asset(s) nothing declares \
+         ({breakdown}). The account-level \"automatically created assets\" switch that makes \
+         them is not in the Google Ads API, so bidsmith can only report it — turn it off in the \
+         Google Ads UI. What a campaign can declare is its own automation: \
+         `asset_automation_settings`."
+    ))
 }
 
 /// Why a link the file no longer declares is left attached anyway. Both cases
@@ -2191,6 +2234,26 @@ fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign, caps_claimed: bool) -> Vec<
             ));
         }
     }
+    // Omitted means unmanaged, one automation at a time — an automation live
+    // carries that the file never names cannot be drift, or a block naming one
+    // of five would propose the same write on every plan and never converge.
+    // The write is still the whole list, since that is all the API takes, so
+    // both sides render whole: the row says what the campaign ends up with,
+    // including the automations the write drops (issue #152).
+    if let Some(a) = d.asset_automation_settings.as_ref().filter(|a| !a.is_empty()) {
+        let drifted = crate::schema::ASSET_AUTOMATION_FIELDS.iter().any(|(field, _)| {
+            let desired = a.get(field);
+            desired.is_some()
+                && desired != l.asset_automation_settings.as_ref().and_then(|s| s.get(field))
+        });
+        if drifted {
+            c.push(change(
+                "asset_automation_settings",
+                Raw(shown_asset_automation(l.asset_automation_settings.as_ref())),
+                Raw(shown_asset_automation(Some(a))),
+            ));
+        }
+    }
     c.extend(diff_targeting_setting(
         d.targeting_setting.as_ref(),
         l.targeting_setting.as_ref(),
@@ -2240,6 +2303,20 @@ fn shown_target_restrictions(effective: &[(&str, bool)]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// The automation list as a reviewer reads it — in the attribute names the
+/// file uses, so a plan row says which automations the campaign ends up with
+/// rather than merely that the setting moves.
+fn shown_asset_automation(settings: Option<&JsonAssetAutomationSettings>) -> String {
+    let shown: Vec<String> = crate::schema::ASSET_AUTOMATION_FIELDS
+        .iter()
+        .filter_map(|(field, _)| Some(format!("{field}={}", settings?.get(field)?)))
+        .collect();
+    if shown.is_empty() {
+        return "Google's defaults".to_string();
+    }
+    shown.join(", ")
 }
 
 /// The cap list as a reviewer reads it — `3 IMPRESSION / 1 DAY (CAMPAIGN)` per
@@ -5452,6 +5529,53 @@ mod asset_prune_tests {
             .find(|w| w.contains("Also on Firefox"))
             .unwrap_or_else(|| panic!("{:?}", report.warnings));
         assert!(w.contains("asset automation"), "{w}");
+        assert_eq!(
+            report.warnings.len(),
+            1,
+            "the link already has its own line: {:?}",
+            report.warnings
+        );
+    }
+
+    /// A campaign declaring no links of its own owns nothing to prune, so a
+    /// sitelink Google invented for it used to leave no trace in the plan at
+    /// all. The switch behind it is account-level and outside the API, so
+    /// saying so on every run is the whole of the enforcement (issue #152).
+    #[test]
+    fn assets_google_invented_are_reported_even_where_nothing_is_pruned() {
+        let bare = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"m.c","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"m.b"}]
+        }"#,
+        );
+        let report = diff(&bare, &live(AUTOMATICALLY_CREATED, ""));
+        assert_eq!(report.delete_count, 0, "{:?}", destroys(&report));
+        let w = report
+            .warnings
+            .iter()
+            .find(|w| w.contains("asset automation"))
+            .unwrap_or_else(|| panic!("{:?}", report.warnings));
+        assert!(w.contains("1 SITELINK"), "{w}");
+        assert!(w.contains("asset_automation_settings"), "{w}");
+    }
+
+    /// Only what Google put there: a link someone added in the UI is a
+    /// different problem, and prune is already the answer to it.
+    #[test]
+    fn links_an_advertiser_added_are_not_reported_as_automation() {
+        let bare = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"m.c","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"m.b"}]
+        }"#,
+        );
+        let report = diff(&bare, &live("ADVERTISER", ""));
+        assert!(
+            !report.warnings.iter().any(|w| w.contains("asset automation")),
+            "{:?}",
+            report.warnings
+        );
     }
 
     #[test]

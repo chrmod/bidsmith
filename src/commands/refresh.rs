@@ -11,7 +11,7 @@ use crate::api::live_state::CacheMode;
 use crate::api::{auth, client, diff, live_state};
 use crate::commands::export::{
     canonicalize, filter_removed, fmt_string, prune_orphans, render_split, report_orphans,
-    ExportInput, JsonFrequencyCap, JsonTargetingSetting,
+    ExportInput, JsonAssetAutomationSettings, JsonFrequencyCap, JsonTargetingSetting,
 };
 use crate::commands::vars;
 use crate::diagnostics::Diag;
@@ -657,6 +657,25 @@ fn frequency_cap_blocks(caps: &[JsonFrequencyCap]) -> Option<Vec<Block>> {
     (blocks.len() == caps.len()).then_some(blocks)
 }
 
+const ASSET_AUTOMATION_UNWRITABLE: &str =
+    "asset_automation_settings (live settings did not render as a valid block — edit it by hand)";
+
+/// Render the live asset automation as the one block the file holds it in. The
+/// whole block round-trips, because the API field it stands for is replaced
+/// whole; a live campaign carrying none renders as an empty block, which is
+/// still the file's claim on the field.
+fn asset_automation_blocks(settings: Option<&JsonAssetAutomationSettings>) -> Option<Vec<Block>> {
+    let mut src = String::from("\n  asset_automation_settings {\n");
+    for (field, _) in crate::schema::ASSET_AUTOMATION_FIELDS {
+        if let Some(status) = settings.and_then(|s| s.get(field)) {
+            src.push_str(&format!("    {field} = {}\n", fmt_string(status)));
+        }
+    }
+    src.push_str("  }\n");
+    let blocks: Vec<Block> = src.parse::<Body>().ok()?.into_blocks().collect();
+    (blocks.len() == 1).then_some(blocks)
+}
+
 const TARGET_RESTRICTIONS_UNWRITABLE: &str =
     "targeting_setting.target_restrictions (live restrictions did not render as valid blocks — \
      edit them by hand)";
@@ -816,6 +835,12 @@ fn collect_edits(
                                 .to_string(),
                         ),
                     },
+                    "asset_automation_settings" => {
+                        match asset_automation_blocks(c.asset_automation_settings.as_ref()) {
+                            Some(blocks) => push!(vec!["asset_automation_settings"], blocks),
+                            None => skip.push(ASSET_AUTOMATION_UNWRITABLE.to_string()),
+                        }
+                    }
                     "targeting_setting.target_restrictions" => {
                         match target_restriction_blocks(c.targeting_setting.as_ref()) {
                             Some(blocks) => {
@@ -1450,6 +1475,69 @@ resource "google_ads_campaign" "brand_video" {
         let (out, outcome) = run(&src, &live);
         assert_eq!(out, src, "an unmanaged field must not be materialized");
         assert!(outcome.applied.is_empty());
+        assert!(outcome.skipped.is_empty(), "{:?}", outcome.skipped);
+    }
+
+    const AUTOMATION_SRC: &str = r#"provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+resource "google_ads_campaign_budget" "budget" {
+  name          = "Budget"
+  amount_micros = 10000000
+}
+
+resource "google_ads_campaign" "brand_search" {
+  name                     = "Brand search"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.budget.id
+
+  # keep this comment
+  asset_automation_settings {
+    text_asset_automation = "OPTED_OUT"
+  }
+}
+"#;
+
+    fn automation_live(settings_json: &str) -> String {
+        format!(
+            r#"{{
+              "customer_id": "1234567890",
+              "campaign_budgets": [
+                {{"id":"111","name":"Budget","amount_micros":10000000,"delivery_method":"STANDARD"}}
+              ],
+              "campaigns": [
+                {{"id":"555","name":"Brand search","status":"ENABLED",
+                 "advertising_channel_type":"SEARCH","campaign_budget":"111",
+                 "managed_address":"main.google_ads_campaign.brand_search",
+                 "asset_automation_settings":{settings_json}}}
+              ]
+            }}"#
+        )
+    }
+
+    /// Someone switching text automation back on in the UI is drift the file
+    /// can absorb: `refresh --in-place` writes what the account actually holds,
+    /// so the next plan compares against a `.bid` that tells the truth.
+    #[test]
+    fn drifted_asset_automation_round_trips_into_the_block() {
+        let live = automation_live(
+            r#"{"text_asset_automation":"OPTED_IN",
+                "final_url_expansion_text_asset_automation":"OPTED_OUT"}"#,
+        );
+        let (out, outcome) = run(AUTOMATION_SRC, &live);
+
+        assert!(
+            out.contains(
+                "\n  asset_automation_settings {\n    text_asset_automation = \"OPTED_IN\"\n    \
+                 final_url_expansion_text_asset_automation = \"OPTED_OUT\"\n  }\n"
+            ),
+            "{out}"
+        );
+        assert_eq!(out.matches("asset_automation_settings {").count(), 1, "{out}");
+        assert_eq!(outcome.changed_files, vec![0]);
+        let (_, fields) = &outcome.applied[0];
+        assert_eq!(fields, &vec!["asset_automation_settings".to_string()]);
         assert!(outcome.skipped.is_empty(), "{:?}", outcome.skipped);
     }
 
