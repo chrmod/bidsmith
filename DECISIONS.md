@@ -1236,6 +1236,25 @@ resource type, any file layout, modules, schema validation.
   heavier, rarely-wanted surface; the 90% use is one-shot idea generation, which
   a read verb serves without any state model. `GenerateKeywordHistoricalMetrics`
   and forecast RPCs are deferred follow-ups.
+- **Adoption writes source, not a label** (issue #150): bringing a
+  pre-bidsmith resource under management is `bidsmith import <address>
+  <resource-name>`, which declares it in a `.bid` file — **not** a mutate that
+  stamps `bidsmith:address` onto the live resource. The API only accepts labels
+  on campaigns, ad groups, ads, and ad-group criteria, and those four already
+  adopt a content-matching live resource by themselves on the next `apply`. The
+  types that actually strand an account with pre-bidsmith history — assets, the
+  `customer_asset` / `campaign_asset` / `ad_group_asset` links, criteria — carry
+  no label and never will, so for them "managed" can only mean "declared", and
+  `plan` reaches them by content the moment a block exists. That makes `import`
+  a source-writing sibling of `refresh --in-place` (same `Program` load, same
+  re-validate-before-writing guard) rather than a new mutate path, and keeps the
+  adoption itself reviewable as a diff in git instead of as an account write.
+  Chosen over `refresh --in-place --adopt`, which would have had to guess which
+  live resource a declaration meant; `import` names it outright, and the
+  guessing that remains — content matching in `plan` — now reports when a
+  declaration fits more than one live resource instead of silently taking one.
+  Automatically-created assets are left out of the declared set (they belong to
+  the automation settings, not to the file) and are a matter for prune.
 
 ## Current state
 
@@ -1274,6 +1293,7 @@ bidsmith/
 │       ├── e2e_cleanup.rs # hidden _e2e-cleanup verb: sweep bidsmith-e2e-* resources
 │       ├── export.rs     # render .bid from a JSON source description
 │       ├── fmt.rs        # canonical re-emitter (in-place / --check)
+│       ├── import.rs     # adopt one live resource into a chosen .bid address
 │       ├── init.rs       # scaffold a GitOps project (templates/init/ → repo skeleton)
 │       ├── keyword_ideas.rs # read-only Keyword Planner research (generateKeywordIdeas)
 │       ├── plan.rs       # parse + validate + import + diff + validateOnly batch
@@ -1789,8 +1809,8 @@ Validator covers (so far):
 | `design-doc` | working | Generate the Google Ads API Basic-Access design document for an applicant to attach to their application. Two subcommands: `init` writes a commented `design-doc.toml` template; `render` reads the filled-in TOML plus bidsmith's own internals (API version, GAQL query list, RMF mapping) and emits `design-doc.html` for the user to print to PDF |
 | `auth`     | working | Sign in to Google Ads and manage saved credentials. `login` runs a browser OAuth loopback + PKCE flow, then writes `~/.bidsmith/credentials.toml` (`0600`) — prompts for the developer token + MCC id when not passed, and ends by listing the accounts `listAccessibleCustomers` returns; `status` shows which credentials resolve and verifies them live; `logout` clears the sign-in (keeps the developer-token + MCC "team profile" unless `--all`); `profile` emits that shareable team blob. Uses the bundled OAuth client when present, else `--client-id`/`--client-secret` |
 | `init`     | working | Scaffold a GitOps project skeleton into a directory (default `.`): a fmt-canonical starter `campaigns.bid` (everything `PAUSED`), a `bidsmith.toml` for the account ids, a `.github/workflows/bidsmith.yml` (plan on PRs → sticky comment, apply on merge to `main`), `.gitignore`, and a README setup checklist. Per-file idempotent — an existing file is reported and skipped unless `--force`. Templates live in `templates/init/` (`include_str!`'d) and are guarded offline by the CI checklist (`init` → `validate` → `fmt --check`) so the starter can't drift from the schema/formatter |
+| `import`   | working | Adopt one live resource into a `.bid` address you name (`bidsmith import <address> <resource-name-or-id>`). Scoped to the types Google Ads refuses to label — sitelink / callout / structured-snippet / call / YouTube-video assets, the `customer_asset` / `campaign_asset` / `ad_group_asset` links, and campaign / ad-group criteria — because the labelable kinds already adopt a content-matching live resource on the next `apply`. The address's module segment picks the file (`account.google_ads_customer_asset.x` → `account.bid`); an unqualified address is only allowed when the tree is a single file. Anything the block needs and the tree doesn't declare (the asset behind a link) is written alongside it with an export-style name; references point at existing declarations wherever the plan already matches one. Refuses an occupied address, a resource `plan` already manages, a resource name from the wrong collection, and a criterion whose parent isn't declared. `--check` prints the blocks without writing; `--offline` reads the cached snapshot; the mutated tree is re-validated before anything reaches disk |
 | `graph`    | —       | (later) Visualize resource graph                     |
-| `import`   | —       | (later) Adopt an unlabeled existing resource         |
 
 ## References
 

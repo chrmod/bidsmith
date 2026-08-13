@@ -300,7 +300,7 @@ fn build_prepared(
     }
 }
 
-fn load_live_from_cache(
+pub fn load_live_from_cache(
     label: &'static str,
     declared: &mut ExportInput,
 ) -> Result<(ExportInput, StateProvenance), ExitCode> {

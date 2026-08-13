@@ -1,0 +1,131 @@
+---
+title: Adopt sitelinks and callouts you already have
+description: Bring extensions that were added in the Google Ads UI into your .bid files with bidsmith import, without creating duplicates.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Most accounts arrive with extensions already on them: sitelinks somebody
+added years ago, callouts attached to the account rather than to a
+campaign, a structured snippet on one campaign that nobody else has.
+
+Writing them out by hand is risky. Declare a sitelink whose text you got
+slightly wrong and bidsmith creates a *second* one; declare a link that
+already exists and Google rejects the whole batch. `bidsmith import`
+avoids both: you point at the live resource, it writes the block that
+matches it, and `plan` goes quiet.
+
+## Find what's there
+
+```sh
+bidsmith query "SELECT customer_asset.resource_name, asset.sitelink_asset.link_text
+                FROM customer_asset WHERE customer_asset.field_type = SITELINK"
+```
+
+```
+customer_asset.resource_name                          asset.sitelink_asset.link_text
+customers/1234567890/customerAssets/4001~SITELINK     Shop
+customers/1234567890/customerAssets/4002~SITELINK     Support
+```
+
+Those `resource_name` values are what `import` takes. Swap `SITELINK`
+for `CALLOUT` or `STRUCTURED_SNIPPET` for the others, and
+`customer_asset` for `campaign_asset` to see the ones attached to a
+single campaign.
+
+## Import them
+
+<Steps>
+
+1. **Preview one.** `--check` prints the block and writes nothing:
+
+   ```sh
+   bidsmith import --check account.google_ads_customer_asset.shop_link \
+                   customers/1234567890/customerAssets/4001~SITELINK
+   ```
+
+   ```hcl
+   resource "google_ads_sitelink_asset" "sitelink_shop" {
+     link_text = "Shop"
+     final_urls = ["https://example.com/shop"]
+   }
+
+   resource "google_ads_customer_asset" "shop_link" {
+     asset = google_ads_sitelink_asset.sitelink_shop.id
+   }
+   ```
+
+   Two blocks, because a link can't exist without its asset. If your
+   files already declared the sitelink, only the link would be written
+   and it would point at what you have.
+
+2. **Write it.** Drop `--check`:
+
+   ```sh
+   bidsmith import account.google_ads_customer_asset.shop_link \
+                   customers/1234567890/customerAssets/4001~SITELINK
+   ```
+
+   `account.` is the module segment — it names the file
+   (`account.bid`) the blocks go into.
+
+3. **Repeat for the rest**, then confirm nothing would be created:
+
+   ```sh
+   bidsmith plan .
+   ```
+
+   ```
+   Plan: 0 to create, 0 to update, 0 to destroy, 0 to adopt, 8 unchanged.
+   ```
+
+</Steps>
+
+Nothing was written to Google Ads at any point. The adoption is a diff
+in your repository, reviewable like any other change.
+
+## Give them better names
+
+`import` names the asset the way `refresh` would —
+`sitelink_shop`, `callout_free_delivery`. If you'd rather call it
+something else, rename it afterwards:
+
+```sh
+bidsmith mv google_ads_sitelink_asset.sitelink_shop google_ads_sitelink_asset.shop
+```
+
+[`mv`](/bidsmith/commands/mv/) rewrites the block and every reference to
+it, and changes nothing live.
+
+## If a sitelink is duplicated
+
+Assets have no name of their own that a `.bid` file can point at —
+bidsmith matches them by their text and URLs. Two live sitelinks that
+are byte-identical are therefore indistinguishable, and `plan` tells you
+so:
+
+```
+plan: warning: account.google_ads_sitelink_asset.shop: 2 live resources
+are identical to it (4001, 4009) — adopted 4001, the rest stay
+unmanaged.
+```
+
+Nothing is duplicated and nothing is broken — but one of the two is
+outside bidsmith's view, and will stay there. Delete the extra in the
+Google Ads UI, or import it too under its own address.
+
+<Aside type="note">
+  Assets Google created for you (`AUTOMATICALLY_CREATED` — a business
+  name, a logo, an auto-generated sitelink) aren't yours to declare:
+  they come back whatever your file says, because an automation setting
+  produces them. Leave them out.
+</Aside>
+
+## See also
+
+- [`bidsmith import`](/bidsmith/commands/import/) — the full flag list
+  and everything it refuses to do.
+- [Make a search ad render taller with extensions](./add-search-ad-extensions/) —
+  how the same resources look when you write them from scratch.
+- [Adopt a campaign you built in the Google Ads UI](./adopt-a-campaign-from-the-ui/) —
+  the label-based half of adoption, for campaigns and ad groups.

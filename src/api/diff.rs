@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::commands::export::{
     address_label_payload, ExportInput, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset,
-    JsonAdGroupCriterion, JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign,
+    JsonAdGroupCriterion, JsonBudget, JsonCallAsset, JsonCampaign,
     JsonCampaignAsset, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
     JsonAudience, JsonCriterion, JsonCustomAudience, JsonCustomParameter, JsonCustomerAsset,
     JsonSharedCriterion,
@@ -734,15 +734,15 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         });
     }
 
-    let live_sitelink_assets: HashMap<String, &JsonSitelinkAsset> = live
-        .sitelink_assets
-        .iter()
-        .map(|a| (sitelink_asset_key(a), a))
-        .collect();
+    let live_sitelink_assets = content_index(&live.sitelink_assets, sitelink_asset_key);
     for d in &declared.sitelink_assets {
         let action = match live_sitelink_assets.get(&sitelink_asset_key(d)) {
-            Some(l) => {
+            Some(cands) => {
+                let l = cands[0];
                 asset_match.insert(d.id.clone(), l.id.clone());
+                if let Some(w) = ambiguity_warning(&d.id, cands, |a| &a.id) {
+                    campaign_warnings.push(w);
+                }
                 action_for_match(l.id.clone(), Vec::new())
             }
             None => Action::Create,
@@ -754,12 +754,15 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         });
     }
 
-    let live_callout_assets: HashMap<&str, &JsonCalloutAsset> =
-        live.callout_assets.iter().map(|a| (a.text.as_str(), a)).collect();
+    let live_callout_assets = content_index(&live.callout_assets, |a| a.text.clone());
     for d in &declared.callout_assets {
-        let action = match live_callout_assets.get(d.text.as_str()) {
-            Some(l) => {
+        let action = match live_callout_assets.get(&d.text) {
+            Some(cands) => {
+                let l = cands[0];
                 asset_match.insert(d.id.clone(), l.id.clone());
+                if let Some(w) = ambiguity_warning(&d.id, cands, |a| &a.id) {
+                    campaign_warnings.push(w);
+                }
                 action_for_match(l.id.clone(), Vec::new())
             }
             None => Action::Create,
@@ -771,15 +774,18 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         });
     }
 
-    let live_structured_snippet_assets: HashMap<String, &JsonStructuredSnippetAsset> = live
-        .structured_snippet_assets
-        .iter()
-        .map(|a| (structured_snippet_asset_key(a), a))
-        .collect();
+    let live_structured_snippet_assets = content_index(
+        &live.structured_snippet_assets,
+        structured_snippet_asset_key,
+    );
     for d in &declared.structured_snippet_assets {
         let action = match live_structured_snippet_assets.get(&structured_snippet_asset_key(d)) {
-            Some(l) => {
+            Some(cands) => {
+                let l = cands[0];
                 asset_match.insert(d.id.clone(), l.id.clone());
+                if let Some(w) = ambiguity_warning(&d.id, cands, |a| &a.id) {
+                    campaign_warnings.push(w);
+                }
                 action_for_match(l.id.clone(), Vec::new())
             }
             None => Action::Create,
@@ -2356,6 +2362,40 @@ fn diff_conversion_action(d: &JsonConversionAction, l: &JsonConversionAction) ->
 
 fn diff_call_asset(_d: &JsonCallAsset, _l: &JsonCallAsset) -> Vec<FieldChange> {
     Vec::new()
+}
+
+/// Live resources grouped by the content key adoption matches them on. Assets
+/// carry no `bidsmith:address` label — the API refuses to label them — so
+/// content is the only identity they have, and it is not guaranteed unique.
+fn content_index<T>(items: &[T], key: impl Fn(&T) -> String) -> HashMap<String, Vec<&T>> {
+    let mut out: HashMap<String, Vec<&T>> = HashMap::new();
+    for item in items {
+        out.entry(key(item)).or_default().push(item);
+    }
+    out
+}
+
+/// A declaration that several live resources answer to equally. The `.bid` says
+/// nothing that could tell them apart, so adoption takes the first and the rest
+/// stay unmanaged — worth saying out loud, because the account keeps serving a
+/// duplicate the file cannot see.
+fn ambiguity_warning<T>(
+    address: &str,
+    candidates: &[&T],
+    id: impl Fn(&T) -> &String,
+) -> Option<String> {
+    if candidates.len() < 2 {
+        return None;
+    }
+    let ids: Vec<&str> = candidates.iter().map(|c| id(c).as_str()).collect();
+    Some(format!(
+        "{address}: {} live resources are identical to it ({}) — adopted {}, the rest \
+         stay unmanaged. Remove the duplicates in the account, or declare them too so \
+         bidsmith owns each one.",
+        ids.len(),
+        ids.join(", "),
+        ids[0],
+    ))
 }
 
 // Assets are content-immutable in the Google Ads API: editing a sitelink's text
@@ -4874,5 +4914,104 @@ mod tracking_tests {
             "m.google_ads_campaign.c",
         );
         assert_eq!(changes, vec![r#"custom_parameters: "{region=us}" -> "{}""#.to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod asset_adoption_tests {
+    use super::*;
+
+    /// Both sides normalized the way plan normalizes them, so an omitted
+    /// `status` does not read as drift against the live default.
+    fn input(json: &str) -> ExportInput {
+        let mut i: ExportInput = serde_json::from_str(json).expect("valid test input");
+        i.apply_schema_defaults();
+        i
+    }
+
+    const DECLARED: &str = r#"{
+        "customer_id": "9",
+        "sitelink_assets": [
+            {"id":"m.google_ads_sitelink_asset.shop","link_text":"Shop",
+             "final_urls":["https://example.com/shop"]}
+        ],
+        "customer_assets": [
+            {"id":"m.google_ads_customer_asset.shop_link",
+             "asset":"m.google_ads_sitelink_asset.shop","field_type":"SITELINK"}
+        ]
+    }"#;
+
+    fn action_for(report: &DiffReport, address: &str) -> String {
+        let d = report
+            .diffs
+            .iter()
+            .find(|d| d.address == address)
+            .unwrap_or_else(|| panic!("no diff for {address}"));
+        match &d.action {
+            Action::NoOp { .. } => "noop".to_string(),
+            Action::Create => "create".to_string(),
+            Action::Update { .. } => "update".to_string(),
+            Action::Delete { .. } => "delete".to_string(),
+        }
+    }
+
+    #[test]
+    fn an_unlabeled_live_sitelink_and_its_account_link_are_adopted_not_recreated() {
+        // The on-ramp case: both were made in the UI, so neither carries a
+        // bidsmith label. Content is all there is to match on, and it is enough.
+        let live = input(
+            r#"{
+            "customer_id": "9",
+            "sitelink_assets": [
+                {"id":"4001","link_text":"Shop","final_urls":["https://example.com/shop"]}
+            ],
+            "customer_assets": [
+                {"id":"4001~SITELINK","asset":"4001","field_type":"SITELINK","status":"ENABLED"}
+            ]
+        }"#,
+        );
+        let report = diff(&input(DECLARED), &live);
+        assert_eq!(action_for(&report, "m.google_ads_sitelink_asset.shop"), "noop");
+        assert_eq!(
+            action_for(&report, "m.google_ads_customer_asset.shop_link"),
+            "noop",
+            "an account-level link that already exists must not be created twice",
+        );
+    }
+
+    #[test]
+    fn two_identical_live_sitelinks_are_reported_rather_than_picked_from_silently() {
+        let live = input(
+            r#"{
+            "customer_id": "9",
+            "sitelink_assets": [
+                {"id":"4001","link_text":"Shop","final_urls":["https://example.com/shop"]},
+                {"id":"4002","link_text":"Shop","final_urls":["https://example.com/shop"]}
+            ]
+        }"#,
+        );
+        let report = diff(&input(DECLARED), &live);
+        let w = report
+            .warnings
+            .iter()
+            .find(|w| w.contains("m.google_ads_sitelink_asset.shop"))
+            .unwrap_or_else(|| panic!("{:?}", report.warnings));
+        assert!(w.contains("4001") && w.contains("4002"), "{w}");
+        assert!(w.contains("adopted 4001"), "the adopted one has to be named: {w}");
+    }
+
+    #[test]
+    fn a_single_match_says_nothing() {
+        let live = input(
+            r#"{
+            "customer_id": "9",
+            "sitelink_assets": [
+                {"id":"4001","link_text":"Shop","final_urls":["https://example.com/shop"]},
+                {"id":"4002","link_text":"Support","final_urls":["https://example.com/help"]}
+            ]
+        }"#,
+        );
+        let report = diff(&input(DECLARED), &live);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     }
 }

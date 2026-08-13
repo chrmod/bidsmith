@@ -44,6 +44,7 @@ Validate, plan, and apply all work today.
 | `drift`    | Show the settings `plan` doesn't look at — and which of them are set on your account |
 | `pull`     | Snapshot the live account                                                    |
 | `refresh`  | Pull the live account into `.bid` files — bootstrap fresh ones (`-d`/`-o`), or `--in-place` to update existing files with live changes |
+| `import`   | Bring one resource that already exists in the account under management, at an address you choose |
 | `query`    | Read stats and reports with a GAQL query (clicks, cost, conversions, search terms) |
 | `keyword-ideas` | Research keywords with Google Keyword Planner — search volume, competition, and bid estimates for seed terms or a landing page |
 | `export`   | Render a `.bid` file from a JSON description                                 |

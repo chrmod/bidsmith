@@ -1665,6 +1665,218 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
     (account, campaigns)
 }
 
+/// The resource types `import` can adopt: the ones the API refuses to label, so
+/// `plan` has no way to reach them until a `.bid` block declares them. The
+/// labelable kinds (campaign, ad group, ad, ad-group criterion) already adopt
+/// themselves by content on the next `apply`, and `refresh -d` bootstraps them.
+pub const IMPORTABLE_TYPES: &[&str] = &[
+    "google_ads_sitelink_asset",
+    "google_ads_callout_asset",
+    "google_ads_structured_snippet_asset",
+    "google_ads_call_asset",
+    "google_ads_youtube_video_asset",
+    "google_ads_customer_asset",
+    "google_ads_campaign_asset",
+    "google_ads_ad_group_asset",
+    "google_ads_campaign_criterion",
+    "google_ads_ad_group_criterion",
+];
+
+/// Addresses the tree already declares, keyed by the live id each one matched.
+/// An imported block points at those instead of repeating the live resource, so
+/// adoption lands as `asset = google_ads_sitelink_asset.shop.id` rather than a
+/// second declaration of the same asset.
+#[derive(Default)]
+pub struct KnownAddresses {
+    pub assets: HashMap<String, String>,
+    pub campaigns: HashMap<String, String>,
+    pub ad_groups: HashMap<String, String>,
+    pub conversion_actions: HashMap<String, String>,
+    pub custom_audiences: HashMap<String, String>,
+    /// `<type>.<name>` pairs already used in the file being written into, so a
+    /// dependency block cannot collide with a resource that is already there.
+    pub taken: HashSet<(String, String)>,
+}
+
+#[derive(Debug)]
+pub struct Imported {
+    /// HCL text to append — dependency blocks first, the requested one last.
+    pub text: String,
+    /// `<type>.<name>` of every block rendered, in the order they appear.
+    pub added: Vec<String>,
+}
+
+/// Render one live resource as a `.bid` block named `name`, plus any block it
+/// references that the tree does not declare yet. Pure: the caller supplies the
+/// live snapshot and what is already declared.
+pub fn render_import(
+    live: &ExportInput,
+    ty: &str,
+    id: &str,
+    name: &str,
+    known: &KnownAddresses,
+) -> Result<Imported, String> {
+    let mut names = NameAllocator::default();
+    for (t, n) in &known.taken {
+        names.allocate(t, n);
+    }
+    let mut out = String::new();
+    let mut added: Vec<String> = Vec::new();
+    let mut asset_addr = known.assets.clone();
+
+    match ty {
+        "google_ads_sitelink_asset" => {
+            let a = find_by_id(&live.sitelink_assets, id, |a| &a.id, ty, id)?;
+            write_sitelink_asset(&mut out, name, a);
+        }
+        "google_ads_callout_asset" => {
+            let a = find_by_id(&live.callout_assets, id, |a| &a.id, ty, id)?;
+            write_callout_asset(&mut out, name, a);
+        }
+        "google_ads_structured_snippet_asset" => {
+            let a = find_by_id(&live.structured_snippet_assets, id, |a| &a.id, ty, id)?;
+            write_structured_snippet_asset(&mut out, name, a);
+        }
+        "google_ads_call_asset" => {
+            let a = find_by_id(&live.call_assets, id, |a| &a.id, ty, id)?;
+            write_call_asset(&mut out, name, a, &known.conversion_actions);
+        }
+        "google_ads_youtube_video_asset" => {
+            let a = find_by_id(&live.youtube_video_assets, id, |a| &a.id, ty, id)?;
+            write_youtube_video_asset(&mut out, name, a);
+        }
+        "google_ads_customer_asset" => {
+            let l = find_by_id(&live.customer_assets, id, |a| &a.id, ty, id)?;
+            ensure_asset(&mut out, live, &l.asset, known, &mut asset_addr, &mut names, &mut added)?;
+            write_customer_asset(&mut out, name, l, &asset_addr);
+        }
+        "google_ads_campaign_asset" => {
+            let l = find_by_id(&live.campaign_assets, id, |a| &a.id, ty, id)?;
+            ensure_asset(&mut out, live, &l.asset, known, &mut asset_addr, &mut names, &mut added)?;
+            // An undeclared campaign is still expressible: `campaign` takes a
+            // literal resource name as well as a reference.
+            let link = JsonCampaignAsset {
+                id: l.id.clone(),
+                campaign: match known.campaigns.contains_key(&l.campaign) {
+                    true => l.campaign.clone(),
+                    false => format!("customers/{}/campaigns/{}", live.customer_id, l.campaign),
+                },
+                asset: l.asset.clone(),
+                field_type: l.field_type.clone(),
+                status: l.status.clone(),
+            };
+            write_campaign_asset(&mut out, name, &link, &known.campaigns, &asset_addr);
+        }
+        "google_ads_ad_group_asset" => {
+            let l = find_by_id(&live.ad_group_assets, id, |a| &a.id, ty, id)?;
+            ensure_asset(&mut out, live, &l.asset, known, &mut asset_addr, &mut names, &mut added)?;
+            let link = JsonAdGroupAsset {
+                id: l.id.clone(),
+                ad_group: match known.ad_groups.contains_key(&l.ad_group) {
+                    true => l.ad_group.clone(),
+                    false => format!("customers/{}/adGroups/{}", live.customer_id, l.ad_group),
+                },
+                asset: l.asset.clone(),
+                field_type: l.field_type.clone(),
+                status: l.status.clone(),
+            };
+            write_ad_group_asset(&mut out, name, &link, &known.ad_groups, &asset_addr);
+        }
+        "google_ads_campaign_criterion" => {
+            let c = find_by_id(&live.campaign_criteria, id, |c| &c.id, ty, id)?;
+            if !known.campaigns.contains_key(&c.campaign) {
+                return Err(undeclared_parent("campaign", &c.campaign));
+            }
+            write_campaign_criterion(&mut out, name, c, &known.campaigns, &known.custom_audiences);
+        }
+        "google_ads_ad_group_criterion" => {
+            let c = find_by_id(&live.ad_group_criteria, id, |c| &c.id, ty, id)?;
+            if !known.ad_groups.contains_key(&c.ad_group) {
+                return Err(undeclared_parent("ad group", &c.ad_group));
+            }
+            write_ad_group_criterion(&mut out, name, c, &known.ad_groups, &known.custom_audiences);
+        }
+        other => {
+            return Err(format!(
+                "import does not handle '{other}'; it adopts {}",
+                IMPORTABLE_TYPES.join(", ")
+            ))
+        }
+    }
+
+    added.push(format!("{ty}.{name}"));
+    Ok(Imported { text: out, added })
+}
+
+fn find_by_id<'a, T>(
+    items: &'a [T],
+    id: &str,
+    key: impl Fn(&T) -> &String,
+    ty: &str,
+    shown: &str,
+) -> Result<&'a T, String> {
+    items
+        .iter()
+        .find(|it| key(it) == id)
+        .ok_or_else(|| format!("no live {ty} with id '{shown}' in this account"))
+}
+
+fn undeclared_parent(noun: &str, id: &str) -> String {
+    format!(
+        "the {noun} this criterion belongs to ({id}) is not declared in these files — \
+         a criterion can only reference a declared parent, so declare or import the \
+         {noun} first"
+    )
+}
+
+/// Emit the asset a link points at, unless the tree already declares it.
+fn ensure_asset(
+    out: &mut String,
+    live: &ExportInput,
+    asset_id: &str,
+    known: &KnownAddresses,
+    asset_addr: &mut HashMap<String, String>,
+    names: &mut NameAllocator,
+    added: &mut Vec<String>,
+) -> Result<(), String> {
+    if asset_addr.contains_key(asset_id) {
+        return Ok(());
+    }
+    let ty;
+    let name;
+    if let Some(a) = live.sitelink_assets.iter().find(|a| a.id == asset_id) {
+        ty = "google_ads_sitelink_asset";
+        name = names.allocate(ty, &format!("sitelink_{}", slugify(&a.link_text)));
+        write_sitelink_asset(out, &name, a);
+    } else if let Some(a) = live.callout_assets.iter().find(|a| a.id == asset_id) {
+        ty = "google_ads_callout_asset";
+        name = names.allocate(ty, &format!("callout_{}", slugify(&a.text)));
+        write_callout_asset(out, &name, a);
+    } else if let Some(a) = live
+        .structured_snippet_assets
+        .iter()
+        .find(|a| a.id == asset_id)
+    {
+        ty = "google_ads_structured_snippet_asset";
+        name = names.allocate(ty, &format!("snippet_{}", slugify(&a.header)));
+        write_structured_snippet_asset(out, &name, a);
+    } else if let Some(a) = live.call_assets.iter().find(|a| a.id == asset_id) {
+        ty = "google_ads_call_asset";
+        let base = slugify(&format!("call_{}_{}", a.country_code, a.phone_number));
+        name = names.allocate(ty, &base);
+        write_call_asset(out, &name, a, &known.conversion_actions);
+    } else {
+        return Err(format!(
+            "the asset this link points at ({asset_id}) is not one bidsmith models \
+             (sitelink, callout, structured snippet, call)"
+        ));
+    }
+    let addr = format!("{ty}.{name}");
+    asset_addr.insert(asset_id.to_string(), addr.clone());
+    added.push(addr);
+    Ok(())
+}
+
 fn render(input: &ExportInput) -> String {
     render_inner(input, true)
 }
@@ -3599,12 +3811,12 @@ fn slugify(s: &str) -> String {
 
 #[derive(Default)]
 struct NameAllocator {
-    by_type: HashMap<&'static str, HashSet<String>>,
+    by_type: HashMap<String, HashSet<String>>,
 }
 
 impl NameAllocator {
-    fn allocate(&mut self, resource_type: &'static str, base: &str) -> String {
-        let set = self.by_type.entry(resource_type).or_default();
+    fn allocate(&mut self, resource_type: &str, base: &str) -> String {
+        let set = self.by_type.entry(resource_type.to_string()).or_default();
         if set.insert(base.to_string()) {
             return base.to_string();
         }
