@@ -695,6 +695,19 @@ resource type, any file layout, modules, schema validation.
     unmanaged (UI-created) and never touched. Destroys are gated by the
     normal `apply` `yes` prompt — same as member removal, **no** separate
     `--allow-destroy` flag.
+  - **Removal is scoped to what the run read** (issue #160). Absence is
+    the instruction, so it only means something against a complete input:
+    a run that read *some* of the project's `.bid` files may only destroy
+    resources whose address names a module it read. `apply one-file.bid`
+    on a per-campaign tree otherwise reads "not declared here" as "not
+    declared anywhere" — it destroyed five live campaigns and their
+    budgets before the loop was stopped. Completeness is decided against
+    the project root (the nearest ancestor with `bidsmith.toml`, else the
+    target directory), so a whole-project run keeps pruning what a
+    *deleted file* used to declare — the gesture that would otherwise
+    have no way to be expressed. What a partial run skips is counted in
+    the summary and named in a warning, because the failure this replaces
+    was silent in the other direction.
   - **Writes**: `apply` emits a `Label` create (reusing an existing
     label by name — a duplicate name is an API error) plus the
     association op, wiring temp ids; a relabel also removes the stale

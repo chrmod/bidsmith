@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::process::ExitCode;
 
@@ -117,6 +117,14 @@ pub struct ExportInput {
     /// only: live state has nothing left to adopt.
     #[serde(default)]
     pub adopt_only: HashSet<String>,
+    /// The modules a **partial** run read, or `None` when the input covered
+    /// every `.bid` file the project has. Removing a labeled live resource is
+    /// authorized by its absence from the declaration, and absence only means
+    /// something against a complete input — so a partial run keeps its
+    /// removals inside the modules it read rather than reading "not declared
+    /// here" as "not declared anywhere" (issue #160). Declared-side only.
+    #[serde(default)]
+    pub partial_modules: Option<BTreeSet<String>>,
     /// Asset field types (`SITELINK`, `CALLOUT`, …) the `provider` block's
     /// `owns` list claims at the account level: a live `customer_asset` of one
     /// of them that no block declares is destroyed. Declared-side only —
