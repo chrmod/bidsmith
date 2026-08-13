@@ -1476,6 +1476,21 @@ pub fn declares_adopt_only(block: &Block) -> bool {
     })
 }
 
+/// The account-level asset kinds a `provider` block's `owns` list can name.
+pub const ACCOUNT_OWNS: &[&str] = &["sitelinks", "callouts", "structured_snippets", "calls"];
+
+/// The `Asset` field type an `owns` entry claims, i.e. which live
+/// `customer_asset` rows an undeclared-means-destroy scope covers.
+pub fn account_owns_field_type(token: &str) -> Option<&'static str> {
+    Some(match token {
+        "sitelinks" => "SITELINK",
+        "callouts" => "CALLOUT",
+        "structured_snippets" => "STRUCTURED_SNIPPET",
+        "calls" => "CALL",
+        _ => return None,
+    })
+}
+
 fn provider_schemas() -> &'static HashMap<&'static str, BlockSchema> {
     static SCHEMAS: OnceLock<HashMap<&'static str, BlockSchema>> = OnceLock::new();
     SCHEMAS.get_or_init(|| {
@@ -1486,6 +1501,7 @@ fn provider_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                 attributes: vec![
                     attr("customer_id", FieldType::String, false),
                     attr("login_customer_id", FieldType::String, false),
+                    attr("owns", FieldType::list_of(FieldType::Enum(ACCOUNT_OWNS)), false),
                 ],
                 blocks: vec![],
             },

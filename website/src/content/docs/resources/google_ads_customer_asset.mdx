@@ -38,6 +38,24 @@ resource "google_ads_customer_asset" "main_phone_link" {
 }
 ```
 
+## Removing ones you didn't declare
+
+Because these links reach every campaign, bidsmith will not remove a
+live one just because your files stop mentioning it. Ask for that in the
+[`provider`](./provider/) block:
+
+```hcl
+provider "google_ads" {
+  owns = ["sitelinks", "callouts"]
+}
+```
+
+Each kind you list becomes exhaustive: the account-level sitelinks are
+exactly the `google_ads_customer_asset` blocks declaring one, and a live
+sitelink nothing declares shows up as `- destroy` in
+[`bidsmith plan`](/bidsmith/commands/plan/). See
+[Serve only the extensions you declared](/bidsmith/recipes/serve-only-the-extensions-you-declared/).
+
 ## Schema
 
 <AttributeTable block={resource} headingLevel={3} />

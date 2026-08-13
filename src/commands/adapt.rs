@@ -936,6 +936,7 @@ impl AdapterState {
                 id: key,
                 asset: String::new(),
                 field_type: String::new(),
+                source: None,
                 status: None,
             });
         if let Some(rn) = v.get("asset").and_then(Value::as_str) {
@@ -945,6 +946,9 @@ impl AdapterState {
         }
         if let Some(s) = v.get("fieldType").and_then(Value::as_str) {
             entry.field_type = s.to_string();
+        }
+        if let Some(s) = v.get("source").and_then(Value::as_str) {
+            entry.source = Some(s.to_string());
         }
         if let Some(s) = v.get("status").and_then(Value::as_str) {
             entry.status = Some(s.to_string());
@@ -971,6 +975,7 @@ impl AdapterState {
                 campaign: String::new(),
                 asset: String::new(),
                 field_type: String::new(),
+                source: None,
                 status: None,
             });
         if let Some(rn) = v.get("campaign").and_then(Value::as_str) {
@@ -985,6 +990,9 @@ impl AdapterState {
         }
         if let Some(s) = v.get("fieldType").and_then(Value::as_str) {
             entry.field_type = s.to_string();
+        }
+        if let Some(s) = v.get("source").and_then(Value::as_str) {
+            entry.source = Some(s.to_string());
         }
         if let Some(s) = v.get("status").and_then(Value::as_str) {
             entry.status = Some(s.to_string());
@@ -1011,6 +1019,7 @@ impl AdapterState {
                 ad_group: String::new(),
                 asset: String::new(),
                 field_type: String::new(),
+                source: None,
                 status: None,
             });
         if let Some(rn) = v.get("adGroup").and_then(Value::as_str) {
@@ -1025,6 +1034,9 @@ impl AdapterState {
         }
         if let Some(s) = v.get("fieldType").and_then(Value::as_str) {
             entry.field_type = s.to_string();
+        }
+        if let Some(s) = v.get("source").and_then(Value::as_str) {
+            entry.source = Some(s.to_string());
         }
         if let Some(s) = v.get("status").and_then(Value::as_str) {
             entry.status = Some(s.to_string());
@@ -1216,6 +1228,7 @@ impl AdapterState {
             youtube_video_assets: self.youtube_video_assets.into_values().collect(),
             custom_audiences: self.custom_audiences.into_values().collect(),
             adopt_only: Default::default(),
+            owned_account_assets: Default::default(),
             labels: self.labels.into_iter().collect(),
             claim_labels: self.claim_labels.into_iter().collect(),
             campaign_claims: self.campaign_claims.into_iter().collect(),

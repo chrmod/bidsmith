@@ -117,6 +117,13 @@ pub struct ExportInput {
     /// only: live state has nothing left to adopt.
     #[serde(default)]
     pub adopt_only: HashSet<String>,
+    /// Asset field types (`SITELINK`, `CALLOUT`, …) the `provider` block's
+    /// `owns` list claims at the account level: a live `customer_asset` of one
+    /// of them that no block declares is destroyed. Declared-side only —
+    /// nothing live can carry an account-wide claim, so it has to be said in
+    /// the file.
+    #[serde(default)]
+    pub owned_account_assets: HashSet<String>,
     /// Live campaign id -> criterion categories a `bidsmith:owns=` label claims
     /// on it. Live-only; empty for declared state.
     #[serde(default)]
@@ -923,6 +930,10 @@ pub struct JsonCustomerAsset {
     pub id: String,
     pub asset: String,
     pub field_type: String,
+    /// `ADVERTISER` | `AUTOMATICALLY_CREATED`. Live-only — who attached the
+    /// asset, which decides whether prune may detach it.
+    #[serde(default)]
+    pub source: Option<String>,
     #[serde(default)]
     pub status: Option<String>,
 }
@@ -934,6 +945,8 @@ pub struct JsonCampaignAsset {
     pub asset: String,
     pub field_type: String,
     #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
     pub status: Option<String>,
 }
 
@@ -943,6 +956,8 @@ pub struct JsonAdGroupAsset {
     pub ad_group: String,
     pub asset: String,
     pub field_type: String,
+    #[serde(default)]
+    pub source: Option<String>,
     #[serde(default)]
     pub status: Option<String>,
 }
@@ -1763,6 +1778,7 @@ pub fn render_import(
                 },
                 asset: l.asset.clone(),
                 field_type: l.field_type.clone(),
+                source: l.source.clone(),
                 status: l.status.clone(),
             };
             write_campaign_asset(&mut out, name, &link, &known.campaigns, &asset_addr);
@@ -1778,6 +1794,7 @@ pub fn render_import(
                 },
                 asset: l.asset.clone(),
                 field_type: l.field_type.clone(),
+                source: l.source.clone(),
                 status: l.status.clone(),
             };
             write_ad_group_asset(&mut out, name, &link, &known.ad_groups, &asset_addr);
@@ -1949,6 +1966,17 @@ fn write_provider(out: &mut String, input: &ExportInput) {
     write_attr(out, 1, "customer_id", &fmt_string(&input.customer_id));
     if let Some(lc) = &input.login_customer_id {
         write_attr(out, 1, "login_customer_id", &fmt_string(lc));
+    }
+    let owns: Vec<String> = crate::schema::ACCOUNT_OWNS
+        .iter()
+        .filter(|token| {
+            crate::schema::account_owns_field_type(token)
+                .is_some_and(|ft| input.owned_account_assets.contains(ft))
+        })
+        .map(|token| fmt_string(token))
+        .collect();
+    if !owns.is_empty() {
+        write_attr(out, 1, "owns", &format!("[{}]", owns.join(", ")));
     }
     out.push_str("}\n\n");
 }

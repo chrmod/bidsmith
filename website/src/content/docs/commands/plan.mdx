@@ -159,8 +159,9 @@ google_ads_campaign_budget.winter  ~ update (amount_micros: 30000000 -> 45000000
 
 Note: ~ adopt / ~ claim rows write bidsmith's own labels only: every field they
 declare already matches live, so no campaign, ad group, or targeting value is
-written. A claim records which criterion categories this file manages, so
-removing the last declared member of one later prunes the live members too.
+written. A claim records which criterion categories and asset kinds this file
+manages, so removing the last declared member of one later prunes the live
+members too.
 ```
 
 | Row | What it writes |
@@ -190,11 +191,21 @@ own `+ create` / `- destroy` rows.
    set, so a live keyword no longer in it is removed. The pruning
    stays within what you manage — declaring negatives never destroys
    positives, and vice versa.
-5. A whole resource that bidsmith created earlier (it carries a
+5. The same rule reaches extensions: once a campaign or ad group
+   declares one sitelink (or callout, or snippet), a live one of that
+   kind that your files don't list becomes a `- destroy` row. Account-
+   level extensions attach to every campaign at once, so those are only
+   removed when the `provider` block's `owns` list says to — see
+   [Serve only the extensions you declared](/bidsmith/recipes/serve-only-the-extensions-you-declared/).
+6. A whole resource that bidsmith created earlier (it carries a
    bidsmith label) and that your files no longer declare becomes a
    `- destroy` row. A campaign somebody built in the Google Ads UI
    carries no label, so it is never destroyed — it's simply not
    bidsmith's to manage.
+7. A removal Google would reject is dropped before the batch is sent
+   and reported as a warning, because one rejected operation fails
+   every other operation with it. The summary counts them: `2 to
+   destroy (1 skipped)`.
 
 After producing the diff, bidsmith sends the create/update/remove
 operations to Google's `googleAds:mutate` endpoint with

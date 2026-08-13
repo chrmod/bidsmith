@@ -967,7 +967,19 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
 
     let claim_plans = claim_plan_entries(declared, live, &campaign_match, &ad_group_match);
 
-    let (deletes, mut warnings) = orphan_criteria_deletes(
+    let (link_deletes, link_warnings, link_skipped) = orphan_asset_link_deletes(
+        declared,
+        live,
+        &diffs,
+        &campaign_match,
+        &ad_group_match,
+        &live_video_campaigns,
+        &live_video_ad_groups,
+    );
+    diffs.extend(link_deletes);
+    skipped_removal_count += link_skipped;
+
+    let (deletes, mut warnings, criteria_skipped) = orphan_criteria_deletes(
         declared,
         live,
         &diffs,
@@ -976,6 +988,8 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         &shared_set_match,
     );
     diffs.extend(deletes);
+    skipped_removal_count += criteria_skipped;
+    warnings.extend(link_warnings);
     warnings.extend(campaign_warnings);
     warnings.extend(shared_budget_warnings(declared));
     blockers.extend(adopt_only_blockers(declared, &diffs));
@@ -1021,10 +1035,11 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     }
 }
 
-/// The categories a `bidsmith:owns` claim can cover — criterion kinds plus
-/// `frequency_caps`, the one non-criterion field whose "declared as empty" is
-/// indistinguishable from "not managed here". Device is excluded (the API
-/// forbids removing device criteria, so a claim would never drive a destroy).
+/// The categories a `bidsmith:owns` claim can cover — criterion kinds, the
+/// asset field types a campaign / ad group links under, and `frequency_caps`,
+/// the one plain field whose "declared as empty" is indistinguishable from "not
+/// managed here". Device is excluded (the API forbids removing device criteria,
+/// so a claim would never drive a destroy).
 fn canonical_category(cat: &str) -> Option<&'static str> {
     Some(match cat {
         FREQUENCY_CAPS_CATEGORY => FREQUENCY_CAPS_CATEGORY,
@@ -1043,6 +1058,10 @@ fn canonical_category(cat: &str) -> Option<&'static str> {
         "parental_status" => "parental_status",
         "income_range" => "income_range",
         "audience" => "audience",
+        "asset_sitelink" => "asset_sitelink",
+        "asset_callout" => "asset_callout",
+        "asset_structured_snippet" => "asset_structured_snippet",
+        "asset_call" => "asset_call",
         _ => return None,
     })
 }
@@ -1083,6 +1102,13 @@ fn claim_plan_entries(
             }
         }
     }
+    for d in &declared.ad_group_assets {
+        if declared_ags.contains(d.ad_group.as_str()) {
+            if let Some(cat) = asset_link_category(&d.field_type) {
+                desired_ag.insert((&d.ad_group, cat));
+            }
+        }
+    }
 
     let mut desired_c: std::collections::BTreeSet<(&str, &'static str)> =
         std::collections::BTreeSet::new();
@@ -1093,6 +1119,13 @@ fn claim_plan_entries(
             if let Some(cat) =
                 canonical_category(criterion_category(&d.target, d.negative.unwrap_or(false)))
             {
+                desired_c.insert((&d.campaign, cat));
+            }
+        }
+    }
+    for d in &declared.campaign_assets {
+        if declared_cs.contains(d.campaign.as_str()) {
+            if let Some(cat) = asset_link_category(&d.field_type) {
                 desired_c.insert((&d.campaign, cat));
             }
         }
@@ -1175,9 +1208,10 @@ fn orphan_criteria_deletes(
     ad_group_match: &HashMap<String, String>,
     campaign_match: &HashMap<String, String>,
     shared_set_match: &HashMap<String, String>,
-) -> (Vec<ResourceDiff>, Vec<String>) {
+) -> (Vec<ResourceDiff>, Vec<String>, usize) {
     let mut out: Vec<ResourceDiff> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
+    let mut skipped = 0usize;
 
     let matched_live_ids = |kind: &str| -> std::collections::HashSet<&str> {
         diffs
@@ -1291,6 +1325,7 @@ fn orphan_criteria_deletes(
                          matching device block to manage it (omit bid_modifier to reset the \
                          adjustment)."
                     ));
+                    skipped += 1;
                 }
                 continue;
             }
@@ -1345,7 +1380,271 @@ fn orphan_criteria_deletes(
         }
     }
 
-    (out, warnings)
+    (out, warnings, skipped)
+}
+
+/// Asset links Google attached by itself. They cannot be pruned to a stable
+/// end state: while the account's asset automation is on, Google recreates them,
+/// so every destroy would come back on the next plan and the file would never
+/// read as applied.
+const AUTOMATICALLY_CREATED: &str = "AUTOMATICALLY_CREATED";
+
+/// A live asset link stops being declared the same two ways a criterion does,
+/// and is pruned under the same rule: only inside a `(parent, field type)` the
+/// file owns, so declaring a campaign's sitelinks never detaches its callouts.
+/// A campaign / ad group proves ownership the way it does for criteria — ≥1
+/// declared link, or a `bidsmith:owns` claim label from a previous apply. The
+/// account has nowhere to carry a claim (the API has no customer label bidsmith
+/// can write), so account-wide ownership is claimed in the file instead, by the
+/// `provider` block's `owns` list.
+fn orphan_asset_link_deletes(
+    declared: &ExportInput,
+    live: &ExportInput,
+    diffs: &[ResourceDiff],
+    campaign_match: &HashMap<String, String>,
+    ad_group_match: &HashMap<String, String>,
+    live_video_campaigns: &HashSet<&str>,
+    live_video_ad_groups: &HashSet<&str>,
+) -> (Vec<ResourceDiff>, Vec<String>, usize) {
+    let mut out: Vec<ResourceDiff> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut skipped = 0usize;
+
+    let matched_live_ids = |kind: &str| -> HashSet<&str> {
+        diffs
+            .iter()
+            .filter(|d| d.kind == kind)
+            .filter_map(|d| d.action.live_id())
+            .collect()
+    };
+    let reverse = |m: &HashMap<String, String>| -> HashMap<String, String> {
+        m.iter().map(|(addr, id)| (id.clone(), addr.clone())).collect()
+    };
+    let describe = |asset_id: &str, field_type: &str| -> String {
+        asset_descriptor(live, asset_id, field_type)
+    };
+
+    // ---- campaign_asset ---------------------------------------------------
+    {
+        let matched = matched_live_ids("campaign_asset");
+        let parent_addr = reverse(campaign_match);
+        let mut managed: HashSet<(String, &'static str)> = HashSet::new();
+        // Keyed off the declared campaigns only, never a literal resource name:
+        // attaching an asset to a campaign the file does not otherwise manage
+        // says nothing about what else may hang off it.
+        for d in &declared.campaign_assets {
+            if let Some(live_c) = campaign_match.get(&d.campaign) {
+                if let Some(cat) = asset_link_category(&d.field_type) {
+                    managed.insert((live_c.clone(), cat));
+                }
+            }
+        }
+        for (live_id, cats) in &live.campaign_claims {
+            if !parent_addr.contains_key(live_id) {
+                continue;
+            }
+            for cat in cats {
+                if let Some(tok) = canonical_category(cat).filter(|t| is_asset_category(t)) {
+                    managed.insert((live_id.clone(), tok));
+                }
+            }
+        }
+        for l in &live.campaign_assets {
+            if matched.contains(l.id.as_str()) || is_removed(l.status.as_deref()) {
+                continue;
+            }
+            let Some(cat) = asset_link_category(&l.field_type) else {
+                continue;
+            };
+            if !managed.contains(&(l.campaign.clone(), cat)) {
+                continue;
+            }
+            let descriptor = describe(&l.asset, &l.field_type);
+            let anchor = parent_addr
+                .get(&l.campaign)
+                .cloned()
+                .unwrap_or_else(|| format!("campaigns/{}", l.campaign));
+            if let Some(w) = undeletable_link_warning(
+                &anchor,
+                &descriptor,
+                l.source.as_deref(),
+                live_video_campaigns
+                    .contains(l.campaign.as_str())
+                    .then_some("a campaign on the VIDEO channel"),
+            ) {
+                warnings.push(w);
+                skipped += 1;
+                continue;
+            }
+            out.push(delete_diff(
+                "campaign_asset",
+                parent_addr.get(&l.campaign),
+                &l.campaign,
+                "campaigns",
+                &descriptor,
+                &l.id,
+            ));
+        }
+    }
+
+    // ---- ad_group_asset ---------------------------------------------------
+    {
+        let matched = matched_live_ids("ad_group_asset");
+        let parent_addr = reverse(ad_group_match);
+        let mut managed: HashSet<(String, &'static str)> = HashSet::new();
+        for d in &declared.ad_group_assets {
+            if let Some(live_ag) = ad_group_match.get(&d.ad_group) {
+                if let Some(cat) = asset_link_category(&d.field_type) {
+                    managed.insert((live_ag.clone(), cat));
+                }
+            }
+        }
+        for (live_id, cats) in &live.ad_group_claims {
+            if !parent_addr.contains_key(live_id) {
+                continue;
+            }
+            for cat in cats {
+                if let Some(tok) = canonical_category(cat).filter(|t| is_asset_category(t)) {
+                    managed.insert((live_id.clone(), tok));
+                }
+            }
+        }
+        for l in &live.ad_group_assets {
+            if matched.contains(l.id.as_str()) || is_removed(l.status.as_deref()) {
+                continue;
+            }
+            let Some(cat) = asset_link_category(&l.field_type) else {
+                continue;
+            };
+            if !managed.contains(&(l.ad_group.clone(), cat)) {
+                continue;
+            }
+            let descriptor = describe(&l.asset, &l.field_type);
+            let anchor = parent_addr
+                .get(&l.ad_group)
+                .cloned()
+                .unwrap_or_else(|| format!("adGroups/{}", l.ad_group));
+            if let Some(w) = undeletable_link_warning(
+                &anchor,
+                &descriptor,
+                l.source.as_deref(),
+                live_video_ad_groups
+                    .contains(l.ad_group.as_str())
+                    .then_some("an ad group on the VIDEO channel"),
+            ) {
+                warnings.push(w);
+                skipped += 1;
+                continue;
+            }
+            out.push(delete_diff(
+                "ad_group_asset",
+                parent_addr.get(&l.ad_group),
+                &l.ad_group,
+                "adGroups",
+                &descriptor,
+                &l.id,
+            ));
+        }
+    }
+
+    // ---- customer_asset: claimed by the provider block, never implicitly --
+    {
+        let matched = matched_live_ids("customer_asset");
+        for l in &live.customer_assets {
+            if matched.contains(l.id.as_str()) || is_removed(l.status.as_deref()) {
+                continue;
+            }
+            if !declared.owned_account_assets.contains(&l.field_type) {
+                continue;
+            }
+            let descriptor = format!("account-level {}", describe(&l.asset, &l.field_type));
+            if let Some(w) =
+                undeletable_link_warning("account", &descriptor, l.source.as_deref(), None)
+            {
+                warnings.push(w);
+                skipped += 1;
+                continue;
+            }
+            out.push(ResourceDiff {
+                address: format!("account (removed {descriptor})"),
+                kind: "customer_asset",
+                action: Action::Delete { live_id: l.id.clone() },
+            });
+        }
+    }
+
+    (out, warnings, skipped)
+}
+
+/// Why a link the file no longer declares is left attached anyway. Both cases
+/// are removals the account would reject, and the batch is atomic — one doomed
+/// operation takes every unrelated one down with it (issue #116).
+fn undeletable_link_warning(
+    anchor: &str,
+    descriptor: &str,
+    source: Option<&str>,
+    read_only_parent: Option<&str>,
+) -> Option<String> {
+    if source == Some(AUTOMATICALLY_CREATED) {
+        return Some(format!(
+            "{anchor}: live {descriptor} was attached by Google's asset automation, not declared \
+             by anyone — removing it only makes Google put it back, so it is left alone. Turn \
+             automatically created assets off for the account to stop it serving."
+        ));
+    }
+    read_only_parent.map(|what| {
+        format!(
+            "{anchor}: live {descriptor} is not declared, but it hangs off {what} and the \
+             Google Ads API cannot mutate those \
+             (see developers.google.com/google-ads/api/docs/video/overview) — skipping the \
+             removal so the rest of the batch can go through."
+        )
+    })
+}
+
+/// How a live asset link reads in a destroy row: what it puts on the page, not
+/// the numeric id nobody recognises.
+fn asset_descriptor(live: &ExportInput, asset_id: &str, field_type: &str) -> String {
+    let found = match field_type {
+        "SITELINK" => live
+            .sitelink_assets
+            .iter()
+            .find(|a| a.id == asset_id)
+            .map(|a| format!("sitelink {:?}", a.link_text)),
+        "CALLOUT" => live
+            .callout_assets
+            .iter()
+            .find(|a| a.id == asset_id)
+            .map(|a| format!("callout {:?}", a.text)),
+        "STRUCTURED_SNIPPET" => live
+            .structured_snippet_assets
+            .iter()
+            .find(|a| a.id == asset_id)
+            .map(|a| format!("structured_snippet {:?}", a.header)),
+        "CALL" => live
+            .call_assets
+            .iter()
+            .find(|a| a.id == asset_id)
+            .map(|a| format!("call {:?}", a.phone_number)),
+        _ => None,
+    };
+    found.unwrap_or_else(|| format!("{} asset {asset_id}", field_type.to_lowercase()))
+}
+
+/// The `bidsmith:owns` category an asset link falls in — its field type, so
+/// ownership of a campaign's sitelinks says nothing about its callouts.
+fn asset_link_category(field_type: &str) -> Option<&'static str> {
+    Some(match field_type {
+        "SITELINK" => "asset_sitelink",
+        "CALLOUT" => "asset_callout",
+        "STRUCTURED_SNIPPET" => "asset_structured_snippet",
+        "CALL" => "asset_call",
+        _ => return None,
+    })
+}
+
+fn is_asset_category(category: &str) -> bool {
+    category.starts_with("asset_")
 }
 
 /// True when a live device criterion deviates from its default state — the
@@ -5013,5 +5312,195 @@ mod asset_adoption_tests {
         );
         let report = diff(&input(DECLARED), &live);
         assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    }
+}
+
+#[cfg(test)]
+mod asset_prune_tests {
+    use super::*;
+
+    fn input(json: &str) -> ExportInput {
+        serde_json::from_str(json).expect("valid test input")
+    }
+
+    /// One campaign, one declared sitelink on it. `extra` adds declared blocks.
+    fn declared(extra: &str) -> ExportInput {
+        input(&format!(
+            r#"{{
+            "customer_id": "1",
+            "campaigns": [{{"id":"m.c","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"m.b"}}],
+            "sitelink_assets": [
+                {{"id":"m.docs","link_text":"Docs","final_urls":["https://example.com/docs"]}}
+            ],
+            "campaign_assets": [
+                {{"id":"m.link","campaign":"m.c","asset":"m.docs","field_type":"SITELINK"}}
+            ]{extra}
+        }}"#
+        ))
+    }
+
+    /// The same campaign live, serving the declared sitelink plus a second one
+    /// nobody declared, plus an undeclared callout. `extra` adds live state.
+    fn live(source: &str, extra: &str) -> ExportInput {
+        input(&format!(
+            r#"{{
+            "customer_id": "1",
+            "campaigns": [{{"id":"100","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"200"}}],
+            "sitelink_assets": [
+                {{"id":"900","link_text":"Docs","final_urls":["https://example.com/docs"]}},
+                {{"id":"901","link_text":"Also on Firefox","final_urls":["https://example.com/ff"]}}
+            ],
+            "callout_assets": [{{"id":"910","text":"Install Now!"}}],
+            "campaign_assets": [
+                {{"id":"100~900~SITELINK","campaign":"100","asset":"900","field_type":"SITELINK","source":"ADVERTISER"}},
+                {{"id":"100~901~SITELINK","campaign":"100","asset":"901","field_type":"SITELINK","source":"{source}"}},
+                {{"id":"100~910~CALLOUT","campaign":"100","asset":"910","field_type":"CALLOUT","source":"ADVERTISER"}}
+            ]{extra}
+        }}"#
+        ))
+    }
+
+    fn destroys(report: &DiffReport) -> Vec<(&str, &str)> {
+        report
+            .diffs
+            .iter()
+            .filter(|d| matches!(d.action, Action::Delete { .. }))
+            .map(|d| (d.kind, d.address.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn a_declared_campaign_owns_the_field_type_it_declares() {
+        let report = diff(&declared(""), &live("ADVERTISER", ""));
+        assert_eq!(
+            destroys(&report),
+            vec![("campaign_asset", "m.c (removed sitelink \"Also on Firefox\")")],
+            "the undeclared sitelink goes, the callout stays: {:?}",
+            report.diffs.iter().map(|d| (&d.address, &d.action)).collect::<Vec<_>>()
+        );
+        assert!(report.claim_plans.iter().any(|p| p.category == "asset_sitelink"
+            && p.kind == "campaign"
+            && p.stale_assoc_rn.is_none()));
+    }
+
+    #[test]
+    fn a_campaign_declaring_no_links_is_left_exactly_as_it_was() {
+        let bare = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"m.c","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"m.b"}]
+        }"#,
+        );
+        let report = diff(&bare, &live("ADVERTISER", ""));
+        assert_eq!(report.delete_count, 0, "{:?}", destroys(&report));
+        assert!(
+            !report.claim_plans.iter().any(|p| is_asset_category(p.category)),
+            "nothing was declared, so nothing is claimed: {:?}",
+            report.claim_plans
+        );
+    }
+
+    #[test]
+    fn a_live_claim_prunes_after_the_last_declared_link_goes() {
+        // Same shape as issue #88 for criteria: the file no longer declares any
+        // sitelink, but the campaign's claim label proves bidsmith owned them.
+        let bare = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"m.c","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"m.b"}]
+        }"#,
+        );
+        let report = diff(
+            &bare,
+            &live(
+                "ADVERTISER",
+                r#",
+            "campaign_claims": {"100": ["asset_sitelink"]},
+            "claim_labels": {"asset_sitelink": "customers/1/labels/777"}"#,
+            ),
+        );
+        let mut gone = destroys(&report);
+        gone.sort();
+        assert_eq!(
+            gone,
+            vec![
+                ("campaign_asset", "m.c (removed sitelink \"Also on Firefox\")"),
+                ("campaign_asset", "m.c (removed sitelink \"Docs\")"),
+            ],
+            "{:?}",
+            report.diffs.iter().map(|d| (&d.address, &d.action)).collect::<Vec<_>>()
+        );
+        let release = report
+            .claim_plans
+            .iter()
+            .find(|p| p.category == "asset_sitelink" && p.stale_assoc_rn.is_some())
+            .unwrap_or_else(|| panic!("{:?}", report.claim_plans));
+        assert_eq!(
+            release.stale_assoc_rn.as_deref(),
+            Some("customers/1/campaignLabels/100~777")
+        );
+    }
+
+    #[test]
+    fn an_automatically_created_link_is_skipped_with_a_warning() {
+        let report = diff(&declared(""), &live(AUTOMATICALLY_CREATED, ""));
+        assert_eq!(report.delete_count, 0, "{:?}", destroys(&report));
+        assert_eq!(report.skipped_removal_count, 1);
+        let w = report
+            .warnings
+            .iter()
+            .find(|w| w.contains("Also on Firefox"))
+            .unwrap_or_else(|| panic!("{:?}", report.warnings));
+        assert!(w.contains("asset automation"), "{w}");
+    }
+
+    #[test]
+    fn account_level_links_need_the_provider_to_claim_them() {
+        let account_live = r#",
+            "customer_assets": [
+                {"id":"910~CALLOUT","asset":"910","field_type":"CALLOUT","source":"ADVERTISER"}
+            ]"#;
+
+        let report = diff(&declared(""), &live("ADVERTISER", account_live));
+        assert!(
+            !destroys(&report).iter().any(|(kind, _)| *kind == "customer_asset"),
+            "an account-wide link is never pruned implicitly: {:?}",
+            destroys(&report)
+        );
+
+        let owning = declared(r#", "owned_account_assets": ["CALLOUT"]"#);
+        let report = diff(&owning, &live("ADVERTISER", account_live));
+        assert!(
+            destroys(&report)
+                .contains(&("customer_asset", "account (removed account-level callout \"Install Now!\")")),
+            "{:?}",
+            destroys(&report)
+        );
+    }
+
+    #[test]
+    fn a_link_on_a_video_campaign_is_skipped_not_destroyed() {
+        let declared_video = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"m.c","name":"C","advertising_channel_type":"VIDEO","campaign_budget":"m.b"}],
+            "sitelink_assets": [
+                {"id":"m.docs","link_text":"Docs","final_urls":["https://example.com/docs"]}
+            ],
+            "campaign_assets": [
+                {"id":"m.link","campaign":"m.c","asset":"m.docs","field_type":"SITELINK"}
+            ]
+        }"#,
+        );
+        let mut video_live = live("ADVERTISER", "");
+        video_live.campaigns[0].advertising_channel_type = "VIDEO".to_string();
+        let report = diff(&declared_video, &video_live);
+        assert_eq!(report.delete_count, 0, "{:?}", destroys(&report));
+        assert_eq!(report.skipped_removal_count, 1);
+        assert!(
+            report.warnings.iter().any(|w| w.contains("VIDEO channel")),
+            "{:?}",
+            report.warnings
+        );
     }
 }

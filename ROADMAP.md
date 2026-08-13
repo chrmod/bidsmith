@@ -243,9 +243,18 @@ what closes the most user-facing gaps next:
 2. ✅ **`import <address> <api-resource>`** (shipped, issue #150).
    Adopts one named live resource into a chosen `.bid` address without
    a full refresh, by writing the block rather than mutating the
-   account. Remaining adoption work is **prune** (#151) — surfacing the
-   live resources nothing declares, `AUTOMATICALLY_CREATED` assets
-   included — and the automation-settings resource (#152).
+   account.
+   ✅ **Exhaustive reconcile for asset links** (shipped, issue #151).
+   A live `campaign_asset` / `ad_group_asset` the file does not declare
+   is destroyed inside a `(parent, field type)` the file owns —
+   declared members or a persisted `bidsmith:owns=asset_*` claim, the
+   same rule criteria prune under. Account-wide `customer_asset` links
+   have no live anchor for a claim, so they are owned by naming them in
+   the `provider` block's `owns` list. `AUTOMATICALLY_CREATED` links
+   and links on VIDEO campaigns are skipped with a warning rather than
+   sent, since the API refuses them and the batch is atomic. Remaining
+   adoption work is the automation-settings resource (#152), which is
+   what stops auto-created assets being regenerated in the first place.
 3. **Account-scoped resource types in the live pipeline** (independent;
    can ride alongside). The schema, validator, renderer, adapter,
    and `live_state` queries for `google_ads_conversion_action`,

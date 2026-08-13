@@ -372,7 +372,17 @@ flow one way — insights never justify mutating outside plan/apply.
 ## Conventions
 
 - The `.bid` file extension is provisional but stable for now.
-- One `provider "google_ads"` block per repository/directory.
+- One `provider "google_ads"` block per repository/directory. Its
+  optional `owns` list (`["sitelinks", "callouts",
+  "structured_snippets", "calls"]`) makes account-level extensions
+  exhaustive: a live `customer_asset` of a listed kind that no block
+  declares is destroyed on the next apply. Adding an entry there
+  changes what every campaign in the account serves — propose it, never
+  add it unprompted.
+- Declaring is claiming. Once a campaign or ad group declares one
+  sitelink (or callout, or snippet), a live one of that kind it does
+  not declare plans as `- destroy`. Adopt what should survive with
+  `bidsmith import` *before* adding the first block of a kind.
 - Resource addresses are stable identifiers; renaming a resource means
   Google Ads sees a delete + create. The full address is
   `<module>.<type>.<name>` (module = file basename), but inside the

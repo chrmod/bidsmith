@@ -92,6 +92,7 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
         labels: Default::default(),
         claim_labels: Default::default(),
         adopt_only: Default::default(),
+        owned_account_assets: Default::default(),
         campaign_claims: Default::default(),
         ad_group_claims: Default::default(),
     };
@@ -148,6 +149,7 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
                                         campaign: owner.clone(),
                                         asset,
                                         field_type,
+                                            source: None,
                                         status: Some("ENABLED".to_string()),
                                     },
                                 ));
@@ -165,6 +167,7 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
                                         ad_group: owner.clone(),
                                         asset,
                                         field_type,
+                                            source: None,
                                         status: Some("ENABLED".to_string()),
                                     },
                                 ));
@@ -298,6 +301,13 @@ fn import_provider(
             "login_customer_id" => {
                 if let Some(v) = expect_string(ctx, a, diags) {
                     input.login_customer_id = Some(v);
+                }
+            }
+            "owns" => {
+                for token in expect_string_list(ctx, &a.value) {
+                    if let Some(ft) = crate::schema::account_owns_field_type(&token) {
+                        input.owned_account_assets.insert(ft.to_string());
+                    }
                 }
             }
             _ => {}
@@ -1868,6 +1878,7 @@ fn import_customer_asset(
             id,
             asset,
             field_type,
+                source: None,
             status: status.clone(),
         })
         .collect())
@@ -1977,6 +1988,7 @@ fn import_campaign_asset(
             campaign: campaign.clone(),
             asset,
             field_type,
+            source: None,
             status: status.clone(),
         })
         .collect())
@@ -2083,6 +2095,7 @@ fn import_ad_group_asset(
             ad_group: ad_group.clone(),
             asset,
             field_type,
+            source: None,
             status: status.clone(),
         })
         .collect())
@@ -2365,6 +2378,7 @@ pub fn import_program(program: &Program) -> Result<ImportResult, Vec<Diag>> {
         labels: Default::default(),
         claim_labels: Default::default(),
         adopt_only: Default::default(),
+        owned_account_assets: Default::default(),
         campaign_claims: Default::default(),
         ad_group_claims: Default::default(),
     };
@@ -2378,6 +2392,7 @@ pub fn import_program(program: &Program) -> Result<ImportResult, Vec<Diag>> {
                 if is_top {
                     combined.customer_id = r.input.customer_id;
                     combined.login_customer_id = r.input.login_customer_id;
+                    combined.owned_account_assets = r.input.owned_account_assets;
                 }
                 combined.campaign_budgets.extend(r.input.campaign_budgets);
                 combined.campaigns.extend(r.input.campaigns);
@@ -4136,6 +4151,98 @@ resource "google_ads_campaign" "c" {
 
         let report = diff_after_defaults(declared, live);
         assert_eq!(report.delete_count, 0, "diffs: {:?}", report.diffs);
+    }
+
+    /// The account behind issue #151, in miniature: one campaign serving two
+    /// sitelinks where the file declares one, an account-wide callout attached
+    /// to everything, and a dynamic sitelink Google made by itself.
+    const DRIFTED_ACCOUNT: &str = r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"}},
+              {"asset":{"resourceName":"customers/9/assets/500","id":"500","finalUrls":["https://example.com/docs"],"sitelinkAsset":{"linkText":"Docs"}}},
+              {"asset":{"resourceName":"customers/9/assets/501","id":"501","finalUrls":["https://example.com/blog"],"sitelinkAsset":{"linkText":"Blog"}}},
+              {"asset":{"resourceName":"customers/9/assets/502","id":"502","finalUrls":["https://example.com/pricing"],"sitelinkAsset":{"linkText":"Pricing"}}},
+              {"asset":{"resourceName":"customers/9/assets/600","id":"600","calloutAsset":{"calloutText":"Install Now!"}}},
+              {"campaignAsset":{"resourceName":"customers/9/campaignAssets/2~500~SITELINK","campaign":"customers/9/campaigns/2","asset":"customers/9/assets/500","fieldType":"SITELINK","source":"ADVERTISER","status":"ENABLED"}},
+              {"campaignAsset":{"resourceName":"customers/9/campaignAssets/2~501~SITELINK","campaign":"customers/9/campaigns/2","asset":"customers/9/assets/501","fieldType":"SITELINK","source":"ADVERTISER","status":"ENABLED"}},
+              {"campaignAsset":{"resourceName":"customers/9/campaignAssets/2~502~SITELINK","campaign":"customers/9/campaigns/2","asset":"customers/9/assets/502","fieldType":"SITELINK","source":"AUTOMATICALLY_CREATED","status":"ENABLED"}},
+              {"customerAsset":{"resourceName":"customers/9/customerAssets/600~CALLOUT","asset":"customers/9/assets/600","fieldType":"CALLOUT","source":"ADVERTISER","status":"ENABLED"}}
+            ]}]"#;
+
+    const DECLARED_ONE_SITELINK: &str = r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+
+resource "google_ads_sitelink_asset" "docs" {
+  link_text  = "Docs"
+  final_urls = ["https://example.com/docs"]
+}
+
+resource "google_ads_campaign_asset" "docs_link" {
+  campaign = google_ads_campaign.c.id
+  asset    = google_ads_sitelink_asset.docs.id
+}
+"#;
+
+    #[test]
+    fn a_campaign_prunes_the_sitelinks_it_does_not_declare() {
+        let declared = import_str("campaign_asset_prune", DECLARED_ONE_SITELINK);
+        let live = crate::commands::adapt::from_search_response(DRIFTED_ACCOUNT).expect("adapt live");
+
+        let report = diff_after_defaults(declared, live);
+        let gone = delete_addresses(&report);
+        assert_eq!(gone.len(), 1, "diffs: {:?}", report.diffs.iter().map(|d| (&d.address, &d.action)).collect::<Vec<_>>());
+        assert!(
+            gone[0].ends_with("google_ads_campaign.c (removed sitelink \"Blog\")"),
+            "{gone:?}"
+        );
+        // The one Google attached by itself would only come back.
+        assert_eq!(report.skipped_removal_count, 1);
+        assert!(
+            report.warnings.iter().any(|w| w.contains("Pricing") && w.contains("asset automation")),
+            "warnings: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn an_account_wide_asset_is_pruned_only_when_the_provider_claims_it() {
+        let declared = import_str("account_asset_unclaimed", DECLARED_ONE_SITELINK);
+        let live = crate::commands::adapt::from_search_response(DRIFTED_ACCOUNT).expect("adapt live");
+        let report = diff_after_defaults(declared, live);
+        assert!(
+            !delete_addresses(&report).iter().any(|a| a.contains("Install Now!")),
+            "an account-wide link is nobody's to remove until the file says so: {:?}",
+            delete_addresses(&report)
+        );
+
+        let declared = import_str(
+            "account_asset_claimed",
+            &format!(
+                r#"
+provider "google_ads" {{
+  customer_id = "9"
+  owns        = ["callouts"]
+}}
+{DECLARED_ONE_SITELINK}"#
+            ),
+        );
+        let live = crate::commands::adapt::from_search_response(DRIFTED_ACCOUNT).expect("adapt live");
+        let report = diff_after_defaults(declared, live);
+        assert!(
+            delete_addresses(&report)
+                .contains(&"account (removed account-level callout \"Install Now!\")".to_string()),
+            "diffs: {:?}",
+            delete_addresses(&report)
+        );
     }
 
     #[test]
