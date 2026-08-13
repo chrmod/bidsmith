@@ -108,6 +108,25 @@ bidsmith --version
   </TabItem>
 </Tabs>
 
+## Installing from crates.io
+
+If you already have the [Rust toolchain](https://rustup.rs) on your
+machine, bidsmith is also published to crates.io:
+
+```sh
+cargo install bidsmith
+```
+
+<Aside type="caution">
+  This build **cannot sign you in with the shortcut**. The Homebrew and
+  release-page binaries ship with a built-in Google OAuth application,
+  so `bidsmith auth login` works out of the box. A `cargo install` build
+  compiles on your own machine, where that application isn't available,
+  so you have to bring your own Google Cloud OAuth client and set
+  `GOOGLE_ADS_CLIENT_ID` and `GOOGLE_ADS_CLIENT_SECRET` yourself. Unless
+  you specifically want to build from source, prefer Homebrew.
+</Aside>
+
 ## Did it work?
 
 If `bidsmith --version` printed a version, you're done with this page.

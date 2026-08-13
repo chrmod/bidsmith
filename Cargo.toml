@@ -5,6 +5,16 @@ edition = "2021"
 license = "MPL-2.0"
 description = "Declarative, AI-friendly tooling for Google Ads campaigns"
 repository = "https://github.com/chrmod/bidsmith"
+exclude = [
+    "website/",
+    ".github/",
+    "scripts/",
+    "homebrew/",
+    ".claude-plugin/",
+    "skills/",
+    "CLAUDE.md",
+    "ROADMAP.md",
+]
 
 [[bin]]
 name = "bidsmith"

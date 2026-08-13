@@ -150,8 +150,11 @@ until the tap is pushed.
 1. Bump `version` in `Cargo.toml`, run `cargo build --release` so
    `Cargo.lock` updates.
 2. Commit, push `main`, then `git tag vX.Y.Z && git push origin vX.Y.Z` —
-   `.github/workflows/release.yml` builds four binaries and publishes the
-   GitHub Release.
+   `.github/workflows/release.yml` builds four binaries, publishes the
+   GitHub Release, and then publishes the crate to crates.io. The
+   crates.io step runs only after the GitHub Release succeeds, and
+   aborts if the tag and the `Cargo.toml` version disagree. It needs the
+   `CARGO_REGISTRY_TOKEN` repo secret.
 3. Once the workflow is green, run `./scripts/bump-formula.sh X.Y.Z` —
    downloads the release assets, hashes them, regenerates
    `homebrew/bidsmith.rb`.
@@ -163,3 +166,11 @@ until the tap is pushed.
 Binaries are unsigned; the formula's `install` block ad-hoc signs on the
 user's machine (`codesign --force --sign -`). The `chrmod/bidsmith` repo
 must stay **public** — Homebrew downloads release assets anonymously.
+
+crates.io builds are **not** equivalent to the released binaries. The
+release workflow injects `BIDSMITH_DEFAULT_CLIENT_ID` / `_SECRET` from
+repo secrets, and `src/api/creds.rs` picks them up via `option_env!`. A
+`cargo install bidsmith` compiles on the user's machine with those
+absent, so it has no built-in OAuth client and requires a bring-your-own
+`GOOGLE_ADS_CLIENT_ID` / `_SECRET`. Homebrew stays the recommended
+install path; keep the caveat on the docs install page in sync.
