@@ -166,6 +166,11 @@ pub struct JsonBudget {
     pub delivery_method: Option<String>,
     #[serde(default)]
     pub explicitly_shared: Option<bool>,
+    /// Live-only, and never rendered: a budget has no declarable `status`, but
+    /// Google auto-removes one along with the last campaign that used it, and a
+    /// dead budget matching by name would shadow the declared one (issue #161).
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 impl JsonBudget {

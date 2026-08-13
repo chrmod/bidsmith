@@ -275,6 +275,7 @@ impl AdapterState {
             ty: None,
             delivery_method: None,
             explicitly_shared: None,
+            status: None,
         });
         if let Some(s) = v.get("name").and_then(Value::as_str) {
             entry.name = s.to_string();
@@ -296,6 +297,9 @@ impl AdapterState {
         }
         if let Some(b) = v.get("explicitlyShared").and_then(Value::as_bool) {
             entry.explicitly_shared = Some(b);
+        }
+        if let Some(s) = v.get("status").and_then(Value::as_str) {
+            entry.status = Some(s.to_string());
         }
     }
 
