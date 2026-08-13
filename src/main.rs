@@ -325,6 +325,54 @@ fields on resources bidsmith manages and leaving everything else intact.")]
         #[arg(long)]
         verbose: bool,
     },
+    /// Adopt one live resource into a chosen .bid address
+    #[command(after_help = "\
+import brings a resource that already exists in the account under management by
+declaring it at an address you choose, so the next plan matches it instead of
+creating a second copy.
+
+Use it for the resource types Google Ads refuses to label — assets, the
+customer / campaign / ad-group links that attach them, and criteria. Campaigns,
+ad groups, and ads need no import: they carry a bidsmith:address label, so apply
+adopts a content-matching live one by itself.
+
+The address's module segment is the file the block is written into (files are
+modules: `account.google_ads_customer_asset.x` -> account.bid). Anything the
+imported block needs and the files don't declare yet — the asset behind a link —
+is written alongside it.
+
+Examples:
+  bidsmith import account.google_ads_customer_asset.shop_link \\
+                  customers/1234567890/customerAssets/4001~SITELINK
+  bidsmith import google_ads_sitelink_asset.shop 4001      # bare id works too
+  bidsmith import --check google_ads_callout_asset.free_delivery 4002")]
+    Import {
+        /// Address to declare it at: `<type>.<name>`, or `<module>.<type>.<name>`
+        /// to pick the file
+        address: String,
+        /// Google Ads resource name (`customers/123/customerAssets/45~SITELINK`)
+        /// or the bare id
+        resource: String,
+        /// .bid file or directory to write into
+        #[arg(long, value_name = "PATH", default_value = ".")]
+        path: String,
+        /// Print the block(s) that would be added without writing
+        #[arg(long)]
+        check: bool,
+        /// Ignore any cached live state for this customer and refetch
+        #[arg(long = "refresh-state", conflicts_with = "offline")]
+        refresh_state: bool,
+        /// Read the account from the cache instead of contacting Google Ads.
+        /// Errors if no fresh cache exists — run `bidsmith pull` first to warm it.
+        #[arg(long)]
+        offline: bool,
+        /// Print the outgoing request envelope
+        #[arg(long)]
+        verbose: bool,
+        /// Set a variable value (repeatable). Example: `--var city_radius_km=20`.
+        #[arg(long = "var", value_name = "NAME=VALUE", action = clap::ArgAction::Append)]
+        var: Vec<String>,
+    },
     /// Run a GAQL query against the live Google Ads account (read-only)
     #[command(after_help = r#"Examples:
   # Campaign performance, last 30 days
@@ -571,6 +619,18 @@ fn main() -> ExitCode {
                     verbose,
                 )
             }
+        }
+        Cmd::Import { address, resource, path, check, refresh_state, offline, verbose, var } => {
+            commands::import::run(
+                &address,
+                &resource,
+                &path,
+                check,
+                refresh_state,
+                offline,
+                verbose,
+                &var,
+            )
         }
         Cmd::Schema { output } => commands::schema::run(output.as_deref()),
         Cmd::Auth(sub) => match sub {

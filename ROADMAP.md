@@ -2,8 +2,9 @@
 
 > Phases 1, 2, and 3 (including the v2 identity labels + whole-resource
 > removal) are landed against the real rezolutnie `[W1]` campaign. The
-> remaining items are Phase 4 v2 (reconcile-mode refresh + `import`) and
-> the account-scoped resource types' live round-trip. Open decisions
+> remaining item is the account-scoped resource types' live
+> round-trip — Phase 4 v2 (reconcile-mode refresh + `import`) has
+> landed. Open decisions
 > below; locked choices in [DECISIONS.md](DECISIONS.md).
 
 ## Architecture (envisioned)
@@ -172,10 +173,19 @@ declared HCL against live labeled state. Local cache is rebuildable.
   instead of failing as standalone roots; a shared template is only
   patched where every instance drifted to the same value, and never
   where the attribute holds a `var.` / `local.` / reference.
-- ⏳ `import <address> <api-resource>`: adopt an unlabeled live
-  resource into a specific `.bid` address. Now unblocked — apply
-  already adopts unlabeled live resources by content and labels them;
-  `import` is the explicit, address-targeted form of that.
+- ✅ `import <address> <api-resource>` (issue #150): adopt an unlabeled
+  live resource into a specific `.bid` address by **writing the block**,
+  not by mutating the account — the types that strand a pre-bidsmith
+  account (assets, the `customer_asset` / `campaign_asset` /
+  `ad_group_asset` links, criteria) can't carry a label, so declaring
+  them is what makes `plan` see them. The address's module segment picks
+  the file; a link brings its asset along when the tree doesn't declare
+  it yet; the mutated tree is re-validated before anything is written.
+  `--check` previews, `--offline` works off the cached snapshot. The
+  account-level `customer_asset` query widened past `field_type = CALL`
+  in the same change, so account sitelinks / callouts / snippets are
+  visible at all. See **Adoption writes source, not a label** in
+  DECISIONS.md.
 
 **Phase 5 — Modules**
 - ✅ Files-as-modules: each `.bid` file's basename is its implicit
@@ -230,10 +240,12 @@ what closes the most user-facing gaps next:
    follow-ups: inserting an attribute that's absent from source (today
    reported, not written) and per-asset RSA / criterion-membership
    reconcile (waits on the per-asset RSA diff below). Next priorities:
-2. **`import <address> <api-resource>`** (unblocked). `apply`
-   already adopts unlabeled live resources by content and labels them;
-   `import` is the explicit, address-targeted form — adopt one named
-   live resource into a chosen `.bid` address without a full refresh.
+2. ✅ **`import <address> <api-resource>`** (shipped, issue #150).
+   Adopts one named live resource into a chosen `.bid` address without
+   a full refresh, by writing the block rather than mutating the
+   account. Remaining adoption work is **prune** (#151) — surfacing the
+   live resources nothing declares, `AUTOMATICALLY_CREATED` assets
+   included — and the automation-settings resource (#152).
 3. **Account-scoped resource types in the live pipeline** (independent;
    can ride alongside). The schema, validator, renderer, adapter,
    and `live_state` queries for `google_ads_conversion_action`,

@@ -1,0 +1,174 @@
+---
+title: bidsmith import
+description: Bring one resource that already exists in your Google Ads account under management, at an address you choose.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Accounts have history. Sitelinks added in the Google Ads UI three years
+ago, callouts somebody attached to the account rather than to a
+campaign, a negative keyword nobody remembers adding — none of it is in
+your `.bid` files, so `plan` can't see it, and writing it out by hand
+risks creating a second copy of something that is already running.
+
+`import` closes that gap. Point it at one live resource and the address
+you want it to live at, and it writes the matching block into your
+`.bid` files. Nothing is changed in Google Ads: the next
+[`plan`](/bidsmith/commands/plan/) simply recognizes the resource and
+reports it as unchanged instead of proposing to create it.
+
+## Synopsis
+
+```sh
+bidsmith import <ADDRESS> <RESOURCE> [--path PATH] [--check]
+                [--refresh-state | --offline] [--var NAME=VALUE] [--verbose]
+```
+
+- `<ADDRESS>` — where the block should go: `<type>.<name>`, or
+  `<module>.<type>.<name>` to say which file.
+- `<RESOURCE>` — the Google Ads resource name
+  (`customers/1234567890/customerAssets/4001~SITELINK`) or just its id.
+
+## Flags
+
+| Flag | Description |
+|---|---|
+| `--path PATH` | The `.bid` file or directory to write into. Default `.`. |
+| `--check` | Print the block(s) that would be added and write nothing. |
+| `--refresh-state` | Ignore the cached account snapshot and refetch. |
+| `--offline` | Read the account from the cache instead of calling the API. Errors if no fresh cache exists — run [`bidsmith pull`](/bidsmith/commands/pull/) first. |
+| `--var NAME=VALUE` | Set a [variable](/bidsmith/concepts/variables/) value. Repeatable. |
+| `--verbose` | Print the outgoing API request envelope. |
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | The block was written (or printed, with `--check`). |
+| `1` | Nothing was written: the resource isn't there, the address is taken, it's already managed, or the result wouldn't validate. |
+| `2` | The address or the resource type isn't one `import` accepts. |
+
+## What you can import
+
+`import` covers the resource types Google Ads refuses to label:
+
+- **Assets** — sitelink, callout, structured snippet, call, YouTube video.
+- **Asset links** — `customer_asset`, `campaign_asset`, `ad_group_asset`
+  (the blocks that attach an asset to the account, a campaign, or an ad
+  group).
+- **Criteria** — campaign and ad-group criteria: keywords, negatives,
+  audiences, placements.
+
+Campaigns, ad groups, and ads need no import. They carry a bidsmith
+label, so the first [`apply`](/bidsmith/commands/apply/) after you write
+them adopts the matching live one — see
+[Adopt a campaign from the UI](/bidsmith/recipes/adopt-a-campaign-from-the-ui/).
+And if you're starting from nothing, [`bidsmith refresh
+-d`](/bidsmith/commands/refresh/) writes the whole account out at once;
+`import` is for picking one thing out of an account you already manage.
+
+## Examples
+
+### Adopt an account-level sitelink
+
+```sh
+bidsmith import account.google_ads_customer_asset.shop_link \
+                customers/1234567890/customerAssets/4001~SITELINK
+```
+
+```hcl
+resource "google_ads_customer_asset" "shop_link" {
+  asset = google_ads_sitelink_asset.shop.id
+}
+```
+
+The link points at the sitelink your file already declares. If it
+didn't, the sitelink would be written alongside it:
+
+```hcl
+resource "google_ads_sitelink_asset" "sitelink_support" {
+  link_text = "Support"
+  final_urls = ["https://example.com/help"]
+}
+
+resource "google_ads_customer_asset" "support_link" {
+  asset = google_ads_sitelink_asset.sitelink_support.id
+}
+```
+
+A link can't exist without its asset, so `import` brings the asset with
+it and names it the way `refresh` would. Rename it afterwards with
+[`bidsmith mv`](/bidsmith/commands/mv/) if you'd rather call it
+something else.
+
+### Look before you write
+
+```sh
+bidsmith import --check google_ads_callout_asset.free_delivery 4002
+```
+
+Prints the block to stdout and touches nothing. The bare id works
+because the collection is implied by the type.
+
+### Pick the file
+
+Files are modules, so the module segment of the address is the file the
+block is written into:
+
+```sh
+bidsmith import account.google_ads_customer_asset.shop_link   4001~SITELINK
+bidsmith import campaigns.google_ads_campaign_asset.sale_link 100~4004~SITELINK
+```
+
+When your project is a single `.bid` file you can leave the module off.
+With more than one file, `import` asks you to say which — it won't
+guess.
+
+## What it refuses
+
+`import` stops rather than write something misleading:
+
+- **The address is taken.** Pick a free name, or move the existing block
+  out of the way with [`bidsmith mv`](/bidsmith/commands/mv/).
+- **`plan` already manages the resource.** It names the address that
+  claims it. Importing it again would be a duplicate declaration.
+- **The resource name is from the wrong collection.** Passing an
+  `assets/...` name for a `customer_asset` is a mistake worth catching
+  before you go looking for a resource that was never missing.
+- **A criterion's parent isn't declared.** A criterion has to reference
+  a campaign or ad group in your files; declare the parent first.
+
+After writing, `import` re-checks the whole project and refuses to save
+if the result wouldn't validate — the same guard `refresh --in-place`
+uses.
+
+<Aside type="note">
+  `import` never calls a mutate. It only reads the account and writes
+  your files, so the adoption arrives as a diff you review in git like
+  any other change.
+</Aside>
+
+## Duplicates
+
+Assets have no id you can write down in a `.bid` file — bidsmith matches
+them by their content, so two live sitelinks with the same text and URL
+are indistinguishable to it. When that happens, `plan` says so:
+
+```
+plan: warning: account.google_ads_sitelink_asset.shop: 2 live resources
+are identical to it (4001, 4009) — adopted 4001, the rest stay
+unmanaged.
+```
+
+Nothing is broken and nothing is duplicated, but one of the two is
+outside bidsmith's view. Remove the extra one in the Google Ads UI, or
+declare it too so both are managed.
+
+## See also
+
+- [`bidsmith refresh`](/bidsmith/commands/refresh/) — adopt a whole
+  account at once, or pull live changes into files you maintain.
+- [`bidsmith plan`](/bidsmith/commands/plan/) — confirm the imported
+  resource reads as unchanged.
+- [Adopt a campaign from the UI](/bidsmith/recipes/adopt-a-campaign-from-the-ui/) —
+  the label-based half of adoption, for campaigns and ad groups.

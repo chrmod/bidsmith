@@ -138,8 +138,10 @@ between read and write:
 
 <ul>
   <li><strong>Read / dry-run</strong> — <code>validate</code> (local only), <code>plan</code>,
-      <code>query</code>, <code>pull</code>, <code>refresh</code>, and <code>drift</code> never mutate
-      the account.
+      <code>query</code>, <code>pull</code>, <code>refresh</code>, <code>import</code>, and
+      <code>drift</code> never mutate the account. <code>import</code> reads one live resource and
+      writes the matching declaration into a local <code>.bid</code> file, so bringing a
+      pre-existing resource under management costs a read and no write at all.
       <code>plan</code> fetches live state, diffs it against the <code>.bid</code> files, and runs the
       resulting mutate with <code>validateOnly=true</code>, so Google validates references, enums,
       policy strings, and field limits without writing anything. <code>drift</code> is read-only

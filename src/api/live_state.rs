@@ -306,7 +306,7 @@ pub const QUERIES: &[(&str, &str)] = &[
           customer_asset.field_type,
           customer_asset.status
         FROM customer_asset
-        WHERE customer_asset.field_type = CALL
+        WHERE customer_asset.field_type IN (CALL, SITELINK, CALLOUT, STRUCTURED_SNIPPET)
           AND customer_asset.status != 'REMOVED'",
     ),
     (

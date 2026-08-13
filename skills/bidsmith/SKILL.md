@@ -101,6 +101,7 @@ bidsmith plan --format markdown --detailed-exitcode  # PR-comment table; exit 2 
 bidsmith apply                                  # apply the plan; prompts unless --auto-approve
 bidsmith drift                                  # settings plan never compares, and which are set live
 bidsmith refresh [-d DIR | -o FILE]             # import live state into fresh .bid files
+bidsmith import ADDRESS RESOURCE_NAME           # adopt one live resource into a chosen .bid address
 bidsmith query "GAQL" [--format table|json|tsv] # read-only stats/reporting passthrough
 bidsmith pull [-o FILE]                         # dump raw live state as SearchStream JSON
 bidsmith auth <login|status|logout|profile>     # browser sign-in + credential management
