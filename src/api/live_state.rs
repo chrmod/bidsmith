@@ -81,6 +81,7 @@ pub const QUERIES: &[(&str, &str)] = &[
           campaign.video_campaign_settings.video_ad_inventory_control.allow_in_feed,
           campaign.video_campaign_settings.video_ad_inventory_control.allow_shorts,
           campaign.video_campaign_settings.video_ad_inventory_control.allow_non_skippable_in_stream,
+          campaign.asset_automation_settings,
           campaign.targeting_setting.target_restrictions,
           campaign.frequency_caps,
           campaign.final_url_suffix,

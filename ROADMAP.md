@@ -252,9 +252,18 @@ what closes the most user-facing gaps next:
    have no live anchor for a claim, so they are owned by naming them in
    the `provider` block's `owns` list. `AUTOMATICALLY_CREATED` links
    and links on VIDEO campaigns are skipped with a warning rather than
-   sent, since the API refuses them and the batch is atomic. Remaining
-   adoption work is the automation-settings resource (#152), which is
-   what stops auto-created assets being regenerated in the first place.
+   sent, since the API refuses them and the batch is atomic.
+   ✅ **Asset automation as a campaign setting** (shipped, issue #152).
+   `asset_automation_settings { text_asset_automation = "OPTED_OUT" … }`
+   declares which assets Google may invent for a campaign, so the
+   opt-out lives in the repo and CI catches it being switched back on.
+   The account-level "automatically created assets" switch behind
+   dynamic sitelinks and the business name has no API field at all, so
+   plan reports what it finds instead — the one half of the umbrella
+   goal (#153) that no `.bid` can close. Remaining there: pruning the
+   auto-created links themselves would need
+   `AutomaticallyCreatedAssetRemovalService`, a separate endpoint
+   outside `googleAds:mutate` and outside the atomic batch.
 3. **Account-scoped resource types in the live pipeline** (independent;
    can ride alongside). The schema, validator, renderer, adapter,
    and `live_state` queries for `google_ads_conversion_action`,

@@ -1089,6 +1089,12 @@ fn campaign_update_body(c: &JsonCampaign, resource_name: &str, fields: &[String]
             "frequency_caps" => {
                 m.insert("frequencyCaps".into(), frequency_caps_value(c));
             }
+            "asset_automation_settings" => {
+                m.insert(
+                    "assetAutomationSettings".into(),
+                    asset_automation_value(c),
+                );
+            }
             "targeting_setting.target_restrictions" => {
                 m.insert(
                     "targetingSetting".into(),
@@ -1875,10 +1881,26 @@ fn campaign_create(c: &JsonCampaign, resource_name: &str, budget_rn: &str) -> Va
     if !c.frequency_caps.is_empty() {
         m.insert("frequencyCaps".into(), frequency_caps_value(c));
     }
+    if c.asset_automation_settings.as_ref().is_some_and(|a| !a.is_empty()) {
+        m.insert("assetAutomationSettings".into(), asset_automation_value(c));
+    }
     if let Some(t) = &c.targeting_setting {
         m.insert("targetingSetting".into(), targeting_setting_value(Some(t)));
     }
     Value::Object(m)
+}
+
+/// The declared automations as the API's repeated `(type, status)` list. The
+/// campaign's whole opt-in state, since Google keeps only what the body carries.
+fn asset_automation_value(c: &JsonCampaign) -> Value {
+    Value::Array(
+        c.asset_automation_list()
+            .into_iter()
+            .map(|(ty, status)| {
+                json!({ "assetAutomationType": ty, "assetAutomationStatus": status })
+            })
+            .collect(),
+    )
 }
 
 /// The campaign's chosen `campaign_bidding_strategy` member as a
@@ -2760,6 +2782,91 @@ mod tests {
             op["update"]["videoCampaignSettings"],
             json!({"videoAdInventoryControl": {"allowShorts": false}})
         );
+    }
+
+    /// The mask names the repeated field and the body carries every automation
+    /// the block declares, because Google keeps only what the body says — the
+    /// one shape in which "no automation writes copy into these ads" survives
+    /// the round trip (issue #152).
+    #[test]
+    fn an_asset_automation_update_sends_the_whole_list() {
+        let op = campaign_update_op(
+            &campaign_bidding(
+                "SEARCH",
+                json!({
+                    "manual_cpc": {},
+                    "asset_automation_settings": {
+                        "text_asset_automation": "OPTED_OUT",
+                        "final_url_expansion_text_asset_automation": "OPTED_OUT",
+                    },
+                }),
+            ),
+            &strategy_switch("asset_automation_settings"),
+        );
+        assert_eq!(op["updateMask"], json!("asset_automation_settings"));
+        assert_eq!(
+            op["update"]["assetAutomationSettings"],
+            json!([
+                {"assetAutomationType": "TEXT_ASSET_AUTOMATION", "assetAutomationStatus": "OPTED_OUT"},
+                {"assetAutomationType": "FINAL_URL_EXPANSION_TEXT_ASSET_AUTOMATION", "assetAutomationStatus": "OPTED_OUT"},
+            ])
+        );
+    }
+
+    #[test]
+    fn a_new_campaign_creates_opted_out_of_the_automation_it_names() {
+        let input = campaign_bidding(
+            "SEARCH",
+            json!({
+                "manual_cpc": {},
+                "asset_automation_settings": {"text_asset_automation": "OPTED_OUT"},
+            }),
+        );
+        let report = DiffReport {
+            diffs: vec![
+                create_diff("m.b", "campaign_budget"),
+                create_diff("m.c", "campaign"),
+            ],
+            create_count: 2,
+            ..DiffReport::default()
+        };
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let campaign = plan.body["mutateOperations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|op| op.get("campaignOperation").and_then(|o| o.get("create")))
+            .expect("campaign create op");
+        assert_eq!(
+            campaign["assetAutomationSettings"],
+            json!([{
+                "assetAutomationType": "TEXT_ASSET_AUTOMATION",
+                "assetAutomationStatus": "OPTED_OUT",
+            }])
+        );
+    }
+
+    /// A campaign that never mentions automation must not send an empty list —
+    /// that would read as "clear every opt-in" on a campaign nobody edited.
+    #[test]
+    fn a_campaign_without_the_block_sends_no_automation_at_all() {
+        let input = campaign_bidding("SEARCH", json!({"manual_cpc": {}}));
+        let report = DiffReport {
+            diffs: vec![
+                create_diff("m.b", "campaign_budget"),
+                create_diff("m.c", "campaign"),
+            ],
+            create_count: 2,
+            ..DiffReport::default()
+        };
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let campaign = plan.body["mutateOperations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|op| op.get("campaignOperation").and_then(|o| o.get("create")))
+            .expect("campaign create op");
+        assert!(campaign.get("assetAutomationSettings").is_none());
     }
 
     /// The mask names the repeated field, and the body carries the whole

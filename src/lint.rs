@@ -71,6 +71,7 @@ fn lint_resource(file: &ParsedFile, block: &Block, bindings: &Bindings, diags: &
     if ty == "google_ads_campaign" {
         lint_frequency_caps(file, block, &address, bindings, diags);
         lint_flight_window(file, block, &address, bindings, diags);
+        lint_asset_automation(file, block, &address, bindings, diags);
     }
 
     if matches!(
@@ -175,6 +176,30 @@ fn lint_frequency_caps(
             span_of(caps.ident.span()),
             format!(
                 "{address} sets frequency_caps on a Demand Gen campaign: Google Ads does not support frequency capping for this channel, so the setting has no effect"
+            ),
+        ));
+    }
+}
+
+fn lint_asset_automation(
+    file: &ParsedFile,
+    block: &Block,
+    address: &str,
+    bindings: &Bindings,
+    diags: &mut Vec<Diag>,
+) {
+    let Some(settings) = find_block(&block.body, "asset_automation_settings") else {
+        return;
+    };
+    let channel = find_attr(&block.body, "advertising_channel_type")
+        .and_then(|a| eval_str(bindings, &file.module, &a.value));
+    let Some(channel) = channel else { return };
+    if !crate::schema::ASSET_AUTOMATION_CHANNELS.contains(&channel.as_str()) {
+        diags.push(Diag::warning(
+            file.src.clone(),
+            span_of(settings.ident.span()),
+            format!(
+                "{address} sets asset_automation_settings on a {channel} campaign: Google Ads carries these settings on Search and Performance Max campaigns only, so `apply` will be rejected"
             ),
         ));
     }
@@ -598,6 +623,44 @@ resource "google_ads_campaign" "c" {{
 "#
             ),
         )
+    }
+
+    fn campaign_with_automation(name: &str, channel: &str) -> Vec<String> {
+        lint_str(
+            name,
+            &format!(
+                r#"
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "{channel}"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  asset_automation_settings {{
+    text_asset_automation = "OPTED_OUT"
+  }}
+}}
+"#
+            ),
+        )
+    }
+
+    #[test]
+    fn asset_automation_off_its_channels_warns() {
+        let msgs = campaign_with_automation("automation_display", "DISPLAY");
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("Search and Performance Max campaigns only")),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn asset_automation_on_search_is_quiet() {
+        let msgs = campaign_with_automation("automation_search", "SEARCH");
+        assert!(
+            !msgs.iter().any(|m| m.contains("asset_automation_settings")),
+            "{msgs:?}"
+        );
     }
 
     #[test]

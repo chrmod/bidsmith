@@ -324,6 +324,23 @@ Plan: 16 to create, 21 to update, 4 to destroy (2 skipped), 1432 unchanged.
 To make the warning stop, either delete the resource in the Google Ads
 UI or restore its declaration.
 
+**It reports.** Some drift bidsmith can neither fix nor declare away,
+because the Google Ads API has no field for it. Assets Google's own
+automation attached to campaigns bidsmith manages are the case that
+matters most — the account-level switch behind them exists only in the
+Google Ads UI, so every plan counts what it found:
+
+```
+plan: warning: account: Google's asset automation is serving 6 asset(s)
+nothing declares (4 SITELINK, 2 CALLOUT). The account-level "automatically
+created assets" switch that makes them is not in the Google Ads API, so
+bidsmith can only report it — turn it off in the Google Ads UI. What a
+campaign can declare is its own automation: `asset_automation_settings`.
+```
+
+See [Stop Google writing your ad
+copy](/bidsmith/recipes/stop-google-writing-your-ad-copy/).
+
 <Aside type="tip">
   When Google *does* reject a batch, the summary separates the
   operations that were actually at fault from the ones that only failed

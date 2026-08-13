@@ -1284,6 +1284,40 @@ resource type, any file layout, modules, schema validation.
   as does the undeletable device criterion that already skipped silently.
   Assets themselves are never destroyed, only unlinked: the API has no remove
   on `AssetService`.
+- **Asset automation is declared per campaign; the account-level switch is
+  reported, never written** (issue #152). "Automatically created assets" is two
+  features wearing one name, and only one of them has an API. A campaign's own
+  automation — text customization, final-URL expansion, and on Performance Max
+  the image and video generators — is `Campaign.asset_automation_settings`, so
+  it becomes an `asset_automation_settings` block whose five attributes are the
+  `AssetAutomationType` values the API accepts on a campaign, each `OPTED_IN` /
+  `OPTED_OUT`. The account-level switch that invents dynamic sitelinks,
+  callouts, a business name and a logo has **no field anywhere in v22** —
+  not on `customer`, not on `campaign` — so no `.bid` can turn it off. Three
+  choices follow:
+  - **Compared per automation, written as a whole list.** Each attribute is
+    independently unmanaged when omitted, like `network_settings` — Google
+    reports a setting for every type it has an opinion about, so reading the
+    unnamed ones as drift would make a block naming one of five propose the
+    same write on every plan and never converge. The *write* is still the
+    whole list, since that is all the API takes, so an automation the file
+    does not name goes back to Google's default the moment a named one drifts.
+    That is why both sides of the plan row render whole (in the file's
+    attribute names, not the API's): the row is the only place the drop is
+    visible, and it has to be visible before it is approved.
+  - **The unreachable half is reported on every plan.** One warning counts the
+    `AUTOMATICALLY_CREATED` links on campaigns and ad groups bidsmith manages
+    that no ownership rule reaches — the ones that would otherwise leave no
+    trace in the plan at all, since prune only speaks inside a `(parent, field
+    type)` the file owns. It cannot be fixed from a `.bid`, which is exactly
+    why it has to be said out loud: a repeating warning is what catches someone
+    flipping the switch back on in the UI. Links inside an owned partition keep
+    their own skip warning and are not counted twice.
+  - **A block on the wrong channel is a lint, not a blocker.** Google Ads
+    carries these settings on Search and Performance Max campaigns only;
+    `validate` warns, and the API rejection stays the authority — the channel
+    lists move with Google's product, and a hard local blocker on a moving list
+    would refuse plans that the account would have accepted.
 
 ## Current state
 
@@ -1656,7 +1690,13 @@ Validator covers (so far):
   campaign is, plus an optional `video_campaign_settings {
   video_ad_inventory_control { allow_in_stream?, allow_in_feed?,
   allow_shorts?, allow_non_skippable_in_stream? } }` block declaring
-  which YouTube inventory it may serve on, plus a
+  which YouTube inventory it may serve on, plus an optional
+  `asset_automation_settings { text_asset_automation?,
+  final_url_expansion_text_asset_automation?,
+  generate_image_enhancement?, generate_image_extraction?,
+  generate_enhanced_youtube_videos? }` block (each `OPTED_IN` /
+  `OPTED_OUT`) saying which assets Google may invent for the campaign,
+  managed as a whole list once declared, plus a
   repeatable `frequency_caps { event_type, time_unit, time_length,
   cap, level? }` block managed as a whole set once declared, with a
   validate-time guard against declaring the same axis both inline and as

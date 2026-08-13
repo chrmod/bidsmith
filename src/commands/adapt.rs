@@ -4,7 +4,8 @@ use serde_json::Value;
 
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
-    JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
+    JsonAssetAutomationSettings, JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset,
+    JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCriterion,
     JsonCustomerAsset, JsonAgeRange, JsonAudience, JsonCustomAudience, JsonCustomAudienceMember,
     JsonCustomParameter, JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonGender,
@@ -327,6 +328,7 @@ impl AdapterState {
                 network_settings: None,
                 geo_target_type_setting: None,
                 video_campaign_settings: None,
+                asset_automation_settings: None,
                 targeting_setting: None,
                 frequency_caps: Vec::new(),
                 managed_address: None,
@@ -438,6 +440,28 @@ impl AdapterState {
             entry.video_campaign_settings = Some(JsonVideoCampaignSettings {
                 video_ad_inventory_control: Some(control),
             });
+        }
+        // An automation this build has no attribute for, or a status it has no
+        // name for, is a report rather than a setting: carrying either over
+        // would render a `.bid` the validator rejects.
+        if let Some(list) = v.get("assetAutomationSettings").and_then(Value::as_array) {
+            let mut settings = JsonAssetAutomationSettings::default();
+            for setting in list {
+                let field = setting
+                    .get("assetAutomationType")
+                    .and_then(Value::as_str)
+                    .and_then(crate::schema::asset_automation_field);
+                let status = setting
+                    .get("assetAutomationStatus")
+                    .and_then(Value::as_str)
+                    .filter(|s| crate::schema::is_asset_automation_status(s));
+                if let (Some(field), Some(status)) = (field, status) {
+                    settings.set(field, Some(status.to_string()));
+                }
+            }
+            if !settings.is_empty() {
+                entry.asset_automation_settings = Some(settings);
+            }
         }
         if v.get("targetingSetting").is_some() {
             entry.targeting_setting = parse_targeting_setting(v);
