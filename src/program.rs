@@ -8,7 +8,7 @@ use hcl_edit::structure::{Block, Structure};
 use miette::NamedSource;
 
 use crate::diagnostics::Diag;
-use crate::parser::{parse_file, ParsedFile};
+use crate::parser::{parse_file, InheritedDefaults, ParsedFile};
 use crate::schema::{Bindings, InputBindings};
 
 pub struct Scope {
@@ -58,6 +58,7 @@ impl Program {
             .collect();
 
         let (top_bindings, _bind_diags) = Bindings::build(&root_files, &cli_inputs);
+        let shared_defaults = collect_defaults(&root_files);
 
         let mut scopes = vec![Scope {
             files: root_files,
@@ -74,7 +75,7 @@ impl Program {
         }
 
         for spec in &module_specs {
-            match load_module(spec, &top_bindings) {
+            match load_module(spec, &top_bindings, &shared_defaults) {
                 Ok(scope) => scopes.push(scope),
                 Err(ds) => diags.extend(ds),
             }
@@ -402,7 +403,32 @@ fn canonical(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
-fn load_module(spec: &ModuleSpec, top_bindings: &Bindings) -> Result<Scope, Vec<Diag>> {
+/// The root tree's `defaults` blocks, which every module instance can see. A
+/// `defaults` block is a type-scoped shell rather than a value, so factoring
+/// campaigns into templates must not force the shell to be written out again
+/// per template (issue #148).
+fn collect_defaults(root_files: &[ParsedFile]) -> Vec<InheritedDefaults> {
+    let mut out = Vec::new();
+    for f in root_files {
+        for s in f.body.iter() {
+            let Structure::Block(b) = s else { continue };
+            if b.ident.as_str() != "defaults" {
+                continue;
+            }
+            out.push(InheritedDefaults {
+                file: f.path.display().to_string(),
+                block: b.clone(),
+            });
+        }
+    }
+    out
+}
+
+fn load_module(
+    spec: &ModuleSpec,
+    top_bindings: &Bindings,
+    shared_defaults: &[InheritedDefaults],
+) -> Result<Scope, Vec<Diag>> {
     let mut diags = Vec::new();
     if !spec.source_path.exists() {
         diags.push(Diag::new(
@@ -450,6 +476,7 @@ fn load_module(spec: &ModuleSpec, top_bindings: &Bindings) -> Result<Scope, Vec<
     }
 
     parsed.module = spec.instance.clone();
+    parsed.inherited_defaults = shared_defaults.to_vec();
 
     let inputs = build_inputs(spec, top_bindings, &mut diags);
     if !diags.is_empty() {
@@ -833,6 +860,219 @@ module "many" {
         assert_eq!(
             module_names(&loaded),
             HashSet::from(["single".to_string(), "many.a".to_string()])
+        );
+    }
+
+    const SHARED_DEFAULTS: &str = r#"
+defaults "google_ads_campaign" "video_plain" {
+  advertising_channel_type = "VIDEO"
+  status                   = "PAUSED"
+}
+"#;
+
+    const CAMPAIGN_TEMPLATE: &str = r#"
+variable "campaign_name" {
+  type = string
+}
+
+resource "google_ads_campaign_budget" "budget" {
+  name          = var.campaign_name
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "campaign" {
+  name            = var.campaign_name
+  defaults        = defaults.video_plain
+  campaign_budget = google_ads_campaign_budget.budget.id
+}
+"#;
+
+    const MODULE_CALL: &str = r#"
+provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+module "m" {
+  source = "./t.bid"
+  for_each = {
+    sg = { campaign_name = "SG" }
+    my = { campaign_name = "MY" }
+  }
+}
+"#;
+
+    fn validation_errors(loaded: &Loaded) -> Vec<String> {
+        let mut out = errors(loaded);
+        for scope in &loaded.program.scopes {
+            out.extend(
+                crate::schema::validate_files(&scope.files, &scope.inputs)
+                    .into_iter()
+                    .filter(|d| d.is_error())
+                    .map(|d| d.message),
+            );
+        }
+        out
+    }
+
+    fn campaigns(loaded: &Loaded) -> Vec<crate::commands::export::JsonCampaign> {
+        crate::api::import::import_program(&loaded.program)
+            .expect("import")
+            .input
+            .campaigns
+    }
+
+    #[test]
+    fn root_defaults_reach_a_module_body() {
+        let loaded = write_and_load(
+            "bidsmith-defaults-inherit",
+            &[
+                ("main.bid", MODULE_CALL),
+                ("shared.bid", SHARED_DEFAULTS),
+                ("t.bid", CAMPAIGN_TEMPLATE),
+            ],
+        );
+        assert_eq!(validation_errors(&loaded), Vec::<String>::new());
+
+        let merged = campaigns(&loaded);
+        assert_eq!(merged.len(), 2);
+        for c in &merged {
+            assert_eq!(c.advertising_channel_type, "VIDEO");
+            assert_eq!(c.status.as_deref(), Some("PAUSED"));
+        }
+    }
+
+    #[test]
+    fn an_unnamed_root_defaults_block_reaches_a_module_body_too() {
+        let shared = r#"
+defaults "google_ads_campaign" {
+  advertising_channel_type = "SEARCH"
+  status                   = "PAUSED"
+}
+"#;
+        let template = r#"
+variable "campaign_name" {
+  type = string
+}
+
+resource "google_ads_campaign_budget" "budget" {
+  name          = var.campaign_name
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "campaign" {
+  name            = var.campaign_name
+  campaign_budget = google_ads_campaign_budget.budget.id
+}
+"#;
+        let main = r#"
+provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+module "m" {
+  source        = "./t.bid"
+  campaign_name = "Solo"
+}
+"#;
+        let loaded = write_and_load(
+            "bidsmith-defaults-inherit-unnamed",
+            &[
+                ("main.bid", main),
+                ("shared.bid", shared),
+                ("t.bid", template),
+            ],
+        );
+        assert_eq!(validation_errors(&loaded), Vec::<String>::new());
+        assert_eq!(campaigns(&loaded)[0].advertising_channel_type, "SEARCH");
+    }
+
+    #[test]
+    fn a_modules_own_defaults_shadow_the_inherited_block() {
+        let template = format!(
+            r#"
+defaults "google_ads_campaign" "video_plain" {{
+  advertising_channel_type = "SEARCH"
+  status                   = "ENABLED"
+}}
+{CAMPAIGN_TEMPLATE}"#
+        );
+        let loaded = write_and_load(
+            "bidsmith-defaults-shadow",
+            &[
+                ("main.bid", MODULE_CALL),
+                ("shared.bid", SHARED_DEFAULTS),
+                ("t.bid", &template),
+            ],
+        );
+        assert_eq!(validation_errors(&loaded), Vec::<String>::new());
+        for c in &campaigns(&loaded) {
+            assert_eq!(c.advertising_channel_type, "SEARCH");
+            assert_eq!(c.status.as_deref(), Some("ENABLED"));
+        }
+    }
+
+    #[test]
+    fn an_inherited_defaults_block_is_reported_once_not_once_per_instance() {
+        let shared = r#"
+defaults "google_ads_campaign" "video_plain" {
+  advertising_channel_type = "VIDEO"
+  nonsense                 = "oops"
+}
+"#;
+        let loaded = write_and_load(
+            "bidsmith-defaults-inherit-diag",
+            &[
+                ("main.bid", MODULE_CALL),
+                ("shared.bid", shared),
+                ("t.bid", CAMPAIGN_TEMPLATE),
+            ],
+        );
+        let complaints: Vec<_> = validation_errors(&loaded)
+            .into_iter()
+            .filter(|m| m.contains("nonsense"))
+            .collect();
+        assert_eq!(complaints.len(), 1, "got {complaints:?}");
+    }
+
+    #[test]
+    fn defaults_declared_in_a_template_stay_inside_it() {
+        let template = format!(
+            r#"
+defaults "google_ads_campaign" "video_plain" {{
+  advertising_channel_type = "VIDEO"
+}}
+{CAMPAIGN_TEMPLATE}"#
+        );
+        let main = r#"
+provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+module "m" {
+  source        = "./t.bid"
+  campaign_name = "Solo"
+}
+
+resource "google_ads_campaign_budget" "b" {
+  name          = "Root budget"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "root" {
+  name            = "Root campaign"
+  defaults        = defaults.video_plain
+  campaign_budget = google_ads_campaign_budget.b.id
+}
+"#;
+        let loaded = write_and_load(
+            "bidsmith-defaults-no-leak-up",
+            &[("main.bid", main), ("t.bid", &template)],
+        );
+        assert!(
+            validation_errors(&loaded)
+                .iter()
+                .any(|m| m.contains("unknown defaults 'video_plain'")),
+            "a template's defaults must not become visible to its caller"
         );
     }
 

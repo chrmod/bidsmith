@@ -301,6 +301,11 @@ Smaller follow-ups that can ride along:
   issue's option B, paired with resource `for_each` (#86) for the
   device-criteria trio; module outputs (option A) and reference-typed
   module inputs (option C) stay deferred under "Module composition v2".
+  A module body sees the root tree's blocks (issue #148), so a tree that
+  factors campaigns into `templates/` shares one shell instead of
+  keeping a copy per template, free to drift. **Still module-private:**
+  `ad_template` bodies, which have the same "shared declaration, not a
+  value" shape — worth carrying across the same way if anyone hits it.
 - ✅ `for_each` on resource blocks (issue #86) — one `resource` block
   plus a list (`["MOBILE", "TABLET"]`) or map of references fans out
   into one instance per entry, with `each.key` / `each.value`

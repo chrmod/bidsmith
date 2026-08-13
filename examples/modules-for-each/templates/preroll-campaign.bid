@@ -27,13 +27,8 @@ resource "google_ads_campaign_budget" "budget" {
 resource "google_ads_campaign" "search" {
   name = var.campaign_name
   status = "ENABLED"
-  advertising_channel_type = "SEARCH"
+  defaults = defaults.search_shell
   campaign_budget = google_ads_campaign_budget.budget.id
-  contains_eu_political_advertising = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"
-
-  manual_cpc {
-    enhanced_cpc_enabled = false
-  }
 }
 
 resource "google_ads_ad_group" "default" {

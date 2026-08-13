@@ -1,0 +1,8 @@
+defaults "google_ads_campaign" "search_shell" {
+  advertising_channel_type = "SEARCH"
+  contains_eu_political_advertising = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"
+
+  manual_cpc {
+    enhanced_cpc_enabled = false
+  }
+}
