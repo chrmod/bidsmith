@@ -636,13 +636,63 @@ URL expansion start off; on Performance Max, everything starts on.
   Dynamic sitelinks, dynamic callouts, and the business name and logo
   Google attaches by itself come from a separate, **account-level**
   "automatically created assets" setting, and the Google Ads API does not
-  expose it — no `.bid` can turn it off. Turn it off in the Google Ads
-  UI, under Admin → Account settings. bidsmith reports what it finds:
-  `plan` prints a warning counting the assets Google attached to
-  campaigns it manages, so someone switching it back on is caught on the
-  next run. See [Serve only the extensions you
-  declared](/bidsmith/recipes/serve-only-the-extensions-you-declared/).
+  expose it — no `.bid` can turn the switch off. What it already made is
+  another matter: see [`owns`](#owns) below, which stops those assets
+  serving. To stop them being made at all, turn the setting off in the
+  Google Ads UI, under Admin → Account settings.
 </Aside>
+
+### owns
+
+Everything else bidsmith manages, it manages because you declared it.
+The assets Google's automation attaches are the exception — you cannot
+write a block for one, because you did not make it and cannot remake it.
+`owns` is how a campaign claims them anyway:
+
+```hcl
+resource "google_ads_campaign" "brand_search" {
+  name                     = "Brand — Search"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.brand.id
+
+  owns = ["automatically_created_assets"]
+}
+```
+
+With that line, anything Google attached to this campaign or its ad
+groups that your files do not declare is **paused** on the next apply —
+the business name, the logo, a sitelink invented from your landing page.
+Paused means it stops serving. It is not deleted, because a deleted one
+comes straight back: bidsmith cannot recreate what Google's automation
+made, so Google simply attaches it again and every `plan` would propose
+the same removal forever. Pausing sticks.
+
+```
+~ pause  google_ads_campaign.brand_search (paused sitelink "Also on Firefox")
+           (status: "ENABLED" -> "PAUSED"; attached by Google's asset automation)
+```
+
+You do not need the line for a kind of extension you already declare. A
+campaign that declares its own sitelinks owns its sitelinks, so an
+invented one is paused with nothing more said — the same rule that
+removes an undeclared sitelink someone added in the UI. `owns` is for
+the kinds no block could ever declare.
+
+Until something claims them, `plan` counts them in a warning on every
+run instead, which is what catches someone switching the account setting
+back on:
+
+```
+warning: account: Google's asset automation is serving 6 asset(s) nothing
+declares (2 BUSINESS_NAME, 2 LOGO, 2 SITELINK). Add
+`owns = ["automatically_created_assets"]` to the campaign …
+```
+
+Account-level assets are claimed the same way, but in the
+[`provider`](./provider/#owning-the-accounts-extensions) block: they
+reach every campaign at once, so no single campaign can speak for them.
+Full walkthrough: [Serve only the extensions you
+declared](/bidsmith/recipes/serve-only-the-extensions-you-declared/).
 
 ### targeting_setting
 

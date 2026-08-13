@@ -257,13 +257,18 @@ what closes the most user-facing gaps next:
    `asset_automation_settings { text_asset_automation = "OPTED_OUT" … }`
    declares which assets Google may invent for a campaign, so the
    opt-out lives in the repo and CI catches it being switched back on.
-   The account-level "automatically created assets" switch behind
-   dynamic sitelinks and the business name has no API field at all, so
-   plan reports what it finds instead — the one half of the umbrella
-   goal (#153) that no `.bid` can close. Remaining there: pruning the
-   auto-created links themselves would need
-   `AutomaticallyCreatedAssetRemovalService`, a separate endpoint
-   outside `googleAds:mutate` and outside the atomic batch.
+   ✅ **What the automation already attached is paused** (shipped,
+   issue #153). The account-level switch behind dynamic sitelinks and
+   the business name still has no API field, so it cannot be turned off
+   from a `.bid` — but the links it produces carry a writable `status`,
+   and `owns = ["automatically_created_assets"]` on a campaign (or in
+   the `provider` block, account-wide) pauses them so they stop serving.
+   Pausing rather than removing is what converges: `source` is
+   output-only, so a destroyed link is simply reattached.
+   `AutomaticallyCreatedAssetRemovalService` turned out to be no help
+   here — despite the name it removes final-URL-expansion assets only.
+   The live asset-link queries lost their `field_type` filter in the
+   same change, so `BUSINESS_NAME` / `LOGO` links are visible at all.
 3. **Account-scoped resource types in the live pipeline** (independent;
    can ride alongside). The schema, validator, renderer, adapter,
    and `live_state` queries for `google_ads_conversion_action`,

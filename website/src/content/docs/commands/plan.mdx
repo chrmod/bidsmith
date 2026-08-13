@@ -169,6 +169,7 @@ members too.
 | `+ create` | A new resource. |
 | `~ update (field: was -> becomes, …)` | Only the fields listed, to the values on the right of each arrow. |
 | `- destroy` | Removes the resource (or the criterion named in the row). |
+| `~ pause` | Switches off an extension Google's asset automation attached. Paused, not removed — bidsmith cannot recreate one, so a deleted one comes straight back. |
 | `~ adopt (label only)` | A `bidsmith:address` label on a live resource that already matches the file, field for field. Nothing else. |
 | `~ adopt (label only; claims …)` / `~ claim (label only; claims …)` | The same label write, plus a `bidsmith:owns=<category>` marker. See [what the `~ claim` rows mean](/bidsmith/recipes/remove-keywords-safely/#what-the--claim-rows-mean). |
 | `no-op` | Nothing — shown only with `--show-unchanged`. |
@@ -197,12 +198,17 @@ own `+ create` / `- destroy` rows.
    level extensions attach to every campaign at once, so those are only
    removed when the `provider` block's `owns` list says to — see
    [Serve only the extensions you declared](/bidsmith/recipes/serve-only-the-extensions-you-declared/).
-6. A whole resource that bidsmith created earlier (it carries a
+6. An extension Google attached by itself, inside a scope your files
+   own, becomes a `~ pause` row rather than a `- destroy` row. For the
+   kinds no block can declare — a business name, a logo — the campaign
+   claims them with `owns = ["automatically_created_assets"]`; until
+   something does, they are counted in a warning on every run.
+7. A whole resource that bidsmith created earlier (it carries a
    bidsmith label) and that your files no longer declare becomes a
    `- destroy` row. A campaign somebody built in the Google Ads UI
    carries no label, so it is never destroyed — it's simply not
    bidsmith's to manage.
-7. A removal Google would reject is dropped before the batch is sent
+8. A removal Google would reject is dropped before the batch is sent
    and reported as a warning, because one rejected operation fails
    every other operation with it. The summary counts them: `2 to
    destroy (1 skipped)`.

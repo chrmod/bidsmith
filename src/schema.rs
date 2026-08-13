@@ -913,6 +913,10 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                     attr("end_date", FieldType::Date, false),
                     attr("languages", FieldType::LanguageList, false),
                     attr("locations", FieldType::LocationList, false),
+                    // What the campaign claims beyond what it declares. Every
+                    // other claim is proved by a declaration; the assets
+                    // Google invents cannot be declared at all (issue #153).
+                    attr("owns", FieldType::list_of(FieldType::Enum(CAMPAIGN_OWNS)), false),
                     attr(
                         "devices",
                         FieldType::list_of(FieldType::Enum(DEVICE_TYPE)),
@@ -1531,8 +1535,25 @@ pub fn declares_adopt_only(block: &Block) -> bool {
     })
 }
 
+/// The token that claims what Google's automation attached rather than an
+/// asset kind a file could declare. Written on a `campaign`, or in the
+/// `provider` block for the links that hang off the account itself.
+pub const AUTOMATIC_ASSETS_OWNS: &str = "automatically_created_assets";
+
 /// The account-level asset kinds a `provider` block's `owns` list can name.
-pub const ACCOUNT_OWNS: &[&str] = &["sitelinks", "callouts", "structured_snippets", "calls"];
+pub const ACCOUNT_OWNS: &[&str] = &[
+    "sitelinks",
+    "callouts",
+    "structured_snippets",
+    "calls",
+    AUTOMATIC_ASSETS_OWNS,
+];
+
+/// What a `campaign` block's `owns` list can name. A campaign claims its
+/// sitelinks or callouts by declaring one, the way it claims a criterion axis;
+/// the assets Google invents are the one thing no block can declare, so they
+/// are the one thing the campaign has to name outright.
+pub const CAMPAIGN_OWNS: &[&str] = &[AUTOMATIC_ASSETS_OWNS];
 
 /// The `Asset` field type an `owns` entry claims, i.e. which live
 /// `customer_asset` rows an undeclared-means-destroy scope covers.
@@ -5455,6 +5476,49 @@ resource "google_ads_campaign" "c" {{
         );
         let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
         assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_campaign_can_claim_the_assets_google_invents() {
+        let diags = validate_str(
+            "campaign_owns_ok",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  owns                     = ["automatically_created_assets"]
+}}
+"#
+            ),
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    /// Sitelinks are claimed by declaring one, so naming them here would be a
+    /// second way to say the same thing — and one the diff does not read.
+    #[test]
+    fn a_campaign_cannot_claim_what_declaring_already_claims() {
+        let diags = validate_str(
+            "campaign_owns_bad",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "c" {{
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  owns                     = ["sitelinks"]
+}}
+"#
+            ),
+        );
+        assert!(
+            diags.iter().any(|d| d.is_error() && d.message.contains("sitelinks")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]

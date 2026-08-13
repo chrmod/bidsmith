@@ -273,6 +273,7 @@ fn build_prepared(
     imported.input.apply_schema_defaults();
     live.apply_schema_defaults();
     let report = diff::diff(&imported.input, &live);
+    diff::carry_unmodelled_automation(&mut imported.input, &live, &report);
     let spend = spend::summarize(&imported.input, &live, &report);
     for w in &report.warnings {
         eprintln!("{label}: warning: {w}");
@@ -368,6 +369,7 @@ pub fn execute(
     if report.create_count == 0
         && report.update_count == 0
         && report.delete_count == 0
+        && report.pause_count == 0
         && report.adopt_count == 0
     {
         if format == Format::Markdown {
@@ -702,16 +704,16 @@ fn print_text_summary(
     let tail = format!("{}{}", collateral_clause(collateral), deferred_clause(deferred));
     if validate_only {
         println!(
-            "{title}: {} to create, {} to update, {} to destroy{}, {}{} unchanged. ({} accepted, {} rejected{tail})",
+            "{title}: {} to create, {} to update, {} to destroy{}{}, {}{} unchanged. ({} accepted, {} rejected{tail})",
             report.create_count, report.update_count, report.delete_count,
-            skipped_clause(report),
+            skipped_clause(report), pause_clause(report, false),
             adopt_clause(report, false), report.noop_count - report.adopt_count, accepted, rejected,
         );
     } else {
         println!(
-            "{title}: {} created, {} updated, {} destroyed{}, {}{} unchanged. ({} succeeded, {} failed{tail})",
+            "{title}: {} created, {} updated, {} destroyed{}{}, {}{} unchanged. ({} succeeded, {} failed{tail})",
             report.create_count, report.update_count, report.delete_count,
-            skipped_clause(report),
+            skipped_clause(report), pause_clause(report, true),
             adopt_clause(report, true), report.noop_count - report.adopt_count, accepted, rejected,
         );
     }
@@ -837,6 +839,19 @@ fn skipped_clause(report: &diff::DiffReport) -> String {
     }
 }
 
+/// Auto-created asset links being switched off. Its own clause rather than a
+/// share of the update count, because "3 to pause" is the line that says what
+/// stops serving — and it is the only clause about resources nobody declared.
+fn pause_clause(report: &diff::DiffReport, past: bool) -> String {
+    if report.pause_count == 0 {
+        String::new()
+    } else if past {
+        format!(", {} paused", report.pause_count)
+    } else {
+        format!(", {} to pause", report.pause_count)
+    }
+}
+
 /// Operations that drew no error of their own and failed only because the
 /// batch is atomic. Kept out of the `rejected` count so a red plan says how
 /// much of it is actually the author's to fix (issue #116).
@@ -874,9 +889,9 @@ fn print_markdown(
     }
     print_markdown_label_only_note(label_only_shown);
     println!(
-        "**Plan:** {} to create, {} to update, {} to destroy{}, {}{} unchanged. ({} accepted, {} rejected{}{})",
+        "**Plan:** {} to create, {} to update, {} to destroy{}{}, {}{} unchanged. ({} accepted, {} rejected{}{})",
         report.create_count, report.update_count, report.delete_count,
-        skipped_clause(report),
+        skipped_clause(report), pause_clause(report, false),
         adopt_clause(report, false), report.noop_count - report.adopt_count, accepted, rejected,
         collateral_clause(collateral),
         deferred_clause(deferred),
@@ -1004,6 +1019,11 @@ fn verb_detail(
             ),
         ),
         (diff::Action::Delete { .. }, _) => ("- destroy", String::new()),
+        (diff::Action::Pause { .. }, _) => (
+            "~ pause",
+            " (status: \"ENABLED\" -> \"PAUSED\"; attached by Google's asset automation)"
+                .to_string(),
+        ),
     }
 }
 
@@ -1094,9 +1114,9 @@ fn display_offline_diff(
             print_text_label_only_note(label_only_shown);
             let title = summary_title(validate_only);
             println!(
-                "{title}: {} to create, {} to update, {} to destroy{}, {}{} unchanged. ({note})",
+                "{title}: {} to create, {} to update, {} to destroy{}{}, {}{} unchanged. ({note})",
                 report.create_count, report.update_count, report.delete_count,
-                skipped_clause(report),
+                skipped_clause(report), pause_clause(report, false),
                 adopt_clause(report, false), report.noop_count - report.adopt_count,
             );
             print_text_spend(&prepared.spend);
@@ -1114,9 +1134,9 @@ fn display_offline_diff(
             }
             print_markdown_label_only_note(label_only_shown);
             println!(
-                "**Plan:** {} to create, {} to update, {} to destroy{}, {}{} unchanged. _({note})_",
+                "**Plan:** {} to create, {} to update, {} to destroy{}{}, {}{} unchanged. _({note})_",
                 report.create_count, report.update_count, report.delete_count,
-                skipped_clause(report),
+                skipped_clause(report), pause_clause(report, false),
                 adopt_clause(report, false), report.noop_count - report.adopt_count,
             );
             print_markdown_spend(&prepared.spend);
@@ -1135,6 +1155,7 @@ pub fn has_pending_changes(prepared: &Prepared) -> bool {
     prepared.report.create_count > 0
         || prepared.report.update_count > 0
         || prepared.report.delete_count > 0
+        || prepared.report.pause_count > 0
         || prepared.report.adopt_count > 0
 }
 

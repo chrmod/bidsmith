@@ -94,6 +94,7 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
         claim_labels: Default::default(),
         adopt_only: Default::default(),
         owned_account_assets: Default::default(),
+        owns_account_automatic_assets: false,
         campaign_claims: Default::default(),
         ad_group_claims: Default::default(),
     };
@@ -306,7 +307,9 @@ fn import_provider(
             }
             "owns" => {
                 for token in expect_string_list(ctx, &a.value) {
-                    if let Some(ft) = crate::schema::account_owns_field_type(&token) {
+                    if token == crate::schema::AUTOMATIC_ASSETS_OWNS {
+                        input.owns_account_automatic_assets = true;
+                    } else if let Some(ft) = crate::schema::account_owns_field_type(&token) {
                         input.owned_account_assets.insert(ft.to_string());
                     }
                 }
@@ -395,6 +398,7 @@ fn import_campaign(
     let mut locations: Vec<String> = Vec::new();
     let mut devices: Vec<String> = Vec::new();
     let mut excluded_devices: Vec<String> = Vec::new();
+    let mut owns_automatic_assets = false;
     let mut final_url_suffix = None;
     let mut custom_parameters = None;
     let mut callouts: Vec<String> = Vec::new();
@@ -413,6 +417,11 @@ fn import_campaign(
                 "end_date" => end_date = expect_string_owned(ctx, a),
                 "languages" => languages = expect_string_list(ctx, &a.value),
                 "locations" => locations = expect_string_list(ctx, &a.value),
+                "owns" => {
+                    owns_automatic_assets = expect_string_list(ctx, &a.value)
+                        .iter()
+                        .any(|t| t == crate::schema::AUTOMATIC_ASSETS_OWNS)
+                }
                 "devices" => devices = expect_string_list(ctx, &a.value),
                 "excluded_devices" => excluded_devices = expect_string_list(ctx, &a.value),
                 "final_url_suffix" => final_url_suffix = expect_string_owned(ctx, a),
@@ -491,6 +500,7 @@ fn import_campaign(
             asset_automation_settings,
             targeting_setting,
             frequency_caps,
+            owns_automatic_assets,
             managed_address: None,
         },
         criteria,
@@ -2400,6 +2410,7 @@ pub fn import_program(program: &Program) -> Result<ImportResult, Vec<Diag>> {
         claim_labels: Default::default(),
         adopt_only: Default::default(),
         owned_account_assets: Default::default(),
+        owns_account_automatic_assets: false,
         campaign_claims: Default::default(),
         ad_group_claims: Default::default(),
     };
@@ -2414,6 +2425,8 @@ pub fn import_program(program: &Program) -> Result<ImportResult, Vec<Diag>> {
                     combined.customer_id = r.input.customer_id;
                     combined.login_customer_id = r.input.login_customer_id;
                     combined.owned_account_assets = r.input.owned_account_assets;
+                    combined.owns_account_automatic_assets =
+                        r.input.owns_account_automatic_assets;
                 }
                 combined.campaign_budgets.extend(r.input.campaign_budgets);
                 combined.campaigns.extend(r.input.campaigns);
@@ -4225,13 +4238,16 @@ resource "google_ads_campaign_asset" "docs_link" {
             gone[0].ends_with("google_ads_campaign.c (removed sitelink \"Blog\")"),
             "{gone:?}"
         );
-        // The one Google attached by itself would only come back.
-        assert_eq!(report.skipped_removal_count, 1);
-        assert!(
-            report.warnings.iter().any(|w| w.contains("Pricing") && w.contains("asset automation")),
-            "warnings: {:?}",
-            report.warnings
-        );
+        // Removing the one Google attached would only bring it back, so it is
+        // switched off where it stands.
+        assert_eq!(report.skipped_removal_count, 0);
+        assert_eq!(report.pause_count, 1, "diffs: {:?}", report.diffs.iter().map(|d| (&d.address, &d.action)).collect::<Vec<_>>());
+        let paused = report
+            .diffs
+            .iter()
+            .find(|d| matches!(d.action, crate::api::diff::Action::Pause { .. }))
+            .expect("a pause row");
+        assert!(paused.address.ends_with("(paused sitelink \"Pricing\")"), "{}", paused.address);
     }
 
     #[test]
@@ -4633,17 +4649,92 @@ resource "google_ads_campaign" "c" {
     }
 
     /// An automation type this build has no attribute for is a report, not a
-    /// setting — carrying it over would render a `.bid` the validator rejects
-    /// and drift no edit could resolve.
+    /// setting: it never renders as a `.bid` attribute (there is no name to
+    /// render it under) and never reads as drift. It is still remembered, so
+    /// the whole-list write can put it back exactly as the account held it.
     #[test]
-    fn an_unmodelled_automation_type_is_not_read_back() {
+    fn an_unmodelled_automation_type_is_remembered_but_never_rendered() {
         let live = crate::commands::adapt::from_search_response(
             r#"[{"results":[
               {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","assetAutomationSettings":[{"assetAutomationType":"GENERATE_LANDING_PAGE_PREVIEW","assetAutomationStatus":"OPTED_IN"},{"assetAutomationType":"TEXT_ASSET_AUTOMATION","assetAutomationStatus":"UNKNOWN"}]}}
             ]}]"#,
         )
         .expect("adapt live");
-        assert!(live.campaigns[0].asset_automation_settings.is_none());
+        let settings = live.campaigns[0]
+            .asset_automation_settings
+            .as_ref()
+            .expect("the unmodelled entry is kept");
+        assert!(settings.is_empty(), "nothing a file could have declared");
+        assert_eq!(
+            settings.unmodelled.get("GENERATE_LANDING_PAGE_PREVIEW").map(String::as_str),
+            Some("OPTED_IN")
+        );
+        assert!(
+            !settings.unmodelled.contains_key("TEXT_ASSET_AUTOMATION"),
+            "a status this version cannot name is not a setting to put back: {:?}",
+            settings.unmodelled
+        );
+        assert!(
+            !crate::commands::export::render_split(&live).1.contains("asset_automation_settings"),
+            "{}",
+            crate::commands::export::render_split(&live).1
+        );
+    }
+
+    /// Declaring one automation must not silently return the automations this
+    /// build cannot name to Google's default — the API replaces the whole list,
+    /// so they have to ride along with the write.
+    #[test]
+    fn a_write_carries_the_automations_the_file_cannot_name() {
+        let mut declared = import_str(
+            "automation_carry",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "C"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  asset_automation_settings {
+    text_asset_automation = "OPTED_OUT"
+  }
+}
+"#,
+        );
+        let live = crate::commands::adapt::from_search_response(
+            r#"[{"results":[
+              {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","manualCpc":{},"assetAutomationSettings":[{"assetAutomationType":"TEXT_ASSET_AUTOMATION","assetAutomationStatus":"OPTED_IN"},{"assetAutomationType":"GENERATE_VERTICAL_YOUTUBE_VIDEOS","assetAutomationStatus":"OPTED_OUT"}]}}
+            ]}]"#,
+        )
+        .expect("adapt live");
+
+        declared.apply_schema_defaults();
+        let mut live_defaulted = live;
+        live_defaulted.apply_schema_defaults();
+        let report = crate::api::diff::diff(&declared, &live_defaulted);
+        crate::api::diff::carry_unmodelled_automation(&mut declared, &live_defaulted, &report);
+
+        assert_eq!(
+            declared.campaigns[0].asset_automation_list(),
+            vec![
+                ("TEXT_ASSET_AUTOMATION", "OPTED_OUT"),
+                ("GENERATE_VERTICAL_YOUTUBE_VIDEOS", "OPTED_OUT"),
+            ]
+        );
+        let row = match &report.diffs.iter().find(|d| d.kind == "campaign").unwrap().action {
+            crate::api::diff::Action::Update { changed_fields, .. } => changed_fields[0].clone(),
+            other => panic!("expected an update, got {other:?}"),
+        };
+        assert!(
+            row.desired.contains("GENERATE_VERTICAL_YOUTUBE_VIDEOS=OPTED_OUT"),
+            "the row shows what survives the write: {}",
+            row.desired
+        );
     }
 
     #[test]

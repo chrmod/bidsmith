@@ -331,6 +331,7 @@ impl AdapterState {
                 asset_automation_settings: None,
                 targeting_setting: None,
                 frequency_caps: Vec::new(),
+                owns_automatic_assets: false,
                 managed_address: None,
             });
         if let Some(s) = v.get("name").and_then(Value::as_str) {
@@ -441,25 +442,35 @@ impl AdapterState {
                 video_ad_inventory_control: Some(control),
             });
         }
-        // An automation this build has no attribute for, or a status it has no
-        // name for, is a report rather than a setting: carrying either over
-        // would render a `.bid` the validator rejects.
+        // A status this build has no name for is a report, not a setting, and is
+        // dropped — writing it back would be rejected. An automation with no
+        // attribute is kept aside instead: it cannot be declared or rendered,
+        // but the write replaces the whole list, so it has to ride along or it
+        // would silently revert to Google's default.
         if let Some(list) = v.get("assetAutomationSettings").and_then(Value::as_array) {
             let mut settings = JsonAssetAutomationSettings::default();
             for setting in list {
-                let field = setting
-                    .get("assetAutomationType")
-                    .and_then(Value::as_str)
-                    .and_then(crate::schema::asset_automation_field);
-                let status = setting
+                let Some(status) = setting
                     .get("assetAutomationStatus")
                     .and_then(Value::as_str)
-                    .filter(|s| crate::schema::is_asset_automation_status(s));
-                if let (Some(field), Some(status)) = (field, status) {
-                    settings.set(field, Some(status.to_string()));
+                    .filter(|s| crate::schema::is_asset_automation_status(s))
+                else {
+                    continue;
+                };
+                let Some(api_type) = setting.get("assetAutomationType").and_then(Value::as_str)
+                else {
+                    continue;
+                };
+                match crate::schema::asset_automation_field(api_type) {
+                    Some(field) => settings.set(field, Some(status.to_string())),
+                    None => {
+                        settings
+                            .unmodelled
+                            .insert(api_type.to_string(), status.to_string());
+                    }
                 }
             }
-            if !settings.is_empty() {
+            if !settings.is_empty() || !settings.unmodelled.is_empty() {
                 entry.asset_automation_settings = Some(settings);
             }
         }
@@ -1253,6 +1264,7 @@ impl AdapterState {
             custom_audiences: self.custom_audiences.into_values().collect(),
             adopt_only: Default::default(),
             owned_account_assets: Default::default(),
+            owns_account_automatic_assets: false,
             labels: self.labels.into_iter().collect(),
             claim_labels: self.claim_labels.into_iter().collect(),
             campaign_claims: self.campaign_claims.into_iter().collect(),

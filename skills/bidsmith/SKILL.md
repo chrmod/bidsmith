@@ -374,11 +374,11 @@ flow one way — insights never justify mutating outside plan/apply.
 - The `.bid` file extension is provisional but stable for now.
 - One `provider "google_ads"` block per repository/directory. Its
   optional `owns` list (`["sitelinks", "callouts",
-  "structured_snippets", "calls"]`) makes account-level extensions
-  exhaustive: a live `customer_asset` of a listed kind that no block
-  declares is destroyed on the next apply. Adding an entry there
-  changes what every campaign in the account serves — propose it, never
-  add it unprompted.
+  "structured_snippets", "calls", "automatically_created_assets"]`)
+  makes account-level extensions exhaustive: a live `customer_asset` of
+  a listed kind that no block declares is destroyed on the next apply.
+  Adding an entry there changes what every campaign in the account
+  serves — propose it, never add it unprompted.
 - Declaring is claiming. Once a campaign or ad group declares one
   sitelink (or callout, or snippet), a live one of that kind it does
   not declare plans as `- destroy`. Adopt what should survive with
@@ -388,8 +388,14 @@ flow one way — insights never justify mutating outside plan/apply.
   back to Google's default as soon as a named one drifts — name every
   one that matters. Search and Performance Max campaigns only. It does
   not cover dynamic sitelinks or the business name Google attaches:
-  that switch is account-level and absent from the API, so `plan` only
-  warns about what it created.
+  that switch is account-level and absent from the API.
+- What Google's automation already attached is **paused**, never
+  destroyed — bidsmith cannot recreate one, so a destroy is reattached
+  and never converges. Inside a kind the file already declares this
+  needs nothing extra; for the kinds no block can declare (business
+  name, logo) the campaign claims them with
+  `owns = ["automatically_created_assets"]`, which also covers its ad
+  groups. Until something claims them `plan` warns and writes nothing.
 - Resource addresses are stable identifiers; renaming a resource means
   Google Ads sees a delete + create. The full address is
   `<module>.<type>.<name>` (module = file basename), but inside the

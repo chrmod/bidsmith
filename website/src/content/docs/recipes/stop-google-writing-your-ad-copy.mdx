@@ -91,36 +91,42 @@ Google attaches by itself are a **different** feature: an account-level
 "automatically created assets" setting that the Google Ads API does not
 expose at all. No `.bid` can turn it off.
 
-What bidsmith can do is tell you it's on:
+What bidsmith can do is stop the results serving, and tell you the switch
+is on:
 
 ```
 plan: warning: account: Google's asset automation is serving 6 asset(s)
-nothing declares (4 SITELINK, 2 CALLOUT). The account-level "automatically
-created assets" switch that makes them is not in the Google Ads API, so
-bidsmith can only report it — turn it off in the Google Ads UI. What a
-campaign can declare is its own automation: `asset_automation_settings`.
+nothing declares (4 SITELINK, 2 CALLOUT). Add
+`owns = ["automatically_created_assets"]` to the campaign — or to the
+`provider` block for the account-level ones — and bidsmith will pause them
+so they stop serving.
 ```
 
 That line comes back on every plan while the switch is on, so flipping it
-in the UI is caught on the next run even though bidsmith can't undo it.
+in the UI is caught on the next run.
 
 <Steps>
 
-1. **Turn it off in the Google Ads UI.** Admin → Account settings →
-   Automatically created assets.
-
-2. **Run `bidsmith plan .`** and check the warning is gone.
-
-3. **Prune what's left.** The assets Google already attached stay until
-   something removes them — see [Serve only the extensions you
+1. **Claim what it already attached.** Add `owns =
+   ["automatically_created_assets"]` to the campaign, or to the
+   `provider` block for account-level assets. The next `plan` shows a
+   `~ pause` row per asset, and `apply` stops them serving. They are
+   paused rather than deleted because Google reattaches anything
+   bidsmith removes — see [Serve only the extensions you
    declared](./serve-only-the-extensions-you-declared/).
+
+2. **Turn the switch off in the Google Ads UI** so no new ones are made.
+   Admin → Account settings → Automatically created assets.
+
+3. **Run `bidsmith plan .`** and check the warning is gone.
 
 </Steps>
 
 ## See also
 
 - [Serve only the extensions you declared](./serve-only-the-extensions-you-declared/) —
-  removing sitelinks and callouts nobody declared.
+  removing sitelinks and callouts nobody declared, and pausing what Google
+  attached.
 - [`google_ads_campaign`](/bidsmith/resources/google_ads_campaign/) —
   the full `asset_automation_settings` reference.
 - [`bidsmith plan`](/bidsmith/commands/plan/) — reading an update row.
