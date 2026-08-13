@@ -7,7 +7,7 @@ use crate::commands::export::{
     JsonAudience, JsonCriterion, JsonCustomAudience, JsonCustomParameter, JsonCustomerAsset,
     JsonSharedCriterion,
     JsonSharedSet, JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonTargetingSetting,
-    JsonYoutubeVideoAsset,
+    JsonYoutubeVideoAsset, AUTOMATICALLY_CREATED,
 };
 use crate::schema::CUSTOM_PERIOD;
 
@@ -30,6 +30,15 @@ pub enum Action {
     Delete {
         live_id: String,
     },
+    /// A live asset link Google's automation attached, inside a scope the file
+    /// owns. It is paused rather than destroyed: `source` is output-only, so
+    /// the automation keeps reattaching what it created, and a destroy would
+    /// come back as the same destroy on the next plan and never converge.
+    /// A paused link stays where it is and stops serving, which is the whole
+    /// of what the file is asking for (issue #153).
+    Pause {
+        live_id: String,
+    },
 }
 
 impl Action {
@@ -37,7 +46,8 @@ impl Action {
         match self {
             Action::NoOp { live_id }
             | Action::Update { live_id, .. }
-            | Action::Delete { live_id } => Some(live_id.as_str()),
+            | Action::Delete { live_id }
+            | Action::Pause { live_id } => Some(live_id.as_str()),
             Action::Create => None,
         }
     }
@@ -88,6 +98,18 @@ fn change(field: impl Into<String>, live: impl Shown, desired: impl Shown) -> Fi
         field: field.into(),
         live: elide(live.shown()),
         desired: elide(desired.shown()),
+    }
+}
+
+/// A change whose value must not be cut short. Eliding is right for a value a
+/// reviewer only needs to recognise, and wrong for one that is the whole point
+/// of the row: an asset-automation write replaces the list, so a reviewer is
+/// being asked to approve exactly what the elision would hide.
+fn whole_change(field: impl Into<String>, live: String, desired: String) -> FieldChange {
+    FieldChange {
+        field: field.into(),
+        live,
+        desired,
     }
 }
 
@@ -217,6 +239,11 @@ pub struct DiffReport {
     pub create_count: usize,
     pub update_count: usize,
     pub delete_count: usize,
+    /// Auto-created asset links being switched off rather than removed. Counted
+    /// apart from updates because the row is about something nobody declared:
+    /// the file is not changing a setting it owns, it is silencing what Google
+    /// attached on its own.
+    pub pause_count: usize,
     /// Resources that match live with no field change but still need label
     /// work — a `bidsmith:address` write (first-run adoption) or a
     /// `bidsmith:owns` claim add / release. Counted so plan / apply treat
@@ -998,12 +1025,14 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     let mut create_count = 0;
     let mut update_count = 0;
     let mut delete_count = 0;
+    let mut pause_count = 0;
     for d in &diffs {
         match &d.action {
             Action::NoOp { .. } => noop_count += 1,
             Action::Create => create_count += 1,
             Action::Update { .. } => update_count += 1,
             Action::Delete { .. } => delete_count += 1,
+            Action::Pause { .. } => pause_count += 1,
         }
     }
 
@@ -1028,6 +1057,7 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         create_count,
         update_count,
         delete_count,
+        pause_count,
         adopt_count,
         skipped_removal_count,
         warnings,
@@ -1383,12 +1413,6 @@ fn orphan_criteria_deletes(
     (out, warnings, skipped)
 }
 
-/// Asset links Google attached by itself. They cannot be pruned to a stable
-/// end state: while the account's asset automation is on, Google recreates them,
-/// so every destroy would come back on the next plan and the file would never
-/// read as applied.
-const AUTOMATICALLY_CREATED: &str = "AUTOMATICALLY_CREATED";
-
 /// A live asset link stops being declared the same two ways a criterion does,
 /// and is pruned under the same rule: only inside a `(parent, field type)` the
 /// file owns, so declaring a campaign's sitelinks never detaches its callouts.
@@ -1397,6 +1421,10 @@ const AUTOMATICALLY_CREATED: &str = "AUTOMATICALLY_CREATED";
 /// account has nowhere to carry a claim (the API has no customer label bidsmith
 /// can write), so account-wide ownership is claimed in the file instead, by the
 /// `provider` block's `owns` list.
+///
+/// What Google's automation attached is in scope on the same terms, but ends
+/// `PAUSED` rather than destroyed, and needs `owns = ["automatically_created_assets"]`
+/// wherever no declaration could have proved the claim.
 fn orphan_asset_link_deletes(
     declared: &ExportInput,
     live: &ExportInput,
@@ -1410,6 +1438,22 @@ fn orphan_asset_link_deletes(
     let mut warnings: Vec<String> = Vec::new();
     let mut skipped = 0usize;
     let mut automatic: BTreeMap<&str, usize> = BTreeMap::new();
+
+    // Live campaign ids whose file claims what Google invented for them. An ad
+    // group inherits the claim: an automation asset lands on whichever level
+    // Google chose, and no ad-group block could have named it either.
+    let campaigns_owning_automatic: HashSet<&str> = declared
+        .campaigns
+        .iter()
+        .filter(|c| c.owns_automatic_assets)
+        .filter_map(|c| campaign_match.get(&c.id).map(String::as_str))
+        .collect();
+    let ad_groups_owning_automatic: HashSet<&str> = live
+        .ad_groups
+        .iter()
+        .filter(|g| campaigns_owning_automatic.contains(g.campaign.as_str()))
+        .map(|g| g.id.as_str())
+        .collect();
 
     let matched_live_ids = |kind: &str| -> HashSet<&str> {
         diffs
@@ -1454,8 +1498,10 @@ fn orphan_asset_link_deletes(
             if matched.contains(l.id.as_str()) || is_removed(l.status.as_deref()) {
                 continue;
             }
+            let automatic_here = is_automatic(l.source.as_deref());
             let owned = asset_link_category(&l.field_type)
-                .is_some_and(|cat| managed.contains(&(l.campaign.clone(), cat)));
+                .is_some_and(|cat| managed.contains(&(l.campaign.clone(), cat)))
+                || (automatic_here && campaigns_owning_automatic.contains(l.campaign.as_str()));
             if !owned {
                 if parent_addr.contains_key(&l.campaign) {
                     note_automatic(&mut automatic, l.source.as_deref(), &l.field_type);
@@ -1467,10 +1513,9 @@ fn orphan_asset_link_deletes(
                 .get(&l.campaign)
                 .cloned()
                 .unwrap_or_else(|| format!("campaigns/{}", l.campaign));
-            if let Some(w) = undeletable_link_warning(
+            if let Some(w) = unmutable_link_warning(
                 &anchor,
                 &descriptor,
-                l.source.as_deref(),
                 live_video_campaigns
                     .contains(l.campaign.as_str())
                     .then_some("a campaign on the VIDEO channel"),
@@ -1479,13 +1524,13 @@ fn orphan_asset_link_deletes(
                 skipped += 1;
                 continue;
             }
-            out.push(delete_diff(
+            out.extend(orphan_link_diff(
                 "campaign_asset",
-                parent_addr.get(&l.campaign),
-                &l.campaign,
-                "campaigns",
+                &anchor,
                 &descriptor,
-                &l.id,
+                l.id.as_str(),
+                l.status.as_deref(),
+                automatic_here,
             ));
         }
     }
@@ -1516,8 +1561,10 @@ fn orphan_asset_link_deletes(
             if matched.contains(l.id.as_str()) || is_removed(l.status.as_deref()) {
                 continue;
             }
+            let automatic_here = is_automatic(l.source.as_deref());
             let owned = asset_link_category(&l.field_type)
-                .is_some_and(|cat| managed.contains(&(l.ad_group.clone(), cat)));
+                .is_some_and(|cat| managed.contains(&(l.ad_group.clone(), cat)))
+                || (automatic_here && ad_groups_owning_automatic.contains(l.ad_group.as_str()));
             if !owned {
                 if parent_addr.contains_key(&l.ad_group) {
                     note_automatic(&mut automatic, l.source.as_deref(), &l.field_type);
@@ -1529,10 +1576,9 @@ fn orphan_asset_link_deletes(
                 .get(&l.ad_group)
                 .cloned()
                 .unwrap_or_else(|| format!("adGroups/{}", l.ad_group));
-            if let Some(w) = undeletable_link_warning(
+            if let Some(w) = unmutable_link_warning(
                 &anchor,
                 &descriptor,
-                l.source.as_deref(),
                 live_video_ad_groups
                     .contains(l.ad_group.as_str())
                     .then_some("an ad group on the VIDEO channel"),
@@ -1541,13 +1587,13 @@ fn orphan_asset_link_deletes(
                 skipped += 1;
                 continue;
             }
-            out.push(delete_diff(
+            out.extend(orphan_link_diff(
                 "ad_group_asset",
-                parent_addr.get(&l.ad_group),
-                &l.ad_group,
-                "adGroups",
+                &anchor,
                 &descriptor,
-                &l.id,
+                l.id.as_str(),
+                l.status.as_deref(),
+                automatic_here,
             ));
         }
     }
@@ -1559,23 +1605,22 @@ fn orphan_asset_link_deletes(
             if matched.contains(l.id.as_str()) || is_removed(l.status.as_deref()) {
                 continue;
             }
-            if !declared.owned_account_assets.contains(&l.field_type) {
+            let automatic_here = is_automatic(l.source.as_deref());
+            let owned = declared.owned_account_assets.contains(&l.field_type)
+                || (automatic_here && declared.owns_account_automatic_assets);
+            if !owned {
                 note_automatic(&mut automatic, l.source.as_deref(), &l.field_type);
                 continue;
             }
             let descriptor = format!("account-level {}", describe(&l.asset, &l.field_type));
-            if let Some(w) =
-                undeletable_link_warning("account", &descriptor, l.source.as_deref(), None)
-            {
-                warnings.push(w);
-                skipped += 1;
-                continue;
-            }
-            out.push(ResourceDiff {
-                address: format!("account (removed {descriptor})"),
-                kind: "customer_asset",
-                action: Action::Delete { live_id: l.id.clone() },
-            });
+            out.extend(orphan_link_diff(
+                "customer_asset",
+                "account",
+                &descriptor,
+                l.id.as_str(),
+                l.status.as_deref(),
+                automatic_here,
+            ));
         }
     }
 
@@ -1612,36 +1657,101 @@ fn automatic_asset_warning(counts: &BTreeMap<&str, usize>) -> Option<String> {
         .join(", ");
     Some(format!(
         "account: Google's asset automation is serving {total} asset(s) nothing declares \
-         ({breakdown}). The account-level \"automatically created assets\" switch that makes \
-         them is not in the Google Ads API, so bidsmith can only report it — turn it off in the \
-         Google Ads UI. What a campaign can declare is its own automation: \
-         `asset_automation_settings`."
+         ({breakdown}). Add `owns = [\"automatically_created_assets\"]` to the campaign — or to \
+         the `provider` block for the account-level ones — and bidsmith will pause them so they \
+         stop serving. The switch that makes them is not in the Google Ads API, so pausing is \
+         what bidsmith can do about it; turning it off outright is a Google Ads UI setting."
     ))
 }
 
-/// Why a link the file no longer declares is left attached anyway. Both cases
-/// are removals the account would reject, and the batch is atomic — one doomed
-/// operation takes every unrelated one down with it (issue #116).
-fn undeletable_link_warning(
+/// Copy the live automations the file has no attribute for onto the campaign
+/// that is about to be written, so the whole-list write puts them back exactly
+/// as the account held them. Without this, declaring one automation would
+/// silently return every automation this build cannot name to Google's default
+/// — a loss the plan row could not even show, since there is no attribute to
+/// show it under. Runs after the diff because it needs the campaign match.
+pub fn carry_unmodelled_automation(
+    declared: &mut ExportInput,
+    live: &ExportInput,
+    report: &DiffReport,
+) {
+    let live_by_id: HashMap<&str, &JsonCampaign> =
+        live.campaigns.iter().map(|c| (c.id.as_str(), c)).collect();
+    let matched: HashMap<&str, &str> = report
+        .diffs
+        .iter()
+        .filter(|d| d.kind == "campaign")
+        .filter_map(|d| d.action.live_id().map(|id| (d.address.as_str(), id)))
+        .collect();
+    for c in &mut declared.campaigns {
+        let carried = matched
+            .get(c.id.as_str())
+            .and_then(|id| live_by_id.get(id))
+            .and_then(|l| l.asset_automation_settings.as_ref())
+            .map(|ls| ls.unmodelled.clone());
+        let (Some(carried), Some(settings)) = (carried, c.asset_automation_settings.as_mut())
+        else {
+            continue;
+        };
+        settings.unmodelled = carried;
+    }
+}
+
+/// The link status that stops an asset serving without detaching it.
+const PAUSED: &str = "PAUSED";
+
+fn is_automatic(source: Option<&str>) -> bool {
+    source == Some(AUTOMATICALLY_CREATED)
+}
+
+/// Why a link the file no longer declares is left attached anyway: the account
+/// would reject the operation, and the batch is atomic — one doomed operation
+/// takes every unrelated one down with it (issue #116).
+fn unmutable_link_warning(
     anchor: &str,
     descriptor: &str,
-    source: Option<&str>,
     read_only_parent: Option<&str>,
 ) -> Option<String> {
-    if source == Some(AUTOMATICALLY_CREATED) {
-        return Some(format!(
-            "{anchor}: live {descriptor} was attached by Google's asset automation, not declared \
-             by anyone — removing it only makes Google put it back, so it is left alone. Turn \
-             automatically created assets off for the account to stop it serving."
-        ));
-    }
     read_only_parent.map(|what| {
         format!(
             "{anchor}: live {descriptor} is not declared, but it hangs off {what} and the \
              Google Ads API cannot mutate those \
-             (see developers.google.com/google-ads/api/docs/video/overview) — skipping the \
-             removal so the rest of the batch can go through."
+             (see developers.google.com/google-ads/api/docs/video/overview) — leaving it alone \
+             so the rest of the batch can go through."
         )
+    })
+}
+
+/// What to do with a live link inside a scope the file owns but does not
+/// declare. An advertiser put it there, so it goes; Google's automation put it
+/// there and keeps putting it there, so it is switched off instead and the
+/// account converges. One already switched off is where the file wants it.
+fn orphan_link_diff(
+    kind: &'static str,
+    anchor: &str,
+    descriptor: &str,
+    live_id: &str,
+    live_status: Option<&str>,
+    automatic: bool,
+) -> Option<ResourceDiff> {
+    if !automatic {
+        return Some(ResourceDiff {
+            address: format!("{anchor} (removed {descriptor})"),
+            kind,
+            action: Action::Delete {
+                live_id: live_id.to_string(),
+            },
+        });
+    }
+    if live_status == Some(PAUSED) {
+        return None;
+    }
+    Some(ResourceDiff {
+        address: format!("{anchor} (paused {descriptor})"),
+        kind,
+        action: Action::Pause {
+            live_id: live_id.to_string(),
+        },
     })
 }
 
@@ -2247,10 +2357,15 @@ fn diff_campaign(d: &JsonCampaign, l: &JsonCampaign, caps_claimed: bool) -> Vec<
                 && desired != l.asset_automation_settings.as_ref().and_then(|s| s.get(field))
         });
         if drifted {
-            c.push(change(
+            let carried = l
+                .asset_automation_settings
+                .as_ref()
+                .map(|s| &s.unmodelled)
+                .filter(|u| !u.is_empty());
+            c.push(whole_change(
                 "asset_automation_settings",
-                Raw(shown_asset_automation(l.asset_automation_settings.as_ref())),
-                Raw(shown_asset_automation(Some(a))),
+                shown_asset_automation(l.asset_automation_settings.as_ref(), carried),
+                shown_asset_automation(Some(a), carried),
             ));
         }
     }
@@ -2308,11 +2423,20 @@ fn shown_target_restrictions(effective: &[(&str, bool)]) -> String {
 /// The automation list as a reviewer reads it — in the attribute names the
 /// file uses, so a plan row says which automations the campaign ends up with
 /// rather than merely that the setting moves.
-fn shown_asset_automation(settings: Option<&JsonAssetAutomationSettings>) -> String {
-    let shown: Vec<String> = crate::schema::ASSET_AUTOMATION_FIELDS
+fn shown_asset_automation(
+    settings: Option<&JsonAssetAutomationSettings>,
+    carried: Option<&BTreeMap<String, String>>,
+) -> String {
+    let named = crate::schema::ASSET_AUTOMATION_FIELDS
         .iter()
-        .filter_map(|(field, _)| Some(format!("{field}={}", settings?.get(field)?)))
-        .collect();
+        .filter_map(|(field, _)| Some(format!("{field}={}", settings?.get(field)?)));
+    // Under their API name: an automation this build models no attribute for
+    // has no other name to render.
+    let extra = carried
+        .into_iter()
+        .flatten()
+        .map(|(api, status)| format!("{api}={status}"));
+    let shown: Vec<String> = named.chain(extra).collect();
     if shown.is_empty() {
         return "Google's defaults".to_string();
     }
@@ -5328,6 +5452,7 @@ mod asset_adoption_tests {
             Action::Create => "create".to_string(),
             Action::Update { .. } => "update".to_string(),
             Action::Delete { .. } => "delete".to_string(),
+            Action::Pause { .. } => "pause".to_string(),
         }
     }
 
@@ -5398,6 +5523,13 @@ mod asset_prune_tests {
 
     fn input(json: &str) -> ExportInput {
         serde_json::from_str(json).expect("valid test input")
+    }
+
+    /// The same campaign, claiming whatever Google invented for it.
+    fn declared_owning_automatic() -> ExportInput {
+        let mut d = declared("");
+        d.campaigns[0].owns_automatic_assets = true;
+        d
     }
 
     /// One campaign, one declared sitelink on it. `extra` adds declared blocks.
@@ -5518,22 +5650,141 @@ mod asset_prune_tests {
         );
     }
 
+    fn pauses(report: &DiffReport) -> Vec<(&str, &str)> {
+        report
+            .diffs
+            .iter()
+            .filter(|d| matches!(d.action, Action::Pause { .. }))
+            .map(|d| (d.kind, d.address.as_str()))
+            .collect()
+    }
+
+    /// The campaign declares a sitelink, so it owns its sitelinks — and what
+    /// Google invented inside that partition stops serving without the file
+    /// having to say anything more.
     #[test]
-    fn an_automatically_created_link_is_skipped_with_a_warning() {
+    fn an_automatically_created_link_in_an_owned_partition_is_paused() {
         let report = diff(&declared(""), &live(AUTOMATICALLY_CREATED, ""));
         assert_eq!(report.delete_count, 0, "{:?}", destroys(&report));
-        assert_eq!(report.skipped_removal_count, 1);
-        let w = report
-            .warnings
-            .iter()
-            .find(|w| w.contains("Also on Firefox"))
-            .unwrap_or_else(|| panic!("{:?}", report.warnings));
-        assert!(w.contains("asset automation"), "{w}");
         assert_eq!(
-            report.warnings.len(),
-            1,
-            "the link already has its own line: {:?}",
-            report.warnings
+            pauses(&report),
+            vec![("campaign_asset", "m.c (paused sitelink \"Also on Firefox\")")],
+            "{:?}",
+            report.diffs.iter().map(|d| (&d.address, &d.action)).collect::<Vec<_>>()
+        );
+        assert_eq!(report.pause_count, 1);
+        assert_eq!(report.skipped_removal_count, 0);
+    }
+
+    /// Pausing has to be a fixed point, or every plan would propose it again.
+    #[test]
+    fn a_link_already_paused_is_left_alone() {
+        let live = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"100","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"200"}],
+            "sitelink_assets": [
+                {"id":"900","link_text":"Docs","final_urls":["https://example.com/docs"]},
+                {"id":"901","link_text":"Also on Firefox","final_urls":["https://example.com/ff"]}
+            ],
+            "campaign_assets": [
+                {"id":"100~900~SITELINK","campaign":"100","asset":"900","field_type":"SITELINK","source":"ADVERTISER"},
+                {"id":"100~901~SITELINK","campaign":"100","asset":"901","field_type":"SITELINK","source":"AUTOMATICALLY_CREATED","status":"PAUSED"}
+            ]
+        }"#,
+        );
+        let report = diff(&declared(""), &live);
+        assert_eq!(report.pause_count, 0, "{:?}", pauses(&report));
+        assert_eq!(report.delete_count, 0, "{:?}", destroys(&report));
+    }
+
+    /// A business name is not a kind of block, so no declaration could ever
+    /// prove the claim over it — the campaign has to say so outright.
+    #[test]
+    fn a_field_type_nothing_can_declare_waits_for_the_opt_in() {
+        let live = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"100","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"200"}],
+            "campaign_assets": [
+                {"id":"100~950~BUSINESS_NAME","campaign":"100","asset":"950","field_type":"BUSINESS_NAME","source":"AUTOMATICALLY_CREATED"}
+            ]
+        }"#,
+        );
+        let reported = diff(&declared(""), &live);
+        assert_eq!(reported.pause_count, 0, "{:?}", pauses(&reported));
+        assert!(
+            reported.warnings.iter().any(|w| w.contains("1 BUSINESS_NAME")),
+            "{:?}",
+            reported.warnings
+        );
+
+        let claimed = diff(&declared_owning_automatic(), &live);
+        assert_eq!(
+            pauses(&claimed),
+            vec![("campaign_asset", "m.c (paused business_name asset 950)")],
+            "{:?}",
+            claimed.diffs.iter().map(|d| (&d.address, &d.action)).collect::<Vec<_>>()
+        );
+        assert!(
+            !claimed.warnings.iter().any(|w| w.contains("asset automation")),
+            "nothing is left to report once it is being paused: {:?}",
+            claimed.warnings
+        );
+    }
+
+    /// Google picks the level it attaches to, and no ad-group block could have
+    /// named a business name either, so the campaign's claim reaches its
+    /// ad groups.
+    #[test]
+    fn an_ad_group_link_is_covered_by_its_campaigns_claim() {
+        let live = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"100","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"200"}],
+            "ad_groups": [{"id":"300","name":"G","campaign":"100"}],
+            "ad_group_assets": [
+                {"id":"300~960~LOGO","ad_group":"300","asset":"960","field_type":"LOGO","source":"AUTOMATICALLY_CREATED"}
+            ]
+        }"#,
+        );
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"m.c","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"m.b","owns_automatic_assets":true}],
+            "ad_groups": [{"id":"m.g","name":"G","campaign":"m.c"}]
+        }"#,
+        );
+        assert_eq!(
+            pauses(&diff(&declared, &live)),
+            vec![("ad_group_asset", "m.g (paused logo asset 960)")]
+        );
+    }
+
+    /// Account-wide links reach every campaign at once, so the claim over them
+    /// is the provider block's, never a campaign's.
+    #[test]
+    fn an_account_level_automatic_link_waits_for_the_provider_claim() {
+        let live_account = |extra: &str| {
+            input(&format!(
+                r#"{{
+            "customer_id": "1",
+            "campaigns": [{{"id":"100","name":"C","advertising_channel_type":"SEARCH","campaign_budget":"200"}}],
+            "callout_assets": [{{"id":"970","text":"Install Now!"}}],
+            "customer_assets": [
+                {{"id":"970~CALLOUT","asset":"970","field_type":"CALLOUT","source":"AUTOMATICALLY_CREATED"}}
+            ]{extra}
+        }}"#
+            ))
+        };
+        let ignored = diff(&declared_owning_automatic(), &live_account(""));
+        assert_eq!(ignored.pause_count, 0, "{:?}", pauses(&ignored));
+
+        let mut claiming = declared("");
+        claiming.owns_account_automatic_assets = true;
+        assert_eq!(
+            pauses(&diff(&claiming, &live_account(""))),
+            vec![("customer_asset", "account (paused account-level callout \"Install Now!\")")]
         );
     }
 
@@ -5557,7 +5808,7 @@ mod asset_prune_tests {
             .find(|w| w.contains("asset automation"))
             .unwrap_or_else(|| panic!("{:?}", report.warnings));
         assert!(w.contains("1 SITELINK"), "{w}");
-        assert!(w.contains("asset_automation_settings"), "{w}");
+        assert!(w.contains("automatically_created_assets"), "{w}");
     }
 
     /// Only what Google put there: a link someone added in the UI is a

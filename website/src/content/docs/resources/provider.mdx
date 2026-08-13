@@ -50,9 +50,14 @@ provider "google_ads" {
 
 Accepted values are `sitelinks`, `callouts`, `structured_snippets`, and
 `calls` — each naming one kind of
-[`google_ads_customer_asset`](./google_ads_customer_asset/). Anything
-you leave out of the list is left alone, and an empty or absent `owns`
-is today's behaviour: nothing account-wide is ever removed.
+[`google_ads_customer_asset`](./google_ads_customer_asset/) — plus
+`automatically_created_assets`, which claims the account-level assets
+Google's automation attached rather than a kind you could declare.
+Those are **paused** rather than removed, since Google reattaches
+anything bidsmith deletes; the same claim written on a campaign covers
+that campaign's own automation assets. Anything you leave out of the
+list is left alone, and an empty or absent `owns` is today's behaviour:
+nothing account-wide is ever removed.
 
 <Aside type="caution">
   This is the widest-reaching removal bidsmith can make — one destroy

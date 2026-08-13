@@ -107,31 +107,60 @@ once each campaign carries its own.
 
 </Steps>
 
-## Two things prune will not remove
+## What Google attached is paused, not removed
 
-Some removals the Google Ads API rejects outright, and one rejected
-operation fails the whole batch with it. bidsmith checks for these
-before sending anything, skips them, and says so — the rest of your
-changes still apply:
+An extension Google's asset automation attached is not yours to delete:
+bidsmith cannot recreate one, so Google simply attaches it again and the
+same destroy would come back on every plan forever. Those are **paused**
+instead. A paused extension stops serving and stays paused, which is the
+end state you were after:
 
 ```
-plan: warning: google_ads_campaign.checkout: live sitelink "Firefox too" was
-attached by Google's asset automation, not by anyone — removing it only makes
-Google reattach it, so it is left alone. Turn automatically created assets off
-for the account to stop it serving.
+~ pause  google_ads_campaign.checkout (paused sitelink "Firefox too")
+           (status: "ENABLED" -> "PAUSED"; attached by Google's asset automation)
 
+Plan: 0 to create, 0 to update, 2 to destroy, 1 to pause, 12 unchanged.
+```
+
+This happens automatically inside a kind of extension you already
+declare — declare your sitelinks and an invented sitelink is paused with
+it. For the ones no block can declare, because there is no such thing as
+a business-name resource, claim them on the campaign:
+
+```hcl
+resource "google_ads_campaign" "checkout" {
+  # ...
+  owns = ["automatically_created_assets"]
+}
+```
+
+Account-level ones take the same token in the `provider` block. Until
+something claims them, `plan` counts them in a warning on every run:
+
+```
+plan: warning: account: Google's asset automation is serving 6 asset(s) nothing
+declares (2 BUSINESS_NAME, 2 LOGO, 2 SITELINK). Add
+`owns = ["automatically_created_assets"]` to the campaign — or to the `provider`
+block for the account-level ones — and bidsmith will pause them so they stop
+serving.
+```
+
+Pausing stops the assets already there. To stop new ones being made, see
+[Stop Google writing your ad copy](./stop-google-writing-your-ad-copy/)
+— which half of that a `.bid` can declare, and which half is a switch in
+the Google Ads UI.
+
+## One thing prune will not touch
+
+**Anything on a Video campaign.** The Google Ads API cannot mutate
+YouTube campaigns at all, extensions included. The API rejects the
+operation outright, and one rejected operation fails the whole batch
+with it — so bidsmith checks before sending, skips it, and says so,
+while the rest of your changes still apply:
+
+```
 Plan: 0 to create, 0 to update, 2 to destroy (1 skipped), 12 unchanged.
 ```
-
-- **Assets Google created** (`AUTOMATICALLY_CREATED` — dynamic
-  sitelinks, auto headlines, a business name). While asset automation is
-  on for the account, Google puts them back, so removing them would show
-  up as the same destroy on every plan forever. Turn the automation off
-  first — see [Stop Google writing your ad
-  copy](./stop-google-writing-your-ad-copy/) for which half of it a
-  `.bid` can declare and which half is a switch in the Google Ads UI.
-- **Anything on a Video campaign.** The API cannot mutate YouTube
-  campaigns at all, extensions included.
 
 The same skip-and-warn applies to a device criterion nobody declared:
 Google refuses to remove those, so bidsmith reports the drift rather
@@ -142,7 +171,7 @@ than sending an operation that would sink the batch.
 - [Adopt sitelinks and callouts you already have](./adopt-sitelinks-and-callouts-you-already-have/) —
   the step before this one.
 - [Stop Google writing your ad copy](./stop-google-writing-your-ad-copy/) —
-  stopping the automation that puts them back.
+  stopping the automation from making more of them.
 - [Make a search ad render taller with extensions](./add-search-ad-extensions/) —
   what to declare in the first place.
 - [`bidsmith plan`](/bidsmith/commands/plan/) — reading a destroy row.

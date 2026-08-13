@@ -308,8 +308,7 @@ pub const QUERIES: &[(&str, &str)] = &[
           customer_asset.source,
           customer_asset.status
         FROM customer_asset
-        WHERE customer_asset.field_type IN (CALL, SITELINK, CALLOUT, STRUCTURED_SNIPPET)
-          AND customer_asset.status != 'REMOVED'",
+        WHERE customer_asset.status != 'REMOVED'",
     ),
     (
         "campaign_asset",
@@ -321,8 +320,7 @@ pub const QUERIES: &[(&str, &str)] = &[
           campaign_asset.source,
           campaign_asset.status
         FROM campaign_asset
-        WHERE campaign_asset.field_type IN (SITELINK, CALLOUT, STRUCTURED_SNIPPET)
-          AND campaign_asset.status != 'REMOVED'",
+        WHERE campaign_asset.status != 'REMOVED'",
     ),
     (
         "ad_group_asset",
@@ -334,8 +332,7 @@ pub const QUERIES: &[(&str, &str)] = &[
           ad_group_asset.source,
           ad_group_asset.status
         FROM ad_group_asset
-        WHERE ad_group_asset.field_type IN (SITELINK, CALLOUT, STRUCTURED_SNIPPET)
-          AND ad_group_asset.status != 'REMOVED'",
+        WHERE ad_group_asset.status != 'REMOVED'",
     ),
     (
         "shared_set",

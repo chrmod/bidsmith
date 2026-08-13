@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::process::ExitCode;
 
@@ -124,6 +124,12 @@ pub struct ExportInput {
     /// the file.
     #[serde(default)]
     pub owned_account_assets: HashSet<String>,
+    /// Whether the `provider` block's `owns` list claims what Google's
+    /// automation attached to the account itself. Separate from the field-type
+    /// set above because it names a source, not a kind of asset: no `.bid` can
+    /// declare one, so nothing about it is provable from a declaration.
+    #[serde(default)]
+    pub owns_account_automatic_assets: bool,
     /// Live campaign id -> criterion categories a `bidsmith:owns=` label claims
     /// on it. Live-only; empty for declared state.
     #[serde(default)]
@@ -220,6 +226,11 @@ pub struct JsonCampaign {
     /// campaign read as drift rather than staying invisible.
     #[serde(default)]
     pub frequency_caps: Vec<JsonFrequencyCap>,
+    /// Whether `owns` claims the assets Google's automation attached to this
+    /// campaign. Declared-side only: nothing live records it, because the
+    /// claim is over resources no file can declare.
+    #[serde(default)]
+    pub owns_automatic_assets: bool,
     /// `bidsmith:address=<addr>` label read off a live resource. None for
     /// declared resources (their address is `id`) and for unmanaged live ones.
     #[serde(default)]
@@ -290,13 +301,18 @@ impl JsonCampaign {
     /// The campaign's asset automation as the API holds it: one
     /// `(automation type, status)` pair per opt-in the campaign carries, in the
     /// schema's order so two sides compare as sets rather than as orderings.
-    pub fn asset_automation_list(&self) -> Vec<(&'static str, &str)> {
+    pub fn asset_automation_list(&self) -> Vec<(&str, &str)> {
         let Some(s) = self.asset_automation_settings.as_ref() else {
             return Vec::new();
         };
         crate::schema::ASSET_AUTOMATION_FIELDS
             .iter()
             .filter_map(|(field, api)| s.get(field).map(|status| (*api, status)))
+            .chain(
+                s.unmodelled
+                    .iter()
+                    .map(|(api, status)| (api.as_str(), status.as_str())),
+            )
             .collect()
     }
 }
@@ -418,6 +434,12 @@ pub struct JsonAssetAutomationSettings {
     pub generate_image_extraction: Option<String>,
     #[serde(default)]
     pub generate_enhanced_youtube_videos: Option<String>,
+    /// Live automations this build has no attribute for, by API type. The API
+    /// replaces the whole list on write, so an automation bidsmith cannot name
+    /// would revert to Google's default the moment a named one moves; carrying
+    /// it through the write is what keeps a setting nobody touched where it is.
+    #[serde(default)]
+    pub unmodelled: BTreeMap<String, String>,
 }
 
 impl JsonAssetAutomationSettings {
@@ -448,6 +470,8 @@ impl JsonAssetAutomationSettings {
         *slot = value;
     }
 
+    /// Empty means "the file says nothing here". Carried-over live automations
+    /// do not count: they are what the account already holds, not a claim.
     pub fn is_empty(&self) -> bool {
         crate::schema::ASSET_AUTOMATION_FIELDS
             .iter()
@@ -992,6 +1016,12 @@ pub struct JsonStructuredSnippetAsset {
     pub values: Vec<String>,
 }
 
+/// `AssetSource` for a link Google's automation attached rather than a person.
+/// `source` is output-only on every link resource, so bidsmith can never create
+/// one — which is why the renderers leave them out of the declared set, and why
+/// the only lever over them is the `status` of the link that carries them.
+pub const AUTOMATICALLY_CREATED: &str = "AUTOMATICALLY_CREATED";
+
 #[derive(Deserialize)]
 pub struct JsonCustomerAsset {
     pub id: String,
@@ -1271,10 +1301,55 @@ pub fn filter_removed(input: &mut ExportInput) {
         .retain(|s| !is_removed(&s.status));
 }
 
+/// Asset links the renderer has no block for. The live queries ask for every
+/// `field_type` so that `plan` can see what is attached to a campaign, but a
+/// file can only describe the kinds bidsmith models an asset resource for —
+/// rendering the rest would emit a reference to an asset the snapshot never
+/// described. Links Google's automation attached go quietly: `source` is
+/// output-only, so no `.bid` could declare one whatever its field type.
+fn prune_unrenderable_links(input: &mut ExportInput) -> Vec<String> {
+    let mut dropped: Vec<String> = Vec::new();
+    let known: HashSet<String> = input
+        .call_assets
+        .iter()
+        .map(|a| a.id.clone())
+        .chain(input.sitelink_assets.iter().map(|a| a.id.clone()))
+        .chain(input.callout_assets.iter().map(|a| a.id.clone()))
+        .chain(
+            input
+                .structured_snippet_assets
+                .iter()
+                .map(|a| a.id.clone()),
+        )
+        .chain(input.youtube_video_assets.iter().map(|a| a.id.clone()))
+        .collect();
+    let mut keep = |kind: &str, id: &str, asset: &str, field_type: &str, source: &Option<String>| {
+        if source.as_deref() == Some(AUTOMATICALLY_CREATED) {
+            return false;
+        }
+        if known.contains(asset) {
+            return true;
+        }
+        dropped.push(format!("{kind} {id} ({field_type} asset {asset} not in snapshot)"));
+        false
+    };
+    input
+        .customer_assets
+        .retain(|a| keep("customer_asset", &a.id, &a.asset, &a.field_type, &a.source));
+    input
+        .campaign_assets
+        .retain(|a| keep("campaign_asset", &a.id, &a.asset, &a.field_type, &a.source));
+    input
+        .ad_group_assets
+        .retain(|a| keep("ad_group_asset", &a.id, &a.asset, &a.field_type, &a.source));
+    dropped
+}
+
 /// The API can return children (ad groups, criteria) whose parent campaign was
 /// filtered out, which would render as a dangling reference; drop them instead.
 pub fn prune_orphans(input: &mut ExportInput) -> Vec<String> {
     let mut dropped: Vec<String> = Vec::new();
+    dropped.extend(prune_unrenderable_links(input));
 
     let campaign_ids: HashSet<String> = input.campaigns.iter().map(|c| c.id.clone()).collect();
     input.ad_groups.retain(|g| {
@@ -2036,9 +2111,9 @@ fn write_provider(out: &mut String, input: &ExportInput) {
     }
     let owns: Vec<String> = crate::schema::ACCOUNT_OWNS
         .iter()
-        .filter(|token| {
-            crate::schema::account_owns_field_type(token)
-                .is_some_and(|ft| input.owned_account_assets.contains(ft))
+        .filter(|token| match crate::schema::account_owns_field_type(token) {
+            Some(ft) => input.owned_account_assets.contains(ft),
+            None => input.owns_account_automatic_assets,
         })
         .map(|token| fmt_string(token))
         .collect();
@@ -2174,6 +2249,14 @@ fn write_campaign(
     }
     if let Some(d) = devices {
         write_attr(out, 1, d.attr, &fmt_string_list(&d.values));
+    }
+    if c.owns_automatic_assets {
+        write_attr(
+            out,
+            1,
+            "owns",
+            &fmt_string_list(&[crate::schema::AUTOMATIC_ASSETS_OWNS.to_string()]),
+        );
     }
     write_tracking(out, 1, &c.final_url_suffix, &c.custom_parameters);
     write_inline_text_assets(out, callouts, snippets);
@@ -4057,6 +4140,51 @@ mod tests {
             out.contains("final_url_expansion_text_asset_automation = \"OPTED_OUT\""),
             "{out}"
         );
+    }
+
+    /// The automations this build has no attribute for are remembered off the
+    /// live campaign so the write can put them back, but there is no name to
+    /// render them under — so a campaign carrying only those renders no block
+    /// at all, rather than an empty one or an invented attribute.
+    #[test]
+    fn an_automation_with_no_attribute_renders_nothing() {
+        let raw = r#"[{"results":[
+            { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget", "amountMicros": "5000000" } },
+            { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Brand", "status": "ENABLED", "advertisingChannelType": "SEARCH", "campaignBudget": "customers/9/campaignBudgets/1001", "assetAutomationSettings": [
+                { "assetAutomationType": "GENERATE_VERTICAL_YOUTUBE_VIDEOS", "assetAutomationStatus": "OPTED_OUT" }
+            ] } }
+        ]}]"#;
+        let input = from_search_response(raw).expect("adapter");
+        assert_eq!(
+            input.campaigns[0]
+                .asset_automation_settings
+                .as_ref()
+                .map(|s| s.unmodelled.len()),
+            Some(1)
+        );
+        let out = render(&input);
+        assert!(!out.contains("asset_automation_settings"), "{out}");
+        assert!(!out.contains("GENERATE_VERTICAL_YOUTUBE_VIDEOS"), "{out}");
+    }
+
+    /// `owns` has no live counterpart — nothing on the account records it —
+    /// so it survives a round trip only through the declared-JSON path.
+    #[test]
+    fn a_campaigns_automation_claim_round_trips() {
+        let input: ExportInput = serde_json::from_value(serde_json::json!({
+            "customer_id": "9",
+            "campaign_budgets": [{"id": "m.b", "name": "B", "amount_micros": 5000000}],
+            "campaigns": [{
+                "id": "m.c",
+                "name": "Brand",
+                "advertising_channel_type": "SEARCH",
+                "campaign_budget": "m.b",
+                "owns_automatic_assets": true
+            }]
+        }))
+        .expect("valid ExportInput");
+        let out = canonicalize(&render(&input));
+        assert!(out.contains(r#"owns = ["automatically_created_assets"]"#), "{out}");
     }
 
     /// Google fills in a restriction for every dimension it has an opinion

@@ -282,6 +282,29 @@ pub fn build_mutate_with_diff(
         }
     }
 
+    // Switching off an asset link Google attached. `source` is output-only, so
+    // the only writable thing about such a link is its status — which is enough,
+    // because a paused link does not serve.
+    for d in &report.diffs {
+        let Action::Pause { live_id } = &d.action else {
+            continue;
+        };
+        let (Some(segment), Some(env)) = (remove_segment_for(d.kind), remove_envelope_for(d.kind))
+        else {
+            continue;
+        };
+        mutate_ops.push(json!({
+            env: {
+                "update": {
+                    "resourceName": format!("customers/{customer_id}/{segment}/{live_id}"),
+                    "status": "PAUSED",
+                },
+                "updateMask": "status",
+            }
+        }));
+        operations.push(PlanOperation { address: d.address.clone(), kind: d.kind });
+    }
+
     for b in &input.campaign_budgets {
         let Some(rn) = plan_rn(&refs, &b.id, "campaign_budget", &mut errors) else {
             continue;
@@ -3594,6 +3617,40 @@ mod tests {
         assert_eq!(
             cr["customAudience"]["customAudience"],
             json!("customers/100/customAudiences/777")
+        );
+    }
+
+    /// The only writable thing about a link Google attached is its status, and
+    /// that is all the pause row asks for — no remove, and nothing that would
+    /// need the link to be declared anywhere.
+    #[test]
+    fn a_pause_row_writes_only_the_link_status() {
+        let input: ExportInput =
+            serde_json::from_value(json!({ "customer_id": "100" })).expect("valid ExportInput");
+        let report = DiffReport {
+            diffs: vec![ResourceDiff {
+                address: "m.c (paused sitelink \"Also on Firefox\")".to_string(),
+                kind: "campaign_asset",
+                action: Action::Pause { live_id: "2~901~SITELINK".to_string() },
+            }],
+            pause_count: 1,
+            ..DiffReport::default()
+        };
+
+        let Ok(plan) = build_mutate_with_diff(&input, &report, true) else {
+            panic!("plan should build");
+        };
+        let ops = plan.body["mutateOperations"].as_array().unwrap();
+        assert_eq!(ops.len(), 1, "{ops:?}");
+        assert_eq!(
+            ops[0]["campaignAssetOperation"],
+            json!({
+                "update": {
+                    "resourceName": "customers/100/campaignAssets/2~901~SITELINK",
+                    "status": "PAUSED",
+                },
+                "updateMask": "status",
+            })
         );
     }
 
