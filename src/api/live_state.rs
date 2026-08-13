@@ -304,6 +304,7 @@ pub const QUERIES: &[(&str, &str)] = &[
           customer_asset.resource_name,
           customer_asset.asset,
           customer_asset.field_type,
+          customer_asset.source,
           customer_asset.status
         FROM customer_asset
         WHERE customer_asset.field_type IN (CALL, SITELINK, CALLOUT, STRUCTURED_SNIPPET)
@@ -316,6 +317,7 @@ pub const QUERIES: &[(&str, &str)] = &[
           campaign_asset.campaign,
           campaign_asset.asset,
           campaign_asset.field_type,
+          campaign_asset.source,
           campaign_asset.status
         FROM campaign_asset
         WHERE campaign_asset.field_type IN (SITELINK, CALLOUT, STRUCTURED_SNIPPET)
@@ -328,6 +330,7 @@ pub const QUERIES: &[(&str, &str)] = &[
           ad_group_asset.ad_group,
           ad_group_asset.asset,
           ad_group_asset.field_type,
+          ad_group_asset.source,
           ad_group_asset.status
         FROM ad_group_asset
         WHERE ad_group_asset.field_type IN (SITELINK, CALLOUT, STRUCTURED_SNIPPET)

@@ -35,6 +35,33 @@ provider "google_ads" {
 }
 ```
 
+## Owning the account's extensions
+
+An extension attached to the **account** rather than to a campaign shows
+up under every campaign you run. `owns` says that your files are the
+complete list of them, so a live one nothing declares is removed:
+
+```hcl
+provider "google_ads" {
+  customer_id = "1234567890"
+  owns        = ["sitelinks", "callouts"]
+}
+```
+
+Accepted values are `sitelinks`, `callouts`, `structured_snippets`, and
+`calls` — each naming one kind of
+[`google_ads_customer_asset`](./google_ads_customer_asset/). Anything
+you leave out of the list is left alone, and an empty or absent `owns`
+is today's behaviour: nothing account-wide is ever removed.
+
+<Aside type="caution">
+  This is the widest-reaching removal bidsmith can make — one destroy
+  changes what every campaign in the account serves. Declare what you
+  want to keep *before* adding `owns`, and read the `- destroy` rows in
+  `bidsmith plan` carefully. Full walkthrough:
+  [Serve only the extensions you declared](/bidsmith/recipes/serve-only-the-extensions-you-declared/).
+</Aside>
+
 ## Schema
 
 <AttributeTable block={provider} headingLevel={3} />

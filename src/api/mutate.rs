@@ -824,6 +824,9 @@ fn remove_segment_for(kind: &str) -> Option<&'static str> {
         "ad_group_criterion" => "adGroupCriteria",
         "campaign_criterion" => "campaignCriteria",
         "shared_criterion" => "sharedCriteria",
+        "customer_asset" => "customerAssets",
+        "campaign_asset" => "campaignAssets",
+        "ad_group_asset" => "adGroupAssets",
         _ => return None,
     })
 }
@@ -865,18 +868,24 @@ fn remove_envelope_for(kind: &str) -> Option<&'static str> {
         "ad_group_criterion" => "adGroupCriterionOperation",
         "campaign_criterion" => "campaignCriterionOperation",
         "shared_criterion" => "sharedCriterionOperation",
+        "customer_asset" => "customerAssetOperation",
+        "campaign_asset" => "campaignAssetOperation",
+        "ad_group_asset" => "adGroupAssetOperation",
         _ => return None,
     })
 }
 
 fn removal_order_index(kind: &str) -> usize {
     match kind {
-        "ad_group_criterion" => 0,
-        "campaign_criterion" => 1,
-        "ad_group_ad" => 2,
-        "ad_group" => 3,
-        "campaign" => 4,
-        "campaign_budget" => 5,
+        "ad_group_asset" => 0,
+        "campaign_asset" => 1,
+        "customer_asset" => 2,
+        "ad_group_criterion" => 3,
+        "campaign_criterion" => 4,
+        "ad_group_ad" => 5,
+        "ad_group" => 6,
+        "campaign" => 7,
+        "campaign_budget" => 8,
         _ => usize::MAX,
     }
 }
@@ -3688,6 +3697,78 @@ mod tests {
         assert_eq!(
             sc.as_str().unwrap(),
             "customers/6571974784/sharedCriteria/50~201"
+        );
+    }
+
+    #[test]
+    fn pruned_asset_links_remove_before_the_parent_they_hang_off() {
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "6571974784",
+        }))
+        .expect("valid ExportInput");
+
+        let report = DiffReport {
+            diffs: vec![
+                ResourceDiff {
+                    address: "c (managed, no longer declared)".to_string(),
+                    kind: "campaign",
+                    action: Action::Delete { live_id: "100".to_string() },
+                },
+                ResourceDiff {
+                    address: "account (removed account-level callout \"Install Now!\")".to_string(),
+                    kind: "customer_asset",
+                    action: Action::Delete { live_id: "910~CALLOUT".to_string() },
+                },
+                ResourceDiff {
+                    address: "c (removed sitelink \"Also on Firefox\")".to_string(),
+                    kind: "campaign_asset",
+                    action: Action::Delete { live_id: "100~901~SITELINK".to_string() },
+                },
+            ],
+            delete_count: 3,
+            ..DiffReport::default()
+        };
+
+        let plan = match build_mutate_with_diff(&input, &report, true) {
+            Ok(plan) => plan,
+            Err(errs) => panic!(
+                "plan should build: {}",
+                errs.iter()
+                    .map(|e| format!("{}: {}", e.address, e.message))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        };
+        let ops = plan.body["mutateOperations"].as_array().unwrap();
+        let envelopes: Vec<&str> = ops
+            .iter()
+            .filter_map(|o| o.as_object().and_then(|m| m.keys().next()).map(String::as_str))
+            .collect();
+        assert_eq!(
+            envelopes,
+            vec![
+                "campaignAssetOperation",
+                "customerAssetOperation",
+                "campaignOperation"
+            ],
+            "a link has to be detached before its campaign goes: {ops:?}"
+        );
+
+        let link = ops
+            .iter()
+            .find_map(|o| o.get("campaignAssetOperation").and_then(|x| x.get("remove")))
+            .expect("campaign asset remove op");
+        assert_eq!(
+            link.as_str().unwrap(),
+            "customers/6571974784/campaignAssets/100~901~SITELINK"
+        );
+        let account = ops
+            .iter()
+            .find_map(|o| o.get("customerAssetOperation").and_then(|x| x.get("remove")))
+            .expect("customer asset remove op");
+        assert_eq!(
+            account.as_str().unwrap(),
+            "customers/6571974784/customerAssets/910~CALLOUT"
         );
     }
 

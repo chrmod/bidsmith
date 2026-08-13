@@ -976,8 +976,8 @@ fn claim_details(report: &diff::DiffReport) -> HashMap<&str, String> {
 /// (issue #112).
 const LABEL_ONLY_NOTE: &str = "~ adopt / ~ claim rows write bidsmith's own labels only: every field \
      they declare already matches live, so no campaign, ad group, or targeting value is written. \
-     A claim records which criterion categories this file manages, so removing the last declared \
-     member of one later prunes the live members too.";
+     A claim records which criterion categories and asset kinds this file manages, so removing \
+     the last declared member of one later prunes the live members too.";
 
 fn verb_detail(
     action: &diff::Action,
@@ -1015,6 +1015,10 @@ fn claim_category_display(category: &str) -> &'static str {
         "language" => "languages",
         "proximity" => "proximity",
         "frequency_caps" => "frequency caps",
+        "asset_sitelink" => "sitelinks",
+        "asset_callout" => "callouts",
+        "asset_structured_snippet" => "structured snippets",
+        "asset_call" => "call assets",
         _ => "criteria",
     }
 }

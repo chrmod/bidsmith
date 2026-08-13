@@ -76,6 +76,7 @@ export default defineConfig({
             { label: 'Budget a campaign that runs for a fixed period', slug: 'recipes/budget-a-fixed-flight' },
             { label: 'Adopt a campaign you built in the Google Ads UI', slug: 'recipes/adopt-a-campaign-from-the-ui' },
             { label: 'Adopt sitelinks and callouts you already have', slug: 'recipes/adopt-sitelinks-and-callouts-you-already-have' },
+            { label: 'Serve only the extensions you declared', slug: 'recipes/serve-only-the-extensions-you-declared' },
             { label: "Put a video ad's tracking URL under review", slug: 'recipes/review-a-video-ads-tracking-url' },
           ],
         },
