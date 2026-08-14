@@ -4,6 +4,7 @@ use hcl_edit::structure::{Attribute, Block, Structure};
 
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
+    JsonAdSchedule,
     JsonAiMaxAdGroupSetting, JsonAiMaxSetting, JsonDynamicSearchAdsSetting,
     JsonAssetAutomationSettings, JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset,
     JsonCampaign, JsonCampaignAsset,
@@ -1564,6 +1565,7 @@ fn import_criterion_blocks(ctx: &Ctx, block: &Block) -> JsonCriterion {
             "location" => t.location = import_location(ctx, b),
             "language" => t.language = import_language(ctx, b),
             "proximity" => t.proximity = import_proximity(ctx, b),
+            "ad_schedule" => t.ad_schedule = import_ad_schedule(ctx, b),
             "device" => t.device = import_device(ctx, b),
             "youtube_channel" => {
                 t.youtube_channel = one_string(ctx, b, "channel_id")
@@ -2314,6 +2316,33 @@ fn import_proximity(ctx: &Ctx, block: &Block) -> Option<JsonProximity> {
         longitude: longitude?,
         radius: radius?,
         radius_units: units?,
+    })
+}
+
+fn import_ad_schedule(ctx: &Ctx, block: &Block) -> Option<JsonAdSchedule> {
+    let mut day = None;
+    let mut start_hour = None;
+    let mut start_minute = None;
+    let mut end_hour = None;
+    let mut end_minute = None;
+    for s in block.body.iter() {
+        if let Structure::Attribute(a) = s {
+            match a.key.as_str() {
+                "day_of_week" => day = expect_string_owned(ctx, a),
+                "start_hour" => start_hour = expect_i64(ctx, a),
+                "start_minute" => start_minute = expect_string_owned(ctx, a),
+                "end_hour" => end_hour = expect_i64(ctx, a),
+                "end_minute" => end_minute = expect_string_owned(ctx, a),
+                _ => {}
+            }
+        }
+    }
+    Some(JsonAdSchedule {
+        day_of_week: day?,
+        start_hour: start_hour?,
+        start_minute: start_minute?,
+        end_hour: end_hour?,
+        end_minute: end_minute?,
     })
 }
 

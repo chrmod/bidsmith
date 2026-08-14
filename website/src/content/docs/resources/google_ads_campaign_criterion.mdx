@@ -1,6 +1,6 @@
 ---
 title: google_ads_campaign_criterion
-description: Campaign-wide targeting — negative keywords, geo, language, proximity, device, YouTube placements, topics, demographics, audiences.
+description: Campaign-wide targeting — negative keywords, geo, language, proximity, ad schedules, device, YouTube placements, topics, demographics, audiences.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -14,6 +14,7 @@ export const negative_keywords = resource.blocks.find((b) => b.name === 'negativ
 export const location = resource.blocks.find((b) => b.name === 'location');
 export const language = resource.blocks.find((b) => b.name === 'language');
 export const proximity = resource.blocks.find((b) => b.name === 'proximity');
+export const ad_schedule = resource.blocks.find((b) => b.name === 'ad_schedule');
 export const device = resource.blocks.find((b) => b.name === 'device');
 export const youtube_channel = resource.blocks.find((b) => b.name === 'youtube_channel');
 export const youtube_video = resource.blocks.find((b) => b.name === 'youtube_video');
@@ -26,8 +27,9 @@ export const audience = resource.blocks.find((b) => b.name === 'audience');
 A **campaign criterion** is targeting that applies to a whole campaign:
 negative keywords (excluded across every ad group), geo targets (which
 locations your ads can show in), language targets, proximity
-(latitude / longitude radius around a point), and device bid
-adjustments (spend more or less — or nothing at all — on a device type).
+(latitude / longitude radius around a point), ad schedules (which days
+and hours the campaign runs), and device bid adjustments (spend more or
+less — or nothing at all — on a device type).
 
 For video campaigns it is also how you say *who* should see the ad and
 *where* it can run: [audiences](#audience), [YouTube channels and
@@ -123,6 +125,36 @@ resource "google_ads_campaign_criterion" "summer_warsaw" {
     longitude    = 21.012228
     radius       = 15
     radius_units = "KILOMETERS"
+  }
+}
+```
+
+Only spend during waking hours — one `ad_schedule` block per day. A
+campaign with no schedule runs around the clock; the moment you declare
+one window, the campaign serves *only* inside the windows you declare:
+
+```hcl
+resource "google_ads_campaign_criterion" "monday_daytime" {
+  campaign = google_ads_campaign.summer_search.id
+
+  ad_schedule {
+    day_of_week  = "MONDAY"
+    start_hour   = 8
+    start_minute = "ZERO"
+    end_hour     = 22
+    end_minute   = "ZERO"
+  }
+}
+
+resource "google_ads_campaign_criterion" "tuesday_daytime" {
+  campaign = google_ads_campaign.summer_search.id
+
+  ad_schedule {
+    day_of_week  = "TUESDAY"
+    start_hour   = 8
+    start_minute = "ZERO"
+    end_hour     = 22
+    end_minute   = "ZERO"
   }
 }
 ```
@@ -254,6 +286,23 @@ A circular radius target — ads only show to users within `radius` of
 the given (latitude, longitude). Use for hyperlocal campaigns.
 
 <AttributeTable block={proximity} headingLevel={4} />
+
+### `ad_schedule`
+
+One day-and-hours window the campaign is allowed to serve in — the
+setting the Google Ads website calls an *ad schedule* (or dayparting).
+Repeat the resource for each day: a Monday-to-Friday 8:00–22:00 schedule
+is five criteria, one per day. Minutes snap to the quarter hour
+(`"ZERO"`, `"FIFTEEN"`, `"THIRTY"`, `"FORTY_FIVE"`), hours run 0–24, and
+a window can't cross midnight — for an overnight window, declare one
+block up to `24` and another from `0`.
+
+Pair a window with the resource's `bid_modifier` to bid more or less in
+that window instead of switching the rest of the week off entirely.
+
+Works on Search and Demand Gen campaigns alike.
+
+<AttributeTable block={ad_schedule} headingLevel={4} />
 
 ### `device`
 

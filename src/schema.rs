@@ -329,6 +329,16 @@ const RSA_PIN: &[&str] = &[
     "DESCRIPTION_2",
 ];
 const PROXIMITY_RADIUS_UNITS: &[&str] = &["MILES", "KILOMETERS"];
+const AD_SCHEDULE_DAY_OF_WEEK: &[&str] = &[
+    "MONDAY",
+    "TUESDAY",
+    "WEDNESDAY",
+    "THURSDAY",
+    "FRIDAY",
+    "SATURDAY",
+    "SUNDAY",
+];
+const AD_SCHEDULE_MINUTE: &[&str] = &["ZERO", "FIFTEEN", "THIRTY", "FORTY_FIVE"];
 const DEVICE_TYPE: &[&str] = &["MOBILE", "DESKTOP", "TABLET", "CONNECTED_TV", "OTHER"];
 
 /// The device types Google auto-materializes on a search or display campaign,
@@ -1191,6 +1201,27 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                                         FieldType::Enum(PROXIMITY_RADIUS_UNITS),
                                         true,
                                     ),
+                                ],
+                                blocks: vec![],
+                            },
+                        },
+                        NestedBlockSchema {
+                            name: "ad_schedule",
+                            schema: BlockSchema {
+                                attributes: vec![
+                                    attr(
+                                        "day_of_week",
+                                        FieldType::Enum(AD_SCHEDULE_DAY_OF_WEEK),
+                                        true,
+                                    ),
+                                    attr("start_hour", FieldType::Number, true),
+                                    attr(
+                                        "start_minute",
+                                        FieldType::Enum(AD_SCHEDULE_MINUTE),
+                                        true,
+                                    ),
+                                    attr("end_hour", FieldType::Number, true),
+                                    attr("end_minute", FieldType::Enum(AD_SCHEDULE_MINUTE), true),
                                 ],
                                 blocks: vec![],
                             },
@@ -5271,6 +5302,80 @@ resource "google_ads_campaign_criterion" "no_kids" {
         );
         assert!(
             diags.is_empty(),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ad_schedule_criterion_validates() {
+        let diags = validate_str(
+            "ad_schedule",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 100000000
+}
+
+resource "google_ads_campaign" "dg" {
+  name                     = "DG"
+  advertising_channel_type = "DEMAND_GEN"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+
+resource "google_ads_campaign_criterion" "daytime" {
+  campaign = google_ads_campaign.dg.id
+
+  ad_schedule {
+    day_of_week  = "MONDAY"
+    start_hour   = 8
+    start_minute = "ZERO"
+    end_hour     = 22
+    end_minute   = "ZERO"
+  }
+}
+"#,
+        );
+        assert!(
+            diags.is_empty(),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ad_schedule_minute_enum_is_validated() {
+        let diags = validate_str(
+            "ad_schedule_bad",
+            r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 100000000
+}
+
+resource "google_ads_campaign" "dg" {
+  name                     = "DG"
+  advertising_channel_type = "DEMAND_GEN"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+
+resource "google_ads_campaign_criterion" "daytime" {
+  campaign = google_ads_campaign.dg.id
+
+  ad_schedule {
+    day_of_week  = "MONDAY"
+    start_hour   = 8
+    start_minute = "TEN"
+    end_hour     = 22
+    end_minute   = "ZERO"
+  }
+}
+"#,
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("expected one of [ZERO, FIFTEEN, THIRTY, FORTY_FIVE]")),
             "{:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
