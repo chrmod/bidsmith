@@ -1887,7 +1887,16 @@ Validator covers (so far):
   every device type once any device targeting exists (issue #82), so an
   undeclared default-state device criterion is implicitly desired and one
   carrying an adjustment surfaces as a plan warning instead of a doomed
-  remove op that would sink the whole atomic batch; plus the video
+  remove op that would sink the whole atomic batch; plus an
+  `ad_schedule { day_of_week, start_hour, start_minute, end_hour,
+  end_minute }` block for dayparting (issue #171) — minutes are the
+  API's `ZERO` / `FIFTEEN` / `THIRTY` / `FORTY_FIVE` enums, hours plain
+  numbers; all five fields are the match key, so editing a window plans
+  as a create plus a prune of the old one, and `bid_modifier` rides
+  along as the per-window bid adjustment; accepted by Google on the
+  `DEMAND_GEN` channel as well as `SEARCH` — verified live via
+  `validateOnly` mutates against a production account, since Google's
+  own docs are silent on Demand Gen dayparting; plus the video
   targeting axes from issue #99 — `youtube_channel { channel_id }`,
   `youtube_video { video_id }`, `topic { topic_constant }`,
   `user_interest { user_interest_category }`, `age_range { type }`,

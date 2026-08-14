@@ -864,6 +864,8 @@ pub struct JsonCriterion {
     #[serde(default)]
     pub proximity: Option<JsonProximity>,
     #[serde(default)]
+    pub ad_schedule: Option<JsonAdSchedule>,
+    #[serde(default)]
     pub device: Option<JsonDevice>,
     #[serde(default)]
     pub youtube_channel: Option<JsonYoutubeChannel>,
@@ -894,6 +896,7 @@ impl JsonCriterion {
             && self.location.is_none()
             && self.language.is_none()
             && self.proximity.is_none()
+            && self.ad_schedule.is_none()
             && self.device.is_none()
             && self.youtube_channel.is_none()
             && self.youtube_video.is_none()
@@ -1008,6 +1011,15 @@ pub struct JsonProximity {
     pub longitude: f64,
     pub radius: f64,
     pub radius_units: String,
+}
+
+#[derive(Deserialize)]
+pub struct JsonAdSchedule {
+    pub day_of_week: String,
+    pub start_hour: i64,
+    pub start_minute: String,
+    pub end_hour: i64,
+    pub end_minute: String,
 }
 
 #[derive(Deserialize)]
@@ -3535,6 +3547,15 @@ fn write_criterion_blocks(
         write_attr(out, 2, "radius_units", &fmt_string(&prox.radius_units));
         out.push_str("  }\n");
     }
+    if let Some(sched) = &c.ad_schedule {
+        out.push_str("\n  ad_schedule {\n");
+        write_attr(out, 2, "day_of_week", &fmt_string(&sched.day_of_week));
+        write_attr(out, 2, "start_hour", &sched.start_hour.to_string());
+        write_attr(out, 2, "start_minute", &fmt_string(&sched.start_minute));
+        write_attr(out, 2, "end_hour", &sched.end_hour.to_string());
+        write_attr(out, 2, "end_minute", &fmt_string(&sched.end_minute));
+        out.push_str("  }\n");
+    }
     if let Some(dev) = &c.device {
         out.push_str("\n  device {\n");
         write_attr(out, 2, "type", &fmt_string(&dev.ty));
@@ -3962,6 +3983,14 @@ fn criterion_base(c: &JsonCriterion, fallback: &str) -> String {
             format_number(prox.radius),
         );
     }
+    if let Some(sched) = &c.ad_schedule {
+        return format!(
+            "schedule_{}_{}_{}",
+            sched.day_of_week.to_ascii_lowercase(),
+            sched.start_hour,
+            sched.end_hour,
+        );
+    }
     if let Some(dev) = &c.device {
         return format!("device_{}", dev.ty.to_ascii_lowercase());
     }
@@ -4191,6 +4220,30 @@ mod tests {
             v1, v2,
             "fold did not round-trip\n=== folded ===\n{folded}\n=== verbose(original) ===\n{v1}\n=== verbose(roundtrip) ===\n{v2}"
         );
+    }
+
+    #[test]
+    fn ad_schedule_criterion_renders_and_roundtrips() {
+        let raw = r#"[{"results":[
+            { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget", "amountMicros": "100000000" } },
+            { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "Daytime", "status": "ENABLED", "advertisingChannelType": "DEMAND_GEN", "campaignBudget": "customers/9/campaignBudgets/1001" } },
+            { "campaignCriterion": { "resourceName": "customers/9/campaignCriteria/2001~7001", "campaign": "customers/9/campaigns/2001", "status": "ENABLED", "adSchedule": { "dayOfWeek": "MONDAY", "startHour": 8, "startMinute": "ZERO", "endHour": 22, "endMinute": "ZERO" } } }
+        ]}]"#;
+        let input = from_search_response(raw).expect("adapter");
+        let sched = input.campaign_criteria[0]
+            .target
+            .ad_schedule
+            .as_ref()
+            .expect("schedule read from live row");
+        assert_eq!(sched.day_of_week, "MONDAY");
+        assert_eq!(sched.start_hour, 8);
+        assert_eq!(sched.end_hour, 22);
+        let out = render(&input);
+        assert!(out.contains("ad_schedule {"), "{out}");
+        assert!(out.contains("day_of_week = \"MONDAY\""), "{out}");
+        assert!(out.contains("start_hour = 8"), "{out}");
+        assert!(out.contains("end_minute = \"ZERO\""), "{out}");
+        assert_fold_roundtrips(raw);
     }
 
     #[test]

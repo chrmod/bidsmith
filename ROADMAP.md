@@ -306,6 +306,20 @@ the full set.
 
 Smaller follow-ups that can ride along:
 
+- ✅ Ad schedules / dayparting (issue #171). `google_ads_campaign_criterion`
+  takes an `ad_schedule { day_of_week, start_hour, start_minute,
+  end_hour, end_minute }` block, so "no overnight spend" lives in the
+  repo instead of a UI setting nobody reviews. The whole window is the
+  match key (editing one plans as create + prune), `bid_modifier` is the
+  per-window adjustment, and declaring any schedule claims the kind so
+  undeclared live windows on a managed campaign are destroyed — the
+  standard claim-by-kind partition. **Verified live** (`validateOnly`
+  mutates against a production account): `AD_SCHEDULE` campaign criteria
+  are accepted on `DEMAND_GEN` — where Google's docs are silent on
+  dayparting — and on `SEARCH`; an inverted window is rejected with
+  `AD_SCHEDULE_INVALID_TIME_INTERVAL`, confirming the criterion op is
+  genuinely validated. The VIDEO channel refuses all criterion mutates
+  as before, and the existing channel blocker already covers that.
 - ✅ Inline campaign targeting (`languages = ["en"]` / `locations =
   ["US"]`) — each entry expands to one positive `campaign_criterion`,
   resolving human-readable codes (or raw `…Constants/NNNN` strings) via

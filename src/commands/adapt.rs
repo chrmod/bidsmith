@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
+    JsonAdSchedule,
     JsonAiMaxAdGroupSetting, JsonAiMaxSetting, JsonDynamicSearchAdsSetting,
     JsonAssetAutomationSettings, JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset,
     JsonCampaign, JsonCampaignAsset,
@@ -1449,6 +1450,27 @@ fn merge_criterion(v: &Value, target: &mut JsonCriterion) {
                 longitude: lng as f64 / 1_000_000.0,
                 radius,
                 radius_units: units.to_string(),
+            });
+        }
+    }
+    if let Some(sched) = v.get("adSchedule") {
+        let day = sched
+            .get("dayOfWeek")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty() && *s != "UNSPECIFIED" && *s != "UNKNOWN");
+        let start_hour = sched.get("startHour").and_then(parse_i64_value);
+        let start_minute = sched.get("startMinute").and_then(Value::as_str);
+        let end_hour = sched.get("endHour").and_then(parse_i64_value);
+        let end_minute = sched.get("endMinute").and_then(Value::as_str);
+        if let (Some(day), Some(start_hour), Some(start_minute), Some(end_hour), Some(end_minute)) =
+            (day, start_hour, start_minute, end_hour, end_minute)
+        {
+            target.ad_schedule = Some(JsonAdSchedule {
+                day_of_week: day.to_string(),
+                start_hour,
+                start_minute: start_minute.to_string(),
+                end_hour,
+                end_minute: end_minute.to_string(),
             });
         }
     }

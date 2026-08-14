@@ -2370,6 +2370,18 @@ fn insert_criterion(m: &mut Map<String, Value>, cr: &JsonCriterion, audience_rn:
         );
         m.insert("proximity".into(), Value::Object(sub));
     }
+    if let Some(sched) = &cr.ad_schedule {
+        let mut sub = Map::new();
+        sub.insert("dayOfWeek".into(), Value::String(sched.day_of_week.clone()));
+        sub.insert("startHour".into(), Value::Number(sched.start_hour.into()));
+        sub.insert(
+            "startMinute".into(),
+            Value::String(sched.start_minute.clone()),
+        );
+        sub.insert("endHour".into(), Value::Number(sched.end_hour.into()));
+        sub.insert("endMinute".into(), Value::String(sched.end_minute.clone()));
+        m.insert("adSchedule".into(), Value::Object(sub));
+    }
     if let Some(dev) = &cr.device {
         let mut sub = Map::new();
         sub.insert("type".into(), Value::String(dev.ty.clone()));

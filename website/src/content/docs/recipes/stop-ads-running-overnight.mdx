@@ -1,0 +1,104 @@
+---
+title: Stop ads running overnight
+description: Put an ad schedule on a campaign so it only spends during the hours that convert — declared in the repo, reviewed in a PR.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Clicks at 3 a.m. rarely turn into customers, but a campaign with no
+schedule serves around the clock. An **ad schedule** (the Google Ads
+website also calls this *dayparting*) restricts a campaign to the days
+and hours you pick — and declaring it in a `.bid` file means the
+schedule is visible in review, and anyone quietly widening it in the UI
+shows up as drift on the next `plan`.
+
+## Declare the windows
+
+One `ad_schedule` block covers one day. A window is `start_hour` to
+`end_hour` on a 24-hour clock, minutes snapping to the quarter hour
+(`"ZERO"`, `"FIFTEEN"`, `"THIRTY"`, `"FORTY_FIVE"`).
+
+Writing seven near-identical resources by hand is boilerplate, so fan
+one block out with
+[`for_each`](/bidsmith/recipes/repeat-a-resource-with-for-each/):
+
+```hcl
+resource "google_ads_campaign_criterion" "daytime" {
+  for_each = [
+    "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY",
+    "SATURDAY", "SUNDAY",
+  ]
+  campaign = google_ads_campaign.summer_search.id
+
+  ad_schedule {
+    day_of_week  = each.value
+    start_hour   = 8
+    start_minute = "ZERO"
+    end_hour     = 22
+    end_minute   = "ZERO"
+  }
+}
+```
+
+Then the usual loop: `bidsmith plan` shows one `+ create` per window,
+the PR gets reviewed, `apply` after merge. The campaign now serves
+8:00–22:00 in the account's time zone and spends nothing overnight.
+
+<Aside type="caution" title="One window switches the rest off">
+  A campaign with no ad schedule runs 24/7. The moment it has *any*
+  window, it serves **only** inside its windows. If you declare Monday
+  8–22 and nothing else, the campaign is dark Tuesday through Sunday.
+</Aside>
+
+## Bid less instead of switching off
+
+If overnight traffic is worth *something*, keep the campaign on
+around the clock and lower bids in the quiet hours instead: give the
+quiet window its own criterion and pair it with `bid_modifier` —
+`0.7` bids 30% less inside that window.
+
+```hcl
+resource "google_ads_campaign_criterion" "monday_night_trim" {
+  campaign     = google_ads_campaign.summer_search.id
+  bid_modifier = 0.7
+
+  ad_schedule {
+    day_of_week  = "MONDAY"
+    start_hour   = 0
+    start_minute = "ZERO"
+    end_hour     = 8
+    end_minute   = "ZERO"
+  }
+}
+```
+
+Remember the caveat above still applies: once any window exists, hours
+outside every window don't serve at all. A "cheaper at night" setup
+declares the day windows *and* the night windows, with the modifier on
+the night ones.
+
+## Editing and removing windows
+
+- **Widening or moving a window** — edit the block; `plan` shows it as
+  a create of the new window plus a destroy of the old one. That's
+  normal: the window itself is the identity, and Google keeps no
+  history on a schedule window worth preserving.
+- **Back to 24/7** — delete all the `ad_schedule` resources and apply.
+- **A window can't cross midnight** — for "Friday 20:00 to Saturday
+  2:00", declare Friday `20`–`24` and Saturday `0`–`2`.
+
+## Which campaigns can have one
+
+Search, Display, and Demand Gen campaigns all take ad schedules —
+including Demand Gen video campaigns on YouTube. Video (the classic
+YouTube campaign type) can't be changed through the API at all;
+bidsmith will block the plan and say so.
+
+## See also
+
+- [`google_ads_campaign_criterion`](/bidsmith/resources/google_ads_campaign_criterion/#ad_schedule) —
+  the full `ad_schedule` reference.
+- [Repeat a resource with for_each](./repeat-a-resource-with-for-each/) —
+  the fan-out used above.
+- [Budget a campaign that runs for a fixed period](./budget-a-fixed-flight/) —
+  date-based rather than hour-based control.

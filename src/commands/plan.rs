@@ -161,7 +161,7 @@ fn run_read_live(refresh_state: bool, verbose: bool) -> ExitCode {
     println!("  ad_group_ads        : {}", state.ad_group_ads.len());
     println!("  ad_group_criteria   : {}", state.ad_group_criteria.len());
     println!(
-        "  campaign_criteria   : {} (keyword / location / language / proximity / device only)",
+        "  campaign_criteria   : {} (managed criterion kinds only)",
         state.campaign_criteria.len(),
     );
 
@@ -1043,6 +1043,7 @@ fn claim_category_display(category: &str) -> &'static str {
         "location" => "locations",
         "language" => "languages",
         "proximity" => "proximity",
+        "ad_schedule" => "ad schedules",
         "frequency_caps" => "frequency caps",
         "asset_sitelink" => "sitelinks",
         "asset_callout" => "callouts",

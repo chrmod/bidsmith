@@ -204,6 +204,11 @@ pub const QUERIES: &[(&str, &str)] = &[
           campaign_criterion.proximity.geo_point.longitude_in_micro_degrees,
           campaign_criterion.proximity.radius,
           campaign_criterion.proximity.radius_units,
+          campaign_criterion.ad_schedule.day_of_week,
+          campaign_criterion.ad_schedule.start_hour,
+          campaign_criterion.ad_schedule.start_minute,
+          campaign_criterion.ad_schedule.end_hour,
+          campaign_criterion.ad_schedule.end_minute,
           campaign_criterion.device.type,
           campaign_criterion.youtube_channel.channel_id,
           campaign_criterion.youtube_video.video_id,
@@ -216,7 +221,7 @@ pub const QUERIES: &[(&str, &str)] = &[
           campaign_criterion.combined_audience.combined_audience
         FROM campaign_criterion
         WHERE campaign_criterion.type IN (
-            KEYWORD, LOCATION, LANGUAGE, PROXIMITY, DEVICE,
+            KEYWORD, LOCATION, LANGUAGE, PROXIMITY, AD_SCHEDULE, DEVICE,
             YOUTUBE_CHANNEL, YOUTUBE_VIDEO, TOPIC, USER_INTEREST,
             AGE_RANGE, GENDER, CUSTOM_AUDIENCE, USER_LIST, COMBINED_AUDIENCE
           )

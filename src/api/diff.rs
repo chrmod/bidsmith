@@ -1115,6 +1115,7 @@ fn canonical_category(cat: &str) -> Option<&'static str> {
         "location" => "location",
         "language" => "language",
         "proximity" => "proximity",
+        "ad_schedule" => "ad_schedule",
         "youtube_channel" => "youtube_channel",
         "youtube_video" => "youtube_video",
         "topic" => "topic",
@@ -1924,6 +1925,8 @@ fn criterion_category(cr: &JsonCriterion, negative: bool) -> &'static str {
         "language"
     } else if cr.proximity.is_some() {
         "proximity"
+    } else if cr.ad_schedule.is_some() {
+        "ad_schedule"
     } else if cr.device.is_some() {
         "device"
     } else if cr.youtube_channel.is_some() {
@@ -1959,6 +1962,15 @@ fn criterion_descriptor(cr: &JsonCriterion, negative: bool) -> Option<String> {
         Some(format!("location {}", loc.geo_target_constant))
     } else if let Some(lang) = &cr.language {
         Some(format!("language {}", lang.language_constant))
+    } else if let Some(sched) = &cr.ad_schedule {
+        Some(format!(
+            "ad_schedule {} {}:{}-{}:{}",
+            sched.day_of_week,
+            sched.start_hour,
+            minute_label(&sched.start_minute),
+            sched.end_hour,
+            minute_label(&sched.end_minute),
+        ))
     } else if let Some(dev) = &cr.device {
         Some(format!("device {}", dev.ty))
     } else if let Some(c) = &cr.youtube_channel {
@@ -1983,6 +1995,16 @@ fn criterion_descriptor(cr: &JsonCriterion, negative: bool) -> Option<String> {
         Some(format!("{field} {value}"))
     } else {
         cr.proximity.as_ref().map(|_| "proximity".to_string())
+    }
+}
+
+fn minute_label(minute: &str) -> &str {
+    match minute {
+        "ZERO" => "00",
+        "FIFTEEN" => "15",
+        "THIRTY" => "30",
+        "FORTY_FIVE" => "45",
+        other => other,
     }
 }
 
@@ -3209,6 +3231,12 @@ fn criterion_key(
             p.radius_units,
         ));
     }
+    if let Some(s) = &cr.ad_schedule {
+        return Some(format!(
+            "sched:{}:{}:{}:{}:{}",
+            s.day_of_week, s.start_hour, s.start_minute, s.end_hour, s.end_minute,
+        ));
+    }
     if let Some(d) = &cr.device {
         return Some(format!("dev:{}", d.ty));
     }
@@ -3517,6 +3545,68 @@ mod criterion_match_tests {
             ),
             "changed device modifier should update bid_modifier, got {:?}",
             crit_action(&changed, "d")
+        );
+    }
+
+    #[test]
+    fn ad_schedule_criterion_matches_by_full_schedule_key() {
+        let same = device_criteria(
+            r#"{"id":"s","campaign":"c","ad_schedule":{"day_of_week":"MONDAY","start_hour":8,"start_minute":"ZERO","end_hour":22,"end_minute":"ZERO"}}"#,
+            r#"{"id":"600","campaign":"100","ad_schedule":{"day_of_week":"MONDAY","start_hour":8,"start_minute":"ZERO","end_hour":22,"end_minute":"ZERO"}}"#,
+        );
+        assert!(
+            matches!(crit_action(&same, "s"), Action::NoOp { live_id } if live_id == "600"),
+            "identical schedule should be a no-op, got {:?}",
+            crit_action(&same, "s")
+        );
+
+        let changed = device_criteria(
+            r#"{"id":"s","campaign":"c","ad_schedule":{"day_of_week":"MONDAY","start_hour":8,"start_minute":"ZERO","end_hour":20,"end_minute":"ZERO"}}"#,
+            r#"{"id":"600","campaign":"100","ad_schedule":{"day_of_week":"MONDAY","start_hour":8,"start_minute":"ZERO","end_hour":22,"end_minute":"ZERO"}}"#,
+        );
+        assert!(
+            matches!(crit_action(&changed, "s"), Action::Create),
+            "a different window is a new criterion, got {:?}",
+            crit_action(&changed, "s")
+        );
+    }
+
+    #[test]
+    fn declared_ad_schedule_prunes_only_schedule_orphans() {
+        let pruned = device_criteria(
+            r#"{"id":"s","campaign":"c","ad_schedule":{"day_of_week":"MONDAY","start_hour":8,"start_minute":"ZERO","end_hour":22,"end_minute":"ZERO"}}"#,
+            r#"{"id":"600","campaign":"100","ad_schedule":{"day_of_week":"SUNDAY","start_hour":0,"start_minute":"ZERO","end_hour":24,"end_minute":"ZERO"}}"#,
+        );
+        assert_eq!(
+            pruned.delete_count, 1,
+            "declaring a schedule claims the kind, so the undeclared one goes: {:?}",
+            pruned
+                .diffs
+                .iter()
+                .map(|d| (&d.address, &d.action))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            pruned
+                .diffs
+                .iter()
+                .any(|d| d.address.contains("removed ad_schedule SUNDAY 0:00-24:00")),
+            "{:?}",
+            pruned.diffs.iter().map(|d| &d.address).collect::<Vec<_>>()
+        );
+
+        let isolated = device_criteria(
+            r#"{"id":"l","campaign":"c","location":{"geo_target_constant":"geoTargetConstants/2616"}}"#,
+            r#"{"id":"600","campaign":"100","ad_schedule":{"day_of_week":"SUNDAY","start_hour":0,"start_minute":"ZERO","end_hour":24,"end_minute":"ZERO"}}"#,
+        );
+        assert_eq!(
+            isolated.delete_count, 0,
+            "declaring a location must not prune schedules: {:?}",
+            isolated
+                .diffs
+                .iter()
+                .map(|d| (&d.address, &d.action))
+                .collect::<Vec<_>>()
         );
     }
 
