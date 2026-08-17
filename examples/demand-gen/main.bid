@@ -82,3 +82,42 @@ resource "google_ads_ad_group_criterion" "home_battery_pl" {
     language_constant = "languageConstants/1030"
   }
 }
+
+# The creative. All three asset kinds it references are declared resources:
+# bidsmith creates the video and button assets from these blocks, and looks the
+# logo up in the account's asset library by name.
+resource "google_ads_youtube_video_asset" "battery_explainer" {
+  youtube_video_id = "dQw4w9WgXcQ"
+  youtube_video_title = "How a home battery pays for itself"
+}
+
+# Upload the image once in Google Ads (Assets → Images); this block names it.
+# bidsmith never uploads image files, the same boundary it draws for video.
+resource "google_ads_image_asset" "logo" {
+  name = "Brand logo 1200x1200"
+}
+
+# Google renders the button wording per locale, so the asset carries a type
+# rather than a phrase.
+resource "google_ads_call_to_action_asset" "learn_more" {
+  call_to_action = "LEARN_MORE"
+}
+
+resource "google_ads_ad_group_ad" "home_battery_video" {
+  ad_group = google_ads_ad_group.home_battery.id
+
+  ad {
+    name = "Home battery explainer"
+    final_urls = ["https://example.com/home-battery"]
+
+    demand_gen_video_responsive_ad {
+      videos = [google_ads_youtube_video_asset.battery_explainer.id]
+      logo_images = [google_ads_image_asset.logo.id]
+      call_to_actions = [google_ads_call_to_action_asset.learn_more.id]
+      business_name = "Example Energy"
+      headlines = ["Cut your power bill", "Store your own solar"]
+      long_headlines = ["Store the solar you already make and use it after dark"]
+      descriptions = ["See what a home battery saves on a typical bill."]
+    }
+  }
+}

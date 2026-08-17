@@ -835,11 +835,12 @@ resource type, any file layout, modules, schema validation.
   the `AdGroupAd` with a `DemandGenVideoResponsiveAdInfo` pointing at it,
   in one atomic batch (the asset op is emitted ahead of the ad so the temp
   resource name resolves). `VideoResponsiveAdInfo` used to create the same
-  way, but API v24 made `business_name` and `logo_images` Required on it —
-  the latter are IMAGE asset references bidsmith has no resource type for —
-  so that block is adopt-only now: a create is a `PlanBuildError` naming
-  adoption, the same shape as `video_ad`. A `google_ads_image_asset`
-  resource is the follow-up that would reopen it. Assets are content-addressed, not
+  way, but API v24 made `business_name` and `logo_images` Required on it
+  and the `video_responsive_ad` block models neither, so that block is
+  adopt-only now: a create is a `PlanBuildError` naming adoption, the same
+  shape as `video_ad`. Modelling those two fields there was left undone
+  deliberately — the VIDEO channel refuses every create and update anyway,
+  so there is nothing to reopen. Assets are content-addressed, not
   labelled: a declared asset matches a live one by `youtube_video_id`, so
   re-running `plan` reuses the account's existing asset instead of piling up
   duplicates — the same rule the sitelink / callout / structured-snippet
@@ -860,22 +861,55 @@ resource type, any file layout, modules, schema validation.
   "facts live in the binary" rule: `plan` / `apply` print
   `export::video_upload_notice` whenever the desired state references a
   video, naming the out-of-band upload step.
-- **Demand Gen creatives apply, minus the call-to-action button**: the same
-  mutate path covers `demand_gen_video_responsive_ad`, with two model gaps
-  that are reported rather than silently dropped. `business_name` is
-  REQUIRED by the API on that ad type but only *optional* in the schema (a
-  required attribute would fail `validate` on every `.bid` written before it
-  existed), so a create without it is a `PlanBuildError` and `validate`
-  warns. `call_to_actions` are `AdCallToActionAsset` references on the wire
-  — asset ids, not text — which bidsmith has no resource type for; a
-  declared value therefore blocks the create with an explanatory error
-  instead of applying an ad that quietly lacks its button. For the same
-  reason live CTAs never round-trip, so `ad_body_key` leaves them out —
-  including them would make every adopted Demand Gen ad look like a body
-  change on the next plan. Chosen over inventing implicit CALL_TO_ACTION
-  assets at mutate time (every other asset in bidsmith is an explicit
-  declared resource) — a `google_ads_call_to_action_asset` resource is the
-  follow-up.
+- **Demand Gen creatives apply, button and logo included** (issue #170):
+  the same mutate path covers `demand_gen_video_responsive_ad`, and the
+  three asset lists it carries — `videos`, `logo_images`,
+  `call_to_actions` — are all references to declared resources, resolved
+  together by `resolve_ad_assets` and emitted as `{"asset": rn}` (the
+  shape `AdVideoAsset` / `AdImageAsset` / `AdCallToActionAsset` share).
+  `business_name` and `logo_images` are REQUIRED by the API on that ad
+  type but only *optional* in the schema — a required attribute would fail
+  `validate` on every `.bid` written before they existed — so a create
+  missing either is a `PlanBuildError` and `validate` warns. Because live
+  CTAs and logos come back as asset ids that `asset_match` reconciles with
+  the declared addresses, both are part of `ad_body_key`: an adopted
+  Demand Gen ad matches on its whole creative, and swapping the button or
+  the logo plans as a new ad the way any other body edit does. That has a
+  one-time upgrade cost, taken deliberately: a `.bid` written before this
+  landed describes an adopted Demand Gen ad without its logos, so the
+  body no longer matches and `plan` stops on "needs logo_images to be
+  created" rather than reporting a no-op. The alternative — keeping both
+  out of the key, the way live-CTA-as-text forced before — buys a quiet
+  plan at the price of a *silent* one: editing the logo or the button
+  would do nothing at all. A file that cannot describe the whole creative
+  cannot recreate the ad either, so completing the description (via
+  `refresh -d` / `pull`, which now render both) is the state worth
+  landing in.
+  `call_to_actions` used to be a string list, which no create could ever
+  use; typing it as a reference makes `call_to_actions = ["Install"]` a
+  validate error naming the asset type instead of a plan-time surprise.
+  Chosen over inventing implicit CALL_TO_ACTION assets at mutate time:
+  every asset in bidsmith is an explicit declared resource.
+- **Image assets are referenced, never uploaded** (issue #170): a
+  `google_ads_image_asset` names an image that is *already in the
+  account's asset library* — `name` (the asset library's label, and the
+  match key) plus an optional `asset_id` that pins one image when several
+  share a name. `apply` never creates one. `ImageAsset.data` is
+  mutate-only: the API takes bytes on the way in and never hands them
+  back, so a declared image has no content to match live state against and
+  nothing stops a re-run from uploading the same logo again — the same
+  no-idempotent-upload argument that keeps video files out (there is no
+  `.tfstate`, and an asset carries no `bidsmith:address` label). The
+  consequence is that a declared image with no live match is a **blocker**
+  rather than a create: `plan` stops and names the upload step (Assets →
+  Images) instead of emitting an asset op with no bytes in it, the same
+  shape the adopt-only blocker takes. Duplicate names adopt the first and
+  warn, like every other content-addressed asset. Image and
+  call-to-action assets are deliberately absent from `ASSET_TYPES`, so no
+  `customer_asset` / `campaign_asset` / `ad_group_asset` link can point at
+  one: `field_type_for_asset` is 1:1 by design and an image can be a
+  `LOGO`, a `MARKETING_IMAGE`, a `SQUARE_MARKETING_IMAGE`, … — the link
+  side is a separate decision, not a lockstep obligation of this one.
 - **Frequency caps are a repeated block managed as a whole set** (issue
   #98): `Campaign.frequency_caps` is a repeated `FrequencyCapEntry`, so
   the campaign takes a repeatable `frequency_caps { event_type,
@@ -2115,23 +2149,30 @@ Validator covers (so far):
   resources diff only on `status`,
   `google_ads_youtube_video_asset` (a reference to a video already
   published on YouTube — `youtube_video_id` required, optional
-  `youtube_video_title`; the creative side of a `video_responsive_ad`).
+  `youtube_video_title`; the creative side of a `video_responsive_ad`),
+  `google_ads_image_asset` (a reference to an image already in the
+  account's asset library — `name` required, optional `asset_id` to pin
+  one when several share a name; never created, see the locked decision
+  above), `google_ads_call_to_action_asset` (the button on a Demand Gen
+  creative — one `call_to_action` enum out of `LEARN_MORE` / `SHOP_NOW`
+  / … , created like any other asset).
   The `ad {}` body also accepts a `video_responsive_ad` block (a
   `video` reference to a `google_ads_youtube_video_asset` plus optional
   `headlines` / `long_headlines` / `descriptions` / `call_to_actions`
   string lists) or a `demand_gen_video_responsive_ad` block (the ad type
   a `DEMAND_GEN` campaign carries — a `videos` list of
-  `google_ads_youtube_video_asset` refs plus optional `headlines` /
-  `long_headlines` / `descriptions` / `call_to_actions` / `breadcrumb1`
+  `google_ads_youtube_video_asset` refs, a `logo_images` list of
+  `google_ads_image_asset` refs, a `call_to_actions` list of
+  `google_ads_call_to_action_asset` refs, plus optional `headlines` /
+  `long_headlines` / `descriptions` / `breadcrumb1`
   / `breadcrumb2` / `business_name`) as an alternative to
   `responsive_search_ad` — an `ad`
   carries at most one creative, enforced at validate time. `pull` selects
-  both video creatives and the `YOUTUBE_VIDEO` asset table, so an
+  both video creatives and the `YOUTUBE_VIDEO` / `IMAGE` /
+  `CALL_TO_ACTION` asset tables, so an
   existing video / Demand Gen campaign round-trips through `export`
   (headlines, long headlines, descriptions, breadcrumbs, business name,
-  and the video-asset refs;
-  `call_to_actions` come back from the API as asset references rather than
-  inline text, so they do not populate on a round-trip)
+  and every asset ref the creative carries)
 - `provider "google_ads"` (`customer_id` optional — resolved from
   `bidsmith.toml` / env / global credentials when omitted, so `.bid`
   files can be account-agnostic; `login_customer_id` optional —

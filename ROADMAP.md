@@ -306,13 +306,23 @@ the full set.
 
 Smaller follow-ups that can ride along:
 
-- `google_ads_image_asset` — reference an already-uploaded IMAGE asset
-  the way `google_ads_youtube_video_asset` references a video. This is
-  what would reopen `video_responsive_ad` creation: API v24 made
-  `business_name` and `logo_images` Required on that creative, and with
-  no image asset model every create bidsmith could emit is refused, so
-  the block is adopt-only for now (plan says so). The same resource
-  unlocks Demand Gen image ads later.
+- ✅ `google_ads_image_asset` and `google_ads_call_to_action_asset`
+  (issue #170). A Demand Gen video ad was declarable but never
+  creatable: the API requires 1–5 `logo_images` on it, which no block
+  could express, and `call_to_actions` are asset refs rather than text.
+  Both are resources now, wired through `logo_images` /
+  `call_to_actions` on `demand_gen_video_responsive_ad`. The button
+  asset is created like any other; the image is **referenced** — the
+  bytes are mutate-only, so bidsmith names an image already in the
+  asset library and blocks the plan (naming the upload step) when
+  nothing matches. See DECISIONS.md "Image assets are referenced, never
+  uploaded". **Deferred:** attaching either kind through
+  `customer_asset` / `campaign_asset` / `ad_group_asset` (an image has
+  many possible `field_type`s, so the 1:1 mapping those links rely on
+  does not hold), `companion_banners`, Demand Gen image / product ads,
+  and modelling `business_name` + `logo_images` on `video_responsive_ad`
+  — the VIDEO channel refuses every mutate, so that block stays
+  adopt-only regardless.
 - ✅ Ad schedules / dayparting (issue #171). `google_ads_campaign_criterion`
   takes an `ad_schedule { day_of_week, start_hour, start_minute,
   end_hour, end_minute }` block, so "no overnight spend" lives in the
@@ -493,12 +503,12 @@ Smaller follow-ups that can ride along:
   an RSA body is. bidsmith never uploads the video (that's the YouTube
   Data API); that one boundary is communicated from the CLI via
   `export::video_upload_notice`. See DECISIONS.md "YouTube video ads".
-  **Deferred:** a `google_ads_call_to_action_asset` resource, which is
-  what a Demand Gen `call_to_actions` needs (today a declared value
-  blocks the create with an explanatory error); extending the
+  **Deferred:** extending the
   `tests/e2e.rs` fixture with a video campaign; multiple `videos` per
-  `video_responsive_ad` (today one `video` ref); companion / logo images;
-  and per-asset RSA/video-asset diffs.
+  `video_responsive_ad` (today one `video` ref); companion banners;
+  and per-asset RSA/video-asset diffs. (The
+  `google_ads_call_to_action_asset` and logo-image gaps closed with
+  issue #170.)
 - ✅ Video bidding strategies (issue #104). `google_ads_campaign` takes
   one bidding block out of `manual_cpc` / `manual_cpm` / `manual_cpv` /
   `target_cpm` / `target_cpv`, so a video campaign's strategy round-trips

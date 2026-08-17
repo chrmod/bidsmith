@@ -224,14 +224,27 @@ measured on lived only in the UI, unversioned and never in a diff.
 
 The creative a **Demand Gen** campaign runs
 (`advertising_channel_type = "DEMAND_GEN"`). It's a distinct ad type
-from `video_responsive_ad`: `videos` is a **list** of
-[`google_ads_youtube_video_asset`](./google_ads_youtube_video_asset/)
-references, and it adds `business_name` and `breadcrumb1` /
-`breadcrumb2`.
+from `video_responsive_ad`, and it is the video creative bidsmith can
+**create** rather than only adopt. Three of its attributes are lists of
+asset references:
+
+| attribute | points at |
+|---|---|
+| `videos` | [`google_ads_youtube_video_asset`](./google_ads_youtube_video_asset/) |
+| `logo_images` | [`google_ads_image_asset`](./google_ads_image_asset/) |
+| `call_to_actions` | [`google_ads_call_to_action_asset`](./google_ads_call_to_action_asset/) |
 
 ```hcl
 resource "google_ads_youtube_video_asset" "shorts" {
   youtube_video_id = "dQw4w9WgXcQ"
+}
+
+resource "google_ads_image_asset" "logo" {
+  name = "Brand logo 1200x1200"
+}
+
+resource "google_ads_call_to_action_asset" "learn_more" {
+  call_to_action = "LEARN_MORE"
 }
 
 resource "google_ads_ad_group_ad" "shorts_ad" {
@@ -243,33 +256,33 @@ resource "google_ads_ad_group_ad" "shorts_ad" {
     final_urls = ["https://example.com/?utm_source=youtube"]
 
     demand_gen_video_responsive_ad {
-      videos         = [google_ads_youtube_video_asset.shorts.id]
-      headlines      = ["Block Ads & Trackers Free"]
-      long_headlines = ["Block ads, trackers and cookie popups across the web"]
-      descriptions   = ["Add the free privacy extension to your browser."]
-      business_name  = "Ghostery"
-      breadcrumb1    = "Adblocker"
-      breadcrumb2    = "Browser"
+      videos          = [google_ads_youtube_video_asset.shorts.id]
+      logo_images     = [google_ads_image_asset.logo.id]
+      call_to_actions = [google_ads_call_to_action_asset.learn_more.id]
+      headlines       = ["Block Ads & Trackers Free"]
+      long_headlines  = ["Block ads, trackers and cookie popups across the web"]
+      descriptions    = ["Add the free privacy extension to your browser."]
+      business_name   = "Ghostery"
+      breadcrumb1     = "Adblocker"
+      breadcrumb2     = "Browser"
     }
   }
 }
 ```
 
-The most common use is **adopting** a Demand Gen campaign you built in
+The other common use is **adopting** a Demand Gen campaign you built in
 the Google Ads UI — see
 [Adopt an existing campaign](../../recipes/adopt-existing-campaign/).
 `bidsmith pull` selects the Demand Gen creative and the campaign
 round-trips through `export`.
 
-<Aside type="caution" title="call_to_actions blocks creation">
-  `business_name` is optional in the schema but **required by the Google
-  Ads API** on this ad type, so `apply` cannot create a Demand Gen video
-  ad without it. And `call_to_actions` are **CALL_TO_ACTION asset
-  references** on the wire rather than inline text — bidsmith does not
-  model that asset type yet, so the attribute neither round-trips nor
-  applies; `plan` refuses to build an ad that sets it. Drop the attribute
-  to create the ad without a call-to-action button, or add the button in
-  the Google Ads UI.
+<Aside type="caution" title="business_name and logo_images are required on create">
+  Both are optional in the schema — a file written before they existed
+  still validates — but the **Google Ads API requires them** on this ad
+  type, so `apply` cannot create the ad without them. `validate` warns
+  when either is missing, and `plan` refuses to build the ad rather than
+  letting Google reject the whole atomic batch. Logo images must be
+  square (at least 128×128, 1:1) and there can be 1 to 5 of them.
 </Aside>
 
 <AttributeTable block={dgVideo} headingLevel={4} />

@@ -151,6 +151,7 @@ pub const QUERIES: &[(&str, &str)] = &[
           ad_group_ad.ad.demand_gen_video_responsive_ad.descriptions,
           ad_group_ad.ad.demand_gen_video_responsive_ad.call_to_actions,
           ad_group_ad.ad.demand_gen_video_responsive_ad.videos,
+          ad_group_ad.ad.demand_gen_video_responsive_ad.logo_images,
           ad_group_ad.ad.demand_gen_video_responsive_ad.breadcrumb1,
           ad_group_ad.ad.demand_gen_video_responsive_ad.breadcrumb2,
           ad_group_ad.ad.demand_gen_video_responsive_ad.business_name
@@ -327,6 +328,28 @@ pub const QUERIES: &[(&str, &str)] = &[
           asset.youtube_video_asset.youtube_video_title
         FROM asset
         WHERE asset.type = YOUTUBE_VIDEO",
+    ),
+    (
+        // `asset.name` is the whole payload a `.bid` can declare: the image
+        // bytes are mutate-only and everything else the API reports about an
+        // image is output-only.
+        "image_asset",
+        "SELECT
+          asset.resource_name,
+          asset.id,
+          asset.name,
+          asset.type
+        FROM asset
+        WHERE asset.type = IMAGE",
+    ),
+    (
+        "call_to_action_asset",
+        "SELECT
+          asset.resource_name,
+          asset.id,
+          asset.call_to_action_asset.call_to_action
+        FROM asset
+        WHERE asset.type = CALL_TO_ACTION",
     ),
     (
         "customer_asset",

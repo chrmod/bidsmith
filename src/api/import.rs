@@ -7,7 +7,8 @@ use crate::commands::export::{
     JsonAdSchedule,
     JsonAiMaxAdGroupSetting, JsonAiMaxSetting, JsonDemandGenCampaignSettings,
     JsonDynamicSearchAdsSetting,
-    JsonAssetAutomationSettings, JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset,
+    JsonAssetAutomationSettings, JsonBidSelector, JsonBudget, JsonCallAsset,
+    JsonCallToActionAsset, JsonCalloutAsset, JsonImageAsset,
     JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCriterion,
     JsonCustomerAsset, JsonAgeRange, JsonAudience, JsonAudienceSegment, JsonAudienceSetting,
@@ -93,6 +94,8 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
         shared_criteria: Vec::new(),
         campaign_shared_sets: Vec::new(),
         youtube_video_assets: Vec::new(),
+        image_assets: Vec::new(),
+        call_to_action_assets: Vec::new(),
         custom_audiences: Vec::new(),
         audiences: Vec::new(),
         labels: Default::default(),
@@ -233,6 +236,14 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
                         "google_ads_youtube_video_asset" => emit(
                             import_youtube_video_asset(&ctx, b, &address)
                                 .map(|x| input.youtube_video_assets.push(x)),
+                        ),
+                        "google_ads_image_asset" => emit(
+                            import_image_asset(&ctx, b, &address)
+                                .map(|x| input.image_assets.push(x)),
+                        ),
+                        "google_ads_call_to_action_asset" => emit(
+                            import_call_to_action_asset(&ctx, b, &address)
+                                .map(|x| input.call_to_action_assets.push(x)),
                         ),
                         "google_ads_shared_set" => emit(
                             import_shared_set(&ctx, b, &address).map(|mut x| {
@@ -1263,6 +1274,7 @@ fn import_ad(ctx: &Ctx, block: &Block) -> JsonAd {
 
 fn import_demand_gen_video_ad(ctx: &Ctx, block: &Block) -> JsonDemandGenVideoResponsiveAd {
     let mut videos: Vec<String> = Vec::new();
+    let mut logo_images: Vec<String> = Vec::new();
     let mut headlines: Vec<String> = Vec::new();
     let mut long_headlines: Vec<String> = Vec::new();
     let mut descriptions: Vec<String> = Vec::new();
@@ -1270,19 +1282,21 @@ fn import_demand_gen_video_ad(ctx: &Ctx, block: &Block) -> JsonDemandGenVideoRes
     let mut breadcrumb1 = None;
     let mut breadcrumb2 = None;
     let mut business_name = None;
+    let asset_refs = |value: &Expression| {
+        extract_resource_ref_list(ctx, value)
+            .into_iter()
+            .map(|r| ctx.resolve_ref(&r))
+            .collect()
+    };
     for s in block.body.iter() {
         let Structure::Attribute(a) = s else { continue };
         match a.key.as_str() {
-            "videos" => {
-                videos = extract_resource_ref_list(ctx, &a.value)
-                    .into_iter()
-                    .map(|r| ctx.resolve_ref(&r))
-                    .collect();
-            }
+            "videos" => videos = asset_refs(&a.value),
+            "logo_images" => logo_images = asset_refs(&a.value),
+            "call_to_actions" => call_to_actions = asset_refs(&a.value),
             "headlines" => headlines = expect_string_list(ctx, &a.value),
             "long_headlines" => long_headlines = expect_string_list(ctx, &a.value),
             "descriptions" => descriptions = expect_string_list(ctx, &a.value),
-            "call_to_actions" => call_to_actions = expect_string_list(ctx, &a.value),
             "breadcrumb1" => breadcrumb1 = expect_string_owned(ctx, a),
             "breadcrumb2" => breadcrumb2 = expect_string_owned(ctx, a),
             "business_name" => business_name = expect_string_owned(ctx, a),
@@ -1291,6 +1305,7 @@ fn import_demand_gen_video_ad(ctx: &Ctx, block: &Block) -> JsonDemandGenVideoRes
     }
     JsonDemandGenVideoResponsiveAd {
         videos,
+        logo_images,
         headlines,
         long_headlines,
         descriptions,
@@ -1370,6 +1385,47 @@ fn import_youtube_video_asset(
         id: address.to_string(),
         youtube_video_id,
         youtube_video_title,
+    })
+}
+
+fn import_image_asset(ctx: &Ctx, block: &Block, address: &str) -> Result<JsonImageAsset, Diag> {
+    let mut name = None;
+    let mut asset_id = None;
+    for s in block.body.iter() {
+        if let Structure::Attribute(a) = s {
+            match a.key.as_str() {
+                "name" => name = expect_string_owned(ctx, a),
+                "asset_id" => asset_id = expect_string_owned(ctx, a),
+                _ => {}
+            }
+        }
+    }
+    let name = name.ok_or_else(|| missing(ctx.file, block, address, "name"))?;
+    Ok(JsonImageAsset {
+        id: address.to_string(),
+        name,
+        asset_id,
+    })
+}
+
+fn import_call_to_action_asset(
+    ctx: &Ctx,
+    block: &Block,
+    address: &str,
+) -> Result<JsonCallToActionAsset, Diag> {
+    let mut call_to_action = None;
+    for s in block.body.iter() {
+        if let Structure::Attribute(a) = s {
+            if a.key.as_str() == "call_to_action" {
+                call_to_action = expect_string_owned(ctx, a);
+            }
+        }
+    }
+    let call_to_action =
+        call_to_action.ok_or_else(|| missing(ctx.file, block, address, "call_to_action"))?;
+    Ok(JsonCallToActionAsset {
+        id: address.to_string(),
+        call_to_action,
     })
 }
 
@@ -2607,6 +2663,8 @@ pub fn import_program(program: &Program) -> Result<ImportResult, Vec<Diag>> {
         shared_criteria: Vec::new(),
         campaign_shared_sets: Vec::new(),
         youtube_video_assets: Vec::new(),
+        image_assets: Vec::new(),
+        call_to_action_assets: Vec::new(),
         custom_audiences: Vec::new(),
         audiences: Vec::new(),
         labels: Default::default(),
@@ -2652,6 +2710,8 @@ pub fn import_program(program: &Program) -> Result<ImportResult, Vec<Diag>> {
                 combined.shared_criteria.extend(r.input.shared_criteria);
                 combined.campaign_shared_sets.extend(r.input.campaign_shared_sets);
                 combined.youtube_video_assets.extend(r.input.youtube_video_assets);
+                combined.image_assets.extend(r.input.image_assets);
+                combined.call_to_action_assets.extend(r.input.call_to_action_assets);
                 combined.custom_audiences.extend(r.input.custom_audiences);
                 combined.audiences.extend(r.input.audiences);
                 combined.adopt_only.extend(r.input.adopt_only);
@@ -3045,6 +3105,14 @@ resource "google_ads_youtube_video_asset" "shorts" {
   youtube_video_id = "dQw4w9WgXcQ"
 }
 
+resource "google_ads_image_asset" "logo" {
+  name = "Square logo"
+}
+
+resource "google_ads_call_to_action_asset" "shop" {
+  call_to_action = "SHOP_NOW"
+}
+
 resource "google_ads_ad_group_ad" "shorts_ad" {
   ad_group = google_ads_ad_group.dg.id
 
@@ -3053,17 +3121,24 @@ resource "google_ads_ad_group_ad" "shorts_ad" {
     final_urls = ["https://example.com"]
 
     demand_gen_video_responsive_ad {
-      videos         = [google_ads_youtube_video_asset.shorts.id]
-      headlines      = ["Block Ads & Trackers"]
-      long_headlines = ["Block ads and trackers everywhere"]
-      descriptions   = ["Install the free extension."]
-      breadcrumb1    = "Adblocker"
-      breadcrumb2    = "Browser"
+      videos          = [google_ads_youtube_video_asset.shorts.id]
+      logo_images     = [google_ads_image_asset.logo.id]
+      call_to_actions = [google_ads_call_to_action_asset.shop.id]
+      headlines       = ["Block Ads & Trackers"]
+      long_headlines  = ["Block ads and trackers everywhere"]
+      descriptions    = ["Install the free extension."]
+      breadcrumb1     = "Adblocker"
+      breadcrumb2     = "Browser"
     }
   }
 }
 "#,
         );
+
+        assert_eq!(input.image_assets.len(), 1);
+        assert_eq!(input.image_assets[0].name, "Square logo");
+        assert_eq!(input.call_to_action_assets.len(), 1);
+        assert_eq!(input.call_to_action_assets[0].call_to_action, "SHOP_NOW");
 
         let dg = input.ad_group_ads[0]
             .ad
@@ -3075,6 +3150,16 @@ resource "google_ads_ad_group_ad" "shorts_ad" {
             dg.videos[0].ends_with("google_ads_youtube_video_asset.shorts"),
             "video ref was {}",
             dg.videos[0]
+        );
+        assert!(
+            dg.logo_images[0].ends_with("google_ads_image_asset.logo"),
+            "logo ref was {}",
+            dg.logo_images[0]
+        );
+        assert!(
+            dg.call_to_actions[0].ends_with("google_ads_call_to_action_asset.shop"),
+            "cta ref was {}",
+            dg.call_to_actions[0]
         );
         assert_eq!(dg.headlines, vec!["Block Ads & Trackers".to_string()]);
         assert_eq!(dg.long_headlines, vec!["Block ads and trackers everywhere".to_string()]);

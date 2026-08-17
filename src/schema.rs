@@ -520,6 +520,26 @@ const SHARED_SET_TYPE: &[&str] = &["NEGATIVE_KEYWORDS", "ACCOUNT_LEVEL_NEGATIVE_
 const SHARED_SET_STATUS: &[&str] = &["ENABLED", "REMOVED"];
 const CAMPAIGN_SHARED_SET_STATUS: &[&str] = &["ENABLED", "REMOVED"];
 
+const CALL_TO_ACTION_TYPE: &[&str] = &[
+    "LEARN_MORE",
+    "GET_QUOTE",
+    "APPLY_NOW",
+    "SIGN_UP",
+    "CONTACT_US",
+    "SUBSCRIBE",
+    "DOWNLOAD",
+    "BOOK_NOW",
+    "SHOP_NOW",
+    "BUY_NOW",
+    "DONATE_NOW",
+    "ORDER_NOW",
+    "PLAY_NOW",
+    "SEE_MORE",
+    "START_NOW",
+    "VISIT_SITE",
+    "WATCH_NOW",
+];
+
 const ASSET_FIELD_TYPE: &[&str] = &[
     "HEADLINE",
     "DESCRIPTION",
@@ -654,8 +674,9 @@ fn ad_block(final_urls_required: bool) -> NestedBlockSchema {
                 // references an already-uploaded YouTube video by id — bidsmith does
                 // not (and cannot) upload the video file itself; see the upload
                 // notice `plan` surfaces. Adopt-only since API v24: the API now
-                // requires a business name and logo image assets on create, and
-                // bidsmith has no image asset model yet.
+                // requires a business name and logo images on create, neither of
+                // which this block models — and the VIDEO channel refuses every
+                // mutate anyway, so there is nothing to reopen.
                 NestedBlockSchema {
                     name: "video_responsive_ad",
                     schema: BlockSchema {
@@ -701,9 +722,9 @@ fn ad_block(final_urls_required: bool) -> NestedBlockSchema {
                 },
                 // A Demand Gen video responsive ad — the ad type a DEMAND_GEN
                 // campaign carries. A distinct API message from video_responsive_ad
-                // (VIDEO campaigns). `business_name` is optional here but required
-                // by the API on create; `call_to_actions` are CALL_TO_ACTION asset
-                // refs on the wire, which bidsmith does not model yet.
+                // (VIDEO campaigns). `business_name` and `logo_images` are optional
+                // here but required by the API on create, so a file written before
+                // they existed still validates.
                 NestedBlockSchema {
                     name: "demand_gen_video_responsive_ad",
                     schema: BlockSchema {
@@ -715,6 +736,11 @@ fn ad_block(final_urls_required: bool) -> NestedBlockSchema {
                                 ])),
                                 false,
                             ),
+                            attr(
+                                "logo_images",
+                                FieldType::list_of(FieldType::Ref(&["google_ads_image_asset"])),
+                                false,
+                            ),
                             attr("headlines", FieldType::list_of(FieldType::String), false),
                             attr(
                                 "long_headlines",
@@ -722,9 +748,13 @@ fn ad_block(final_urls_required: bool) -> NestedBlockSchema {
                                 false,
                             ),
                             attr("descriptions", FieldType::list_of(FieldType::String), false),
+                            // AdCallToActionAsset refs on the wire, not text —
+                            // Google renders the button wording per locale.
                             attr(
                                 "call_to_actions",
-                                FieldType::list_of(FieldType::String),
+                                FieldType::list_of(FieldType::Ref(&[
+                                    "google_ads_call_to_action_asset",
+                                ])),
                                 false,
                             ),
                             attr("breadcrumb1", FieldType::String, false),
@@ -1532,6 +1562,38 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                     attr("youtube_video_id", FieldType::String, true),
                     attr("youtube_video_title", FieldType::String, false),
                 ],
+                blocks: vec![],
+            },
+        );
+
+        // An image Asset that is **already in the account's asset library**.
+        // `ImageAsset.data` is mutate-only — the API never reads the bytes back
+        // — so bidsmith references an image rather than uploading one, the same
+        // boundary a YouTube video asset draws. `name` is how the asset library
+        // lists it and the key the match runs on; `asset_id` pins one image when
+        // several share a name.
+        m.insert(
+            "google_ads_image_asset",
+            BlockSchema {
+                attributes: vec![
+                    attr("name", FieldType::String, true),
+                    attr("asset_id", FieldType::String, false),
+                ],
+                blocks: vec![],
+            },
+        );
+
+        // A call-to-action Asset — the button text on a Demand Gen creative.
+        // Google picks the wording per locale, so the asset holds a type rather
+        // than a string.
+        m.insert(
+            "google_ads_call_to_action_asset",
+            BlockSchema {
+                attributes: vec![attr(
+                    "call_to_action",
+                    FieldType::Enum(CALL_TO_ACTION_TYPE),
+                    true,
+                )],
                 blocks: vec![],
             },
         );
@@ -7801,6 +7863,116 @@ resource "google_ads_ad_group_ad" "preroll" {
         );
         assert!(
             diags.iter().any(|d| d.message.contains("more than one creative")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    const DEMAND_GEN_VIDEO_AD: &str = r#"
+resource "google_ads_ad_group" "g" {
+  name     = "Home battery"
+  campaign = google_ads_campaign.c.id
+}
+
+resource "google_ads_campaign" "c" {
+  name                     = "Demand Gen"
+  advertising_channel_type = "DEMAND_GEN"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+
+resource "google_ads_campaign_budget" "b" {
+  name          = "Demand Gen"
+  amount_micros = 60000000
+}
+
+resource "google_ads_youtube_video_asset" "clip" {
+  youtube_video_id = "dQw4w9WgXcQ"
+}
+
+resource "google_ads_image_asset" "logo" {
+  name = "Square logo"
+}
+
+resource "google_ads_call_to_action_asset" "shop" {
+  call_to_action = "SHOP_NOW"
+}
+
+resource "google_ads_ad_group_ad" "dg" {
+  ad_group = google_ads_ad_group.g.id
+
+  ad {
+    final_urls = ["https://example.com/lp"]
+
+    demand_gen_video_responsive_ad {
+      videos          = [google_ads_youtube_video_asset.clip.id]
+      logo_images     = [google_ads_image_asset.logo.id]
+      call_to_actions = [google_ads_call_to_action_asset.shop.id]
+      business_name   = "Example"
+      headlines       = ["One", "Two"]
+      descriptions    = ["A description."]
+    }
+  }
+}
+"#;
+
+    #[test]
+    fn a_demand_gen_video_ad_with_its_assets_validates() {
+        let diags = validate_str("dg_assets", DEMAND_GEN_VIDEO_AD);
+        assert!(
+            diags.iter().all(|d| !d.is_error()),
+            "{:?}",
+            diags.iter().filter(|d| d.is_error()).map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_text_call_to_action_on_a_demand_gen_ad_errors() {
+        let diags = validate_str(
+            "dg_text_cta",
+            &DEMAND_GEN_VIDEO_AD.replace(
+                "call_to_actions = [google_ads_call_to_action_asset.shop.id]",
+                r#"call_to_actions = ["Install"]"#,
+            ),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.is_error()
+                    && d.message.contains("expected reference to google_ads_call_to_action_asset")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn an_image_asset_needs_a_name() {
+        let diags = validate_str(
+            "image_no_name",
+            r#"
+resource "google_ads_image_asset" "logo" {
+  asset_id = "123456789"
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.is_error() && d.message.contains("name")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn an_unknown_call_to_action_type_errors() {
+        let diags = validate_str(
+            "cta_bad_type",
+            r#"
+resource "google_ads_call_to_action_asset" "shop" {
+  call_to_action = "BUY_TODAY"
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.is_error() && d.message.contains("SHOP_NOW")),
             "{:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
