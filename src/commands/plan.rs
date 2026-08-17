@@ -508,7 +508,7 @@ pub fn execute(
         if response.status == 404 && response.body_raw.contains("<!DOCTYPE html>") {
             eprintln!(
                 "{label}: HTTP 404 + HTML body — likely a retired Google Ads API version. \
-                 Try BIDSMITH_API_VERSION=v22 (or current).",
+                 Try BIDSMITH_API_VERSION=v25 (or current).",
             );
             return ExitCode::from(1);
         }

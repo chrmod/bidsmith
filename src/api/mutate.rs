@@ -9,8 +9,7 @@ use crate::commands::export::{
     JsonAudience, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
     JsonCriterion, JsonCustomAudience, JsonCustomParameter, JsonCustomerAsset,
     JsonDemandGenVideoResponsiveAd, JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedSet,
-    JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonTargetingSetting, JsonVideoResponsiveAd,
-    JsonYoutubeVideoAsset,
+    JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonTargetingSetting, JsonYoutubeVideoAsset,
 };
 
 pub struct PlanOperation {
@@ -984,14 +983,27 @@ fn campaign_update_mask(fields: &[String]) -> String {
     paths.join(",")
 }
 
-/// `custom_parameters` is bidsmith's spelling; the API field — and therefore
-/// the update mask path — is `url_custom_parameters`.
+/// Where bidsmith's spelling differs from the API field — and therefore the
+/// update mask path: `custom_parameters` is `url_custom_parameters`, and the
+/// `.bid` flight dates are the API's date-time fields.
 fn tracking_mask_path(field: &str) -> &str {
     match field {
         "custom_parameters" => "url_custom_parameters",
         "ad.custom_parameters" => "ad.url_custom_parameters",
+        "start_date" => "start_date_time",
+        "end_date" => "end_date_time",
         other => other,
     }
+}
+
+/// The `.bid` model is daily; the API wants "yyyy-MM-dd HH:mm:ss", with the
+/// time component pinned to the edges of the day for daily granularity.
+fn start_date_time(date: &str) -> String {
+    format!("{date} 00:00:00")
+}
+
+fn end_date_time(date: &str) -> String {
+    format!("{date} 23:59:59")
 }
 
 /// Both tracking fields at once, for a create body — only what the file
@@ -1077,12 +1089,12 @@ fn campaign_update_body(c: &JsonCampaign, resource_name: &str, fields: &[String]
             }
             "start_date" => {
                 if let Some(s) = &c.start_date {
-                    m.insert("startDate".into(), Value::String(s.clone()));
+                    m.insert("startDateTime".into(), Value::String(start_date_time(s)));
                 }
             }
             "end_date" => {
                 if let Some(s) = &c.end_date {
-                    m.insert("endDate".into(), Value::String(s.clone()));
+                    m.insert("endDateTime".into(), Value::String(end_date_time(s)));
                 }
             }
             "manual_cpc.enhanced_cpc_enabled" => {
@@ -1886,10 +1898,10 @@ fn campaign_create(c: &JsonCampaign, resource_name: &str, budget_rn: &str) -> Va
         Value::String(eu_political),
     );
     if let Some(d) = &c.start_date {
-        m.insert("startDate".into(), Value::String(d.clone()));
+        m.insert("startDateTime".into(), Value::String(start_date_time(d)));
     }
     if let Some(d) = &c.end_date {
-        m.insert("endDate".into(), Value::String(d.clone()));
+        m.insert("endDateTime".into(), Value::String(end_date_time(d)));
     }
     if let Some((field, body)) = bidding_strategy_value(c) {
         m.insert(field.into(), body);
@@ -2138,8 +2150,20 @@ fn resolve_ad_videos(
         });
         return None;
     }
-    if let Some(v) = &a.ad.video_responsive_ad {
-        return resolve(refs, &v.video, &a.id, "video", errors).map(|rn| vec![rn]);
+    if a.ad.video_responsive_ad.is_some() {
+        // v24 made business name and logo image assets Required on this ad
+        // type, and bidsmith has no image asset model — every create it could
+        // emit would be refused.
+        errors.push(PlanBuildError {
+            address: a.id.clone(),
+            message: "a video_responsive_ad creative cannot be created — since Google Ads API \
+                      v24 it requires a business name and logo image assets, which bidsmith \
+                      does not model yet. Declare it to adopt the ad that is already live \
+                      (bidsmith claims it by bidsmith:address label, else by body), or build \
+                      the ad in the Google Ads UI"
+                .to_string(),
+        });
+        return None;
     }
     let Some(dg) = &a.ad.demand_gen_video_responsive_ad else {
         return Some(Vec::new());
@@ -2193,30 +2217,11 @@ fn ad_value(ad: &JsonAd, video_rns: &[String]) -> Value {
     if let Some(rsa) = &ad.responsive_search_ad {
         m.insert("responsiveSearchAd".into(), rsa_value(rsa));
     }
-    if let Some(v) = &ad.video_responsive_ad {
-        m.insert("videoResponsiveAd".into(), video_ad_value(v, video_rns));
-    }
     if let Some(dg) = &ad.demand_gen_video_responsive_ad {
         m.insert(
             "demandGenVideoResponsiveAd".into(),
             demand_gen_video_ad_value(dg, video_rns),
         );
-    }
-    Value::Object(m)
-}
-
-fn video_ad_value(v: &JsonVideoResponsiveAd, video_rns: &[String]) -> Value {
-    let mut m = Map::new();
-    insert_ad_text_list(&mut m, "headlines", &v.headlines);
-    insert_ad_text_list(&mut m, "longHeadlines", &v.long_headlines);
-    insert_ad_text_list(&mut m, "descriptions", &v.descriptions);
-    insert_ad_text_list(&mut m, "callToActions", &v.call_to_actions);
-    m.insert("videos".into(), ad_video_assets(video_rns));
-    if let Some(b) = &v.breadcrumb1 {
-        m.insert("breadcrumb1".into(), Value::String(b.clone()));
-    }
-    if let Some(b) = &v.breadcrumb2 {
-        m.insert("breadcrumb2".into(), Value::String(b.clone()));
     }
     Value::Object(m)
 }
@@ -2613,6 +2618,45 @@ mod tests {
         assert_eq!(
             campaign["update"]["urlCustomParameters"],
             json!([{"key": "region", "value": "eu"}])
+        );
+    }
+
+    #[test]
+    fn a_flight_date_update_speaks_the_api_date_time_dialect() {
+        // The `.bid` file says `end_date = "2026-12-31"`; since v23 the API
+        // field is `end_date_time` and wants "yyyy-MM-dd HH:mm:ss", with the
+        // day edges standing in for daily granularity.
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "campaign_budgets": [{"id": "m.b", "name": "B", "amount_micros": 10000000}],
+            "campaigns": [{
+                "id": "m.c", "name": "C", "advertising_channel_type": "SEARCH",
+                "campaign_budget": "m.b",
+                "start_date": "2026-09-01",
+                "end_date": "2026-12-31"
+            }]
+        }))
+        .expect("valid ExportInput");
+        let report = report_of(vec![
+            noop_diff("m.b", "campaign_budget", "500"),
+            update_diff("m.c", "campaign", &["start_date", "end_date"]),
+        ]);
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let op = plan.body["mutateOperations"]
+            .as_array()
+            .expect("ops")
+            .iter()
+            .find(|o| o.get("campaignOperation").is_some())
+            .expect("a campaign op");
+        let campaign = &op["campaignOperation"];
+        assert_eq!(campaign["updateMask"], json!("start_date_time,end_date_time"));
+        assert_eq!(
+            campaign["update"]["startDateTime"],
+            json!("2026-09-01 00:00:00")
+        );
+        assert_eq!(
+            campaign["update"]["endDateTime"],
+            json!("2026-12-31 23:59:59")
         );
     }
 
@@ -4635,7 +4679,7 @@ mod tests {
             "customer_id": "100",
             "campaign_budgets": [{ "id": "m.b", "name": "Preroll", "amount_micros": 10000000 }],
             "campaigns": [{
-                "id": "m.c", "name": "Preroll", "advertising_channel_type": "VIDEO",
+                "id": "m.c", "name": "Preroll", "advertising_channel_type": "DEMAND_GEN",
                 "campaign_budget": "m.b"
             }],
             "ad_groups": [{ "id": "m.ag", "name": "In-stream", "campaign": "m.c" }],
@@ -4651,12 +4695,12 @@ mod tests {
                 "ad": {
                     "name": "Preroll 12s",
                     "final_urls": ["https://ghostery.com/get"],
-                    "video_responsive_ad": {
-                        "video": "m.brand_12s",
+                    "demand_gen_video_responsive_ad": {
+                        "videos": ["m.brand_12s"],
+                        "business_name": "Ghostery",
                         "headlines": ["Block ads and trackers"],
                         "long_headlines": ["Ghostery blocks ads and trackers everywhere"],
-                        "descriptions": ["Install the free extension"],
-                        "call_to_actions": ["Install"]
+                        "descriptions": ["Install the free extension"]
                     }
                 }
             }]
@@ -4703,7 +4747,8 @@ mod tests {
             "Brand 12s"
         );
 
-        let ad = ops[ad_idx]["adGroupAdOperation"]["create"]["ad"]["videoResponsiveAd"].clone();
+        let ad =
+            ops[ad_idx]["adGroupAdOperation"]["create"]["ad"]["demandGenVideoResponsiveAd"].clone();
         assert_eq!(
             ad["videos"][0]["asset"].as_str().unwrap(),
             asset_rn,
@@ -4715,7 +4760,6 @@ mod tests {
             "Ghostery blocks ads and trackers everywhere"
         );
         assert_eq!(ad["descriptions"][0]["text"].as_str().unwrap(), "Install the free extension");
-        assert_eq!(ad["callToActions"][0]["text"].as_str().unwrap(), "Install");
     }
 
     #[test]
@@ -4734,7 +4778,11 @@ mod tests {
                 "ad_group": "m.ag",
                 "ad": {
                     "final_urls": ["https://ghostery.com/get"],
-                    "video_responsive_ad": { "video": "m.brand_12s", "headlines": ["Block ads"] }
+                    "demand_gen_video_responsive_ad": {
+                        "videos": ["m.brand_12s"],
+                        "business_name": "Ghostery",
+                        "headlines": ["Block ads"]
+                    }
                 }
             }]
         }))
@@ -4758,7 +4806,7 @@ mod tests {
             .find_map(|o| o.get("adGroupAdOperation").and_then(|o| o.get("create")))
             .expect("ad group ad create op");
         assert_eq!(
-            ad["ad"]["videoResponsiveAd"]["videos"][0]["asset"].as_str().unwrap(),
+            ad["ad"]["demandGenVideoResponsiveAd"]["videos"][0]["asset"].as_str().unwrap(),
             "customers/100/assets/42",
             "the creative must point at the live asset"
         );
@@ -4924,12 +4972,15 @@ mod tests {
     }
 
     #[test]
-    fn video_responsive_breadcrumbs_reach_the_wire() {
+    fn a_video_responsive_ad_creative_cannot_be_created_and_the_error_names_adoption() {
+        // v24 made business name and logo image assets Required on this ad
+        // type; bidsmith models neither, so the create must fail the plan
+        // instead of sinking the atomic batch at apply.
         let declared: ExportInput = serde_json::from_value(json!({
             "customer_id": "100",
             "campaign_budgets": [{ "id": "m.b", "name": "Preroll", "amount_micros": 10000000 }],
             "campaigns": [{
-                "id": "m.c", "name": "Preroll", "advertising_channel_type": "DEMAND_GEN",
+                "id": "m.c", "name": "Preroll", "advertising_channel_type": "VIDEO",
                 "campaign_budget": "m.b"
             }],
             "ad_groups": [{ "id": "m.ag", "name": "In-stream", "campaign": "m.c" }],
@@ -4953,15 +5004,16 @@ mod tests {
             serde_json::from_value(json!({ "customer_id": "100" })).expect("valid live");
 
         let report = crate::api::diff::diff(&declared, &live);
-        let plan = expect_plan(build_mutate_with_diff(&declared, &report, true));
-        let ops = plan.body["mutateOperations"].as_array().unwrap();
-        let vra = ops
+        let Err(errs) = build_mutate_with_diff(&declared, &report, true) else {
+            panic!("a video_responsive_ad create should fail the plan");
+        };
+        let messages = errs
             .iter()
-            .find_map(|o| o.get("adGroupAdOperation").and_then(|o| o.get("create")))
-            .expect("ad group ad create op")["ad"]["videoResponsiveAd"]
-            .clone();
-        assert_eq!(vra["breadcrumb1"].as_str().unwrap(), "AdBlocker");
-        assert_eq!(vra["breadcrumb2"].as_str().unwrap(), "Browser");
+            .map(|e| e.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(messages.contains("logo image assets"), "{messages}");
+        assert!(messages.contains("adopt"), "{messages}");
     }
 
     #[test]

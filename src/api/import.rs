@@ -4002,7 +4002,7 @@ resource "google_ads_campaign" "c" {
         let live = crate::commands::adapt::from_search_response(
             r#"[{"results":[
               {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
-              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","startDate":"2026-08-11","endDate":"2037-12-30"}}
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","startDateTime":"2026-08-11 00:00:00","endDateTime":"2037-12-30 23:59:59"}}
             ]}]"#,
         )
         .expect("adapt live");
@@ -4040,7 +4040,7 @@ resource "google_ads_campaign" "c" {
         let live = crate::commands::adapt::from_search_response(
             r#"[{"results":[
               {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
-              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","startDate":"2026-08-11","endDate":"2037-12-30"}}
+              {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"C","status":"ENABLED","advertisingChannelType":"SEARCH","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING","startDateTime":"2026-08-11 00:00:00","endDateTime":"2037-12-30 23:59:59"}}
             ]}]"#,
         )
         .expect("adapt live");

@@ -453,7 +453,7 @@ resource type, any file layout, modules, schema validation.
 - **Google Ads transport**: REST over `reqwest::blocking`, not gRPC.
   Chosen for the early-iteration debugging UX (curl-able endpoints,
   human-readable JSON wire format, no proto compile step). Endpoint
-  version pinned via `BIDSMITH_API_VERSION` env var (default `v22`);
+  version pinned via `BIDSMITH_API_VERSION` env var (default `v25`);
   retired-version 404s are detected and surfaced with an actionable
   hint. tonic-build / `google-ads-rs` remain available as future
   swaps if a specific gRPC-only RPC is needed.
@@ -832,9 +832,14 @@ resource type, any file layout, modules, schema validation.
   Google Ads API itself only ever *references* a video, it never hosts one.
   Everything downstream of the upload *is* managed: `apply` creates the
   asset via `AssetService` from the video id (+ optional title) and creates
-  the `AdGroupAd` with a `VideoResponsiveAdInfo` / `DemandGenVideoResponsiveAdInfo`
-  pointing at it, in one atomic batch (the asset op is emitted ahead of the
-  ad so the temp resource name resolves). Assets are content-addressed, not
+  the `AdGroupAd` with a `DemandGenVideoResponsiveAdInfo` pointing at it,
+  in one atomic batch (the asset op is emitted ahead of the ad so the temp
+  resource name resolves). `VideoResponsiveAdInfo` used to create the same
+  way, but API v24 made `business_name` and `logo_images` Required on it —
+  the latter are IMAGE asset references bidsmith has no resource type for —
+  so that block is adopt-only now: a create is a `PlanBuildError` naming
+  adoption, the same shape as `video_ad`. A `google_ads_image_asset`
+  resource is the follow-up that would reopen it. Assets are content-addressed, not
   labelled: a declared asset matches a live one by `youtube_video_id`, so
   re-running `plan` reuses the account's existing asset instead of piling up
   duplicates — the same rule the sitelink / callout / structured-snippet
@@ -1462,7 +1467,22 @@ resource type, any file layout, modules, schema validation.
     time is the reliable way through, which the removal scoping from
     issue #160 now makes safe.
 
-## Current state
+- **API upgraded v22 → v25 by verification, not migration guide.** Every
+  field path the live-state queries SELECT, every enum value the schema
+  or a GAQL WHERE names, every JSON key a mutate body writes, and every
+  REST method bidsmith calls was checked against the v22 and v25 public
+  discovery documents; two breaks surfaced and were absorbed at the API
+  boundary. (1) v23 replaced `campaign.start_date` / `end_date` with
+  `start_date_time` / `end_date_time` ("yyyy-MM-dd HH:mm:ss") — the
+  `.bid` surface stays daily (`start_date = "2026-09-01"`): reads keep
+  the date part (the open-ended sentinel is now `2037-12-30 23:59:59`),
+  writes pin the time to the day edges (`00:00:00` / `23:59:59`) per the
+  API's daily-granularity convention. (2) v24 made `business_name` and
+  `logo_images` Required on `VideoResponsiveAdInfo`, so that creative is
+  adopt-only now (see the YouTube video ads decision). Sub-daily flight
+  times are deliberately not modelled: a marketer's flight is a date
+  range, and a UI-set intraday time reads back as its date and never
+  diffs.
 
 ```
 bidsmith/
