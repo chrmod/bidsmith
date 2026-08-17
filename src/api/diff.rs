@@ -2137,6 +2137,27 @@ fn campaign_immutable_warnings(address: &str, d: &JsonCampaign, l: &JsonCampaign
             ));
         }
     }
+    let upgraded = |c: &JsonCampaign| {
+        c.demand_gen_campaign_settings
+            .as_ref()
+            .and_then(|s| s.upgraded_targeting)
+    };
+    if let (Some(du), Some(lu)) = (upgraded(d), upgraded(l)) {
+        if du != lu {
+            let (declared_level, live_level) = if du {
+                ("ad groups", "campaign")
+            } else {
+                ("campaign", "ad groups")
+            };
+            out.push(format!(
+                "{address} declares upgraded_targeting = {du} (language/location targeting on \
+                 the {declared_level}) but the live campaign it matched carries it on the \
+                 {live_level}. Google fixes this when the campaign is created, so bidsmith can \
+                 never reconcile it — move the declared targeting to the live campaign's level, \
+                 or recreate the campaign under a new name"
+            ));
+        }
+    }
     out
 }
 
@@ -3767,6 +3788,42 @@ mod label_match_tests {
                 && warning.contains("\"VIDEO_REACH_TARGET_FREQUENCY\""),
             "{warning}"
         );
+    }
+
+    /// Where a Demand Gen campaign's targeting lives is fixed at creation, so
+    /// a level mismatch against the matched live campaign can only be said out
+    /// loud, never reconciled (issue #168).
+    #[test]
+    fn adopting_a_demand_gen_campaign_of_the_other_targeting_level_warns() {
+        let declared = DECLARED_SUMMER.replace(
+            r#""advertising_channel_type":"SEARCH""#,
+            r#""advertising_channel_type":"DEMAND_GEN","demand_gen_campaign_settings":{"upgraded_targeting":false}"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "campaign_budgets": [{"id":"999","name":"B","amount_micros":1000}],
+            "campaigns": [{"id":"555","name":"Summer","advertising_channel_type":"DEMAND_GEN","demand_gen_campaign_settings":{"upgraded_targeting":true},"campaign_budget":"999"}]
+        }"#,
+        );
+        let report = diff(&input(&declared), &live);
+        let warning = report
+            .warnings
+            .iter()
+            .find(|w| w.contains("upgraded_targeting"))
+            .expect("a targeting-level mismatch warning");
+        assert!(warning.contains("can never reconcile"), "{warning}");
+
+        // The mismatch is a warning, not a planned update: the field is
+        // create-only and must stay out of the update mask.
+        if let Action::Update { changed_fields, .. } = &campaign_diff(&report).action {
+            assert!(
+                !field_names(changed_fields)
+                    .iter()
+                    .any(|f| f.contains("upgraded_targeting")),
+                "{changed_fields:?}"
+            );
+        }
     }
 
     /// A file that says nothing about the sub-type is not asserting the

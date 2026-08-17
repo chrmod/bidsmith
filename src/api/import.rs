@@ -5,7 +5,8 @@ use hcl_edit::structure::{Attribute, Block, Structure};
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
     JsonAdSchedule,
-    JsonAiMaxAdGroupSetting, JsonAiMaxSetting, JsonDynamicSearchAdsSetting,
+    JsonAiMaxAdGroupSetting, JsonAiMaxSetting, JsonDemandGenCampaignSettings,
+    JsonDynamicSearchAdsSetting,
     JsonAssetAutomationSettings, JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset,
     JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCriterion,
@@ -397,6 +398,7 @@ fn import_campaign(
     let mut video_campaign_settings = None;
     let mut asset_automation_settings = None;
     let mut ai_max_setting = None;
+    let mut demand_gen_campaign_settings = None;
     let mut dynamic_search_ads_setting = None;
     let mut targeting_setting = None;
     let mut frequency_caps: Vec<JsonFrequencyCap> = Vec::new();
@@ -456,6 +458,10 @@ fn import_campaign(
                     asset_automation_settings = Some(import_asset_automation_settings(ctx, b))
                 }
                 "ai_max_setting" => ai_max_setting = Some(import_ai_max_setting(ctx, b)),
+                "demand_gen_campaign_settings" => {
+                    demand_gen_campaign_settings =
+                        Some(import_demand_gen_campaign_settings(ctx, b))
+                }
                 "dynamic_search_ads_setting" => {
                     dynamic_search_ads_setting = Some(import_dynamic_search_ads_setting(ctx, b))
                 }
@@ -509,6 +515,7 @@ fn import_campaign(
             video_campaign_settings,
             asset_automation_settings,
             ai_max_setting,
+            demand_gen_campaign_settings,
             dynamic_search_ads_setting,
             targeting_setting,
             frequency_caps,
@@ -867,6 +874,18 @@ fn import_ai_max_setting(ctx: &Ctx, block: &Block) -> JsonAiMaxSetting {
         }
     }
     a
+}
+
+fn import_demand_gen_campaign_settings(ctx: &Ctx, block: &Block) -> JsonDemandGenCampaignSettings {
+    let mut s = JsonDemandGenCampaignSettings::default();
+    for st in block.body.iter() {
+        if let Structure::Attribute(attr) = st {
+            if attr.key.as_str() == "upgraded_targeting" {
+                s.upgraded_targeting = expect_bool(ctx, attr);
+            }
+        }
+    }
+    s
 }
 
 fn import_dynamic_search_ads_setting(ctx: &Ctx, block: &Block) -> JsonDynamicSearchAdsSetting {

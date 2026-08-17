@@ -1348,11 +1348,25 @@ fn extract_google_ads_errors(body: &Value) -> Vec<GoogleAdsErrorEntry> {
             continue;
         };
         for err in errors {
-            let message = err
+            let mut message = err
                 .get("message")
                 .and_then(Value::as_str)
                 .unwrap_or("(no message)")
                 .to_string();
+            // The trigger is the value that tripped the check. For an error
+            // code Google has not published in any API version the generic
+            // "The error code is not in this version." plus the trigger is
+            // all the diagnosis there is (issue #168), and for "Too long."
+            // it is the only way to learn which string.
+            if let Some(trigger) = err
+                .get("trigger")
+                .and_then(|t| t.get("stringValue"))
+                .and_then(Value::as_str)
+                .filter(|t| !t.is_empty() && !message.contains(t))
+            {
+                let short: String = trigger.chars().take(120).collect();
+                message.push_str(&format!(" (trigger: '{short}')"));
+            }
             let mut path_parts: Vec<String> = Vec::new();
             let mut op_index: Option<usize> = None;
             if let Some(elems) = err
@@ -1841,6 +1855,39 @@ mod tests {
         assert_eq!(errors[0].code.as_deref(), Some("RESOURCE_NOT_FOUND"));
         assert_eq!(errors[0].op_index, Some(3));
         assert!(looks_like_stale_state(errors[0].code.as_deref(), &errors[0].message));
+    }
+
+    /// An error code Google publishes in no API version arrives as the generic
+    /// "The error code is not in this version." — the trigger is the only
+    /// diagnosis there is, so the message must carry it (issue #168).
+    #[test]
+    fn an_unpublished_error_code_still_shows_its_trigger() {
+        let body = serde_json::json!({
+            "error": {"details": [{"errors": [{
+                "errorCode": {"requestError": "UNKNOWN"},
+                "message": "The error code is not in this version.",
+                "trigger": {"stringValue": "OWNED_AND_OPERATED"},
+            }, {
+                "errorCode": {"stringLengthError": "TOO_LONG"},
+                "message": "Too long.",
+                "trigger": {"stringValue": "a headline well past the cap"},
+            }, {
+                "errorCode": {"mutateError": "RESOURCE_NOT_FOUND"},
+                "message": "The resource named 'customers/1/campaigns/2' was not found.",
+                "trigger": {"stringValue": "customers/1/campaigns/2"},
+            }]}]}
+        });
+        let errors = extract_google_ads_errors(&body);
+        assert_eq!(
+            errors[0].message,
+            "The error code is not in this version. (trigger: 'OWNED_AND_OPERATED')"
+        );
+        assert_eq!(errors[1].message, "Too long. (trigger: 'a headline well past the cap')");
+        assert!(
+            !errors[2].message.contains("trigger"),
+            "a trigger the message already quotes is not repeated: {}",
+            errors[2].message
+        );
     }
 
     #[test]

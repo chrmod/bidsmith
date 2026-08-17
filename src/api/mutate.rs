@@ -430,7 +430,7 @@ pub fn build_mutate_with_diff(
                 };
             mutate_ops.push(json!({
                 "adGroupCriterionOperation": {
-                    "create": ad_group_criterion_create(cr, rn, &ag_rn, audience_rn)
+                    "create": ad_group_criterion_create(cr, &ag_rn, audience_rn)
                 }
             }));
             operations.push(PlanOperation { address: cr.id.clone(), kind: "ad_group_criterion" });
@@ -1935,6 +1935,18 @@ fn campaign_create(c: &JsonCampaign, resource_name: &str, budget_rn: &str) -> Va
     if let Some(v) = c.ai_max_setting.as_ref().and_then(|a| a.enable_ai_max) {
         m.insert("aiMaxSetting".into(), json!({ "enableAiMax": v }));
     }
+    // Create-only: the field is immutable, so the update path never carries it
+    // and drift is reported by `campaign_immutable_warnings` instead.
+    if let Some(v) = c
+        .demand_gen_campaign_settings
+        .as_ref()
+        .and_then(|s| s.upgraded_targeting)
+    {
+        m.insert(
+            "demandGenCampaignSettings".into(),
+            json!({ "upgradedTargeting": v }),
+        );
+    }
     if let Some(v) = dynamic_search_ads_value(c) {
         m.insert("dynamicSearchAdsSetting".into(), v);
     }
@@ -2272,12 +2284,13 @@ fn asset_value(asset: &JsonRsaAsset) -> Value {
 
 fn ad_group_criterion_create(
     cr: &JsonAdGroupCriterion,
-    resource_name: &str,
     ag_rn: &str,
     audience_rn: Option<String>,
 ) -> Value {
+    // No resourceName: a constant-backed criterion (language, location,
+    // demographics, …) must carry the constant's own id in its composite
+    // resource name, so a pinned temp id is rejected as INCONSISTENT_FIELD_VALUES.
     let mut m = Map::new();
-    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
     m.insert("adGroup".into(), Value::String(ag_rn.to_string()));
     if let Some(s) = &cr.status {
         m.insert("status".into(), Value::String(s.clone()));
@@ -3059,6 +3072,38 @@ mod tests {
         assert_eq!(campaign["aiMaxSetting"], json!({"enableAiMax": false}));
     }
 
+    /// Issue #168: the opt-out has to reach the wire at creation — the field is
+    /// immutable, so there is no second chance.
+    #[test]
+    fn a_new_demand_gen_campaign_creates_with_its_targeting_level() {
+        let input = campaign_bidding(
+            "DEMAND_GEN",
+            json!({
+                "target_spend": {},
+                "demand_gen_campaign_settings": {"upgraded_targeting": false}
+            }),
+        );
+        let report = DiffReport {
+            diffs: vec![
+                create_diff("m.b", "campaign_budget"),
+                create_diff("m.c", "campaign"),
+            ],
+            create_count: 2,
+            ..DiffReport::default()
+        };
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let campaign = plan.body["mutateOperations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|op| op.get("campaignOperation").and_then(|o| o.get("create")))
+            .expect("campaign create op");
+        assert_eq!(
+            campaign["demandGenCampaignSettings"],
+            json!({"upgradedTargeting": false})
+        );
+    }
+
     #[test]
     fn an_ad_group_update_sends_its_half_of_ai_max() {
         let input: ExportInput = serde_json::from_value(json!({
@@ -3769,6 +3814,14 @@ mod tests {
         );
         assert_eq!(creates[4]["incomeRange"], json!({"type": "INCOME_RANGE_90_UP"}));
         assert_eq!(creates[5]["parentalStatus"], json!({"type": "NOT_A_PARENT"}));
+        // Issue #168: a constant-backed criterion's composite id must be the
+        // constant's own, so no create may pin a temp resource name.
+        for create in &creates {
+            assert!(
+                create.get("resourceName").is_none(),
+                "criterion create must not pin a resource name: {create}"
+            );
+        }
     }
 
     #[test]

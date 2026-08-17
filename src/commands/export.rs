@@ -235,6 +235,8 @@ pub struct JsonCampaign {
     #[serde(default)]
     pub ai_max_setting: Option<JsonAiMaxSetting>,
     #[serde(default)]
+    pub demand_gen_campaign_settings: Option<JsonDemandGenCampaignSettings>,
+    #[serde(default)]
     pub dynamic_search_ads_setting: Option<JsonDynamicSearchAdsSetting>,
     #[serde(default)]
     pub targeting_setting: Option<JsonTargetingSetting>,
@@ -510,6 +512,16 @@ pub struct JsonAiMaxSetting {
 pub struct JsonAiMaxAdGroupSetting {
     #[serde(default)]
     pub disable_search_term_matching: Option<bool>,
+}
+
+/// `Campaign.demand_gen_campaign_settings`. `upgraded_targeting` decides where
+/// the campaign's language / location targeting lives — `true` (Google's
+/// create-default) on the ad groups, `false` on the campaign — and is fixed
+/// when the campaign is created (issue #168).
+#[derive(Deserialize, Default)]
+pub struct JsonDemandGenCampaignSettings {
+    #[serde(default)]
+    pub upgraded_targeting: Option<bool>,
 }
 
 /// `Campaign.dynamic_search_ads_setting` — the site Google may crawl to write
@@ -2440,6 +2452,19 @@ fn write_campaign(
         write_attr(out, 2, "enable_ai_max", &v.to_string());
         out.push_str("  }\n");
     }
+    // Only `false` is rendered: `true` is Google's create-default for every
+    // new Demand Gen campaign, while `false` is what lets the campaign carry
+    // `languages` / `locations` itself — the one fact a re-created campaign
+    // could not do without (issue #168).
+    if c.demand_gen_campaign_settings
+        .as_ref()
+        .and_then(|s| s.upgraded_targeting)
+        == Some(false)
+    {
+        out.push_str("\n  demand_gen_campaign_settings {\n");
+        write_attr(out, 2, "upgraded_targeting", "false");
+        out.push_str("  }\n");
+    }
     write_targeting_setting(out, c.targeting_setting.as_ref());
     for f in &c.frequency_caps {
         out.push_str("\n  frequency_caps {\n");
@@ -4332,6 +4357,39 @@ mod tests {
         let input = from_search_response(raw).expect("adapter");
         let out = render(&input);
         assert!(!out.contains("ai_max_setting"), "{out}");
+    }
+
+    /// A legacy Demand Gen campaign that kept campaign-level targeting is the
+    /// one fact a re-created campaign could not do without, so the opt-out is
+    /// rendered; the create-default `true` is not, or every new-style campaign
+    /// would carry a block that says nothing (issue #168).
+    #[test]
+    fn demand_gen_targeting_opt_out_renders_and_the_default_does_not() {
+        let raw = |upgraded: &str| {
+            format!(
+                r#"[{{"results":[
+            {{ "campaignBudget": {{ "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget", "amountMicros": "5000000" }} }},
+            {{ "campaign": {{ "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "DG", "status": "ENABLED", "advertisingChannelType": "DEMAND_GEN", "campaignBudget": "customers/9/campaignBudgets/1001", "demandGenCampaignSettings": {{ "upgradedTargeting": {upgraded} }} }} }}
+        ]}}]"#
+            )
+        };
+        let input = from_search_response(&raw("false")).expect("adapter");
+        let out = render(&input);
+        assert!(out.contains("demand_gen_campaign_settings {"), "{out}");
+        assert!(out.contains("upgraded_targeting = false"), "{out}");
+
+        let input = from_search_response(&raw("true")).expect("adapter");
+        // The adapter keeps the value — the live-state diff needs it — and
+        // only the renderer drops it.
+        assert_eq!(
+            input.campaigns[0]
+                .demand_gen_campaign_settings
+                .as_ref()
+                .and_then(|s| s.upgraded_targeting),
+            Some(true)
+        );
+        let out = render(&input);
+        assert!(!out.contains("demand_gen_campaign_settings"), "{out}");
     }
 
     /// The automations this build has no attribute for are remembered off the
