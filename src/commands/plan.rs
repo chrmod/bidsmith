@@ -196,12 +196,7 @@ pub fn prepare(
     imported.input.partial_modules =
         crate::program::removable_modules(Path::new(path), &files);
 
-    let total = imported.input.campaign_budgets.len()
-        + imported.input.campaigns.len()
-        + imported.input.ad_groups.len()
-        + imported.input.ad_group_ads.len()
-        + imported.input.ad_group_criteria.len()
-        + imported.input.campaign_criteria.len();
+    let total = imported.input.declared_resource_count();
     if total == 0 {
         eprintln!("{label}: nothing to do (no recognised resources in the .bid).");
         if !imported.skipped.is_empty() {

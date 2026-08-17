@@ -405,6 +405,11 @@ fn api_necessity_table() -> Vec<ApiNecessityRow> {
             why: "Custom audiences cannot be carried by the <code>GoogleAdsService.Mutate</code> batch; this service is the only way to manage them declaratively.",
         },
         ApiNecessityRow {
+            capability: "Define the grouped audiences Demand Gen ad groups target",
+            service: "<code>AudienceService.MutateAudiences</code> (as <code>audience_operation</code> inside the <code>GoogleAdsService.Mutate</code> batch)",
+            why: "A Demand Gen ad group runs in grouped-audience mode: it rejects segment and demographic criteria and can only be targeted through an <code>Audience</code>. Without this operation that targeting is web-interface-only and invisible to review.",
+        },
+        ApiNecessityRow {
             capability: "Audit the fields the declared diff is silent about (drift detection)",
             service: "<code>GoogleAdsFieldService.Search</code> plus the public discovery document",
             why: "Read-only metadata: it tells the operator which settable fields the declaration does not cover, so \u{201c}unchanged\u{201d} is a verified claim rather than an assumption.",
@@ -446,7 +451,7 @@ fn rmf_table() -> Vec<RmfRow> {
         },
         RmfRow {
             requirement: "Show and edit audience / placement targeting",
-            satisfied_by: "Modelled as sub-blocks on <code>google_ads_campaign_criterion</code> and <code>google_ads_ad_group_criterion</code> (<code>audience</code>, <code>youtube_channel</code>, <code>youtube_video</code>, <code>topic</code>, <code>user_interest</code>, <code>age_range</code>, <code>gender</code>, plus <code>placement</code> / <code>parental_status</code> / <code>income_range</code> / <code>location</code> / <code>language</code> at ad-group scope), each usable as an exclusion via <code>negative = true</code>. Search-intent segments are built declaratively as <code>google_ads_custom_audience</code> via <code>CustomAudienceService</code>.",
+            satisfied_by: "Modelled as sub-blocks on <code>google_ads_campaign_criterion</code> and <code>google_ads_ad_group_criterion</code> (<code>audience</code>, <code>youtube_channel</code>, <code>youtube_video</code>, <code>topic</code>, <code>user_interest</code>, <code>age_range</code>, <code>gender</code>, plus <code>placement</code> / <code>parental_status</code> / <code>income_range</code> / <code>location</code> / <code>language</code> at ad-group scope), each usable as an exclusion via <code>negative = true</code>. Search-intent segments are built declaratively as <code>google_ads_custom_audience</code> via <code>CustomAudienceService</code>. Grouped targeting — the only form a <code>DEMAND_GEN</code> ad group accepts — is modelled as <code>google_ads_audience</code> (segment / demographic dimensions plus a user-list exclusion dimension), mutated through <code>AudienceOperation</code> in the same atomic batch and attached with <code>audience { audience = … }</code> on an ad group carrying <code>audience_setting { use_audience_grouped = true }</code>.",
         },
         RmfRow {
             requirement: "Pause / enable campaigns and ad groups",

@@ -1276,6 +1276,99 @@ resource type, any file layout, modules, schema validation.
   leaves them created. Chosen over dropping the resource or making the
   user pre-create audiences in the UI — the ordering is the same
   dependency the plan already models, just across two calls.
+- **Grouped audiences are their own resource, in the atomic batch**
+  (issue #169): a Demand Gen ad group runs in *grouped-audience* mode, where
+  Google refuses a segment attached straight to it ("Audience segment
+  attachment is not allowed when use audience grouped bit is set to true")
+  and targeting has to go through the unified `Audience` resource.
+  Modelled as `google_ads_audience`, the fourth alternative in the
+  criterion `audience {}` block — `audience { audience =
+  google_ads_audience.<name>.id }` — which is exactly the extension the
+  issue-#105 entry above anticipated. **Unlike a custom audience it rides
+  the unified batch**: `MutateOperation` *does* have an
+  `audience_operation` member, so a new audience and the criterion
+  attaching it commit in one transaction through a temp resource name, with
+  no second call and no cross-call `deferred` row. The one inherited wait is
+  a `segment { custom_audience = … }` pointing at an audience the
+  pre-batch service has not created yet — under `validateOnly` that has no
+  name either, so the grouped audience defers with the criterion that
+  targets it. Matched live **by name**, like `custom_audience` and
+  `shared_set` (audiences carry no labels), and **never destroyed**:
+  `AudienceOperation` has no `remove` and `status` is output-only, so an
+  audience dropped from the file is left alone.
+  **Shape.** Google's `dimensions` is a repeated oneof, one entry per axis,
+  which flattens with no loss: `segment {}` blocks (exactly one of
+  `user_interest` / `user_list` / `life_event` / `detailed_demographic` /
+  `custom_audience`) collect into the single `audience_segments` dimension,
+  and `age_ranges` / `genders` / `parental_statuses` / `income_ranges` are
+  list attributes standing for one demographic dimension each. Axes
+  intersect, values within an axis are alternatives. Each is one repeated
+  API field, so each diffs as a whole set and the update mask names only
+  the two paths an audience has (`dimensions`, `exclusion_dimension`) — the
+  same whole-set rule `frequency_caps` and custom-audience `members`
+  follow. `excluded_user_lists` is the `exclusion_dimension`, user lists
+  only, because the API has no other exclusion segment. **Demographics
+  speak the criterion's vocabulary, not the API's**: `AgeDimension` counts
+  in years, every other age field in Google Ads is the `AGE_RANGE_*` enum,
+  and the bands map one-to-one — so `.bid` files use the enum in both
+  places (`src/schema::AGE_RANGE_BOUNDS` is the single source of truth for
+  the translation) and `AGE_RANGE_UNDETERMINED` / `UNDETERMINED` /
+  `INCOME_RANGE_UNDETERMINED` in a list *is* the dimension's
+  `include_undetermined` flag rather than a list entry. `scope` and
+  `asset_group` are deliberately absent — `ASSET_GROUP` scope means
+  something only for a Performance Max asset group, which bidsmith does not
+  model, so every audience is account-scoped.
+  **The ad group's half.** `AdGroup.audience_setting.use_audience_grouped`
+  is modelled too, because Google's docs are explicit that audience
+  targeting *fails* without it and it is **immutable after creation**:
+  `validate` errors when a criterion targets an audience under an ad group
+  that does not declare `use_audience_grouped = true` (the file cannot see
+  the live value, and getting it wrong is a rejected apply), the mutate
+  builder sends it on creates only, and a declared-vs-live mismatch is a
+  plan warning in the same immutable-field family as
+  `advertising_channel_type` / `upgraded_targeting` — the only fix is a new
+  ad group. Direct segment / demographic criteria on a Demand Gen ad group
+  are a **warning, not an error**: `use_audience_grouped` is per ad group
+  and invisible from the file, so an older Demand Gen ad group created
+  outside grouped mode still accepts them. Exclusions (`negative = true`)
+  are left alone — an exclusion is not an attachment.
+  **Not the cause of the demographics half of the issue.** The reported
+  `age_range` rejection ("The field's contents don't match another field
+  that represents the same data") was `INCONSISTENT_FIELD_VALUES` from the
+  temp composite `resourceName` ad-group criterion creates used to pin —
+  already fixed by issue #168, on every channel, before this work.
+  **All verified live** (`validateOnly` mutates against a live account):
+  the whole chain — budget, Demand Gen campaign, ad group with
+  `use_audience_grouped = true`, audience, and the criterion attaching it
+  — is accepted in one batch with nothing rejected, which is the proof
+  that `audience_operation` rides `GoogleAdsService.Mutate` *and* that the
+  criterion resolves the audience's temp resource name. `Audience` is the
+  first resource bidsmith creates through a service-specific operation
+  inside the unified batch rather than a call of its own.
+- **Segment constants are customer-scoped, not global** (issue #169): the
+  `UserInterest`, `LifeEvent`, and `DetailedDemographic` resources are
+  named `customers/{customer_id}/userInterests/{id}` (and `/lifeEvents/`,
+  `/detailedDemographics/`) — there is **no** `userInterestConstants`
+  resource in any API version, and passing one is rejected with "Resource
+  name '…' is malformed". Only `topicConstants/{id}`,
+  `geoTargetConstants/{id}`, and `languageConstants/{id}` are genuinely
+  account-free, which is why the three of them read differently from every
+  other targeting constant. This had been wrong since the `user_interest`
+  criterion shipped — in its reference page, the video-audience recipe,
+  and the test fixtures, none of which the offline tests could catch
+  because the value is an opaque string to everything but Google. Found by
+  the live probe for the grouped audience and corrected everywhere.
+- **Demand Gen refuses `target_cpm`** (issue #169): a Demand Gen campaign
+  create carrying it comes back "The operation is not allowed for the
+  given context." naming no field; live Demand Gen campaigns bid with
+  `TARGET_SPEND` / `TARGET_CPC`, so `examples/demand-gen` uses
+  `target_spend`. Recorded rather than validated client-side: the
+  channel × strategy matrix is large, Google changes it, and a hard-coded
+  table would go stale in a way a plan rejection does not. Related:
+  `use_audience_grouped` is refused on a `SEARCH` ad group with
+  `trigger: 'SEARCH'` — grouped mode is a Demand Gen / App notion, which
+  is why the validate-time check keys on a criterion targeting an audience
+  rather than on the channel.
 - **Keyword Planner is a read-only research verb, not a resource**: Google
   Keyword Planner (`KeywordPlanIdeaService.GenerateKeywordIdeas`) is surfaced
   as `bidsmith keyword-ideas` — an imperative, live-only command in the same
@@ -1886,7 +1979,11 @@ Validator covers (so far):
   one carries the bid, plus the same `targeting_setting` block the
   campaign carries, plus an optional `ai_max_ad_group_setting
   { disable_search_term_matching? }` block declaring the ad group's half
-  of AI Max), `google_ads_ad_group_ad`
+  of AI Max, plus an optional `audience_setting
+  { use_audience_grouped? }` block — immutable, create-only — saying
+  whether the ad group targets through a `google_ads_audience` rather
+  than segment criteria of its own, which Demand Gen requires),
+  `google_ads_ad_group_ad`
   (with `ad` → `responsive_search_ad` → repeating
   `headline { text, pin? }` / `description { text, pin? }` blocks,
   plus an equivalent list-attribute form `headlines = [...]` /
@@ -1930,7 +2027,10 @@ Validator covers (so far):
   another axis is rejected at import. Ad-group `location` / `language`
   *intersect* with the campaign's own targeting rather than overriding
   it, which is what lets one campaign hold a cohort or a market per ad
-  group instead of fanning out into one campaign each),
+  group instead of fanning out into one campaign each. The ad-group
+  `audience {}` block takes a fourth alternative the campaign one has no
+  API field for — `audience = google_ads_audience.<name>.id`, the grouped
+  form Demand Gen requires),
   `google_ads_campaign_criterion` (single negative keyword, location,
   language, proximity with flat `latitude` / `longitude` in decimal
   degrees plus `radius` + `radius_units`; the adapter rounds to the
@@ -1964,7 +2064,16 @@ Validator covers (so far):
   (`name`, `description`, creation-only `type` = `AUTO` / `INTEREST` /
   `PURCHASE_INTENT` / `SEARCH`, `status`, and repeatable
   `member { keyword | url | place_category | app }` blocks managed as a
-  whole set; matched to live by name like `shared_set`), plus a bulk
+  whole set; matched to live by name like `shared_set`),
+  `google_ads_audience` (the unified grouped audience: `name`,
+  `description`, repeatable `segment { user_interest | user_list |
+  life_event | detailed_demographic | custom_audience }` blocks taking
+  exactly one of five, and `age_ranges` / `genders` /
+  `parental_statuses` / `income_ranges` / `excluded_user_lists` list
+  attributes — one `AudienceDimension` each, every one a whole set, with
+  the axis's `UNDETERMINED` member standing for the API's
+  `include_undetermined` flag; at least one dimension is required, and
+  matched to live by name), plus a bulk
   syntactic-sugar form where repeating `negative_keyword { text,
   match_type }` sub-blocks in one resource expand into N individual
   negative criteria at import time (same `negative`-from-block-shape

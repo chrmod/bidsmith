@@ -103,6 +103,8 @@ pub struct ExportInput {
     pub youtube_video_assets: Vec<JsonYoutubeVideoAsset>,
     #[serde(default)]
     pub custom_audiences: Vec<JsonCustomAudience>,
+    #[serde(default)]
+    pub audiences: Vec<JsonGroupedAudience>,
     /// Live `bidsmith:address=<addr>` labels keyed by address -> label
     /// resource_name. Lets the mutate builder reuse an existing label instead
     /// of re-creating one (a duplicate name is an API error). Live-only; empty
@@ -514,6 +516,16 @@ pub struct JsonAiMaxAdGroupSetting {
     pub disable_search_term_matching: Option<bool>,
 }
 
+/// `AdGroup.audience_setting`. `use_audience_grouped = true` puts the ad group
+/// in grouped mode, where segments and demographics reach it through an
+/// `Audience` instead of as criteria of its own. Immutable after creation
+/// (issue #169).
+#[derive(Deserialize, Default)]
+pub struct JsonAudienceSetting {
+    #[serde(default)]
+    pub use_audience_grouped: Option<bool>,
+}
+
 /// `Campaign.demand_gen_campaign_settings`. `upgraded_targeting` decides where
 /// the campaign's language / location targeting lives — `true` (Google's
 /// create-default) on the ad groups, `false` on the campaign — and is fixed
@@ -689,6 +701,8 @@ pub struct JsonAdGroup {
     pub targeting_setting: Option<JsonTargetingSetting>,
     #[serde(default)]
     pub ai_max_ad_group_setting: Option<JsonAiMaxAdGroupSetting>,
+    #[serde(default)]
+    pub audience_setting: Option<JsonAudienceSetting>,
     #[serde(default)]
     pub managed_address: Option<String>,
 }
@@ -973,10 +987,10 @@ pub struct JsonPlacement {
     pub url: String,
 }
 
-/// Exactly one field is ever set — three distinct API criterion messages that
-/// all answer "which audience?". `custom_audience` holds a declared
-/// `google_ads_custom_audience` address or a live resource name; the other two
-/// are always resource names (bidsmith has no resource that builds them).
+/// Exactly one field is ever set — four distinct API criterion messages that
+/// all answer "which audience?". `custom_audience` / `audience` hold a declared
+/// address or a live resource name; the other two are always resource names
+/// (bidsmith has no resource that builds them).
 #[derive(Deserialize)]
 pub struct JsonAudience {
     #[serde(default)]
@@ -985,6 +999,8 @@ pub struct JsonAudience {
     pub user_list: Option<String>,
     #[serde(default)]
     pub combined_audience: Option<String>,
+    #[serde(default)]
+    pub audience: Option<String>,
 }
 
 impl JsonAudience {
@@ -995,9 +1011,10 @@ impl JsonAudience {
         if let Some(v) = &self.user_list {
             return Some(("user_list", v));
         }
-        self.combined_audience
-            .as_deref()
-            .map(|v| ("combined_audience", v))
+        if let Some(v) = &self.combined_audience {
+            return Some(("combined_audience", v));
+        }
+        self.audience.as_deref().map(|v| ("audience", v))
     }
 }
 
@@ -1211,6 +1228,89 @@ impl JsonCustomAudienceMember {
     }
 }
 
+/// The unified `Audience` resource — the grouped form of targeting a Demand Gen
+/// ad group reaches segments and demographics through. Distinct from
+/// [`JsonAudience`], which is a criterion's "which audience?" union. Every
+/// dimension is one repeated API field, so each diffs as a whole set.
+#[derive(Deserialize)]
+pub struct JsonGroupedAudience {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub segments: Vec<JsonAudienceSegment>,
+    #[serde(default)]
+    pub age_ranges: Vec<String>,
+    #[serde(default)]
+    pub genders: Vec<String>,
+    #[serde(default)]
+    pub parental_statuses: Vec<String>,
+    #[serde(default)]
+    pub income_ranges: Vec<String>,
+    #[serde(default)]
+    pub excluded_user_lists: Vec<String>,
+}
+
+impl JsonGroupedAudience {
+    /// The demographic dimensions as (bidsmith attribute, values), in the order
+    /// the renderer and the mutate builder emit them.
+    pub fn demographics(&self) -> [(&'static str, &Vec<String>); 4] {
+        [
+            ("age_ranges", &self.age_ranges),
+            ("genders", &self.genders),
+            ("parental_statuses", &self.parental_statuses),
+            ("income_ranges", &self.income_ranges),
+        ]
+    }
+}
+
+#[derive(Deserialize, Clone, PartialEq, Eq)]
+pub struct JsonAudienceSegment {
+    #[serde(default)]
+    pub user_interest: Option<String>,
+    #[serde(default)]
+    pub user_list: Option<String>,
+    #[serde(default)]
+    pub life_event: Option<String>,
+    #[serde(default)]
+    pub detailed_demographic: Option<String>,
+    #[serde(default)]
+    pub custom_audience: Option<String>,
+}
+
+impl JsonAudienceSegment {
+    /// The set attribute as (bidsmith name, API wrapper message, API field,
+    /// value) — `AudienceSegment` wraps every kind in a message of its own.
+    pub fn payload(&self) -> Option<(&'static str, &'static str, &'static str, &str)> {
+        if let Some(v) = &self.user_interest {
+            return Some((
+                "user_interest",
+                "userInterest",
+                "userInterestCategory",
+                v,
+            ));
+        }
+        if let Some(v) = &self.user_list {
+            return Some(("user_list", "userList", "userList", v));
+        }
+        if let Some(v) = &self.life_event {
+            return Some(("life_event", "lifeEvent", "lifeEvent", v));
+        }
+        if let Some(v) = &self.detailed_demographic {
+            return Some((
+                "detailed_demographic",
+                "detailedDemographic",
+                "detailedDemographic",
+                v,
+            ));
+        }
+        self.custom_audience
+            .as_deref()
+            .map(|v| ("custom_audience", "customAudience", "customAudience", v))
+    }
+}
+
 #[derive(Deserialize)]
 pub struct JsonCampaignSharedSet {
     pub id: String,
@@ -1296,6 +1396,36 @@ impl ExportInput {
         for s in &mut self.campaign_shared_sets {
             s.status.get_or_insert_with(status);
         }
+    }
+}
+
+impl ExportInput {
+    /// How many resources the declaration actually describes. `plan` / `apply`
+    /// bail out when this is zero, so every collection has to be counted —
+    /// leaving the account-scoped ones out made a project of nothing but
+    /// audiences, custom audiences, shared sets, conversion actions, or assets
+    /// report "nothing to do" and exit successfully.
+    pub fn declared_resource_count(&self) -> usize {
+        self.campaign_budgets.len()
+            + self.campaigns.len()
+            + self.ad_groups.len()
+            + self.ad_group_ads.len()
+            + self.ad_group_criteria.len()
+            + self.campaign_criteria.len()
+            + self.conversion_actions.len()
+            + self.call_assets.len()
+            + self.sitelink_assets.len()
+            + self.callout_assets.len()
+            + self.structured_snippet_assets.len()
+            + self.youtube_video_assets.len()
+            + self.customer_assets.len()
+            + self.campaign_assets.len()
+            + self.ad_group_assets.len()
+            + self.shared_sets.len()
+            + self.shared_criteria.len()
+            + self.campaign_shared_sets.len()
+            + self.custom_audiences.len()
+            + self.audiences.len()
     }
 }
 
@@ -1708,17 +1838,27 @@ fn write_campaign_assets(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn write_custom_audiences(
+/// Custom audiences first: a grouped audience may hold one as a segment, and a
+/// reference resolves only against a block already rendered.
+fn write_audiences(
     out: &mut String,
     input: &ExportInput,
     names: &mut NameAllocator,
-    custom_audience_addr: &mut HashMap<String, String>,
+    audience_addr: &mut AudienceAddrs,
 ) {
     for a in &input.custom_audiences {
         let name = names.allocate("google_ads_custom_audience", &slugify(&a.name));
-        custom_audience_addr.insert(a.id.clone(), format!("google_ads_custom_audience.{name}"));
+        audience_addr
+            .custom
+            .insert(a.id.clone(), format!("google_ads_custom_audience.{name}"));
         write_custom_audience(out, &name, a);
+    }
+    for a in &input.audiences {
+        let name = names.allocate("google_ads_audience", &slugify(&a.name));
+        audience_addr
+            .grouped
+            .insert(a.id.clone(), format!("google_ads_audience.{name}"));
+        write_audience(out, &name, a, audience_addr);
     }
 }
 
@@ -1734,7 +1874,7 @@ fn write_campaign_tree(
     campaign_addr: &mut HashMap<String, String>,
     ad_group_addr: &mut HashMap<String, String>,
     youtube_asset_addr: &HashMap<String, String>,
-    custom_audience_addr: &HashMap<String, String>,
+    audience_addr: &AudienceAddrs,
 ) {
     for b in &input.campaign_budgets {
         let name = names.allocate("google_ads_campaign_budget", &slugify(&b.name));
@@ -1782,7 +1922,7 @@ fn write_campaign_tree(
     for c in ag_singletons {
         let base = ad_group_criterion_base(c, ad_group_addr);
         let name = names.allocate("google_ads_ad_group_criterion", &slugify(&base));
-        write_ad_group_criterion(out, &name, c, ad_group_addr, custom_audience_addr);
+        write_ad_group_criterion(out, &name, c, ad_group_addr, audience_addr);
     }
     let remaining: Vec<&JsonCampaignCriterion> = input
         .campaign_criteria
@@ -1798,7 +1938,7 @@ fn write_campaign_tree(
     for c in singletons {
         let base = criterion_base(&c.target, &c.id);
         let name = names.allocate("google_ads_campaign_criterion", &slugify(&base));
-        write_campaign_criterion(out, &name, c, campaign_addr, custom_audience_addr);
+        write_campaign_criterion(out, &name, c, campaign_addr, audience_addr);
     }
 }
 
@@ -1840,7 +1980,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
     let mut asset_addr: HashMap<String, String> = HashMap::new();
     let mut youtube_asset_addr: HashMap<String, String> = HashMap::new();
     let mut shared_set_addr: HashMap<String, String> = HashMap::new();
-    let mut custom_audience_addr: HashMap<String, String> = HashMap::new();
+    let mut audience_addr = AudienceAddrs::default();
 
     let inline_assets = compute_inline_assets(input);
     write_provider(&mut account, input);
@@ -1853,7 +1993,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
         &mut youtube_asset_addr,
         &inline_assets,
     );
-    write_custom_audiences(&mut account, input, &mut names, &mut custom_audience_addr);
+    write_audiences(&mut account, input, &mut names, &mut audience_addr);
     write_shared_sets_and_criteria(&mut account, input, &mut names, &mut shared_set_addr);
 
     let has_campaign_resources = !input.campaign_budgets.is_empty()
@@ -1882,7 +2022,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
             &mut campaign_addr,
             &mut ad_group_addr,
             &youtube_asset_addr,
-            &custom_audience_addr,
+            &audience_addr,
         );
         write_campaign_shared_sets(
             &mut campaigns,
@@ -1929,6 +2069,30 @@ pub const IMPORTABLE_TYPES: &[&str] = &[
     "google_ads_ad_group_criterion",
 ];
 
+/// Rendered addresses for the two audience resources a criterion's `audience`
+/// block can point at. Kept in separate maps because the id spaces are
+/// independent: `audiences/501` and `customAudiences/501` name different things,
+/// and the block's attribute says which one is meant.
+#[derive(Default)]
+pub struct AudienceAddrs {
+    pub custom: HashMap<String, String>,
+    pub grouped: HashMap<String, String>,
+}
+
+impl AudienceAddrs {
+    /// The declared address for `value` under `field`, matching either the full
+    /// live resource name or its bare id.
+    fn rendered(&self, field: &str, value: &str) -> Option<&String> {
+        let map = match field {
+            "custom_audience" => &self.custom,
+            "audience" => &self.grouped,
+            _ => return None,
+        };
+        let bare = value.rsplit('/').next().unwrap_or(value);
+        map.get(value).or_else(|| map.get(bare))
+    }
+}
+
 /// Addresses the tree already declares, keyed by the live id each one matched.
 /// An imported block points at those instead of repeating the live resource, so
 /// adoption lands as `asset = google_ads_sitelink_asset.shop.id` rather than a
@@ -1939,7 +2103,7 @@ pub struct KnownAddresses {
     pub campaigns: HashMap<String, String>,
     pub ad_groups: HashMap<String, String>,
     pub conversion_actions: HashMap<String, String>,
-    pub custom_audiences: HashMap<String, String>,
+    pub audiences: AudienceAddrs,
     /// `<type>.<name>` pairs already used in the file being written into, so a
     /// dependency block cannot collide with a resource that is already there.
     pub taken: HashSet<(String, String)>,
@@ -2036,14 +2200,14 @@ pub fn render_import(
             if !known.campaigns.contains_key(&c.campaign) {
                 return Err(undeclared_parent("campaign", &c.campaign));
             }
-            write_campaign_criterion(&mut out, name, c, &known.campaigns, &known.custom_audiences);
+            write_campaign_criterion(&mut out, name, c, &known.campaigns, &known.audiences);
         }
         "google_ads_ad_group_criterion" => {
             let c = find_by_id(&live.ad_group_criteria, id, |c| &c.id, ty, id)?;
             if !known.ad_groups.contains_key(&c.ad_group) {
                 return Err(undeclared_parent("ad group", &c.ad_group));
             }
-            write_ad_group_criterion(&mut out, name, c, &known.ad_groups, &known.custom_audiences);
+            write_ad_group_criterion(&mut out, name, c, &known.ad_groups, &known.audiences);
         }
         other => {
             return Err(format!(
@@ -2144,7 +2308,7 @@ fn render_inner(input: &ExportInput, fold: bool) -> String {
     let mut asset_addr: HashMap<String, String> = HashMap::new();
     let mut youtube_asset_addr: HashMap<String, String> = HashMap::new();
     let mut shared_set_addr: HashMap<String, String> = HashMap::new();
-    let mut custom_audience_addr: HashMap<String, String> = HashMap::new();
+    let mut audience_addr = AudienceAddrs::default();
 
     write_provider(&mut out, input);
     write_account_assets(
@@ -2156,7 +2320,7 @@ fn render_inner(input: &ExportInput, fold: bool) -> String {
         &mut youtube_asset_addr,
         &inline_assets,
     );
-    write_custom_audiences(&mut out, input, &mut names, &mut custom_audience_addr);
+    write_audiences(&mut out, input, &mut names, &mut audience_addr);
     if let Some(p) = &plan {
         if p.has_decls() {
             write_fold_decls(&mut out, p);
@@ -2173,7 +2337,7 @@ fn render_inner(input: &ExportInput, fold: bool) -> String {
         &mut campaign_addr,
         &mut ad_group_addr,
         &youtube_asset_addr,
-        &custom_audience_addr,
+        &audience_addr,
     );
     write_shared_sets_and_criteria(&mut out, input, &mut names, &mut shared_set_addr);
     write_campaign_shared_sets(&mut out, input, &mut names, &campaign_addr, &shared_set_addr);
@@ -2523,6 +2687,15 @@ fn write_ad_group(
     {
         out.push_str("\n  ai_max_ad_group_setting {\n");
         write_attr(out, 2, "disable_search_term_matching", &v.to_string());
+        out.push_str("  }\n");
+    }
+    if let Some(v) = g
+        .audience_setting
+        .as_ref()
+        .and_then(|a| a.use_audience_grouped)
+    {
+        out.push_str("\n  audience_setting {\n");
+        write_attr(out, 2, "use_audience_grouped", &v.to_string());
         out.push_str("  }\n");
     }
     out.push_str("}\n\n");
@@ -2880,7 +3053,7 @@ fn write_ad_group_criterion(
     name: &str,
     c: &JsonAdGroupCriterion,
     ad_group_addr: &HashMap<String, String>,
-    custom_audience_addr: &HashMap<String, String>,
+    audience_addr: &AudienceAddrs,
 ) {
     let _ = writeln!(
         out,
@@ -2903,7 +3076,7 @@ fn write_ad_group_criterion(
     if let Some(bm) = c.bid_modifier {
         write_attr(out, 1, "bid_modifier", &format_number(bm));
     }
-    write_criterion_blocks(out, &c.target, custom_audience_addr);
+    write_criterion_blocks(out, &c.target, audience_addr);
     out.push_str("}\n\n");
 }
 
@@ -3506,7 +3679,7 @@ fn write_campaign_criterion(
     name: &str,
     c: &JsonCampaignCriterion,
     campaign_addr: &HashMap<String, String>,
-    custom_audience_addr: &HashMap<String, String>,
+    audience_addr: &AudienceAddrs,
 ) {
     let _ = writeln!(
         out,
@@ -3529,7 +3702,7 @@ fn write_campaign_criterion(
     if let Some(bm) = c.bid_modifier {
         write_attr(out, 1, "bid_modifier", &format_number(bm));
     }
-    write_criterion_blocks(out, &c.target, custom_audience_addr);
+    write_criterion_blocks(out, &c.target, audience_addr);
     out.push_str("}\n\n");
 }
 
@@ -3539,7 +3712,7 @@ fn write_campaign_criterion(
 fn write_criterion_blocks(
     out: &mut String,
     c: &JsonCriterion,
-    custom_audience_addr: &HashMap<String, String>,
+    audience_addr: &AudienceAddrs,
 ) {
     if let Some(kw) = &c.keyword {
         write_keyword(out, kw);
@@ -3638,27 +3811,53 @@ fn write_criterion_blocks(
     }
     if let Some((field, value)) = c.audience.as_ref().and_then(JsonAudience::source) {
         out.push_str("\n  audience {\n");
-        let rendered = if field == "custom_audience" {
-            custom_audience_ref(value, custom_audience_addr)
-        } else {
-            fmt_string(value)
-        };
-        write_attr(out, 2, field, &rendered);
+        write_attr(out, 2, field, &audience_ref(field, value, audience_addr));
         out.push_str("  }\n");
     }
 }
 
-/// A declared `google_ads_custom_audience.<name>.id` reference when the target
-/// is one bidsmith renders, else the raw resource name.
-fn custom_audience_ref(value: &str, custom_audience_addr: &HashMap<String, String>) -> String {
-    let bare = value.rsplit('/').next().unwrap_or(value);
-    match custom_audience_addr
-        .get(value)
-        .or_else(|| custom_audience_addr.get(bare))
-    {
+/// A declared `<type>.<name>.id` reference when the target is one bidsmith
+/// renders, else the raw resource name.
+fn audience_ref(field: &str, value: &str, audience_addr: &AudienceAddrs) -> String {
+    match audience_addr.rendered(field, value) {
         Some(addr) => format!("{addr}.id"),
         None => fmt_string(value),
     }
+}
+
+fn write_audience(
+    out: &mut String,
+    name: &str,
+    a: &JsonGroupedAudience,
+    audience_addr: &AudienceAddrs,
+) {
+    let _ = writeln!(out, "resource \"google_ads_audience\" \"{name}\" {{");
+    write_attr(out, 1, "name", &fmt_string(&a.name));
+    if let Some(d) = &a.description {
+        write_attr(out, 1, "description", &fmt_string(d));
+    }
+    for (field, values) in a.demographics() {
+        if !values.is_empty() {
+            write_attr(out, 1, field, &fmt_string_list(values));
+        }
+    }
+    if !a.excluded_user_lists.is_empty() {
+        write_attr(
+            out,
+            1,
+            "excluded_user_lists",
+            &fmt_string_list(&a.excluded_user_lists),
+        );
+    }
+    for s in &a.segments {
+        let Some((field, _, _, value)) = s.payload() else {
+            continue;
+        };
+        out.push_str("\n  segment {\n");
+        write_attr(out, 2, field, &audience_ref(field, value, audience_addr));
+        out.push_str("  }\n");
+    }
+    out.push_str("}\n\n");
 }
 
 fn write_custom_audience(out: &mut String, name: &str, a: &JsonCustomAudience) {

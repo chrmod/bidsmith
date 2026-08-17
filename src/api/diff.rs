@@ -5,7 +5,7 @@ use crate::commands::export::{
     JsonAdGroupCriterion, JsonAssetAutomationSettings, JsonBudget, JsonCallAsset, JsonCampaign,
     JsonCampaignAsset, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
     JsonAudience, JsonCriterion, JsonCustomAudience, JsonCustomParameter, JsonCustomerAsset,
-    JsonSharedCriterion,
+    JsonGroupedAudience, JsonSharedCriterion,
     JsonSharedSet, JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonTargetingSetting,
     JsonYoutubeVideoAsset, AUTOMATICALLY_CREATED,
 };
@@ -551,6 +551,7 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
                     let l = live_ad_groups[*li];
                     claimed[*li] = true;
                     ad_group_match.insert(d.id.clone(), l.id.clone());
+                    campaign_warnings.extend(ad_group_immutable_warnings(&d.id, d, l));
                     (
                         action_for_match(l.id.clone(), diff_ad_group(d, l)),
                         Some((l.id.as_str(), l.managed_address.as_deref())),
@@ -673,8 +674,9 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     }
 
     // Ahead of the criteria that reference them: an `audience` criterion is
-    // keyed on the live custom audience id, which this match supplies.
-    let mut custom_audience_match: HashMap<String, String> = HashMap::new();
+    // keyed on the live audience id, which these matches supply. Both audience
+    // resources match live **by name** — neither carries a bidsmith label.
+    let mut audience_ids: HashMap<String, String> = HashMap::new();
     let live_custom_audiences: HashMap<&str, &JsonCustomAudience> = live
         .custom_audiences
         .iter()
@@ -683,7 +685,7 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     for d in &declared.custom_audiences {
         let action = match live_custom_audiences.get(d.name.as_str()) {
             Some(l) => {
-                custom_audience_match.insert(d.id.clone(), l.id.clone());
+                audience_ids.insert(d.id.clone(), l.id.clone());
                 action_for_match(l.id.clone(), diff_custom_audience(d, l))
             }
             None => Action::Create,
@@ -691,6 +693,22 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         diffs.push(ResourceDiff {
             address: d.id.clone(),
             kind: "custom_audience",
+            action,
+        });
+    }
+    let live_audiences: HashMap<&str, &JsonGroupedAudience> =
+        live.audiences.iter().map(|a| (a.name.as_str(), a)).collect();
+    for d in &declared.audiences {
+        let action = match live_audiences.get(d.name.as_str()) {
+            Some(l) => {
+                audience_ids.insert(d.id.clone(), l.id.clone());
+                action_for_match(l.id.clone(), diff_audience(d, l, &audience_ids))
+            }
+            None => Action::Create,
+        };
+        diffs.push(ResourceDiff {
+            address: d.id.clone(),
+            kind: "audience",
             action,
         });
     }
@@ -705,11 +723,7 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     for d in &declared.ad_group_criteria {
         let action = match (
             ad_group_match.get(&d.ad_group),
-            criterion_key(
-                &d.target,
-                d.negative.unwrap_or(false),
-                &custom_audience_match,
-            ),
+            criterion_key(&d.target, d.negative.unwrap_or(false), &audience_ids),
         ) {
             (Some(parent_id), Some(key)) => match live_ag_criteria.get(&(parent_id.clone(), key)) {
                 Some(l) => action_for_match(l.id.clone(), diff_ad_group_criterion(d, l)),
@@ -734,11 +748,7 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     for d in &declared.campaign_criteria {
         let action = match (
             campaign_match.get(&d.campaign),
-            criterion_key(
-                &d.target,
-                d.negative.unwrap_or(false),
-                &custom_audience_match,
-            ),
+            criterion_key(&d.target, d.negative.unwrap_or(false), &audience_ids),
         ) {
             (Some(parent_id), Some(key)) => match live_c_criteria.get(&(parent_id.clone(), key)) {
                 Some(l) => action_for_match(l.id.clone(), diff_campaign_criterion(d, l)),
@@ -2161,6 +2171,34 @@ fn campaign_immutable_warnings(address: &str, d: &JsonCampaign, l: &JsonCampaign
     out
 }
 
+/// `AdGroup.audience_setting.use_audience_grouped` is fixed when the ad group is
+/// created, so `diff_ad_group` skips it and a mismatch would otherwise read as a
+/// clean adoption. It decides whether the ad group can be targeted with a
+/// `google_ads_audience` at all, so the plan says so out loud (issue #169).
+fn ad_group_immutable_warnings(address: &str, d: &JsonAdGroup, l: &JsonAdGroup) -> Vec<String> {
+    let grouped = |g: &JsonAdGroup| {
+        g.audience_setting
+            .as_ref()
+            .and_then(|a| a.use_audience_grouped)
+    };
+    let Some(dg) = grouped(d) else { return Vec::new() };
+    let live = grouped(l).unwrap_or(false);
+    if dg == live {
+        return Vec::new();
+    }
+    let consequence = if dg {
+        "an audience criterion on this ad group will be rejected"
+    } else {
+        "segment and demographic criteria on this ad group will be rejected"
+    };
+    vec![format!(
+        "{address} declares use_audience_grouped = {dg} but the live ad group it matched carries \
+         {live}. Google fixes this when the ad group is created, so bidsmith can never reconcile \
+         it — {consequence}; match the file to the live setting, or recreate the ad group under a \
+         new name"
+    )]
+}
+
 /// Google Ads requires a bidding strategy to *create* a campaign, and rejects
 /// the create with a bare "The required field was not present." that names no
 /// field. Only creates: an adopted campaign keeps whatever the account bids
@@ -2266,6 +2304,7 @@ fn adopt_match_key<'a>(
         "custom_audience" => {
             find(declared.custom_audiences.iter().find(|a| a.id == address).map(|a| &a.name))
         }
+        "audience" => find(declared.audiences.iter().find(|a| a.id == address).map(|a| &a.name)),
         _ => None,
     }
 }
@@ -3202,6 +3241,88 @@ fn shown_members(a: &JsonCustomAudience) -> String {
         .join(", ")
 }
 
+/// Each dimension is one repeated API field, so each diffs as a whole set —
+/// `dimensions` and `exclusion_dimension` are the only two update-mask paths an
+/// audience has, and an update replaces what is there.
+fn diff_audience(
+    d: &JsonGroupedAudience,
+    l: &JsonGroupedAudience,
+    audience_ids: &HashMap<String, String>,
+) -> Vec<FieldChange> {
+    let mut c = Vec::new();
+    if d.description != l.description && d.description.is_some() {
+        c.push(change("description", &l.description, &d.description));
+    }
+    if sorted_segments(d, audience_ids) != sorted_segments(l, audience_ids) {
+        c.push(change(
+            "segments",
+            Raw(shown_segments(l, audience_ids)),
+            Raw(shown_segments(d, audience_ids)),
+        ));
+    }
+    for ((field, desired), (_, live)) in d.demographics().iter().zip(l.demographics()) {
+        if sorted_values(desired) != sorted_values(live) {
+            c.push(change(*field, Raw(shown_list(live)), Raw(shown_list(desired))));
+        }
+    }
+    if sorted_values(&d.excluded_user_lists) != sorted_values(&l.excluded_user_lists) {
+        c.push(change(
+            "excluded_user_lists",
+            Raw(shown_list(&l.excluded_user_lists)),
+            Raw(shown_list(&d.excluded_user_lists)),
+        ));
+    }
+    c
+}
+
+/// The segment list as `user_interest:customers/1234567890/userInterests/80277` pairs, so a
+/// plan row says which signals the audience gains or loses.
+fn shown_segments(a: &JsonGroupedAudience, audience_ids: &HashMap<String, String>) -> String {
+    let segments = sorted_segments(a, audience_ids);
+    if segments.is_empty() {
+        return "none".to_string();
+    }
+    segments
+        .iter()
+        .map(|(kind, value)| format!("{kind}:{value}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A `custom_audience` segment holds a declared address on one side and a live
+/// resource name on the other, so it compares through the same canonical id the
+/// criterion key uses. The rest are constants both sides state identically.
+fn sorted_segments(
+    a: &JsonGroupedAudience,
+    audience_ids: &HashMap<String, String>,
+) -> Vec<(&'static str, String)> {
+    let mut segments: Vec<_> = a
+        .segments
+        .iter()
+        .filter_map(|s| {
+            s.payload().map(|(name, _, _, v)| match name {
+                "custom_audience" => (name, canonical_audience(v, audience_ids)),
+                _ => (name, v.to_string()),
+            })
+        })
+        .collect();
+    segments.sort_unstable();
+    segments
+}
+
+fn sorted_values(values: &[String]) -> Vec<&str> {
+    let mut out: Vec<&str> = values.iter().map(String::as_str).collect();
+    out.sort_unstable();
+    out
+}
+
+fn shown_list(values: &[String]) -> String {
+    if values.is_empty() {
+        return "none".to_string();
+    }
+    sorted_values(values).join(", ")
+}
+
 /// The member list is one API field, so it diffs as a set — reordering the
 /// blocks in a `.bid` is not a change.
 fn sorted_members(a: &JsonCustomAudience) -> Vec<(&'static str, &str)> {
@@ -3215,11 +3336,13 @@ fn sorted_members(a: &JsonCustomAudience) -> Vec<(&'static str, &str)> {
 }
 
 /// The live-comparable token for an audience reference. A declared
-/// `google_ads_custom_audience.<name>` resolves through the match to the live
-/// id; anything else falls back to the resource name's last segment, so a raw
-/// `customers/X/customAudiences/999` and the live row agree on `999`.
-fn canonical_audience(value: &str, custom_audience_match: &HashMap<String, String>) -> String {
-    match custom_audience_match.get(value) {
+/// `google_ads_custom_audience.<name>` / `google_ads_audience.<name>` resolves
+/// through the match to the live id; anything else falls back to the resource
+/// name's last segment, so a raw `customers/X/customAudiences/999` and the live
+/// row agree on `999`. The criterion key prefixes the field name, which is what
+/// keeps the two id spaces from colliding on a shared number.
+fn canonical_audience(value: &str, audience_ids: &HashMap<String, String>) -> String {
+    match audience_ids.get(value) {
         Some(live_id) => live_id.clone(),
         None => value.rsplit('/').next().unwrap_or(value).to_string(),
     }
@@ -3231,7 +3354,7 @@ fn canonical_audience(value: &str, custom_audience_match: &HashMap<String, Strin
 fn criterion_key(
     cr: &JsonCriterion,
     negative: bool,
-    custom_audience_match: &HashMap<String, String>,
+    audience_ids: &HashMap<String, String>,
 ) -> Option<String> {
     if let Some(kw) = &cr.keyword {
         let polarity = if negative { "neg" } else { "pos" };
@@ -3289,10 +3412,7 @@ fn criterion_key(
         return Some(format!("income:{}", i.ty));
     }
     if let Some((field, value)) = cr.audience.as_ref().and_then(JsonAudience::source) {
-        return Some(format!(
-            "{field}:{}",
-            canonical_audience(value, custom_audience_match)
-        ));
+        return Some(format!("{field}:{}", canonical_audience(value, audience_ids)));
     }
     None
 }

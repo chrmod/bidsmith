@@ -138,6 +138,7 @@ fn api_resource(kind: &str) -> Option<&'static str> {
         "campaign_criterion" => "campaign_criterion",
         "conversion_action" => "conversion_action",
         "custom_audience" => "custom_audience",
+        "audience" => "audience",
         "shared_set" => "shared_set",
         "shared_criterion" => "shared_criterion",
         "campaign_shared_set" => "campaign_shared_set",

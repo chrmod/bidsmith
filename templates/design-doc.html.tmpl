@@ -168,7 +168,9 @@ ordered by resource dependency (budgets &rarr; campaigns &rarr; ad groups &rarr;
 so either every operation in the batch succeeds or none are written. The one exception is the custom
 audience, which <code>GoogleAdsService.Mutate</code> has no operation type for: those go first, in a
 separate <code>customAudiences:mutate</code> call, and the batch then references the resource names it
-returned. Both calls run under <code>validateOnly</code> before either is committed. Every change to a
+returned. Both calls run under <code>validateOnly</code> before either is committed. The unified
+<code>Audience</code> resource, by contrast, does have a batch operation type, so a grouped audience and
+the ad-group criterion attaching it commit in the same transaction. Every change to a
 <code>.bid</code> file is a reviewable Git commit, and the Google Ads change-history view records the
 same operations under the operator&rsquo;s identity. Parse, schema, and policy errors render with file
 path, line number, and a source snippet (via the <code>miette</code> diagnostic library), so a

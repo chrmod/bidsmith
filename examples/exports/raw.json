@@ -227,6 +227,43 @@
           "fieldType": "STRUCTURED_SNIPPET",
           "status": "ENABLED"
         }
+      },
+      {
+        "audience": {
+          "resourceName": "customers/1234567890/audiences/7001",
+          "id": "7001",
+          "name": "Home battery shoppers",
+          "description": "In-market for energy storage, homeowners with budget",
+          "dimensions": [
+            {"audienceSegments": {"segments": [
+              {"userInterest": {"userInterestCategory": "customers/1234567890/userInterests/80277"}},
+              {"lifeEvent": {"lifeEvent": "customers/1234567890/lifeEvents/80111"}}
+            ]}},
+            {"age": {"ageRanges": [{"minAge": 35, "maxAge": 44}, {"minAge": 65}], "includeUndetermined": true}},
+            {"householdIncome": {"incomeRanges": ["INCOME_RANGE_80_90", "INCOME_RANGE_90_UP"]}}
+          ],
+          "exclusionDimension": {
+            "exclusions": [{"userList": {"userList": "customers/1234567890/userLists/778899"}}]
+          }
+        }
+      },
+      {
+        "adGroup": {
+          "resourceName": "customers/1234567890/adGroups/3009",
+          "id": "3009",
+          "name": "Grouped audience",
+          "campaign": "customers/1234567890/campaigns/2001",
+          "status": "ENABLED",
+          "audienceSetting": {"useAudienceGrouped": true}
+        }
+      },
+      {
+        "adGroupCriterion": {
+          "resourceName": "customers/1234567890/adGroupCriteria/3009~5009",
+          "adGroup": "customers/1234567890/adGroups/3009",
+          "status": "ENABLED",
+          "audience": {"audience": "customers/1234567890/audiences/7001"}
+        }
       }
     ]
   }

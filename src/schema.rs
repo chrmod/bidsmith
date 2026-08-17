@@ -355,6 +355,43 @@ const AGE_RANGE_TYPE: &[&str] = &[
     "AGE_RANGE_65_UP",
     "AGE_RANGE_UNDETERMINED",
 ];
+/// `AgeRangeTypeEnum` bands as the `(min_age, max_age)` years `AgeSegment`
+/// takes, which is how an `Audience` dimension states the same thing. Google
+/// allows `min_age` ∈ {18, 25, 35, 45, 55, 65} and `max_age` ∈ {24, 34, 44, 54,
+/// 64}, so the two vocabularies map one-to-one and the top band is open-ended.
+/// `AGE_RANGE_UNDETERMINED` has no band: it is the dimension's
+/// `include_undetermined` flag, handled by the caller.
+const AGE_RANGE_BOUNDS: &[(&str, i64, Option<i64>)] = &[
+    ("AGE_RANGE_18_24", 18, Some(24)),
+    ("AGE_RANGE_25_34", 25, Some(34)),
+    ("AGE_RANGE_35_44", 35, Some(44)),
+    ("AGE_RANGE_45_54", 45, Some(54)),
+    ("AGE_RANGE_55_64", 55, Some(64)),
+    ("AGE_RANGE_65_UP", 65, None),
+];
+
+/// The `(min_age, max_age)` an `AGE_RANGE_*` band covers, or `None` for
+/// `AGE_RANGE_UNDETERMINED`, which is a flag rather than a band.
+pub fn age_range_bounds(ty: &str) -> Option<(i64, Option<i64>)> {
+    AGE_RANGE_BOUNDS
+        .iter()
+        .find(|(name, _, _)| *name == ty)
+        .map(|(_, min, max)| (*min, *max))
+}
+
+/// The `AGE_RANGE_*` band a live `AgeSegment` names — both bounds have to
+/// match. The API permits a span no band covers (`min_age = 25, max_age = 44`),
+/// which nothing here can name; reporting that as unreconciled drift is safer
+/// than rounding it down to the narrower band it starts at, since a `refresh`
+/// that wrote `AGE_RANGE_25_34` would then narrow live targeting on apply.
+pub fn age_range_for_bounds(min_age: Option<i64>, max_age: Option<i64>) -> Option<&'static str> {
+    let min = min_age?;
+    AGE_RANGE_BOUNDS
+        .iter()
+        .find(|(_, m, x)| *m == min && *x == max_age)
+        .map(|(name, _, _)| *name)
+}
+
 const GENDER_TYPE: &[&str] = &["MALE", "FEMALE", "UNDETERMINED"];
 const PARENTAL_STATUS_TYPE: &[&str] = &["PARENT", "NOT_A_PARENT", "UNDETERMINED"];
 /// Household income percentile bands, top-down: `0_50` is the lower half,
@@ -751,22 +788,32 @@ fn language_block() -> NestedBlockSchema {
     one_attr_block("language", "language_constant", FieldType::String)
 }
 
-/// Three distinct API criterion messages, one block: they all answer "which
+/// Four distinct API criterion messages, one block: they all answer "which
 /// audience?", and only one may be set. Enforced by `validate_exactly_one_of`,
-/// not expressible in the schema.
-fn audience_block() -> NestedBlockSchema {
+/// not expressible in the schema. `grouped` adds `audience`
+/// (`AudienceInfo`), which only `AdGroupCriterion` carries — a campaign has no
+/// such field, so the attribute is absent there rather than rejected later.
+fn audience_block(grouped: bool) -> NestedBlockSchema {
+    let mut attributes = vec![
+        attr(
+            "custom_audience",
+            FieldType::RefOrResourceName(&["google_ads_custom_audience"]),
+            false,
+        ),
+        attr("user_list", FieldType::String, false),
+        attr("combined_audience", FieldType::String, false),
+    ];
+    if grouped {
+        attributes.push(attr(
+            "audience",
+            FieldType::RefOrResourceName(&["google_ads_audience"]),
+            false,
+        ));
+    }
     NestedBlockSchema {
         name: "audience",
         schema: BlockSchema {
-            attributes: vec![
-                attr(
-                    "custom_audience",
-                    FieldType::RefOrResourceName(&["google_ads_custom_audience"]),
-                    false,
-                ),
-                attr("user_list", FieldType::String, false),
-                attr("combined_audience", FieldType::String, false),
-            ],
+            attributes,
             blocks: vec![],
         },
     }
@@ -774,7 +821,7 @@ fn audience_block() -> NestedBlockSchema {
 
 /// The who-and-where axes both criterion resources accept: cohort narrowing,
 /// YouTube inventory, and demographics.
-fn audience_targeting_blocks() -> Vec<NestedBlockSchema> {
+fn audience_targeting_blocks(grouped: bool) -> Vec<NestedBlockSchema> {
     vec![
         one_attr_block("youtube_channel", "channel_id", FieldType::String),
         one_attr_block("youtube_video", "video_id", FieldType::String),
@@ -786,8 +833,32 @@ fn audience_targeting_blocks() -> Vec<NestedBlockSchema> {
         ),
         one_attr_block("age_range", "type", FieldType::Enum(AGE_RANGE_TYPE)),
         one_attr_block("gender", "type", FieldType::Enum(GENDER_TYPE)),
-        audience_block(),
+        audience_block(grouped),
     ]
+}
+
+/// The segment kinds an `Audience`'s `audience_segments` dimension can hold.
+/// One block, exactly one attribute — the same collapse the criterion
+/// `audience` block makes, for the same reason: five API messages that all
+/// answer "which segment?".
+fn audience_segment_block() -> NestedBlockSchema {
+    NestedBlockSchema {
+        name: "segment",
+        schema: BlockSchema {
+            attributes: vec![
+                attr("user_interest", FieldType::String, false),
+                attr("user_list", FieldType::String, false),
+                attr("life_event", FieldType::String, false),
+                attr("detailed_demographic", FieldType::String, false),
+                attr(
+                    "custom_audience",
+                    FieldType::RefOrResourceName(&["google_ads_custom_audience"]),
+                    false,
+                ),
+            ],
+            blocks: vec![],
+        },
+    }
 }
 
 // "exactly one of match_type / match_types" is not expressible here; enforced by validate_compact_keywords.
@@ -1156,7 +1227,7 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         negative_keyword_block(),
                         compact_keywords_block("negative_keywords"),
                     ];
-                    b.extend(audience_targeting_blocks());
+                    b.extend(audience_targeting_blocks(true));
                     // Ad-group-only axes. `placement` names one site, app, or
                     // channel URL; the two demographics round out age / gender.
                     b.push(one_attr_block("placement", "url", FieldType::String));
@@ -1240,7 +1311,7 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                             },
                         },
                     ];
-                    b.extend(audience_targeting_blocks());
+                    b.extend(audience_targeting_blocks(false));
                     b
                 },
             },
@@ -1316,6 +1387,21 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         schema: BlockSchema {
                             attributes: vec![attr(
                                 "disable_search_term_matching",
+                                FieldType::Bool,
+                                false,
+                            )],
+                            blocks: vec![],
+                        },
+                    },
+                    // Whether the ad group targets through a
+                    // `google_ads_audience` rather than segment criteria of its
+                    // own. Immutable after creation, and Demand Gen audience
+                    // targeting does not work without it (issue #169).
+                    NestedBlockSchema {
+                        name: "audience_setting",
+                        schema: BlockSchema {
+                            attributes: vec![attr(
+                                "use_audience_grouped",
                                 FieldType::Bool,
                                 false,
                             )],
@@ -1491,6 +1577,52 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         blocks: vec![],
                     },
                 }],
+            },
+        );
+
+        // The grouped audience Demand Gen ad groups target through. Google
+        // reports `status` and never accepts it, and `scope` / `asset_group`
+        // only mean something for a Performance Max asset group — a resource
+        // bidsmith does not model — so both are left out and every audience is
+        // account-scoped (issue #169).
+        m.insert(
+            "google_ads_audience",
+            BlockSchema {
+                attributes: vec![
+                    attr("name", FieldType::String, true),
+                    attr("description", FieldType::String, false),
+                    // One `AudienceDimension` each. Dimensions intersect and
+                    // the values inside one are alternatives, so a viewer has
+                    // to match every axis declared and any value within it.
+                    attr(
+                        "age_ranges",
+                        FieldType::list_of(FieldType::Enum(AGE_RANGE_TYPE)),
+                        false,
+                    ),
+                    attr(
+                        "genders",
+                        FieldType::list_of(FieldType::Enum(GENDER_TYPE)),
+                        false,
+                    ),
+                    attr(
+                        "parental_statuses",
+                        FieldType::list_of(FieldType::Enum(PARENTAL_STATUS_TYPE)),
+                        false,
+                    ),
+                    attr(
+                        "income_ranges",
+                        FieldType::list_of(FieldType::Enum(INCOME_RANGE_TYPE)),
+                        false,
+                    ),
+                    // `AudienceExclusionDimension` takes user lists and
+                    // nothing else — the API has no other exclusion segment.
+                    attr(
+                        "excluded_user_lists",
+                        FieldType::list_of(FieldType::String),
+                        false,
+                    ),
+                ],
+                blocks: vec![audience_segment_block()],
             },
         );
 
@@ -2612,6 +2744,8 @@ pub fn validate_files(files: &[ParsedFile], inputs: &InputBindings) -> Vec<Diag>
     validate_targeting_conflicts(files, &registry, &defaults, &mut diags);
     validate_targeting_setting_conflicts(files, &registry, &defaults, &mut diags);
     validate_demand_gen_targeting_level(files, &registry, &defaults, &mut diags);
+    validate_audience_dimensions(files, &mut diags);
+    validate_demand_gen_grouped_audience(files, &registry, &defaults, &mut diags);
 
     diags.sort_by(|a, b| {
         (a.src.name(), a.span.offset()).cmp(&(b.src.name(), b.span.offset()))
@@ -3422,6 +3556,203 @@ fn positive_geo_lang_block(body: &Body) -> Option<&Block> {
     })
 }
 
+/// An audience with no dimension targets everyone, which is not what anyone
+/// means by declaring one — and the API refuses to create it. Cheaper to say so
+/// locally than to spend a round trip on it.
+fn validate_audience_dimensions(files: &[ParsedFile], diags: &mut Vec<Diag>) {
+    for f in files {
+        for b in resource_blocks(f, "google_ads_audience") {
+            let has_segment = b
+                .body
+                .iter()
+                .any(|s| matches!(s, Structure::Block(x) if x.ident.as_str() == "segment"));
+            let has_demographic = AUDIENCE_DIMENSION_ATTRS
+                .iter()
+                .any(|name| find_attr_key_span(&b.body, name).is_some());
+            if has_segment || has_demographic {
+                continue;
+            }
+            diags.push(Diag::new(
+                f.src.clone(),
+                span_of(b.ident.span()),
+                format!(
+                    "audience '{}' declares no dimension: add at least one segment {{}} block \
+                     or one of {}",
+                    b.labels[1].as_str(),
+                    quoted_list(AUDIENCE_DIMENSION_ATTRS),
+                ),
+            ));
+        }
+    }
+}
+
+/// The dimension list attributes on `google_ads_audience` — the demographic
+/// half, `segment {}` blocks being the other.
+const AUDIENCE_DIMENSION_ATTRS: &[&str] = &[
+    "age_ranges",
+    "genders",
+    "parental_statuses",
+    "income_ranges",
+];
+
+/// Positive ad-group criteria a Demand Gen ad group cannot carry. Google runs
+/// those ad groups in grouped-audience mode, where a segment reaches the ad
+/// group through an `Audience` rather than as a criterion of its own — the API
+/// answers a direct attachment with "Audience segment attachment is not allowed
+/// when use audience grouped bit is set to true" (issue #169). A warning rather
+/// than an error: `use_audience_grouped` is immutable per ad group and invisible
+/// from the file, so an older Demand Gen ad group created outside that mode
+/// still accepts the criterion.
+fn validate_demand_gen_grouped_audience(
+    files: &[ParsedFile],
+    registry: &ResourceRegistry,
+    defaults: &DefaultsRegistry,
+    diags: &mut Vec<Diag>,
+) {
+    let defaults_channel = defaults
+        .decl_for("google_ads_campaign", None)
+        .and_then(|d| attr_string_literal(&d.block.body, "advertising_channel_type"));
+
+    let defaults_grouped = defaults
+        .decl_for("google_ads_ad_group", None)
+        .and_then(|d| nested_block(&d.block.body, "audience_setting"))
+        .and_then(|b| attr_bool_literal(&b.body, "use_audience_grouped"));
+
+    let mut demand_gen: HashSet<String> = HashSet::new();
+    let mut ad_group_to_campaign: HashMap<String, String> = HashMap::new();
+    let mut grouped_ad_groups: HashSet<String> = HashSet::new();
+    for f in files {
+        for b in resource_blocks(f, "google_ads_campaign") {
+            let channel = attr_string_literal(&b.body, "advertising_channel_type")
+                .or_else(|| defaults_channel.clone());
+            if channel.as_deref() == Some("DEMAND_GEN") {
+                demand_gen.insert(ResourceRegistry::qualified(
+                    &f.module,
+                    "google_ads_campaign",
+                    b.labels[1].as_str(),
+                ));
+            }
+        }
+        for b in resource_blocks(f, "google_ads_ad_group") {
+            let qualified = ResourceRegistry::qualified(
+                &f.module,
+                "google_ads_ad_group",
+                b.labels[1].as_str(),
+            );
+            let grouped = match nested_block(&b.body, "audience_setting") {
+                Some(setting) => attr_bool_literal(&setting.body, "use_audience_grouped"),
+                None => defaults_grouped,
+            };
+            if grouped == Some(true) {
+                grouped_ad_groups.insert(qualified.clone());
+            }
+            let Some((ty, cname)) = attr_ref(&b.body, "campaign") else { continue };
+            if ty != "google_ads_campaign" {
+                continue;
+            }
+            if let Resolution::Found(target) = registry.resolve(&f.module, &ty, &cname) {
+                ad_group_to_campaign.insert(qualified, target);
+            }
+        }
+    }
+
+    for f in files {
+        for b in resource_blocks(f, "google_ads_ad_group_criterion") {
+            let Some((ty, agname)) = attr_ref(&b.body, "ad_group") else { continue };
+            if ty != "google_ads_ad_group" {
+                continue;
+            }
+            let Resolution::Found(ag) = registry.resolve(&f.module, &ty, &agname) else {
+                continue;
+            };
+            // Targeting an audience needs the ad group in grouped mode. Google
+            // fixes that at creation, so an ad group that never asked for it can
+            // never carry the criterion.
+            if let Some(block) = grouped_audience_block(&b.body) {
+                if !grouped_ad_groups.contains(&ag) {
+                    diags.push(Diag::new(
+                        f.src.clone(),
+                        span_of(block.ident.span()),
+                        format!(
+                            "ad group '{agname}' does not declare audience_setting {{ \
+                             use_audience_grouped = true }}, so Google rejects an audience \
+                             attached to it — add that block to the ad group (it is fixed when \
+                             the ad group is created, so an existing one has to be recreated)"
+                        ),
+                    ));
+                }
+                continue;
+            }
+            let Some((offender, what)) = grouped_only_block(&b.body) else { continue };
+            if !ad_group_to_campaign
+                .get(&ag)
+                .is_some_and(|c| demand_gen.contains(c))
+            {
+                continue;
+            }
+            diags.push(Diag::warning(
+                f.src.clone(),
+                span_of(offender.ident.span()),
+                format!(
+                    "this ad group belongs to a Demand Gen campaign, which targets through a \
+                     grouped audience: Google rejects '{what}' attached straight to such an ad \
+                     group — move it into a google_ads_audience resource and target that with \
+                     audience {{ audience = google_ads_audience.<name>.id }}"
+                ),
+            ));
+        }
+    }
+}
+
+/// The criterion's `audience {}` block when it names a grouped audience — the
+/// one alternative that needs the ad group in grouped mode.
+fn grouped_audience_block(body: &Body) -> Option<&Block> {
+    let block = nested_block(body, "audience")?;
+    attr_names(&block.body)
+        .iter()
+        .any(|k| k == "audience")
+        .then_some(block)
+}
+
+/// The positive segment or demographic block a criterion declares that a
+/// grouped-audience ad group takes through its `Audience` instead, named as the
+/// warning should say it. Negatives are left alone: an exclusion is not an
+/// attachment, and the `Audience` can only exclude user lists.
+fn grouped_only_block(body: &Body) -> Option<(&Block, String)> {
+    let negative = body.iter().any(|s| {
+        matches!(s, Structure::Attribute(a)
+            if a.key.as_str() == "negative"
+                && matches!(&a.value, Expression::Bool(v) if *v.as_ref()))
+    });
+    if negative {
+        return None;
+    }
+    body.iter().find_map(|s| {
+        let Structure::Block(b) = s else { return None };
+        match b.ident.as_str() {
+            "user_interest" | "age_range" | "gender" | "parental_status" | "income_range" => {
+                Some((b, format!("{} {{}}", b.ident.as_str())))
+            }
+            // The grouped path itself is the one form of `audience {}` that
+            // belongs here; the other three are direct segment attachments.
+            "audience" => attr_names(&b.body)
+                .into_iter()
+                .find(|k| matches!(k.as_str(), "custom_audience" | "user_list" | "combined_audience"))
+                .map(|k| (b, format!("audience {{ {k} }}"))),
+            _ => None,
+        }
+    })
+}
+
+fn attr_names(body: &Body) -> Vec<String> {
+    body.iter()
+        .filter_map(|s| match s {
+            Structure::Attribute(a) => Some(a.key.as_str().to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn attr_string_literal(body: &Body, key: &str) -> Option<String> {
     body.iter().find_map(|s| match s {
         Structure::Attribute(a) if a.key.as_str() == key => match &a.value {
@@ -4058,7 +4389,7 @@ fn validate_body(
                         diags,
                     );
                 }
-                if matches!(bname, "audience" | "member") {
+                if matches!(bname, "audience" | "member" | "segment") {
                     validate_exactly_one_of(
                         file,
                         b,
@@ -5139,6 +5470,22 @@ locals {
     fn validate_str(name: &str, content: &str) -> Vec<Diag> {
         let pf = parse_str(name, content);
         validate_files(std::slice::from_ref(&pf), &InputBindings::default())
+    }
+
+    #[test]
+    fn every_age_range_band_round_trips_through_the_api_bounds() {
+        for ty in AGE_RANGE_TYPE {
+            let Some((min, max)) = age_range_bounds(ty) else {
+                assert_eq!(*ty, "AGE_RANGE_UNDETERMINED", "{ty} has no bounds");
+                continue;
+            };
+            assert_eq!(age_range_for_bounds(Some(min), max), Some(*ty));
+        }
+        // A span no band covers stays unnamed rather than rounding down to the
+        // narrower band it starts at.
+        assert_eq!(age_range_for_bounds(Some(25), Some(44)), None);
+        assert_eq!(age_range_for_bounds(Some(65), Some(74)), None);
+        assert_eq!(age_range_for_bounds(None, None), None);
     }
 
     #[test]
@@ -6542,6 +6889,198 @@ resource "google_ads_ad_group_criterion" "ag_lang" {{
         let diags = validate_str("dg_ag_ok", &upgraded);
         assert!(
             diags.iter().all(|d| !d.message.contains("upgraded_targeting")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    const GROUPED_AUDIENCE: &str = r#"
+resource "google_ads_audience" "shoppers" {
+  name = "Shoppers"
+
+  segment {
+    user_interest = "customers/1234567890/userInterests/80277"
+  }
+
+  age_ranges = ["AGE_RANGE_25_34", "AGE_RANGE_UNDETERMINED"]
+}
+"#;
+
+    fn demand_gen_project(ad_group_body: &str, criterion_body: &str) -> String {
+        format!(
+            r#"{TARGETING_PREAMBLE}{GROUPED_AUDIENCE}
+resource "google_ads_campaign" "dg" {{
+  name                     = "DG"
+  advertising_channel_type = "DEMAND_GEN"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}}
+
+resource "google_ads_ad_group" "ag" {{
+  name     = "AG"
+  campaign = google_ads_campaign.dg.id
+{ad_group_body}}}
+
+resource "google_ads_ad_group_criterion" "cr" {{
+  ad_group = google_ads_ad_group.ag.id
+{criterion_body}}}
+"#
+        )
+    }
+
+    const GROUPED_SETTING: &str = "\n  audience_setting {\n    use_audience_grouped = true\n  }\n";
+    const AUDIENCE_CRITERION: &str =
+        "\n  audience {\n    audience = google_ads_audience.shoppers.id\n  }\n";
+
+    #[test]
+    fn a_grouped_audience_and_the_ad_group_that_targets_it_validate() {
+        let diags = validate_str(
+            "grouped_ok",
+            &demand_gen_project(GROUPED_SETTING, AUDIENCE_CRITERION),
+        );
+        assert!(
+            diags.is_empty(),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn targeting_an_audience_needs_the_ad_group_in_grouped_mode() {
+        let diags = validate_str("grouped_missing", &demand_gen_project("", AUDIENCE_CRITERION));
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.is_error() && d.message.contains("use_audience_grouped = true")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_defaults_block_can_supply_the_grouped_setting() {
+        let with_defaults = format!(
+            "defaults \"google_ads_ad_group\" {{{GROUPED_SETTING}}}\n{}",
+            demand_gen_project("", AUDIENCE_CRITERION)
+        );
+        let diags = validate_str("grouped_defaults", &with_defaults);
+        assert!(
+            diags
+                .iter()
+                .all(|d| !d.message.contains("use_audience_grouped")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// A positive segment or demographic criterion on a Demand Gen ad group is
+    /// what the grouped audience replaces; Google refuses the direct attachment.
+    #[test]
+    fn direct_segment_targeting_on_demand_gen_warns() {
+        for body in [
+            "\n  user_interest {\n    user_interest_category = \"customers/1234567890/userInterests/1\"\n  }\n",
+            "\n  age_range {\n    type = \"AGE_RANGE_25_34\"\n  }\n",
+            "\n  audience {\n    user_list = \"customers/1/userLists/2\"\n  }\n",
+        ] {
+            let diags = validate_str("dg_direct", &demand_gen_project(GROUPED_SETTING, body));
+            assert!(
+                diags
+                    .iter()
+                    .any(|d| !d.is_error() && d.message.contains("grouped audience")),
+                "{body} — {:?}",
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn an_exclusion_on_demand_gen_is_left_alone() {
+        let excluded = "\n  negative = true\n\n  audience {\n    user_list = \"customers/1/userLists/2\"\n  }\n";
+        let diags = validate_str("dg_exclusion", &demand_gen_project(GROUPED_SETTING, excluded));
+        assert!(
+            diags.iter().all(|d| !d.message.contains("grouped audience")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn direct_segment_targeting_off_demand_gen_is_quiet() {
+        let project = demand_gen_project(
+            "",
+            "\n  user_interest {\n    user_interest_category = \"customers/1234567890/userInterests/1\"\n  }\n",
+        )
+        .replace("\"DEMAND_GEN\"", "\"DISPLAY\"");
+        let diags = validate_str("display_direct", &project);
+        assert!(
+            diags.iter().all(|d| !d.message.contains("grouped audience")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn an_audience_with_no_dimension_is_an_error() {
+        let diags = validate_str(
+            "audience_empty",
+            r#"
+resource "google_ads_audience" "a" {
+  name = "Nothing"
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("declares no dimension")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn an_audience_segment_takes_exactly_one_kind() {
+        let diags = validate_str(
+            "audience_segment_two",
+            r#"
+resource "google_ads_audience" "a" {
+  name = "Two"
+
+  segment {
+    user_interest = "customers/1234567890/userInterests/1"
+    life_event    = "customers/1234567890/lifeEvents/2"
+  }
+}
+"#,
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("these are alternatives")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// `CampaignCriterion` has no `AudienceInfo`, so the attribute is absent
+    /// from the campaign-side block rather than accepted and rejected live.
+    #[test]
+    fn a_campaign_criterion_cannot_target_a_grouped_audience() {
+        let diags = validate_str(
+            "campaign_grouped",
+            &format!(
+                r#"{TARGETING_PREAMBLE}{GROUPED_AUDIENCE}
+resource "google_ads_campaign_criterion" "cr" {{
+  campaign = google_ads_campaign.c.id
+
+  audience {{
+    audience = google_ads_audience.shoppers.id
+  }}
+}}
+"#
+            ),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("unknown attribute 'audience'")),
             "{:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
