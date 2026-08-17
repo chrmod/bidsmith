@@ -1,0 +1,103 @@
+---
+title: Launch a Demand Gen video ad
+description: The four things a Demand Gen creative needs — video, logo, button, brand name — and which of them bidsmith creates for you.
+---
+
+A Demand Gen video ad runs your YouTube video across Shorts, Discover,
+and Gmail. Google rejects the ad on create unless the creative carries
+**all four** of these:
+
+| | |
+|---|---|
+| a video | already published on your YouTube channel |
+| 1–5 logo images | square, at least 128×128 |
+| a brand name | what the ad says you are |
+| headlines + descriptions | the copy |
+
+Each of the first two is a resource of its own, and so is the
+call-to-action button:
+
+```hcl
+resource "google_ads_youtube_video_asset" "explainer" {
+  youtube_video_id    = "dQw4w9WgXcQ"
+  youtube_video_title = "How a home battery pays for itself"
+}
+
+resource "google_ads_image_asset" "logo" {
+  name = "Brand logo 1200x1200"
+}
+
+resource "google_ads_call_to_action_asset" "learn_more" {
+  call_to_action = "LEARN_MORE"
+}
+
+resource "google_ads_ad_group_ad" "home_battery_video" {
+  ad_group = google_ads_ad_group.home_battery.id
+
+  ad {
+    name       = "Home battery explainer"
+    final_urls = ["https://example.com/home-battery"]
+
+    demand_gen_video_responsive_ad {
+      videos          = [google_ads_youtube_video_asset.explainer.id]
+      logo_images     = [google_ads_image_asset.logo.id]
+      call_to_actions = [google_ads_call_to_action_asset.learn_more.id]
+      business_name   = "Example Energy"
+      headlines       = ["Cut your power bill", "Store your own solar"]
+      long_headlines  = ["Store the solar you already make and use it after dark"]
+      descriptions    = ["See what a home battery saves on a typical bill."]
+    }
+  }
+}
+```
+
+## Upload the logo first
+
+bidsmith creates the video asset and the button asset for you. The
+**image** it only references: upload it once in Google Ads
+(**Assets → Images**), then name it in the file. Google Ads accepts
+image bytes but never hands them back, so bidsmith has no way to tell
+an image it uploaded from one it didn't — and a re-run would quietly
+add a second copy of your logo.
+
+If the name doesn't match anything in the account, `plan` stops before
+it talks to Google:
+
+```
+google_ads_image_asset.logo names an image that is not in the account
+(no live image asset is named "Brand logo 1200x1200"). bidsmith references
+image assets, it never uploads them — add the image to the Google Ads asset
+library (Assets → Images) and re-run, or point the block at one that is
+already there
+```
+
+Two images sharing a name? Add `asset_id = "123456789"` to pin the one
+you mean.
+
+## The button is a type, not a phrase
+
+`call_to_actions` takes a reference rather than text, because Google
+writes the button in the viewer's language. You pick which button:
+`LEARN_MORE`, `SHOP_NOW`, `SIGN_UP`, `BOOK_NOW`, `DOWNLOAD`,
+`GET_QUOTE`, `SUBSCRIBE`, `CONTACT_US`, `APPLY_NOW`, `BUY_NOW`,
+`DONATE_NOW`, `ORDER_NOW`, `PLAY_NOW`, `SEE_MORE`, `START_NOW`,
+`VISIT_SITE`, `WATCH_NOW`.
+
+## Editing a live ad's creative
+
+An ad's creative is fixed once it's live — Google Ads has no "change
+the logo" operation. Swap the logo, the button, or a headline and
+`plan` shows a **new ad plus a destroy of the old one**, which is what
+editing an ad means in Google Ads whether you do it here or in the UI.
+Only `status` and the tracking fields change in place.
+
+That also means an ad you adopted from the UI has to name its logos
+before bidsmith can act on it. `bidsmith refresh -d` writes them out of
+the live account for you.
+
+## See also
+
+- [`google_ads_image_asset`](/bidsmith/resources/google_ads_image_asset/) — naming an image you already uploaded.
+- [`google_ads_call_to_action_asset`](/bidsmith/resources/google_ads_call_to_action_asset/) — the button.
+- [`google_ads_ad_group_ad`](/bidsmith/resources/google_ads_ad_group_ad/#demand_gen_video_responsive_ad) — the full creative reference.
+- [Adopt a campaign you built in the Google Ads UI](./adopt-a-campaign-from-the-ui/).

@@ -146,7 +146,7 @@ fn api_resource(kind: &str) -> Option<&'static str> {
         "campaign_asset" => "campaign_asset",
         "ad_group_asset" => "ad_group_asset",
         "call_asset" | "sitelink_asset" | "callout_asset" | "structured_snippet_asset"
-        | "youtube_video_asset" => "asset",
+        | "youtube_video_asset" | "image_asset" | "call_to_action_asset" => "asset",
         _ => return None,
     })
 }

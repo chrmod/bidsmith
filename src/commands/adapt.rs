@@ -7,7 +7,8 @@ use crate::commands::export::{
     JsonAdSchedule,
     JsonAiMaxAdGroupSetting, JsonAiMaxSetting, JsonDemandGenCampaignSettings,
     JsonDynamicSearchAdsSetting,
-    JsonAssetAutomationSettings, JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset,
+    JsonAssetAutomationSettings, JsonBidSelector, JsonBudget, JsonCallAsset,
+    JsonCallToActionAsset, JsonCalloutAsset, JsonImageAsset,
     JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCriterion,
     JsonCustomerAsset, JsonAgeRange, JsonAudience, JsonAudienceSegment, JsonAudienceSetting,
@@ -83,6 +84,8 @@ struct AdapterState {
     callout_assets: BTreeMap<String, JsonCalloutAsset>,
     structured_snippet_assets: BTreeMap<String, JsonStructuredSnippetAsset>,
     youtube_video_assets: BTreeMap<String, JsonYoutubeVideoAsset>,
+    image_assets: BTreeMap<String, JsonImageAsset>,
+    call_to_action_assets: BTreeMap<String, JsonCallToActionAsset>,
     customer_assets: BTreeMap<String, JsonCustomerAsset>,
     campaign_assets: BTreeMap<String, JsonCampaignAsset>,
     ad_group_assets: BTreeMap<String, JsonAdGroupAsset>,
@@ -684,7 +687,7 @@ impl AdapterState {
             }
             if let Some(video) = ad.get("videoResponsiveAd") {
                 entry.ad.video_responsive_ad = Some(JsonVideoResponsiveAd {
-                    video: extract_video_asset_ids(video.get("videos"))
+                    video: extract_asset_ids(video.get("videos"))
                         .into_iter()
                         .next()
                         .unwrap_or_default(),
@@ -709,11 +712,14 @@ impl AdapterState {
             }
             if let Some(dg) = ad.get("demandGenVideoResponsiveAd") {
                 entry.ad.demand_gen_video_responsive_ad = Some(JsonDemandGenVideoResponsiveAd {
-                    videos: extract_video_asset_ids(dg.get("videos")),
+                    videos: extract_asset_ids(dg.get("videos")),
+                    logo_images: extract_asset_ids(dg.get("logoImages")),
                     headlines: extract_ad_text_list(dg.get("headlines")),
                     long_headlines: extract_ad_text_list(dg.get("longHeadlines")),
                     descriptions: extract_ad_text_list(dg.get("descriptions")),
-                    call_to_actions: extract_ad_text_list(dg.get("callToActions")),
+                    // Asset refs on this ad type, unlike video_responsive_ad's
+                    // text call_to_actions.
+                    call_to_actions: extract_asset_ids(dg.get("callToActions")),
                     breadcrumb1: dg.get("breadcrumb1").and_then(Value::as_str).map(String::from),
                     breadcrumb2: dg.get("breadcrumb2").and_then(Value::as_str).map(String::from),
                     business_name: dg
@@ -1080,6 +1086,35 @@ impl AdapterState {
                 entry.youtube_video_title = Some(s.to_string());
             }
         }
+        // The image's own payload says nothing a file can declare — the bytes
+        // are mutate-only and the dimensions are output-only — so the row is
+        // kept for its identity: the asset name a `.bid` names it by, and the
+        // id that pins it.
+        if v.get("type").and_then(Value::as_str) == Some("IMAGE") {
+            let entry = self
+                .image_assets
+                .entry(id.clone())
+                .or_insert_with(|| JsonImageAsset {
+                    id: id.clone(),
+                    name: String::new(),
+                    asset_id: Some(id.clone()),
+                });
+            if let Some(s) = v.get("name").and_then(Value::as_str) {
+                entry.name = s.to_string();
+            }
+        }
+        if let Some(cta) = v.get("callToActionAsset") {
+            let entry = self
+                .call_to_action_assets
+                .entry(id.clone())
+                .or_insert_with(|| JsonCallToActionAsset {
+                    id: id.clone(),
+                    call_to_action: String::new(),
+                });
+            if let Some(s) = cta.get("callToAction").and_then(Value::as_str) {
+                entry.call_to_action = s.to_string();
+            }
+        }
     }
 
     fn merge_customer_asset(&mut self, v: &Value) {
@@ -1392,6 +1427,8 @@ impl AdapterState {
             shared_criteria: shared_criteria_out,
             campaign_shared_sets: self.campaign_shared_sets.into_values().collect(),
             youtube_video_assets: self.youtube_video_assets.into_values().collect(),
+            image_assets: self.image_assets.into_values().collect(),
+            call_to_action_assets: self.call_to_action_assets.into_values().collect(),
             custom_audiences: self.custom_audiences.into_values().collect(),
             audiences: self.audiences.into_values().collect(),
             adopt_only: Default::default(),
@@ -1751,7 +1788,7 @@ fn extract_ad_text_list(v: Option<&Value>) -> Vec<String> {
 
 /// Extract youtube-video asset ids from a demand-gen ad's `videos` array. Each
 /// item is an `AdVideoAsset { asset: "customers/x/assets/ID" }`.
-fn extract_video_asset_ids(v: Option<&Value>) -> Vec<String> {
+fn extract_asset_ids(v: Option<&Value>) -> Vec<String> {
     let Some(arr) = v.and_then(Value::as_array) else {
         return Vec::new();
     };

@@ -1,0 +1,50 @@
+---
+title: google_ads_call_to_action_asset
+description: The call-to-action button on a Demand Gen creative — a type, not a phrase.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_call_to_action_asset'];
+
+A **call-to-action asset** is the button on a Demand Gen creative. You
+pick the *type* of button; Google renders the wording, translated for
+whoever is watching. It attaches through the `call_to_actions` attribute
+of a
+[`demand_gen_video_responsive_ad`](./google_ads_ad_group_ad/#demand_gen_video_responsive_ad)
+block.
+
+```hcl
+resource "google_ads_call_to_action_asset" "learn_more" {
+  call_to_action = "LEARN_MORE"
+}
+```
+
+`apply` creates the asset from that one value. If the account already
+has a button asset of the same type, bidsmith reuses it rather than
+adding a duplicate.
+
+<Aside type="note" title="Why you can't write your own wording">
+  On the wire this is an asset reference, not text — which is why
+  `call_to_actions = ["Install"]` is a validate error rather than
+  something bidsmith quietly sends. Google translates the button per
+  locale, so the type is the only thing an advertiser gets to choose.
+</Aside>
+
+## The full vocabulary
+
+`LEARN_MORE`, `GET_QUOTE`, `APPLY_NOW`, `SIGN_UP`, `CONTACT_US`,
+`SUBSCRIBE`, `DOWNLOAD`, `BOOK_NOW`, `SHOP_NOW`, `BUY_NOW`,
+`DONATE_NOW`, `ORDER_NOW`, `PLAY_NOW`, `SEE_MORE`, `START_NOW`,
+`VISIT_SITE`, `WATCH_NOW`.
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+## See also
+
+- [`google_ads_ad_group_ad`](./google_ads_ad_group_ad/#demand_gen_video_responsive_ad) — the ad that shows this button.
+- [`google_ads_image_asset`](./google_ads_image_asset/) — the logo on the same creative.

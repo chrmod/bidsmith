@@ -54,6 +54,7 @@ export default defineConfig({
             { label: 'Cap how often people see your video ad', slug: 'recipes/cap-how-often-people-see-your-video' },
             { label: 'Stop ads running overnight', slug: 'recipes/stop-ads-running-overnight' },
             { label: 'Narrow a video campaign to a specific audience', slug: 'recipes/narrow-a-video-audience' },
+            { label: 'Launch a Demand Gen video ad', slug: 'recipes/launch-a-demand-gen-video-ad' },
             { label: 'Make an audience observe instead of target', slug: 'recipes/target-or-observe-an-audience' },
             { label: 'Add a whole keyword list at once', slug: 'recipes/add-many-keywords' },
             { label: 'Remove a whole keyword list safely', slug: 'recipes/remove-keywords-safely' },
@@ -164,6 +165,8 @@ export default defineConfig({
               label: 'Video',
               items: [
                 { label: 'google_ads_youtube_video_asset', slug: 'resources/google_ads_youtube_video_asset' },
+                { label: 'google_ads_image_asset', slug: 'resources/google_ads_image_asset' },
+                { label: 'google_ads_call_to_action_asset', slug: 'resources/google_ads_call_to_action_asset' },
               ],
             },
             {

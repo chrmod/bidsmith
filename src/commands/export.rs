@@ -102,6 +102,10 @@ pub struct ExportInput {
     #[serde(default)]
     pub youtube_video_assets: Vec<JsonYoutubeVideoAsset>,
     #[serde(default)]
+    pub image_assets: Vec<JsonImageAsset>,
+    #[serde(default)]
+    pub call_to_action_assets: Vec<JsonCallToActionAsset>,
+    #[serde(default)]
     pub custom_audiences: Vec<JsonCustomAudience>,
     #[serde(default)]
     pub audiences: Vec<JsonGroupedAudience>,
@@ -810,20 +814,22 @@ pub struct JsonVideoAd {
 }
 
 /// A Demand Gen video responsive ad body (the ad type a DEMAND_GEN campaign
-/// carries). `videos` holds asset ids of `google_ads_youtube_video_asset`s,
-/// resolved to their addresses at render time.
+/// carries). `videos`, `logo_images`, and `call_to_actions` all hold asset ids
+/// — of `google_ads_youtube_video_asset`, `google_ads_image_asset`, and
+/// `google_ads_call_to_action_asset` respectively — resolved to their addresses
+/// at render time.
 #[derive(Deserialize)]
 pub struct JsonDemandGenVideoResponsiveAd {
     #[serde(default)]
     pub videos: Vec<String>,
+    #[serde(default)]
+    pub logo_images: Vec<String>,
     #[serde(default)]
     pub headlines: Vec<String>,
     #[serde(default)]
     pub long_headlines: Vec<String>,
     #[serde(default)]
     pub descriptions: Vec<String>,
-    /// Live Demand Gen CTAs are `AdCallToActionAsset` refs, not text, so this
-    /// list only ever carries hand-authored values — it never round-trips.
     #[serde(default)]
     pub call_to_actions: Vec<String>,
     #[serde(default)]
@@ -840,6 +846,27 @@ pub struct JsonYoutubeVideoAsset {
     pub youtube_video_id: String,
     #[serde(default)]
     pub youtube_video_title: Option<String>,
+}
+
+/// An image already in the account's asset library. bidsmith never uploads the
+/// bytes (`ImageAsset.data` is mutate-only), so this resource only ever names
+/// one: `name` is the asset library's label and the match key, `asset_id` pins
+/// a single image when several carry the same name.
+#[derive(Deserialize)]
+pub struct JsonImageAsset {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub asset_id: Option<String>,
+}
+
+/// A `CallToActionAsset` — the button on a Demand Gen creative. The type is the
+/// whole payload; Google renders the wording per locale.
+#[derive(Deserialize)]
+pub struct JsonCallToActionAsset {
+    pub id: String,
+    pub call_to_action: String,
 }
 
 #[derive(Deserialize)]
@@ -1418,6 +1445,8 @@ impl ExportInput {
             + self.callout_assets.len()
             + self.structured_snippet_assets.len()
             + self.youtube_video_assets.len()
+            + self.image_assets.len()
+            + self.call_to_action_assets.len()
             + self.customer_assets.len()
             + self.campaign_assets.len()
             + self.ad_group_assets.len()
@@ -1730,7 +1759,7 @@ fn write_account_assets(
     names: &mut NameAllocator,
     conversion_action_addr: &mut HashMap<String, String>,
     asset_addr: &mut HashMap<String, String>,
-    youtube_asset_addr: &mut HashMap<String, String>,
+    ad_asset_addr: &mut HashMap<String, String>,
     inline_assets: &InlineAssets,
 ) {
     for v in &input.youtube_video_assets {
@@ -1741,11 +1770,33 @@ fn write_account_assets(
             .map(slugify)
             .unwrap_or_else(|| format!("video_{}", slugify(&v.youtube_video_id)));
         let name = names.allocate("google_ads_youtube_video_asset", &base);
-        youtube_asset_addr.insert(
+        ad_asset_addr.insert(
             v.id.clone(),
             format!("google_ads_youtube_video_asset.{name}"),
         );
         write_youtube_video_asset(out, &name, v);
+    }
+    // Only the images and buttons an ad in this snapshot actually uses: an
+    // account's asset library holds every image ever uploaded, and rendering
+    // the unreferenced ones would fill the file with resources nothing points
+    // at and every one of which `plan` would then have to match.
+    let used = ad_referenced_assets(input);
+    for a in input.image_assets.iter().filter(|a| used.contains(&a.id)) {
+        let base = match a.name.trim().is_empty() {
+            true => format!("image_{}", slugify(&a.id)),
+            false => slugify(&a.name),
+        };
+        let name = names.allocate("google_ads_image_asset", &base);
+        ad_asset_addr.insert(a.id.clone(), format!("google_ads_image_asset.{name}"));
+        write_image_asset(out, &name, a);
+    }
+    for a in input.call_to_action_assets.iter().filter(|a| used.contains(&a.id)) {
+        let name = names.allocate("google_ads_call_to_action_asset", &slugify(&a.call_to_action));
+        ad_asset_addr.insert(
+            a.id.clone(),
+            format!("google_ads_call_to_action_asset.{name}"),
+        );
+        write_call_to_action_asset(out, &name, a);
     }
     for c in &input.conversion_actions {
         let name = names.allocate("google_ads_conversion_action", &slugify(&c.name));
@@ -1873,7 +1924,7 @@ fn write_campaign_tree(
     budget_addr: &mut HashMap<String, String>,
     campaign_addr: &mut HashMap<String, String>,
     ad_group_addr: &mut HashMap<String, String>,
-    youtube_asset_addr: &HashMap<String, String>,
+    ad_asset_addr: &HashMap<String, String>,
     audience_addr: &AudienceAddrs,
 ) {
     for b in &input.campaign_budgets {
@@ -1911,7 +1962,7 @@ fn write_campaign_tree(
     for (i, a) in input.ad_group_ads.iter().enumerate() {
         let base = ad_ad_base(a, ad_group_addr);
         let name = names.allocate("google_ads_ad_group_ad", &base);
-        write_ad_group_ad(out, &name, a, ad_group_addr, youtube_asset_addr, plan, i);
+        write_ad_group_ad(out, &name, a, ad_group_addr, ad_asset_addr, plan, i);
     }
     let (keyword_groups, ag_singletons) = partition_ad_group_criteria(&input.ad_group_criteria);
     for group in keyword_groups {
@@ -1978,7 +2029,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
     let mut ad_group_addr: HashMap<String, String> = HashMap::new();
     let mut conversion_action_addr: HashMap<String, String> = HashMap::new();
     let mut asset_addr: HashMap<String, String> = HashMap::new();
-    let mut youtube_asset_addr: HashMap<String, String> = HashMap::new();
+    let mut ad_asset_addr: HashMap<String, String> = HashMap::new();
     let mut shared_set_addr: HashMap<String, String> = HashMap::new();
     let mut audience_addr = AudienceAddrs::default();
 
@@ -1990,7 +2041,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
         &mut names,
         &mut conversion_action_addr,
         &mut asset_addr,
-        &mut youtube_asset_addr,
+        &mut ad_asset_addr,
         &inline_assets,
     );
     write_audiences(&mut account, input, &mut names, &mut audience_addr);
@@ -2021,7 +2072,7 @@ pub fn render_split(input: &ExportInput) -> (String, String) {
             &mut budget_addr,
             &mut campaign_addr,
             &mut ad_group_addr,
-            &youtube_asset_addr,
+            &ad_asset_addr,
             &audience_addr,
         );
         write_campaign_shared_sets(
@@ -2062,6 +2113,8 @@ pub const IMPORTABLE_TYPES: &[&str] = &[
     "google_ads_structured_snippet_asset",
     "google_ads_call_asset",
     "google_ads_youtube_video_asset",
+    "google_ads_image_asset",
+    "google_ads_call_to_action_asset",
     "google_ads_customer_asset",
     "google_ads_campaign_asset",
     "google_ads_ad_group_asset",
@@ -2155,6 +2208,14 @@ pub fn render_import(
         "google_ads_youtube_video_asset" => {
             let a = find_by_id(&live.youtube_video_assets, id, |a| &a.id, ty, id)?;
             write_youtube_video_asset(&mut out, name, a);
+        }
+        "google_ads_image_asset" => {
+            let a = find_by_id(&live.image_assets, id, |a| &a.id, ty, id)?;
+            write_image_asset(&mut out, name, a);
+        }
+        "google_ads_call_to_action_asset" => {
+            let a = find_by_id(&live.call_to_action_assets, id, |a| &a.id, ty, id)?;
+            write_call_to_action_asset(&mut out, name, a);
         }
         "google_ads_customer_asset" => {
             let l = find_by_id(&live.customer_assets, id, |a| &a.id, ty, id)?;
@@ -2306,7 +2367,7 @@ fn render_inner(input: &ExportInput, fold: bool) -> String {
     let mut ad_group_addr: HashMap<String, String> = HashMap::new();
     let mut conversion_action_addr: HashMap<String, String> = HashMap::new();
     let mut asset_addr: HashMap<String, String> = HashMap::new();
-    let mut youtube_asset_addr: HashMap<String, String> = HashMap::new();
+    let mut ad_asset_addr: HashMap<String, String> = HashMap::new();
     let mut shared_set_addr: HashMap<String, String> = HashMap::new();
     let mut audience_addr = AudienceAddrs::default();
 
@@ -2317,7 +2378,7 @@ fn render_inner(input: &ExportInput, fold: bool) -> String {
         &mut names,
         &mut conversion_action_addr,
         &mut asset_addr,
-        &mut youtube_asset_addr,
+        &mut ad_asset_addr,
         &inline_assets,
     );
     write_audiences(&mut out, input, &mut names, &mut audience_addr);
@@ -2336,7 +2397,7 @@ fn render_inner(input: &ExportInput, fold: bool) -> String {
         &mut budget_addr,
         &mut campaign_addr,
         &mut ad_group_addr,
-        &youtube_asset_addr,
+        &ad_asset_addr,
         &audience_addr,
     );
     write_shared_sets_and_criteria(&mut out, input, &mut names, &mut shared_set_addr);
@@ -2729,7 +2790,7 @@ fn write_ad_group_ad(
     name: &str,
     a: &JsonAdGroupAd,
     ad_group_addr: &HashMap<String, String>,
-    youtube_asset_addr: &HashMap<String, String>,
+    ad_asset_addr: &HashMap<String, String>,
     plan: Option<&FoldPlan>,
     idx: usize,
 ) {
@@ -2784,7 +2845,7 @@ fn write_ad_group_ad(
     }
     if let Some(video) = &a.ad.video_responsive_ad {
         out.push_str("\n    video_responsive_ad {\n");
-        let video_ref = match youtube_asset_addr.get(&video.video) {
+        let video_ref = match ad_asset_addr.get(&video.video) {
             Some(addr) => format!("{addr}.id"),
             None => format!("\"<unresolved video {}>\"", video.video),
         };
@@ -2809,7 +2870,7 @@ fn write_ad_group_ad(
     }
     if let Some(video) = &a.ad.video_ad {
         out.push_str("\n    video_ad {\n");
-        let video_ref = match youtube_asset_addr.get(&video.video) {
+        let video_ref = match ad_asset_addr.get(&video.video) {
             Some(addr) => format!("{addr}.id"),
             None => format!("\"<unresolved video {}>\"", video.video),
         };
@@ -2818,22 +2879,27 @@ fn write_ad_group_ad(
     }
     if let Some(dg) = &a.ad.demand_gen_video_responsive_ad {
         out.push_str("\n    demand_gen_video_responsive_ad {\n");
-        if !dg.videos.is_empty() {
-            let refs: Vec<String> = dg
-                .videos
+        for (attr, kind, ids) in [
+            ("videos", "video", &dg.videos),
+            ("logo_images", "image", &dg.logo_images),
+            ("call_to_actions", "call to action", &dg.call_to_actions),
+        ] {
+            if ids.is_empty() {
+                continue;
+            }
+            let refs: Vec<String> = ids
                 .iter()
-                .map(|id| match youtube_asset_addr.get(id) {
+                .map(|id| match ad_asset_addr.get(id) {
                     Some(addr) => format!("{addr}.id"),
-                    None => format!("\"<unresolved video {id}>\""),
+                    None => format!("\"<unresolved {kind} {id}>\""),
                 })
                 .collect();
-            write_attr(out, 3, "videos", &format!("[{}]", refs.join(", ")));
+            write_attr(out, 3, attr, &format!("[{}]", refs.join(", ")));
         }
         for (attr, items) in [
             ("headlines", &dg.headlines),
             ("long_headlines", &dg.long_headlines),
             ("descriptions", &dg.descriptions),
-            ("call_to_actions", &dg.call_to_actions),
         ] {
             if !items.is_empty() {
                 write_attr(out, 3, attr, &fmt_string_list(items));
@@ -2851,6 +2917,36 @@ fn write_ad_group_ad(
         out.push_str("    }\n");
     }
     out.push_str("  }\n");
+    out.push_str("}\n\n");
+}
+
+/// Live ids of the image and call-to-action assets some ad in the snapshot
+/// references.
+fn ad_referenced_assets(input: &ExportInput) -> HashSet<String> {
+    input
+        .ad_group_ads
+        .iter()
+        .filter_map(|a| a.ad.demand_gen_video_responsive_ad.as_ref())
+        .flat_map(|dg| dg.logo_images.iter().chain(dg.call_to_actions.iter()))
+        .cloned()
+        .collect()
+}
+
+fn write_image_asset(out: &mut String, name: &str, a: &JsonImageAsset) {
+    let _ = writeln!(out, "resource \"google_ads_image_asset\" \"{name}\" {{");
+    write_attr(out, 1, "name", &fmt_string(&a.name));
+    if let Some(id) = &a.asset_id {
+        write_attr(out, 1, "asset_id", &fmt_string(id));
+    }
+    out.push_str("}\n\n");
+}
+
+fn write_call_to_action_asset(out: &mut String, name: &str, a: &JsonCallToActionAsset) {
+    let _ = writeln!(
+        out,
+        "resource \"google_ads_call_to_action_asset\" \"{name}\" {{"
+    );
+    write_attr(out, 1, "call_to_action", &fmt_string(&a.call_to_action));
     out.push_str("}\n\n");
 }
 
@@ -4823,6 +4919,8 @@ mod tests {
                 { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "GH_Shorts_3", "status": "ENABLED", "advertisingChannelType": "DEMAND_GEN", "campaignBudget": "customers/9/campaignBudgets/1001" } },
                 { "adGroup": { "resourceName": "customers/9/adGroups/3001", "id": "3001", "name": "Shorts AG", "campaign": "customers/9/campaigns/2001", "status": "ENABLED" } },
                 { "asset": { "resourceName": "customers/9/assets/7001", "id": "7001", "youtubeVideoAsset": { "youtubeVideoId": "dQw4w9WgXcQ", "youtubeVideoTitle": "Shorts v2" } } },
+                { "asset": { "resourceName": "customers/9/assets/7002", "id": "7002", "name": "Square logo", "type": "IMAGE" } },
+                { "asset": { "resourceName": "customers/9/assets/7003", "id": "7003", "callToActionAsset": { "callToAction": "DOWNLOAD" } } },
                 { "adGroupAd": { "resourceName": "customers/9/adGroupAds/3001~4001", "adGroup": "customers/9/adGroups/3001", "status": "ENABLED", "ad": {
                     "name": "Ad 1",
                     "finalUrls": ["https://www.ghostery.com/ghostery-ad-blocker?utm_source=youtube"],
@@ -4830,8 +4928,9 @@ mod tests {
                         "headlines": [{"text": "Block trackers"}],
                         "longHeadlines": [{"text": "Block trackers and ads everywhere"}],
                         "descriptions": [{"text": "Private browsing made simple."}],
-                        "callToActions": [{"text": "Install"}],
+                        "callToActions": [{"asset": "customers/9/assets/7003"}],
                         "videos": [{"asset": "customers/9/assets/7001"}],
+                        "logoImages": [{"asset": "customers/9/assets/7002"}],
                         "breadcrumb1": "ghostery",
                         "breadcrumb2": "download"
                     }
@@ -4852,15 +4951,18 @@ mod tests {
         assert_eq!(dg.headlines, vec!["Block trackers".to_string()]);
         assert_eq!(dg.long_headlines, vec!["Block trackers and ads everywhere".to_string()]);
         assert_eq!(dg.descriptions, vec!["Private browsing made simple.".to_string()]);
-        assert_eq!(dg.call_to_actions, vec!["Install".to_string()]);
+        assert_eq!(dg.call_to_actions, vec!["7003".to_string()]);
         assert_eq!(dg.breadcrumb1.as_deref(), Some("ghostery"));
         assert_eq!(dg.breadcrumb2.as_deref(), Some("download"));
         assert_eq!(dg.videos, vec!["7001".to_string()]);
+        assert_eq!(dg.logo_images, vec!["7002".to_string()]);
 
         let rendered = canonicalize(&render(&input));
         assert!(rendered.contains("demand_gen_video_responsive_ad {"), "{rendered}");
         assert!(rendered.contains("breadcrumb1 = \"ghostery\""), "{rendered}");
         assert!(rendered.contains("google_ads_youtube_video_asset."), "{rendered}");
+        assert!(rendered.contains("google_ads_image_asset."), "{rendered}");
+        assert!(rendered.contains("google_ads_call_to_action_asset."), "{rendered}");
         assert!(
             rendered.contains("videos") && !rendered.contains("<unresolved video"),
             "video ref should resolve to a youtube asset:\n{rendered}"

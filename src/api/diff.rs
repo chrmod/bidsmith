@@ -6,8 +6,8 @@ use crate::commands::export::{
     JsonCampaignAsset, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
     JsonAudience, JsonCriterion, JsonCustomAudience, JsonCustomParameter, JsonCustomerAsset,
     JsonGroupedAudience, JsonSharedCriterion,
-    JsonSharedSet, JsonSitelinkAsset, JsonStructuredSnippetAsset, JsonTargetingSetting,
-    JsonYoutubeVideoAsset, AUTOMATICALLY_CREATED,
+    JsonImageAsset, JsonSharedSet, JsonSitelinkAsset, JsonStructuredSnippetAsset,
+    JsonTargetingSetting, JsonYoutubeVideoAsset, AUTOMATICALLY_CREATED,
 };
 use crate::schema::CUSTOM_PERIOD;
 
@@ -408,6 +408,24 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     for d in &declared.youtube_video_assets {
         if let Some(l) = live_youtube_video_assets.get(d.youtube_video_id.as_str()) {
             asset_match.insert(d.id.clone(), l.id.clone());
+        }
+    }
+    // The other two ad-level asset kinds resolve here for the same reason: a
+    // Demand Gen ad's body key names its logo images and its call-to-action
+    // buttons by live asset id.
+    let live_image_assets = content_index(&live.image_assets, |a| a.name.clone());
+    let mut image_matches: HashMap<&str, &JsonImageAsset> = HashMap::new();
+    for d in &declared.image_assets {
+        if let Some(l) = match_image_asset(live, &live_image_assets, d) {
+            image_matches.insert(d.id.as_str(), l);
+            asset_match.insert(d.id.clone(), l.id.clone());
+        }
+    }
+    let live_call_to_action_assets =
+        content_index(&live.call_to_action_assets, |a| a.call_to_action.clone());
+    for d in &declared.call_to_action_assets {
+        if let Some(l) = live_call_to_action_assets.get(&d.call_to_action) {
+            asset_match.insert(d.id.clone(), l[0].id.clone());
         }
     }
 
@@ -873,6 +891,43 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
         diffs.push(ResourceDiff {
             address: d.id.clone(),
             kind: "youtube_video_asset",
+            action,
+        });
+    }
+
+    for d in &declared.image_assets {
+        let action = match image_matches.get(d.id.as_str()) {
+            Some(l) => {
+                // Only a name can be ambiguous; `asset_id` names exactly one.
+                if d.asset_id.is_none() {
+                    if let Some(cands) = live_image_assets.get(&d.name) {
+                        if let Some(w) = ambiguity_warning(&d.id, cands, |a| &a.id) {
+                            campaign_warnings.push(w);
+                        }
+                    }
+                }
+                action_for_match(l.id.clone(), Vec::new())
+            }
+            None => {
+                blockers.push(missing_image_blocker(d));
+                Action::Create
+            }
+        };
+        diffs.push(ResourceDiff {
+            address: d.id.clone(),
+            kind: "image_asset",
+            action,
+        });
+    }
+
+    for d in &declared.call_to_action_assets {
+        let action = match live_call_to_action_assets.get(&d.call_to_action) {
+            Some(l) => action_for_match(l[0].id.clone(), Vec::new()),
+            None => Action::Create,
+        };
+        diffs.push(ResourceDiff {
+            address: d.id.clone(),
+            kind: "call_to_action_asset",
             action,
         });
     }
@@ -2921,13 +2976,13 @@ fn ad_urls_key(a: &JsonAdGroupAd) -> String {
 
 /// A stable key for an ad's content (everything `diff_ad_group_ad` treats as
 /// creation-only). Status is deliberately excluded so identical-bodied ads in
-/// different states share a bucket and get assigned 1:1. Video refs run through
+/// different states share a bucket and get assigned 1:1. Asset refs run through
 /// `asset_match` so a declared asset address and the live asset id it matched
 /// produce the same key; a live id is its own key, so one function serves both
 /// sides.
 fn ad_body_key(a: &JsonAdGroupAd, asset_match: &HashMap<String, String>) -> String {
     use std::fmt::Write;
-    let video_id = |r: &String| asset_match.get(r).unwrap_or(r).clone();
+    let live_asset = |r: &String| asset_match.get(r).unwrap_or(r).clone();
     let mut k = String::new();
     let _ = write!(
         k,
@@ -2956,7 +3011,7 @@ fn ad_body_key(a: &JsonAdGroupAd, asset_match: &HashMap<String, String>) -> Stri
         let _ = write!(
             k,
             "\u{1e}video:{}\u{1e}vh:{}\u{1e}vlh:{}\u{1e}vd:{}\u{1e}vcta:{}\u{1e}vb1:{}\u{1e}vb2:{}",
-            video_id(&v.video),
+            live_asset(&v.video),
             v.headlines.join("\u{1f}"),
             v.long_headlines.join("\u{1f}"),
             v.descriptions.join("\u{1f}"),
@@ -2966,17 +3021,18 @@ fn ad_body_key(a: &JsonAdGroupAd, asset_match: &HashMap<String, String>) -> Stri
         );
     }
     if let Some(v) = &a.ad.video_ad {
-        let _ = write!(k, "\u{1e}va:{}", video_id(&v.video));
+        let _ = write!(k, "\u{1e}va:{}", live_asset(&v.video));
     }
     if let Some(dg) = &a.ad.demand_gen_video_responsive_ad {
-        // call_to_actions are left out: live Demand Gen CTAs are asset refs, so
-        // reading them back never reproduces the declared text and every ad
-        // would look like a body change.
-        let videos: Vec<String> = dg.videos.iter().map(video_id).collect();
+        let videos: Vec<String> = dg.videos.iter().map(live_asset).collect();
+        let logos: Vec<String> = dg.logo_images.iter().map(live_asset).collect();
+        let ctas: Vec<String> = dg.call_to_actions.iter().map(live_asset).collect();
         let _ = write!(
             k,
-            "\u{1e}dgvideos:{}\u{1e}dgh:{}\u{1e}dglh:{}\u{1e}dgd:{}\u{1e}dgb1:{}\u{1e}dgb2:{}\u{1e}dgbn:{}",
+            "\u{1e}dgvideos:{}\u{1e}dglogos:{}\u{1e}dgcta:{}\u{1e}dgh:{}\u{1e}dglh:{}\u{1e}dgd:{}\u{1e}dgb1:{}\u{1e}dgb2:{}\u{1e}dgbn:{}",
             videos.join("\u{1f}"),
+            logos.join("\u{1f}"),
+            ctas.join("\u{1f}"),
             dg.headlines.join("\u{1f}"),
             dg.long_headlines.join("\u{1f}"),
             dg.descriptions.join("\u{1f}"),
@@ -3097,6 +3153,41 @@ fn diff_call_asset(_d: &JsonCallAsset, _l: &JsonCallAsset) -> Vec<FieldChange> {
 /// Live resources grouped by the content key adoption matches them on. Assets
 /// carry no `bidsmith:address` label — the API refuses to label them — so
 /// content is the only identity they have, and it is not guaranteed unique.
+/// The live image an `google_ads_image_asset` names: the one it pins by
+/// `asset_id`, else the first with that name. Nothing else can match — the
+/// image's own bytes are write-only, so there is no content to compare.
+fn match_image_asset<'a>(
+    live: &'a ExportInput,
+    by_name: &HashMap<String, Vec<&'a JsonImageAsset>>,
+    d: &JsonImageAsset,
+) -> Option<&'a JsonImageAsset> {
+    match &d.asset_id {
+        // Whichever half of `customers/1/assets/77` the file pasted.
+        Some(id) => {
+            let bare = id.rsplit('/').next().unwrap_or(id);
+            live.image_assets.iter().find(|l| l.id == bare)
+        }
+        None => by_name.get(&d.name).map(|cands| cands[0]),
+    }
+}
+
+/// An image asset is a reference, never a create: `ImageAsset.data` is
+/// mutate-only, so bidsmith has no way to put an image in the account and
+/// letting the plan degrade into a create would send an asset op with no bytes.
+/// Naming the upload step is the whole fix.
+fn missing_image_blocker(d: &JsonImageAsset) -> String {
+    let named = match &d.asset_id {
+        Some(id) => format!("no live image asset has id {id}"),
+        None => format!("no live image asset is named {:?}", d.name),
+    };
+    format!(
+        "{} names an image that is not in the account ({named}). bidsmith references image \
+         assets, it never uploads them — add the image to the Google Ads asset library \
+         (Assets → Images) and re-run, or point the block at one that is already there",
+        d.id,
+    )
+}
+
 fn content_index<T>(items: &[T], key: impl Fn(&T) -> String) -> HashMap<String, Vec<&T>> {
     let mut out: HashMap<String, Vec<&T>> = HashMap::new();
     for item in items {
@@ -4214,6 +4305,147 @@ mod removed_resource_tests {
             .filter(|d| d.kind == "ad_group_ad" && matches!(d.action, Action::Delete { .. }))
             .filter_map(|d| d.action.live_id())
             .collect()
+    }
+
+    #[test]
+    fn an_image_asset_that_matches_live_is_adopted_and_the_ad_points_at_it() {
+        let declared = input(
+            r#"{
+            "customer_id": "100",
+            "ad_groups": [{"id":"m.ag","name":"Shorts","campaign":"m.c"}],
+            "image_assets": [{"id":"m.logo","name":"Square logo"}],
+            "call_to_action_assets": [{"id":"m.cta","call_to_action":"SHOP_NOW"}],
+            "ad_group_ads": [{
+                "id":"m.dg","ad_group":"m.ag",
+                "ad":{"final_urls":["https://e.com"],"demand_gen_video_responsive_ad":{
+                    "logo_images":["m.logo"],"call_to_actions":["m.cta"],
+                    "business_name":"Example","headlines":["One"]
+                }}
+            }]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "ad_groups": [{"id":"55","name":"Shorts","campaign":"c1","managed_address":"m.ag"}],
+            "image_assets": [{"id":"77","name":"Square logo"}],
+            "call_to_action_assets": [{"id":"88","call_to_action":"SHOP_NOW"}],
+            "ad_group_ads": [{
+                "id":"55~9","ad_group":"55",
+                "ad":{"final_urls":["https://e.com"],"demand_gen_video_responsive_ad":{
+                    "logo_images":["77"],"call_to_actions":["88"],
+                    "business_name":"Example","headlines":["One"]
+                }},
+                "managed_address":"m.dg"
+            }],
+            "labels": {"m.ag":"customers/100/labels/1","m.dg":"customers/100/labels/2"}
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        assert!(report.blockers.is_empty(), "{:?}", report.blockers);
+        for (address, kind) in [("m.logo", "image_asset"), ("m.cta", "call_to_action_asset")] {
+            let d = report
+                .diffs
+                .iter()
+                .find(|d| d.address == address)
+                .unwrap_or_else(|| panic!("a {kind} diff"));
+            assert_eq!(d.kind, kind);
+            assert!(
+                matches!(d.action, Action::NoOp { .. }),
+                "{address} should adopt the live asset: {:?}",
+                d.action
+            );
+        }
+        let ad = report.diffs.iter().find(|d| d.kind == "ad_group_ad").expect("ad diff");
+        assert!(
+            matches!(ad.action, Action::NoOp { .. }),
+            "the ad body matches through the asset ids: {:?}",
+            ad.action
+        );
+    }
+
+    #[test]
+    fn an_image_asset_with_no_live_match_blocks_the_plan() {
+        let declared = input(
+            r#"{
+            "customer_id": "100",
+            "image_assets": [{"id":"m.logo","name":"Square logo"}]
+        }"#,
+        );
+        let live = input(r#"{"customer_id": "100"}"#);
+        let report = diff(&declared, &live);
+
+        let blocker = report
+            .blockers
+            .iter()
+            .find(|b| b.contains("m.logo"))
+            .unwrap_or_else(|| panic!("{:?}", report.blockers));
+        assert!(blocker.contains("never uploads"), "{blocker}");
+        assert!(blocker.contains("Square logo"), "{blocker}");
+    }
+
+    #[test]
+    fn an_image_asset_pinned_by_id_ignores_the_name() {
+        let declared = input(
+            r#"{
+            "customer_id": "100",
+            "image_assets": [{"id":"m.logo","name":"whatever the file calls it","asset_id":"77"}]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "image_assets": [{"id":"77","name":"logo-final-v3.png"}]
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        assert!(report.blockers.is_empty(), "{:?}", report.blockers);
+        let d = report.diffs.iter().find(|d| d.address == "m.logo").expect("image diff");
+        assert_eq!(d.action.live_id(), Some("77"));
+    }
+
+    #[test]
+    fn an_image_asset_pinned_by_a_full_resource_name_matches_too() {
+        let declared = input(
+            r#"{
+            "customer_id": "100",
+            "image_assets": [{"id":"m.logo","name":"Logo","asset_id":"customers/100/assets/77"}]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "image_assets": [{"id":"77","name":"logo-final-v3.png"}]
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        assert!(report.blockers.is_empty(), "{:?}", report.blockers);
+        let d = report.diffs.iter().find(|d| d.address == "m.logo").expect("image diff");
+        assert_eq!(d.action.live_id(), Some("77"));
+    }
+
+    #[test]
+    fn a_call_to_action_asset_missing_from_the_account_is_created() {
+        let declared = input(
+            r#"{
+            "customer_id": "100",
+            "call_to_action_assets": [{"id":"m.cta","call_to_action":"SHOP_NOW"}]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "100",
+            "call_to_action_assets": [{"id":"88","call_to_action":"LEARN_MORE"}]
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        assert!(report.blockers.is_empty(), "{:?}", report.blockers);
+        let d = report.diffs.iter().find(|d| d.address == "m.cta").expect("cta diff");
+        assert!(matches!(d.action, Action::Create), "{:?}", d.action);
     }
 
     #[test]

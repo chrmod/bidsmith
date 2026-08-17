@@ -48,6 +48,57 @@ age_ranges = ["AGE_RANGE_35_44", "AGE_RANGE_45_54"]
 `INCOME_RANGE_UNDETERMINED` on the other axes) means "include people
 Google could not classify" — the API's `include_undetermined` flag.
 
+## The creative needs four things, not two
+
+A Demand Gen video ad is rejected on create unless it carries **all** of:
+
+| | |
+|---|---|
+| `videos` | a YouTube video already published on your channel |
+| `logo_images` | 1–5 square logos, at least 128×128, 1:1 |
+| `business_name` | your advertiser/brand name |
+| headlines + descriptions | the copy |
+
+`validate` warns when `business_name` or `logo_images` is missing, so you
+find out before `plan` talks to Google.
+
+## Which assets bidsmith creates, and which it only references
+
+`google_ads_youtube_video_asset` and `google_ads_call_to_action_asset`
+are **created** by `apply` — a video id and a button type are all the API
+needs.
+
+`google_ads_image_asset` is a **reference**. The Google Ads API accepts
+image bytes on the way in but never hands them back, so bidsmith would
+have no way to tell an image it uploaded from one it didn't. Upload the
+logo once in Google Ads (**Assets → Images**), then name it here:
+
+```hcl
+resource "google_ads_image_asset" "logo" {
+  name = "Brand logo 1200x1200"
+}
+```
+
+If no image in the account carries that name, `plan` stops and says so
+rather than sending an asset op that cannot work. Two images with the
+same name? Add `asset_id = "123456789"` to pin one.
+
+## The button is an asset, not a phrase
+
+`call_to_actions` takes references, not text — Google renders "Learn
+more" in the viewer's language from the type you pick:
+
+```hcl
+resource "google_ads_call_to_action_asset" "learn_more" {
+  call_to_action = "LEARN_MORE"
+}
+```
+
+`LEARN_MORE`, `SHOP_NOW`, `SIGN_UP`, `BOOK_NOW`, `DOWNLOAD`,
+`GET_QUOTE`, `SUBSCRIBE`, `CONTACT_US`, `APPLY_NOW`, `BUY_NOW`,
+`DONATE_NOW`, `ORDER_NOW`, `PLAY_NOW`, `SEE_MORE`, `START_NOW`,
+`VISIT_SITE`, and `WATCH_NOW` are the whole vocabulary.
+
 ## Two things Demand Gen refuses
 
 `target_cpm` — the campaign here bids with `target_spend`, because a

@@ -1,0 +1,72 @@
+---
+title: google_ads_image_asset
+description: A reference to an image already in your Google Ads asset library, used as the logo on a Demand Gen ad.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_image_asset'];
+
+An **image asset** points bidsmith at an image that is **already in your
+account's asset library**, addressed by the name it carries there. It's
+what a Demand Gen creative uses as its logo, via the `logo_images`
+attribute of a
+[`demand_gen_video_responsive_ad`](./google_ads_ad_group_ad/#demand_gen_video_responsive_ad)
+block.
+
+<Aside type="caution" title="bidsmith does not upload images">
+  bidsmith never uploads image files. Google Ads accepts image bytes on
+  the way in but never hands them back, so bidsmith would have no way to
+  tell an image it uploaded from one it didn't, and re-running `apply`
+  would pile up duplicates. Upload the image once in Google Ads
+  (**Assets → Images**), then name it here.
+</Aside>
+
+If no image in the account carries the name you wrote, `plan` stops and
+says so rather than sending an operation that cannot work.
+
+## Where the name comes from
+
+In Google Ads, open **Assets → Images**. The name in the list is what
+goes in `name` — for images uploaded through the UI that is usually the
+filename.
+
+```hcl
+resource "google_ads_image_asset" "logo" {
+  name = "Brand logo 1200x1200"
+}
+```
+
+## When two images share a name
+
+Asset names are not unique. If several images answer to the same name,
+bidsmith adopts the first and warns that the rest stay unmanaged. Pin
+the one you mean with its id:
+
+```hcl
+resource "google_ads_image_asset" "logo" {
+  name     = "Brand logo 1200x1200"
+  asset_id = "123456789"
+}
+```
+
+With `asset_id` set, `name` is documentation — the id is what the match
+runs on.
+
+## What the image has to look like
+
+For a Demand Gen logo, Google requires a **square** image: at least
+128×128, aspect ratio 1:1 (±1%), in GIF, JPEG, or PNG. An ad takes 1 to
+5 of them.
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+## See also
+
+- [`google_ads_ad_group_ad`](./google_ads_ad_group_ad/#demand_gen_video_responsive_ad) — the ad that shows this logo.
+- [`google_ads_call_to_action_asset`](./google_ads_call_to_action_asset/) — the button on the same creative.
+- [`google_ads_youtube_video_asset`](./google_ads_youtube_video_asset/) — the video, referenced the same way.

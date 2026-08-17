@@ -304,12 +304,12 @@ fn lint_demand_gen_video_ad(
             ),
         ));
     }
-    if let Some(cta) = find_attr(&block.body, "call_to_actions") {
+    if find_attr(&block.body, "logo_images").is_none() {
         diags.push(Diag::warning(
             file.src.clone(),
-            span_of(cta.key.span()),
+            span_of(block.ident.span()),
             format!(
-                "{address} sets call_to_actions on a Demand Gen video ad: the API takes CALL_TO_ACTION asset references here rather than text, and bidsmith does not model that asset type yet — `apply` cannot create the ad while the attribute is set"
+                "{address} omits logo_images: the Google Ads API requires 1 to 5 square logo images on a Demand Gen video ad, so `apply` cannot create this ad without them"
             ),
         ));
     }
@@ -1155,6 +1155,61 @@ resource "google_ads_ad_group_ad" "rsa" {
             msgs.iter().any(|m| m.contains("path1 in google_ads_ad_group_ad.rsa")
                 && m.contains("outside [a-z0-9-]")),
             "expected charset warning on rendered path: {msgs:?}"
+        );
+    }
+
+    fn demand_gen_ad(name: &str, body: &str) -> Vec<String> {
+        lint_str(
+            name,
+            &format!(
+                r#"
+resource "google_ads_ad_group_ad" "dg" {{
+  ad_group = google_ads_ad_group.g.id
+
+  ad {{
+    final_urls = ["https://example.com/lp"]
+
+    demand_gen_video_responsive_ad {{
+{body}
+    }}
+  }}
+}}
+"#
+            ),
+        )
+    }
+
+    #[test]
+    fn a_demand_gen_ad_without_logo_images_warns() {
+        let msgs = demand_gen_ad(
+            "dg_no_logo",
+            r#"      videos        = [google_ads_youtube_video_asset.v.id]
+      business_name = "Example"
+      headlines     = ["One", "Two"]"#,
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("omits logo_images")),
+            "expected a logo_images warning: {msgs:?}"
+        );
+        assert!(
+            !msgs.iter().any(|m| m.contains("omits business_name")),
+            "business_name is declared: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn a_complete_demand_gen_ad_is_quiet() {
+        let msgs = demand_gen_ad(
+            "dg_complete",
+            r#"      videos          = [google_ads_youtube_video_asset.v.id]
+      logo_images     = [google_ads_image_asset.logo.id]
+      call_to_actions = [google_ads_call_to_action_asset.shop.id]
+      business_name   = "Example"
+      headlines       = ["One", "Two"]"#,
+        );
+        assert!(
+            !msgs.iter().any(|m| m.contains("google_ads_ad_group_ad.dg")),
+            "a creatable Demand Gen ad should lint clean: {msgs:?}"
         );
     }
 }

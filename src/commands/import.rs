@@ -341,7 +341,7 @@ fn plan_import(
             "custom_audience" => &mut known.audiences.custom,
             "audience" => &mut known.audiences.grouped,
             "sitelink_asset" | "callout_asset" | "structured_snippet_asset" | "call_asset"
-            | "youtube_video_asset" => &mut known.assets,
+            | "youtube_video_asset" | "image_asset" | "call_to_action_asset" => &mut known.assets,
             _ => continue,
         };
         bucket.insert(live_id.to_string(), reference);

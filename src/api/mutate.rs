@@ -5,7 +5,8 @@ use serde_json::{Map, Value, json};
 use crate::api::diff::{Action, DiffReport};
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
-    JsonBudget, JsonCallAsset, JsonCalloutAsset, JsonCampaign, JsonCampaignAsset,
+    JsonBudget, JsonCallAsset, JsonCallToActionAsset, JsonCalloutAsset, JsonCampaign,
+    JsonCampaignAsset,
     JsonAudience, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
     JsonCriterion, JsonCustomAudience, JsonCustomParameter, JsonCustomerAsset,
     JsonGroupedAudience,
@@ -121,6 +122,8 @@ pub fn build_mutate_with_diff(
             "callout_asset" => "assets",
             "structured_snippet_asset" => "assets",
             "youtube_video_asset" => "assets",
+            "image_asset" => "assets",
+            "call_to_action_asset" => "assets",
             "customer_asset" => "customerAssets",
             "campaign_asset" => "campaignAssets",
             "ad_group_asset" => "adGroupAssets",
@@ -441,6 +444,17 @@ pub fn build_mutate_with_diff(
             operations.push(PlanOperation { address: a.id.clone(), kind: "youtube_video_asset" });
         }
     }
+    for a in &input.call_to_action_assets {
+        let Some(rn) = plan_rn(&refs, &a.id, "call_to_action_asset", &mut errors) else {
+            continue;
+        };
+        if create_set.contains(&a.id) {
+            mutate_ops.push(json!({
+                "assetOperation": { "create": call_to_action_asset_create(a, rn) }
+            }));
+            operations.push(PlanOperation { address: a.id.clone(), kind: "call_to_action_asset" });
+        }
+    }
     for a in &input.ad_group_ads {
         let Some(rn) = plan_rn(&refs, &a.id, "ad_group_ad", &mut errors) else {
             continue;
@@ -450,12 +464,12 @@ pub fn build_mutate_with_diff(
                 Some(s) => s,
                 None => continue,
             };
-            let videos = match resolve_ad_videos(&refs, a, &mut errors) {
+            let assets = match resolve_ad_assets(&refs, a, &mut errors) {
                 Some(v) => v,
                 None => continue,
             };
             mutate_ops.push(json!({
-                "adGroupAdOperation": { "create": ad_group_ad_create(a, rn, &ag_rn, &videos) }
+                "adGroupAdOperation": { "create": ad_group_ad_create(a, rn, &ag_rn, &assets) }
             }));
             operations.push(PlanOperation { address: a.id.clone(), kind: "ad_group_ad" });
         } else if let Some(fields) = update_set.get(&a.id) {
@@ -1625,6 +1639,13 @@ fn youtube_video_asset_create(a: &JsonYoutubeVideoAsset, resource_name: &str) ->
     Value::Object(m)
 }
 
+fn call_to_action_asset_create(a: &JsonCallToActionAsset, resource_name: &str) -> Value {
+    json!({
+        "resourceName": resource_name,
+        "callToActionAsset": { "callToAction": a.call_to_action },
+    })
+}
+
 fn structured_snippet_asset_create(a: &JsonStructuredSnippetAsset, resource_name: &str) -> Value {
     let mut m = Map::new();
     m.insert("resourceName".into(), Value::String(resource_name.to_string()));
@@ -2175,7 +2196,7 @@ fn ad_group_ad_create(
     a: &JsonAdGroupAd,
     resource_name: &str,
     ag_rn: &str,
-    video_rns: &[String],
+    assets: &AdAssetRefs,
 ) -> Value {
     let mut m = Map::new();
     m.insert("resourceName".into(), Value::String(resource_name.to_string()));
@@ -2183,18 +2204,26 @@ fn ad_group_ad_create(
     if let Some(s) = &a.status {
         m.insert("status".into(), Value::String(s.clone()));
     }
-    m.insert("ad".into(), ad_value(&a.ad, video_rns));
+    m.insert("ad".into(), ad_value(&a.ad, assets));
     Value::Object(m)
 }
 
-/// Resource names of the youtube video assets an ad's creative references, in
-/// declaration order. `None` means the ad cannot be built — the reasons are
-/// already recorded in `errors`.
-fn resolve_ad_videos(
+/// Resource names of the assets an ad's creative references, in declaration
+/// order.
+#[derive(Default)]
+struct AdAssetRefs {
+    videos: Vec<String>,
+    logo_images: Vec<String>,
+    call_to_actions: Vec<String>,
+}
+
+/// Resolve every asset reference an ad's creative carries. `None` means the ad
+/// cannot be built — the reasons are already recorded in `errors`.
+fn resolve_ad_assets(
     refs: &HashMap<String, String>,
     a: &JsonAdGroupAd,
     errors: &mut Vec<PlanBuildError>,
-) -> Option<Vec<String>> {
+) -> Option<AdAssetRefs> {
     if a.ad.video_ad.is_some() {
         // Not a model gap: `Ad.video_ad` is what a UI-built VIDEO creative is,
         // and the channel refuses every create. Saying so here beats letting
@@ -2211,22 +2240,22 @@ fn resolve_ad_videos(
         return None;
     }
     if a.ad.video_responsive_ad.is_some() {
-        // v24 made business name and logo image assets Required on this ad
-        // type, and bidsmith has no image asset model — every create it could
-        // emit would be refused.
+        // v24 made business name and logo images Required on this ad type and
+        // the block models neither — every create it could emit would be
+        // refused. Nothing to reopen: the VIDEO channel refuses every mutate.
         errors.push(PlanBuildError {
             address: a.id.clone(),
             message: "a video_responsive_ad creative cannot be created — since Google Ads API \
-                      v24 it requires a business name and logo image assets, which bidsmith \
-                      does not model yet. Declare it to adopt the ad that is already live \
-                      (bidsmith claims it by bidsmith:address label, else by body), or build \
-                      the ad in the Google Ads UI"
+                      v24 it requires a business name and logo images, which this block does \
+                      not model. Declare it to adopt the ad that is already live (bidsmith \
+                      claims it by bidsmith:address label, else by body), or build the ad in \
+                      the Google Ads UI"
                 .to_string(),
         });
         return None;
     }
     let Some(dg) = &a.ad.demand_gen_video_responsive_ad else {
-        return Some(Vec::new());
+        return Some(AdAssetRefs::default());
     };
     let mut ok = true;
     if dg.business_name.is_none() {
@@ -2238,28 +2267,35 @@ fn resolve_ad_videos(
         });
         ok = false;
     }
-    if !dg.call_to_actions.is_empty() {
+    if dg.logo_images.is_empty() {
         errors.push(PlanBuildError {
             address: a.id.clone(),
-            message: "demand_gen_video_responsive_ad call_to_actions cannot be created: the API \
-                      takes CALL_TO_ACTION asset references here, not text, and bidsmith does not \
-                      model that asset type yet — drop the attribute to create the ad without a \
-                      call-to-action button"
+            message: "demand_gen_video_responsive_ad needs logo_images to be created — the \
+                      Google Ads API requires 1 to 5 square logo images (at least 128x128, \
+                      1:1) on this ad type. Point it at a google_ads_image_asset naming an \
+                      image already in the account's asset library, or run `bidsmith refresh \
+                      -d` to render the logos of an ad that is already live"
                 .to_string(),
         });
         ok = false;
     }
-    let mut rns = Vec::with_capacity(dg.videos.len());
-    for v in &dg.videos {
-        match resolve(refs, v, &a.id, "videos", errors) {
-            Some(rn) => rns.push(rn),
-            None => ok = false,
+    let mut out = AdAssetRefs::default();
+    for (field, addresses, into) in [
+        ("videos", &dg.videos, &mut out.videos),
+        ("logo_images", &dg.logo_images, &mut out.logo_images),
+        ("call_to_actions", &dg.call_to_actions, &mut out.call_to_actions),
+    ] {
+        for address in addresses {
+            match resolve(refs, address, &a.id, field, errors) {
+                Some(rn) => into.push(rn),
+                None => ok = false,
+            }
         }
     }
-    ok.then_some(rns)
+    ok.then_some(out)
 }
 
-fn ad_value(ad: &JsonAd, video_rns: &[String]) -> Value {
+fn ad_value(ad: &JsonAd, assets: &AdAssetRefs) -> Value {
     let mut m = Map::new();
     if let Some(n) = &ad.name {
         m.insert("name".into(), Value::String(n.clone()));
@@ -2280,19 +2316,25 @@ fn ad_value(ad: &JsonAd, video_rns: &[String]) -> Value {
     if let Some(dg) = &ad.demand_gen_video_responsive_ad {
         m.insert(
             "demandGenVideoResponsiveAd".into(),
-            demand_gen_video_ad_value(dg, video_rns),
+            demand_gen_video_ad_value(dg, assets),
         );
     }
     Value::Object(m)
 }
 
-fn demand_gen_video_ad_value(dg: &JsonDemandGenVideoResponsiveAd, video_rns: &[String]) -> Value {
+fn demand_gen_video_ad_value(dg: &JsonDemandGenVideoResponsiveAd, assets: &AdAssetRefs) -> Value {
     let mut m = Map::new();
     insert_ad_text_list(&mut m, "headlines", &dg.headlines);
     insert_ad_text_list(&mut m, "longHeadlines", &dg.long_headlines);
     insert_ad_text_list(&mut m, "descriptions", &dg.descriptions);
-    if !video_rns.is_empty() {
-        m.insert("videos".into(), ad_video_assets(video_rns));
+    for (key, rns) in [
+        ("videos", &assets.videos),
+        ("logoImages", &assets.logo_images),
+        ("callToActions", &assets.call_to_actions),
+    ] {
+        if !rns.is_empty() {
+            m.insert(key.to_string(), asset_refs(rns));
+        }
     }
     if let Some(b) = &dg.breadcrumb1 {
         m.insert("breadcrumb1".into(), Value::String(b.clone()));
@@ -2314,13 +2356,10 @@ fn insert_ad_text_list(m: &mut Map<String, Value>, key: &str, texts: &[String]) 
     m.insert(key.to_string(), Value::Array(items));
 }
 
-fn ad_video_assets(video_rns: &[String]) -> Value {
-    Value::Array(
-        video_rns
-            .iter()
-            .map(|rn| json!({ "asset": rn }))
-            .collect(),
-    )
+/// `AdVideoAsset` / `AdImageAsset` / `AdCallToActionAsset` are the same shape
+/// on the wire: a resource name under `asset`.
+fn asset_refs(rns: &[String]) -> Value {
+    Value::Array(rns.iter().map(|rn| json!({ "asset": rn })).collect())
 }
 
 fn rsa_value(rsa: &JsonResponsiveSearchAd) -> Value {
@@ -5019,8 +5058,11 @@ mod tests {
             }]
         }))
         .expect("valid ExportInput");
-        let live: ExportInput =
-            serde_json::from_value(json!({ "customer_id": "100" })).expect("valid live");
+        let live: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "image_assets": [{ "id": "77", "name": "Square logo" }]
+        }))
+        .expect("valid live");
 
         let report = crate::api::diff::diff(&declared, &live);
         let plan = match build_mutate_with_diff(&declared, &report, true) {
@@ -5089,6 +5131,7 @@ mod tests {
                 "youtube_video_id": "dQw4w9WgXcQ",
                 "youtube_video_title": "Brand 12s"
             }],
+            "image_assets": [{ "id": "m.logo", "name": "Square logo" }],
             "ad_group_ads": [{
                 "id": "m.preroll",
                 "ad_group": "m.ag",
@@ -5098,6 +5141,7 @@ mod tests {
                     "final_urls": ["https://ghostery.com/get"],
                     "demand_gen_video_responsive_ad": {
                         "videos": ["m.brand_12s"],
+                        "logo_images": ["m.logo"],
                         "business_name": "Ghostery",
                         "headlines": ["Block ads and trackers"],
                         "long_headlines": ["Ghostery blocks ads and trackers everywhere"],
@@ -5107,8 +5151,11 @@ mod tests {
             }]
         }))
         .expect("valid ExportInput");
-        let live: ExportInput =
-            serde_json::from_value(json!({ "customer_id": "100" })).expect("valid live");
+        let live: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "image_assets": [{ "id": "77", "name": "Square logo" }]
+        }))
+        .expect("valid live");
 
         let report = crate::api::diff::diff(&declared, &live);
         let plan = match build_mutate_with_diff(&declared, &report, true) {
@@ -5174,6 +5221,7 @@ mod tests {
             }],
             "ad_groups": [{ "id": "m.ag", "name": "In-stream", "campaign": "m.c" }],
             "youtube_video_assets": [{ "id": "m.brand_12s", "youtube_video_id": "dQw4w9WgXcQ" }],
+            "image_assets": [{ "id": "m.logo", "name": "Square logo" }],
             "ad_group_ads": [{
                 "id": "m.preroll",
                 "ad_group": "m.ag",
@@ -5181,6 +5229,7 @@ mod tests {
                     "final_urls": ["https://ghostery.com/get"],
                     "demand_gen_video_responsive_ad": {
                         "videos": ["m.brand_12s"],
+                        "logo_images": ["m.logo"],
                         "business_name": "Ghostery",
                         "headlines": ["Block ads"]
                     }
@@ -5190,7 +5239,8 @@ mod tests {
         .expect("valid ExportInput");
         let live: ExportInput = serde_json::from_value(json!({
             "customer_id": "100",
-            "youtube_video_assets": [{ "id": "42", "youtube_video_id": "dQw4w9WgXcQ" }]
+            "youtube_video_assets": [{ "id": "42", "youtube_video_id": "dQw4w9WgXcQ" }],
+            "image_assets": [{ "id": "77", "name": "Square logo" }]
         }))
         .expect("valid live");
 
@@ -5214,7 +5264,7 @@ mod tests {
     }
 
     #[test]
-    fn demand_gen_video_ad_needs_business_name_and_rejects_text_ctas() {
+    fn demand_gen_video_ad_needs_business_name_and_logo_images() {
         let declared: ExportInput = serde_json::from_value(json!({
             "customer_id": "100",
             "campaign_budgets": [{ "id": "m.b", "name": "Preroll", "amount_micros": 10000000 }],
@@ -5231,8 +5281,7 @@ mod tests {
                     "final_urls": ["https://ghostery.com/get"],
                     "demand_gen_video_responsive_ad": {
                         "videos": ["m.short"],
-                        "headlines": ["Block ads"],
-                        "call_to_actions": ["Install"]
+                        "headlines": ["Block ads"]
                     }
                 }
             }]
@@ -5251,7 +5300,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(messages.contains("business_name"), "{messages}");
-        assert!(messages.contains("CALL_TO_ACTION"), "{messages}");
+        assert!(messages.contains("logo_images"), "{messages}");
     }
 
     #[test]
@@ -5265,6 +5314,8 @@ mod tests {
             }],
             "ad_groups": [{ "id": "m.ag", "name": "In-stream", "campaign": "m.c" }],
             "youtube_video_assets": [{ "id": "m.short", "youtube_video_id": "dQw4w9WgXcQ" }],
+            "image_assets": [{ "id": "m.logo", "name": "Square logo" }],
+            "call_to_action_assets": [{ "id": "m.cta", "call_to_action": "SHOP_NOW" }],
             "ad_group_ads": [{
                 "id": "m.dg",
                 "ad_group": "m.ag",
@@ -5272,6 +5323,8 @@ mod tests {
                     "final_urls": ["https://ghostery.com/get"],
                     "demand_gen_video_responsive_ad": {
                         "videos": ["m.short"],
+                        "logo_images": ["m.logo"],
+                        "call_to_actions": ["m.cta"],
                         "headlines": ["Block ads"],
                         "descriptions": ["Free and open source"],
                         "business_name": "Ghostery",
@@ -5281,8 +5334,11 @@ mod tests {
             }]
         }))
         .expect("valid ExportInput");
-        let live: ExportInput =
-            serde_json::from_value(json!({ "customer_id": "100" })).expect("valid live");
+        let live: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "image_assets": [{ "id": "77", "name": "Square logo" }]
+        }))
+        .expect("valid live");
 
         let report = crate::api::diff::diff(&declared, &live);
         let plan = expect_plan(build_mutate_with_diff(&declared, &report, true));
@@ -5296,6 +5352,24 @@ mod tests {
         assert_eq!(dg["headlines"][0]["text"].as_str().unwrap(), "Block ads");
         assert_eq!(dg["breadcrumb1"].as_str().unwrap(), "Privacy");
         assert!(dg["videos"][0]["asset"].as_str().unwrap().starts_with("customers/100/assets/-"));
+        assert_eq!(
+            dg["logoImages"][0]["asset"].as_str().unwrap(),
+            "customers/100/assets/77",
+            "a logo image is referenced, never created"
+        );
+        assert!(
+            dg["callToActions"][0]["asset"].as_str().unwrap().starts_with("customers/100/assets/-"),
+            "the button asset is created in the same batch: {dg}"
+        );
+        let cta_idx = ops
+            .iter()
+            .position(|o| o.pointer("/assetOperation/create/callToActionAsset").is_some())
+            .expect("a call to action asset create op");
+        let ad_idx = ops
+            .iter()
+            .position(|o| o.get("adGroupAdOperation").is_some())
+            .expect("an ad group ad create op");
+        assert!(cta_idx < ad_idx, "the button must be created before the ad that references it");
     }
 
     #[test]
@@ -5374,9 +5448,9 @@ mod tests {
 
     #[test]
     fn a_video_responsive_ad_creative_cannot_be_created_and_the_error_names_adoption() {
-        // v24 made business name and logo image assets Required on this ad
-        // type; bidsmith models neither, so the create must fail the plan
-        // instead of sinking the atomic batch at apply.
+        // v24 made business name and logo images Required on this ad type and
+        // the block models neither, so the create must fail the plan instead of
+        // sinking the atomic batch at apply.
         let declared: ExportInput = serde_json::from_value(json!({
             "customer_id": "100",
             "campaign_budgets": [{ "id": "m.b", "name": "Preroll", "amount_micros": 10000000 }],
@@ -5413,7 +5487,7 @@ mod tests {
             .map(|e| e.message.as_str())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(messages.contains("logo image assets"), "{messages}");
+        assert!(messages.contains("logo images"), "{messages}");
         assert!(messages.contains("adopt"), "{messages}");
     }
 
