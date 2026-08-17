@@ -157,6 +157,7 @@ export default defineConfig({
                 { label: 'google_ads_ad_group_criterion', slug: 'resources/google_ads_ad_group_criterion' },
                 { label: 'google_ads_campaign_criterion', slug: 'resources/google_ads_campaign_criterion' },
                 { label: 'google_ads_custom_audience', slug: 'resources/google_ads_custom_audience' },
+                { label: 'google_ads_audience', slug: 'resources/google_ads_audience' },
               ],
             },
             {

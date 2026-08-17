@@ -338,7 +338,8 @@ fn plan_import(
             "campaign" => &mut known.campaigns,
             "ad_group" => &mut known.ad_groups,
             "conversion_action" => &mut known.conversion_actions,
-            "custom_audience" => &mut known.custom_audiences,
+            "custom_audience" => &mut known.audiences.custom,
+            "audience" => &mut known.audiences.grouped,
             "sitelink_asset" | "callout_asset" | "structured_snippet_asset" | "call_asset"
             | "youtube_video_asset" => &mut known.assets,
             _ => continue,

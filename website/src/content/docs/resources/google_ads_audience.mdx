@@ -1,0 +1,173 @@
+---
+title: google_ads_audience
+description: One reusable definition of who to reach — segments and demographics together — and the only way a Demand Gen ad group can be targeted.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AttributeTable from '~/components/AttributeTable.astro';
+import schema from '~/data/schema.json';
+
+export const resource = schema.resources['google_ads_audience'];
+export const segment = resource.blocks.find((b) => b.name === 'segment');
+
+An **audience** is one named description of who you want to reach, with
+every axis in the same place: in-market and affinity segments, life
+events, detailed demographics, a custom audience you built yourself, plus
+age, gender, parental status, and household income.
+
+Elsewhere in Google Ads each of those is a separate criterion hung off a
+campaign or an ad group. An audience gathers them into a single reusable
+resource — and for **Demand Gen** campaigns it is not optional. Those ad
+groups run in *grouped-audience* mode, where a segment attached directly
+is rejected:
+
+> Audience segment attachment is not allowed when use audience grouped
+> bit is set to true.
+
+## Example
+
+```hcl
+resource "google_ads_audience" "home_battery_shoppers" {
+  name        = "Home battery shoppers"
+  description = "In-market for energy storage, homeowners with budget"
+
+  segment { user_interest   = "customers/1234567890/userInterests/80277" }
+  segment { life_event      = "customers/1234567890/lifeEvents/80111" }
+  segment { custom_audience = google_ads_custom_audience.solar_researchers.id }
+
+  age_ranges    = ["AGE_RANGE_35_44", "AGE_RANGE_45_54", "AGE_RANGE_55_64"]
+  income_ranges = ["INCOME_RANGE_80_90", "INCOME_RANGE_90_UP"]
+
+  excluded_user_lists = ["customers/1234567890/userLists/778899"]
+}
+```
+
+Then point an ad group at it:
+
+```hcl
+resource "google_ads_ad_group" "home_battery" {
+  name     = "Home battery"
+  campaign = google_ads_campaign.demand_gen.id
+
+  audience_setting {
+    use_audience_grouped = true
+  }
+}
+
+resource "google_ads_ad_group_criterion" "home_battery_audience" {
+  ad_group = google_ads_ad_group.home_battery.id
+
+  audience {
+    audience = google_ads_audience.home_battery_shoppers.id
+  }
+}
+```
+
+<Aside type="caution">
+  `use_audience_grouped` is fixed when the **ad group** is created.
+  Without it Google rejects the audience criterion; with it, direct
+  segment criteria are rejected instead. `validate` requires it on any ad
+  group whose criterion targets an audience, and `plan` warns when a live
+  ad group carries the other value — at which point the only fix is a new
+  ad group.
+</Aside>
+
+## How the axes combine
+
+The axes **intersect**, and the values within one axis are
+**alternatives**. The example above reaches someone who is
+
+- in at least one of the three segments, **and**
+- aged 35–64, **and**
+- in the top 20% of household income,
+
+and who is not on the excluded user list. Leave an axis out entirely and
+it does not narrow anything.
+
+## Schema
+
+<AttributeTable block={resource} headingLevel={3} />
+
+### Demographics use the enum, not years
+
+Google's API states an audience's age dimension in years and every other
+age field as an enum. `.bid` files use the enum in both places, so
+`AGE_RANGE_35_44` means the same thing wherever you write it.
+
+`AGE_RANGE_UNDETERMINED` — and `UNDETERMINED` on `genders` /
+`parental_statuses`, `INCOME_RANGE_UNDETERMINED` on `income_ranges` —
+means *"include people Google could not classify"*. That is a large share
+of viewers on most accounts, so leaving it out of a list is a real
+narrowing, not a rounding error.
+
+### `excluded_user_lists`
+
+Google only lets an audience exclude **user lists** — there is no way to
+exclude an interest or a demographic here. Each entry is a user-list
+resource name; bidsmith has no resource that builds user lists, so these
+are always names of lists that already exist.
+
+## Nested blocks
+
+### `segment`
+
+One segment. Repeat the block to list many — the axis is the union of
+them. Set **exactly one** attribute per block:
+
+- **`user_interest`** — an affinity or in-market segment
+  (`customers/{customer_id}/userInterests/…`).
+- **`user_list`** — a remarketing or customer-match list you already
+  have.
+- **`life_event`** — people around a moment like moving or graduating
+  (`customers/{customer_id}/lifeEvents/…`).
+- **`detailed_demographic`** — a long-term trait like homeownership or
+  education (`customers/{customer_id}/detailedDemographics/…`).
+- **`custom_audience`** — a
+  [`google_ads_custom_audience`](./google_ads_custom_audience/) you built
+  from search terms, sites, or apps. Takes a reference or a resource
+  name.
+
+<AttributeTable block={segment} headingLevel={4} />
+
+<Aside type="note">
+  Each axis is managed as a **whole set**. Whatever the file says is what
+  the audience ends up with, so a segment somebody added in the Google Ads
+  website shows up in `plan` as drift, and the order of the blocks and
+  list entries doesn't matter. Editing an axis is an in-place update — the
+  audience keeps its id and every ad group targeting it stays pointed at
+  it.
+</Aside>
+
+## Matching an audience that already exists
+
+bidsmith matches a declared audience to a live one **by name**, the same
+way custom audiences and shared sets work. Declaring one whose name
+already exists in the account adopts it rather than creating a duplicate
+— which is how you bring a UI-built audience under management: run
+`bidsmith refresh`, keep the block it writes, and edit from there.
+
+If you'd rather leave an audience unmanaged, don't declare it — point the
+criterion at its resource name instead:
+
+```hcl
+audience {
+  audience = "customers/1234567890/audiences/9876543210"
+}
+```
+
+## How it applies
+
+Unlike a custom audience, an audience goes in the **same** atomic request
+as everything else. A new audience and the ad-group criterion attaching it
+commit together or not at all, so there is no half-applied state to clean
+up and no `deferred` row in `plan`.
+
+Google has no remove operation for an audience, so dropping the block from
+your files leaves the audience alone rather than destroying it. Archive it
+in the Google Ads website if you want it gone.
+
+## See also
+
+- [`google_ads_ad_group_criterion`](./google_ads_ad_group_criterion/) — how an ad group targets the audience.
+- [`google_ads_custom_audience`](./google_ads_custom_audience/) — build a search-intent segment to put inside one.
+- [Google's Demand Gen audiences help page](https://support.google.com/google-ads/answer/15594567).

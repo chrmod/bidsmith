@@ -1,0 +1,84 @@
+provider "google_ads" {
+  customer_id = "1234567890"
+}
+
+# The grouped audience the ad group targets. Segments and demographics live
+# here, not on the ad group, because Demand Gen runs in grouped-audience mode.
+resource "google_ads_audience" "home_battery_shoppers" {
+  name = "Home battery shoppers"
+  description = "In-market for energy storage, homeowners with budget"
+
+  segment {
+    user_interest = "customers/1234567890/userInterests/80277"
+  }
+
+  segment {
+    life_event = "customers/1234567890/lifeEvents/80111"
+  }
+
+  segment {
+    custom_audience = google_ads_custom_audience.solar_researchers.id
+  }
+
+  age_ranges = ["AGE_RANGE_35_44", "AGE_RANGE_45_54", "AGE_RANGE_55_64"]
+  income_ranges = ["INCOME_RANGE_80_90", "INCOME_RANGE_90_UP"]
+  excluded_user_lists = ["customers/1234567890/userLists/778899"]
+}
+
+resource "google_ads_custom_audience" "solar_researchers" {
+  name = "Solar researchers"
+  description = "People searching for rooftop solar"
+  type = "SEARCH"
+
+  member {
+    keyword = "rooftop solar cost"
+  }
+
+  member {
+    url = "https://example.com/solar-guide"
+  }
+}
+
+resource "google_ads_campaign_budget" "demand_gen" {
+  name = "Demand Gen — home battery"
+  amount_micros = 60000000
+}
+
+resource "google_ads_campaign" "demand_gen" {
+  name = "Demand Gen — home battery"
+  advertising_channel_type = "DEMAND_GEN"
+  campaign_budget = google_ads_campaign_budget.demand_gen.id
+  contains_eu_political_advertising = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"
+
+  # Demand Gen refuses target_cpm; Google answers "The operation is not
+  # allowed for the given context." with no field named.
+  target_spend {}
+}
+
+resource "google_ads_ad_group" "home_battery" {
+  name = "Home battery"
+  campaign = google_ads_campaign.demand_gen.id
+
+  # Fixed when the ad group is created, and audience targeting needs it.
+  audience_setting {
+    use_audience_grouped = true
+  }
+}
+
+resource "google_ads_ad_group_criterion" "home_battery_audience" {
+  ad_group = google_ads_ad_group.home_battery.id
+
+  audience {
+    audience = google_ads_audience.home_battery_shoppers.id
+  }
+}
+
+# Language and location stay ad-group-level on Demand Gen: Google creates the
+# campaign with upgraded targeting (see issue #168).
+resource "google_ads_ad_group_criterion" "home_battery_pl" {
+  ad_group = google_ads_ad_group.home_battery.id
+
+  language {
+    language_constant = "languageConstants/1030"
+  }
+}

@@ -268,18 +268,29 @@ every resulting criterion negative for you.
 
 ### `audience`
 
-A cohort to narrow the ad group to. Set exactly one of the three:
+A cohort to narrow the ad group to. Set exactly one of the four:
 `custom_audience` (a
 [`google_ads_custom_audience`](./google_ads_custom_audience/) you
 declare, or a resource name), `user_list` (a remarketing list built in
-the Google Ads UI), or `combined_audience`.
+the Google Ads UI), `combined_audience`, or `audience` (a
+[`google_ads_audience`](./google_ads_audience/) — segments and
+demographics gathered into one reusable definition).
 
 <AttributeTable block={audience} headingLevel={4} />
+
+<Aside type="caution">
+  A **Demand Gen** ad group only accepts the `audience` form, and only
+  when the ad group declares `audience_setting { use_audience_grouped =
+  true }`. The other three — and the demographic blocks below — are
+  rejected there; put them inside the
+  [`google_ads_audience`](./google_ads_audience/) instead. `validate`
+  warns when it sees one.
+</Aside>
 
 ### `user_interest`
 
 An affinity or in-market interest category, named by its constant
-(`userInterestConstants/<id>`).
+(`customers/{customer_id}/userInterests/<id>`).
 
 <AttributeTable block={user_interest} headingLevel={4} />
 
@@ -347,4 +358,5 @@ A language target for this ad group, intersected with the campaign's own.
 - [`google_ads_ad_group`](./google_ads_ad_group/) — required parent.
 - [`google_ads_campaign_criterion`](./google_ads_campaign_criterion/) — the same targeting applied to a whole campaign.
 - [`google_ads_custom_audience`](./google_ads_custom_audience/) — build a search-intent segment to target here.
+- [`google_ads_audience`](./google_ads_audience/) — segments and demographics in one resource, and the only targeting a Demand Gen ad group accepts.
 - [`google_ads_shared_set`](./google_ads_shared_set/) — reusable negative lists across campaigns.

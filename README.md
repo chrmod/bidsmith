@@ -53,7 +53,8 @@ Validate, plan, and apply all work today.
 
 Covered today: campaigns (Search), ad groups, responsive search ads,
 keywords and negatives, shared keyword lists, budgets,
-location/language/proximity targeting, device bid adjustments,
+location/language/proximity targeting, device bid adjustments, audience
+targeting (including the grouped audiences Demand Gen requires),
 conversion actions, and call / customer assets. The full reference is on the
 [docs site](https://chrmod.github.io/bidsmith/resources/).
 

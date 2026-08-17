@@ -623,15 +623,22 @@ fn set_existing_scalar(body: &mut Body, path: &[&str], value: Expression) -> Set
     }
 }
 
+/// A list counts as a literal only when every element is one: `["a", "b"]`
+/// round-trips, `local.theme` and `["a", local.b]` keep their indirection.
 fn is_literal(e: &Expression) -> bool {
-    matches!(
-        e,
-        Expression::String(_) | Expression::Number(_) | Expression::Bool(_)
-    )
+    match e {
+        Expression::String(_) | Expression::Number(_) | Expression::Bool(_) => true,
+        Expression::Array(items) => items.iter().all(is_literal),
+        _ => false,
+    }
 }
 
 fn s(v: &str) -> Expression {
     Expression::from(v.to_string())
+}
+
+fn string_array(values: &[String]) -> Expression {
+    Expression::Array(values.iter().map(|v| s(v)).collect())
 }
 
 /// Render the live frequency caps as source blocks in `export`'s shape (one
@@ -1055,6 +1062,37 @@ fn collect_edits(
                 }
             }
         }
+        "audience" => {
+            let Some(a) = live.audiences.iter().find(|x| x.id == live_id) else {
+                return (e, fields.to_vec());
+            };
+            for f in fields {
+                match f.as_str() {
+                    "description" => {
+                        opt!(f, vec!["description"], a.description.as_deref().map(s))
+                    }
+                    // The dimension lists are plain list attributes, so a band
+                    // widened in the UI writes straight back.
+                    "age_ranges" => push!(vec!["age_ranges"], string_array(&a.age_ranges)),
+                    "genders" => push!(vec!["genders"], string_array(&a.genders)),
+                    "parental_statuses" => {
+                        push!(vec!["parental_statuses"], string_array(&a.parental_statuses))
+                    }
+                    "income_ranges" => {
+                        push!(vec!["income_ranges"], string_array(&a.income_ranges))
+                    }
+                    "excluded_user_lists" => push!(
+                        vec!["excluded_user_lists"],
+                        string_array(&a.excluded_user_lists)
+                    ),
+                    "segments" => skip.push(
+                        "segments (repeated block — edit the blocks by hand or run a bootstrap refresh)"
+                            .to_string(),
+                    ),
+                    other => skip.push(other.to_string()),
+                }
+            }
+        }
         "campaign_shared_set" => {
             let Some(css) = live.campaign_shared_sets.iter().find(|x| x.id == live_id) else {
                 return (e, fields.to_vec());
@@ -1220,6 +1258,40 @@ resource "google_ads_campaign" "summer_search" {
   }
 }
 "#;
+
+    #[test]
+    fn a_widened_demographic_band_writes_back_into_the_audience() {
+        let src = r#"resource "google_ads_audience" "shoppers" {
+  name        = "Shoppers"
+  description = "In-market"
+
+  # keep this comment
+  segment {
+    user_interest = "customers/1234567890/userInterests/80277"
+  }
+
+  age_ranges = ["AGE_RANGE_25_34"]
+}
+"#;
+        let live = r#"{
+          "customer_id": "1234567890",
+          "audiences": [
+            {"id":"7001","name":"Shoppers","description":"In-market and shopping",
+             "segments":[{"user_interest":"customers/1234567890/userInterests/80277"}],
+             "age_ranges":["AGE_RANGE_25_34","AGE_RANGE_35_44"]}
+          ]
+        }"#;
+        let (out, outcome) = run(src, live);
+        assert!(
+            out.contains(r#"age_ranges  = ["AGE_RANGE_25_34", "AGE_RANGE_35_44"]"#)
+                || out.contains(r#"age_ranges = ["AGE_RANGE_25_34", "AGE_RANGE_35_44"]"#),
+            "{out}"
+        );
+        assert!(out.contains(r#"description = "In-market and shopping""#), "{out}");
+        assert!(out.contains("# keep this comment"), "{out}");
+        let (_, fields) = &outcome.applied[0];
+        assert!(fields.contains(&"age_ranges".to_string()), "{fields:?}");
+    }
 
     #[test]
     fn updates_drifted_scalars_in_place_preserving_structure() {

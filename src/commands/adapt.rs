@@ -10,7 +10,8 @@ use crate::commands::export::{
     JsonAssetAutomationSettings, JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset,
     JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCriterion,
-    JsonCustomerAsset, JsonAgeRange, JsonAudience, JsonCustomAudience, JsonCustomAudienceMember,
+    JsonCustomerAsset, JsonAgeRange, JsonAudience, JsonAudienceSegment, JsonAudienceSetting,
+    JsonCustomAudience, JsonCustomAudienceMember, JsonGroupedAudience,
     JsonCustomParameter, JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonGender,
     JsonGeoTargetTypeSetting, JsonIncomeRange, JsonKeyword, JsonLanguage, JsonLocation,
     JsonManualCpc, JsonNetworkSettings, JsonParentalStatus, JsonPlacement, JsonProximity,
@@ -87,6 +88,7 @@ struct AdapterState {
     ad_group_assets: BTreeMap<String, JsonAdGroupAsset>,
     shared_sets: BTreeMap<String, SharedSetBuilder>,
     custom_audiences: BTreeMap<String, JsonCustomAudience>,
+    audiences: BTreeMap<String, JsonGroupedAudience>,
     // value: (real criterion resource-name segment `<setId>~<critId>`, keyword)
     shared_criteria: BTreeMap<String, Vec<(String, JsonKeyword)>>,
     campaign_shared_sets: BTreeMap<String, JsonCampaignSharedSet>,
@@ -144,6 +146,9 @@ impl AdapterState {
         }
         if let Some(v) = row.get("customAudience") {
             self.merge_custom_audience(v);
+        }
+        if let Some(v) = row.get("audience") {
+            self.merge_audience(v);
         }
         if let Some(v) = row.get("sharedSet") {
             self.merge_shared_set(v);
@@ -581,6 +586,15 @@ impl AdapterState {
                 disable_search_term_matching: Some(b),
             });
         }
+        if let Some(b) = v
+            .get("audienceSetting")
+            .and_then(|a| a.get("useAudienceGrouped"))
+            .and_then(Value::as_bool)
+        {
+            entry.audience_setting = Some(JsonAudienceSetting {
+                use_audience_grouped: Some(b),
+            });
+        }
     }
 
     fn merge_ad_group_ad(&mut self, v: &Value) {
@@ -843,6 +857,67 @@ impl AdapterState {
         }
         if let Some(members) = v.get("members").and_then(Value::as_array) {
             entry.members = members.iter().filter_map(parse_custom_audience_member).collect();
+        }
+    }
+
+    fn merge_audience(&mut self, v: &Value) {
+        if let Some(rn) = v.get("resourceName").and_then(Value::as_str) {
+            self.note_customer(rn);
+        }
+        let Some(id) = extract_id(v) else { return };
+        let entry = self
+            .audiences
+            .entry(id.clone())
+            .or_insert_with(|| JsonGroupedAudience {
+                id,
+                name: String::new(),
+                description: None,
+                segments: Vec::new(),
+                age_ranges: Vec::new(),
+                genders: Vec::new(),
+                parental_statuses: Vec::new(),
+                income_ranges: Vec::new(),
+                excluded_user_lists: Vec::new(),
+            });
+        if let Some(s) = v.get("name").and_then(Value::as_str) {
+            entry.name = s.to_string();
+        }
+        if let Some(s) = v.get("description").and_then(Value::as_str) {
+            entry.description = Some(s.to_string());
+        }
+        for d in v
+            .get("dimensions")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            if let Some(segments) = d.pointer("/audienceSegments/segments").and_then(Value::as_array)
+            {
+                entry.segments = segments.iter().filter_map(parse_audience_segment).collect();
+            }
+            if let Some(age) = d.get("age") {
+                entry.age_ranges = parse_age_dimension(age);
+            }
+            if let Some(g) = d.get("gender") {
+                entry.genders = parse_enum_dimension(g, "genders", "UNDETERMINED");
+            }
+            if let Some(p) = d.get("parentalStatus") {
+                entry.parental_statuses =
+                    parse_enum_dimension(p, "parentalStatuses", "UNDETERMINED");
+            }
+            if let Some(i) = d.get("householdIncome") {
+                entry.income_ranges =
+                    parse_enum_dimension(i, "incomeRanges", "INCOME_RANGE_UNDETERMINED");
+            }
+        }
+        if let Some(exclusions) = v
+            .pointer("/exclusionDimension/exclusions")
+            .and_then(Value::as_array)
+        {
+            entry.excluded_user_lists = exclusions
+                .iter()
+                .filter_map(|e| nested_str(e, "userList", "userList"))
+                .collect();
         }
     }
 
@@ -1318,6 +1393,7 @@ impl AdapterState {
             campaign_shared_sets: self.campaign_shared_sets.into_values().collect(),
             youtube_video_assets: self.youtube_video_assets.into_values().collect(),
             custom_audiences: self.custom_audiences.into_values().collect(),
+            audiences: self.audiences.into_values().collect(),
             adopt_only: Default::default(),
             partial_modules: None,
             owned_account_assets: Default::default(),
@@ -1531,27 +1607,24 @@ fn merge_criterion(v: &Value, target: &mut JsonCriterion) {
         ("customAudience", "customAudience"),
         ("userList", "userList"),
         ("combinedAudience", "combinedAudience"),
+        ("audience", "audience"),
     ] {
         let Some(rn) = nested_str(v, message, field) else {
             continue;
         };
-        target.audience = Some(match message {
-            "customAudience" => JsonAudience {
-                custom_audience: Some(rn),
-                user_list: None,
-                combined_audience: None,
-            },
-            "userList" => JsonAudience {
-                custom_audience: None,
-                user_list: Some(rn),
-                combined_audience: None,
-            },
-            _ => JsonAudience {
-                custom_audience: None,
-                user_list: None,
-                combined_audience: Some(rn),
-            },
-        });
+        let mut audience = JsonAudience {
+            custom_audience: None,
+            user_list: None,
+            combined_audience: None,
+            audience: None,
+        };
+        match message {
+            "customAudience" => audience.custom_audience = Some(rn),
+            "userList" => audience.user_list = Some(rn),
+            "combinedAudience" => audience.combined_audience = Some(rn),
+            _ => audience.audience = Some(rn),
+        }
+        target.audience = Some(audience);
     }
 }
 
@@ -1567,6 +1640,61 @@ fn nested_str(v: &Value, message: &str, field: &str) -> Option<String> {
 /// neither is a value a `.bid` may declare, so treat them as absent.
 fn nested_enum(v: &Value, message: &str, field: &str) -> Option<String> {
     nested_str(v, message, field).filter(|s| s != "UNSPECIFIED" && s != "UNKNOWN")
+}
+
+fn parse_audience_segment(v: &Value) -> Option<JsonAudienceSegment> {
+    let s = JsonAudienceSegment {
+        user_interest: nested_str(v, "userInterest", "userInterestCategory"),
+        user_list: nested_str(v, "userList", "userList"),
+        life_event: nested_str(v, "lifeEvent", "lifeEvent"),
+        detailed_demographic: nested_str(v, "detailedDemographic", "detailedDemographic"),
+        custom_audience: nested_str(v, "customAudience", "customAudience"),
+    };
+    s.payload().is_some().then_some(s)
+}
+
+/// `AgeDimension` counts in years, the rest of bidsmith speaks the
+/// `AGE_RANGE_*` enum every other age field uses, and `include_undetermined`
+/// is the enum's `AGE_RANGE_UNDETERMINED` member — see
+/// [`crate::schema::age_range_for_bounds`].
+fn parse_age_dimension(v: &Value) -> Vec<String> {
+    let mut out: Vec<String> = v
+        .get("ageRanges")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| {
+            crate::schema::age_range_for_bounds(
+                parse_i64(r.get("minAge")),
+                parse_i64(r.get("maxAge")),
+            )
+            .map(str::to_string)
+        })
+        .collect();
+    if v.get("includeUndetermined").and_then(Value::as_bool) == Some(true) {
+        out.push("AGE_RANGE_UNDETERMINED".to_string());
+    }
+    out
+}
+
+/// A demographic dimension's enum list, with `include_undetermined` folded back
+/// into it as the axis's own `UNDETERMINED` member.
+fn parse_enum_dimension(v: &Value, field: &str, undetermined: &str) -> Vec<String> {
+    let mut out: Vec<String> = v
+        .get(field)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|s| *s != "UNSPECIFIED" && *s != "UNKNOWN" && *s != undetermined)
+        .map(str::to_string)
+        .collect();
+    if v.get("includeUndetermined").and_then(Value::as_bool) == Some(true) {
+        out.push(undetermined.to_string());
+    }
+    out
 }
 
 fn parse_custom_audience_member(v: &Value) -> Option<JsonCustomAudienceMember> {

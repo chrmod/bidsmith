@@ -10,7 +10,8 @@ use crate::commands::export::{
     JsonAssetAutomationSettings, JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset,
     JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCriterion,
-    JsonCustomerAsset, JsonAgeRange, JsonAudience, JsonCustomAudience, JsonCustomAudienceMember,
+    JsonCustomerAsset, JsonAgeRange, JsonAudience, JsonAudienceSegment, JsonAudienceSetting,
+    JsonCustomAudience, JsonCustomAudienceMember, JsonGroupedAudience,
     JsonCustomParameter, JsonDemandGenVideoResponsiveAd, JsonDevice, JsonFrequencyCap, JsonGender,
     JsonGeoTargetTypeSetting, JsonIncomeRange, JsonKeyword, JsonLanguage, JsonLocation,
     JsonManualCpc, JsonNetworkSettings, JsonParentalStatus, JsonPlacement, JsonProximity,
@@ -93,6 +94,7 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
         campaign_shared_sets: Vec::new(),
         youtube_video_assets: Vec::new(),
         custom_audiences: Vec::new(),
+        audiences: Vec::new(),
         labels: Default::default(),
         claim_labels: Default::default(),
         adopt_only: Default::default(),
@@ -248,6 +250,10 @@ pub fn import_files(files: &[ParsedFile], inputs: &InputBindings) -> Result<Impo
                         "google_ads_custom_audience" => emit(
                             import_custom_audience(&ctx, b, &address)
                                 .map(|x| input.custom_audiences.push(x)),
+                        ),
+                        "google_ads_audience" => emit(
+                            import_grouped_audience(&ctx, b, &address)
+                                .map(|x| input.audiences.push(x)),
                         ),
                         "google_ads_shared_criterion" => emit(
                             import_shared_criterion(&ctx, b, &address)
@@ -902,6 +908,18 @@ fn import_dynamic_search_ads_setting(ctx: &Ctx, block: &Block) -> JsonDynamicSea
     d
 }
 
+fn import_audience_setting(ctx: &Ctx, block: &Block) -> JsonAudienceSetting {
+    let mut a = JsonAudienceSetting::default();
+    for st in block.body.iter() {
+        if let Structure::Attribute(attr) = st {
+            if attr.key.as_str() == "use_audience_grouped" {
+                a.use_audience_grouped = expect_bool(ctx, attr);
+            }
+        }
+    }
+    a
+}
+
 fn import_ai_max_ad_group_setting(ctx: &Ctx, block: &Block) -> JsonAiMaxAdGroupSetting {
     let mut a = JsonAiMaxAdGroupSetting::default();
     for st in block.body.iter() {
@@ -986,6 +1004,7 @@ fn import_ad_group(
     let mut ty = None;
     let mut targeting_setting = None;
     let mut ai_max_ad_group_setting = None;
+    let mut audience_setting = None;
     let mut final_url_suffix = None;
     let mut custom_parameters = None;
     let mut callouts: Vec<String> = Vec::new();
@@ -1019,6 +1038,9 @@ fn import_ad_group(
             Structure::Block(b) if b.ident.as_str() == "ai_max_ad_group_setting" => {
                 ai_max_ad_group_setting = Some(import_ai_max_ad_group_setting(ctx, b))
             }
+            Structure::Block(b) if b.ident.as_str() == "audience_setting" => {
+                audience_setting = Some(import_audience_setting(ctx, b))
+            }
             Structure::Block(b) if b.ident.as_str() == "structured_snippet" => {
                 if let Some(sn) = import_inline_snippet(ctx, b) {
                     snippets.push(sn);
@@ -1038,6 +1060,7 @@ fn import_ad_group(
         ty,
         targeting_setting,
         ai_max_ad_group_setting,
+        audience_setting,
         final_url_suffix,
         custom_parameters,
         ..Default::default()
@@ -1708,6 +1731,7 @@ fn import_audience(ctx: &Ctx, block: &Block) -> Option<JsonAudience> {
         custom_audience: None,
         user_list: None,
         combined_audience: None,
+        audience: None,
     };
     for s in block.body.iter() {
         let Structure::Attribute(a) = s else { continue };
@@ -1721,10 +1745,86 @@ fn import_audience(ctx: &Ctx, block: &Block) -> Option<JsonAudience> {
             }
             "user_list" => out.user_list = expect_string_owned(ctx, a),
             "combined_audience" => out.combined_audience = expect_string_owned(ctx, a),
+            "audience" => {
+                out.audience = extract_resource_ref(ctx, &a.value)
+                    .map(|r| ctx.resolve_ref(&r))
+                    .or_else(|| expect_string_owned(ctx, a));
+            }
             _ => {}
         }
     }
     out.source().is_some().then_some(out)
+}
+
+fn import_grouped_audience(
+    ctx: &Ctx,
+    block: &Block,
+    address: &str,
+) -> Result<JsonGroupedAudience, Diag> {
+    let mut name = None;
+    let mut description = None;
+    let mut age_ranges = Vec::new();
+    let mut genders = Vec::new();
+    let mut parental_statuses = Vec::new();
+    let mut income_ranges = Vec::new();
+    let mut excluded_user_lists = Vec::new();
+    let mut segments: Vec<JsonAudienceSegment> = Vec::new();
+    for s in block.body.iter() {
+        match s {
+            Structure::Attribute(a) => match a.key.as_str() {
+                "name" => name = expect_string_owned(ctx, a),
+                "description" => description = expect_string_owned(ctx, a),
+                "age_ranges" => age_ranges = expect_string_list(ctx, &a.value),
+                "genders" => genders = expect_string_list(ctx, &a.value),
+                "parental_statuses" => parental_statuses = expect_string_list(ctx, &a.value),
+                "income_ranges" => income_ranges = expect_string_list(ctx, &a.value),
+                "excluded_user_lists" => excluded_user_lists = expect_string_list(ctx, &a.value),
+                _ => {}
+            },
+            Structure::Block(b) if b.ident.as_str() == "segment" => {
+                segments.extend(import_audience_segment(ctx, b));
+            }
+            Structure::Block(_) => {}
+        }
+    }
+    let name = name.ok_or_else(|| missing(ctx.file, block, address, "name"))?;
+    Ok(JsonGroupedAudience {
+        id: address.to_string(),
+        name,
+        description,
+        segments,
+        age_ranges,
+        genders,
+        parental_statuses,
+        income_ranges,
+        excluded_user_lists,
+    })
+}
+
+fn import_audience_segment(ctx: &Ctx, block: &Block) -> Option<JsonAudienceSegment> {
+    let mut s = JsonAudienceSegment {
+        user_interest: None,
+        user_list: None,
+        life_event: None,
+        detailed_demographic: None,
+        custom_audience: None,
+    };
+    for st in block.body.iter() {
+        let Structure::Attribute(a) = st else { continue };
+        match a.key.as_str() {
+            "user_interest" => s.user_interest = expect_string_owned(ctx, a),
+            "user_list" => s.user_list = expect_string_owned(ctx, a),
+            "life_event" => s.life_event = expect_string_owned(ctx, a),
+            "detailed_demographic" => s.detailed_demographic = expect_string_owned(ctx, a),
+            "custom_audience" => {
+                s.custom_audience = extract_resource_ref(ctx, &a.value)
+                    .map(|r| ctx.resolve_ref(&r))
+                    .or_else(|| expect_string_owned(ctx, a));
+            }
+            _ => {}
+        }
+    }
+    s.payload().is_some().then_some(s)
 }
 
 fn import_custom_audience(
@@ -2508,6 +2608,7 @@ pub fn import_program(program: &Program) -> Result<ImportResult, Vec<Diag>> {
         campaign_shared_sets: Vec::new(),
         youtube_video_assets: Vec::new(),
         custom_audiences: Vec::new(),
+        audiences: Vec::new(),
         labels: Default::default(),
         claim_labels: Default::default(),
         adopt_only: Default::default(),
@@ -2552,6 +2653,7 @@ pub fn import_program(program: &Program) -> Result<ImportResult, Vec<Diag>> {
                 combined.campaign_shared_sets.extend(r.input.campaign_shared_sets);
                 combined.youtube_video_assets.extend(r.input.youtube_video_assets);
                 combined.custom_audiences.extend(r.input.custom_audiences);
+                combined.audiences.extend(r.input.audiences);
                 combined.adopt_only.extend(r.input.adopt_only);
                 skipped.extend(r.skipped);
             }
@@ -2585,6 +2687,46 @@ mod tests {
         import_files(std::slice::from_ref(&pf), &InputBindings::default())
             .expect("import")
             .input
+    }
+
+    /// Through `import_program`, the way `plan` and `apply` read a project —
+    /// not `import_files`, which sees one scope and skips the per-scope combine.
+    fn import_project(name: &str, content: &str) -> ExportInput {
+        let dir = std::env::temp_dir().join(format!("bidsmith-import-project-{name}"));
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let path = dir.join("main.bid");
+        std::fs::write(&path, content).expect("write");
+        let loaded = Program::load(&[path], InputBindings::default());
+        assert!(
+            loaded.diagnostics.iter().all(|d| !d.is_error()),
+            "{:?}",
+            loaded.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        import_program(&loaded.program).expect("import").input
+    }
+
+    /// `import_program` rebuilds `ExportInput` collection by collection, so a
+    /// new resource type reaches `plan` only if it is added to the combine as
+    /// well as to the per-file import. Missing that leaves the resource
+    /// declared, silently dropped, and its references unresolvable.
+    #[test]
+    fn a_grouped_audience_survives_the_per_scope_combine() {
+        let input = import_project("audience_combine", GROUPED_AUDIENCE_BID);
+        assert_eq!(input.audiences.len(), 1, "audience dropped by the combine");
+        assert_eq!(input.custom_audiences.len(), 1);
+        let target = input
+            .ad_group_criteria
+            .iter()
+            .find_map(|c| c.target.audience.as_ref())
+            .expect("audience criterion");
+        assert!(
+            target
+                .audience
+                .as_deref()
+                .is_some_and(|v| input.audiences.iter().any(|a| a.id == v)),
+            "the criterion's reference must name a declared audience: {:?}",
+            target.audience
+        );
     }
 
     fn keyword_set(criteria: &[JsonAdGroupCriterion]) -> Vec<(String, String, bool)> {
@@ -5612,6 +5754,159 @@ resource "google_ads_campaign_criterion" "no_kids" {
         assert_eq!(changed.len(), 1, "diffs: {:?}", report.diffs);
         assert_eq!(changed[0].0, "custom_audience");
         assert_eq!(changed[0].1, vec!["members".to_string()]);
+    }
+
+    const GROUPED_AUDIENCE_BID: &str = r#"
+resource "google_ads_custom_audience" "solar" {
+  name = "Solar researchers"
+  type = "SEARCH"
+
+  member { keyword = "rooftop solar cost" }
+}
+
+resource "google_ads_audience" "battery" {
+  name        = "Home battery shoppers"
+  description = "In-market plus income"
+
+  segment { user_interest   = "customers/9/userInterests/80277" }
+  segment { custom_audience = google_ads_custom_audience.solar.id }
+
+  age_ranges    = ["AGE_RANGE_35_44", "AGE_RANGE_65_UP", "AGE_RANGE_UNDETERMINED"]
+  income_ranges = ["INCOME_RANGE_90_UP"]
+
+  excluded_user_lists = ["customers/9/userLists/778899"]
+}
+
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "dg" {
+  name                     = "DG"
+  advertising_channel_type = "DEMAND_GEN"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+
+resource "google_ads_ad_group" "ag" {
+  name     = "AG"
+  campaign = google_ads_campaign.dg.id
+
+  audience_setting {
+    use_audience_grouped = true
+  }
+}
+
+resource "google_ads_ad_group_criterion" "grouped" {
+  ad_group = google_ads_ad_group.ag.id
+
+  audience {
+    audience = google_ads_audience.battery.id
+  }
+}
+"#;
+
+    const LIVE_GROUPED_AUDIENCE: &str = r#"[{"results":[
+      {"customAudience":{"resourceName":"customers/9/customAudiences/501","id":"501","name":"Solar researchers","type":"SEARCH","status":"ENABLED","members":[
+        {"memberType":"KEYWORD","keyword":"rooftop solar cost"}
+      ]}},
+      {"audience":{"resourceName":"customers/9/audiences/7001","id":"7001","name":"Home battery shoppers","description":"In-market plus income","dimensions":[
+        {"audienceSegments":{"segments":[
+          {"customAudience":{"customAudience":"customers/9/customAudiences/501"}},
+          {"userInterest":{"userInterestCategory":"customers/9/userInterests/80277"}}
+        ]}},
+        {"age":{"ageRanges":[{"minAge":65},{"minAge":35,"maxAge":44}],"includeUndetermined":true}},
+        {"householdIncome":{"incomeRanges":["INCOME_RANGE_90_UP"]}}
+      ],"exclusionDimension":{"exclusions":[{"userList":{"userList":"customers/9/userLists/778899"}}]}}},
+      {"campaignBudget":{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}},
+      {"campaign":{"resourceName":"customers/9/campaigns/2","id":"2","name":"DG","status":"ENABLED","advertisingChannelType":"DEMAND_GEN","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"}},
+      {"adGroup":{"resourceName":"customers/9/adGroups/3","id":"3","name":"AG","campaign":"customers/9/campaigns/2","status":"ENABLED","audienceSetting":{"useAudienceGrouped":true}}},
+      {"adGroupCriterion":{"resourceName":"customers/9/adGroupCriteria/3~9001","adGroup":"customers/9/adGroups/3","status":"ENABLED","negative":false,"audience":{"audience":"customers/9/audiences/7001"}}}
+    ]}]"#;
+
+    #[test]
+    fn a_grouped_audience_and_its_ad_group_criterion_match_live() {
+        let declared = import_str("grouped_audience", GROUPED_AUDIENCE_BID);
+        assert_eq!(declared.audiences.len(), 1);
+        let a = &declared.audiences[0];
+        assert_eq!(a.segments.len(), 2);
+        assert!(
+            a.segments[1]
+                .custom_audience
+                .as_deref()
+                .is_some_and(|v| v.ends_with("google_ads_custom_audience.solar")),
+            "{:?}",
+            a.segments[1].custom_audience
+        );
+        let target = declared
+            .ad_group_criteria
+            .iter()
+            .find_map(|c| c.target.audience.as_ref())
+            .expect("audience criterion");
+        assert!(
+            target
+                .audience
+                .as_deref()
+                .is_some_and(|v| v.ends_with("google_ads_audience.battery")),
+            "{:?}",
+            target.audience
+        );
+
+        // Dimensions are whole sets, so live's different segment and age-range
+        // ordering is not drift.
+        let live = crate::commands::adapt::from_search_response(LIVE_GROUPED_AUDIENCE)
+            .expect("adapt live");
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(report.create_count, 0, "diffs: {:?}", report.diffs);
+        assert_eq!(report.update_count, 0, "diffs: {:?}", report.diffs);
+        assert_eq!(report.delete_count, 0, "diffs: {:?}", report.diffs);
+    }
+
+    #[test]
+    fn adding_a_demographic_band_plans_an_audience_update_not_a_recreate() {
+        let declared = import_str(
+            "grouped_audience_edit",
+            &GROUPED_AUDIENCE_BID.replace(
+                r#"income_ranges = ["INCOME_RANGE_90_UP"]"#,
+                r#"income_ranges = ["INCOME_RANGE_80_90", "INCOME_RANGE_90_UP"]"#,
+            ),
+        );
+        let live = crate::commands::adapt::from_search_response(LIVE_GROUPED_AUDIENCE)
+            .expect("adapt live");
+        let report = diff_after_defaults(declared, live);
+        let changed: Vec<(&str, Vec<String>)> = report
+            .diffs
+            .iter()
+            .filter_map(|d| match &d.action {
+                crate::api::diff::Action::Update { changed_fields, .. } => {
+                    Some((d.kind, crate::api::diff::field_names(changed_fields)))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(changed.len(), 1, "diffs: {:?}", report.diffs);
+        assert_eq!(changed[0].0, "audience");
+        assert_eq!(changed[0].1, vec!["income_ranges".to_string()]);
+        assert_eq!(report.create_count, 0, "diffs: {:?}", report.diffs);
+    }
+
+    /// The setting is immutable, so a mismatch can never be reconciled — and it
+    /// decides whether the ad group can carry an audience criterion at all.
+    #[test]
+    fn a_grouped_setting_the_live_ad_group_lacks_is_a_warning() {
+        let live_without = LIVE_GROUPED_AUDIENCE
+            .replace(r#","audienceSetting":{"useAudienceGrouped":true}"#, "");
+        let declared = import_str("grouped_audience_immutable", GROUPED_AUDIENCE_BID);
+        let live = crate::commands::adapt::from_search_response(&live_without).expect("adapt live");
+        let report = diff_after_defaults(declared, live);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("use_audience_grouped = true")),
+            "{:?}",
+            report.warnings
+        );
     }
 
     #[test]

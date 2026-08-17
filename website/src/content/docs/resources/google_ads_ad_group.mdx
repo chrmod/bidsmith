@@ -11,6 +11,7 @@ export const resource = schema.resources['google_ads_ad_group'];
 export const targetingSetting = resource.blocks.find((b) => b.name === 'targeting_setting');
 export const targetRestriction = targetingSetting.blocks.find((b) => b.name === 'target_restriction');
 export const aiMaxAdGroupSetting = resource.blocks.find((b) => b.name === 'ai_max_ad_group_setting');
+export const audienceSetting = resource.blocks.find((b) => b.name === 'audience_setting');
 
 An **ad group** is a bucket inside a campaign. It holds the keywords
 people search for and the ads that show in response. Every campaign
@@ -210,8 +211,36 @@ Leave the block out and the ad group follows whatever the account is
 doing. Write it, and someone changing it in the Google Ads UI shows up
 as drift on the next `plan`.
 
+### audience_setting
+
+Whether the ad group is targeted through a
+[`google_ads_audience`](./google_ads_audience/) — one reusable definition
+holding segments and demographics together — rather than through segment
+criteria of its own. **Demand Gen** ad groups work this way:
+
+```hcl
+resource "google_ads_ad_group" "home_battery" {
+  name     = "Home battery"
+  campaign = google_ads_campaign.demand_gen.id
+
+  audience_setting {
+    use_audience_grouped = true
+  }
+}
+```
+
+<AttributeTable block={audienceSetting} headingLevel={4} />
+
+<Aside type="caution">
+  Google fixes this when the ad group is **created**. Without it an
+  audience criterion is rejected; with it, segment and demographic
+  criteria are rejected instead. `plan` warns when a live ad group carries
+  the other value — the only fix at that point is a new ad group.
+</Aside>
+
 ## See also
 
 - [`google_ads_campaign`](./google_ads_campaign/) — required parent.
 - [`google_ads_ad_group_ad`](./google_ads_ad_group_ad/) — at least one ad per group.
 - [`google_ads_ad_group_criterion`](./google_ads_ad_group_criterion/) — keywords in this group.
+- [`google_ads_audience`](./google_ads_audience/) — the grouped audience `audience_setting` points this ad group at.

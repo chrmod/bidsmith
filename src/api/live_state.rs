@@ -115,6 +115,7 @@ pub const QUERIES: &[(&str, &str)] = &[
           ad_group.fixed_cpm_micros,
           ad_group.targeting_setting.target_restrictions,
           ad_group.ai_max_ad_group_setting.disable_search_term_matching,
+          ad_group.audience_setting.use_audience_grouped,
           ad_group.final_url_suffix,
           ad_group.url_custom_parameters
         FROM ad_group
@@ -180,12 +181,13 @@ pub const QUERIES: &[(&str, &str)] = &[
           ad_group_criterion.income_range.type,
           ad_group_criterion.custom_audience.custom_audience,
           ad_group_criterion.user_list.user_list,
-          ad_group_criterion.combined_audience.combined_audience
+          ad_group_criterion.combined_audience.combined_audience,
+          ad_group_criterion.audience.audience
         FROM ad_group_criterion
         WHERE ad_group_criterion.type IN (
             KEYWORD, LOCATION, LANGUAGE, YOUTUBE_CHANNEL, YOUTUBE_VIDEO, TOPIC,
             PLACEMENT, USER_INTEREST, AGE_RANGE, GENDER, PARENTAL_STATUS,
-            INCOME_RANGE, CUSTOM_AUDIENCE, USER_LIST, COMBINED_AUDIENCE
+            INCOME_RANGE, CUSTOM_AUDIENCE, USER_LIST, COMBINED_AUDIENCE, AUDIENCE
           )
           AND ad_group_criterion.status != 'REMOVED'",
     ),
@@ -227,6 +229,20 @@ pub const QUERIES: &[(&str, &str)] = &[
             AGE_RANGE, GENDER, CUSTOM_AUDIENCE, USER_LIST, COMBINED_AUDIENCE
           )
           AND campaign_criterion.status != 'REMOVED'",
+    ),
+    (
+        // `audience.status` is output-only and the API has no remove operation
+        // for an audience, so a removed one can only be filtered out here.
+        "audience",
+        "SELECT
+          audience.resource_name,
+          audience.id,
+          audience.name,
+          audience.description,
+          audience.dimensions,
+          audience.exclusion_dimension
+        FROM audience
+        WHERE audience.status != 'REMOVED'",
     ),
     (
         "custom_audience",

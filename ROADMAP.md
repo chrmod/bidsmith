@@ -341,6 +341,47 @@ Smaller follow-ups that can ride along:
   **Verified live** (validateOnly against a dedicated test account):
   both levels accepted under their own setting, both rejected under the
   other's. See the DECISIONS.md entry for the full shape.
+- ✅ Demand Gen audience targeting (issue #169). A Demand Gen ad group
+  runs in grouped-audience mode: it refuses a segment attached straight
+  to it and can only be targeted through the unified `Audience`
+  resource. Modelled as `google_ads_audience` (`segment {}` blocks plus
+  `age_ranges` / `genders` / `parental_statuses` / `income_ranges` /
+  `excluded_user_lists` list attributes, one API dimension each, all
+  whole-set), attached with `audience { audience = … }` on an ad group
+  carrying the new immutable `audience_setting { use_audience_grouped =
+  true }`. Rides the **atomic batch** — `MutateOperation` has an
+  `audience_operation` member, unlike custom audiences — so audience and
+  criterion commit together. Demographics keep the `AGE_RANGE_*`
+  vocabulary the criterion blocks use rather than the API's min/max
+  years, and each axis's `UNDETERMINED` member is its
+  `include_undetermined` flag. The issue's second half (an `age_range`
+  criterion rejected as `INCONSISTENT_FIELD_VALUES`) was the temp
+  composite `resourceName` pin, already fixed by #168.
+  **Verified live** (`validateOnly` mutates against a live account):
+  budget → Demand Gen campaign → ad group carrying
+  `use_audience_grouped = true` → audience → the criterion attaching it
+  all accepted in **one batch, zero rejected**, which confirms both that
+  `audience_operation` rides `GoogleAdsService.Mutate` and that the
+  criterion resolves the audience's temp resource name. Three rider
+  findings from the same probes: `use_audience_grouped` is refused on a
+  `SEARCH` ad group (`trigger: 'SEARCH'`) — grouped mode is Demand Gen /
+  App only; `target_cpm` is refused on a Demand Gen campaign, whose live
+  strategies are `TARGET_SPEND` / `TARGET_CPC`, so the example bids with
+  `target_spend`; and the segment constants are **not** `…Constants/NNNN`
+  — `UserInterest` / `LifeEvent` / `DetailedDemographic` are
+  customer-scoped (`customers/{cid}/userInterests/{id}`), which the API
+  rejects as malformed otherwise. That last one was already wrong for the
+  `user_interest` criterion in the docs, the recipe, and the test
+  fixtures; all of them are corrected. Only `topicConstants` /
+  `geoTargetConstants` / `languageConstants` are genuinely account-free.
+  Two bugs the probes caught that every offline test had missed:
+  `import_program`'s per-scope combine dropped `audiences` entirely (so a
+  declared audience never reached `plan`), and its "nothing to do" count
+  summed only the campaign-tree collections, so a project of nothing but
+  account-scoped resources exited successfully without planning. Both
+  fixed, both now covered — the combine by a test that goes through
+  `import_program` rather than `import_files`, the count by
+  `ExportInput::declared_resource_count`.
 - ✅ Inline campaign targeting (`languages = ["en"]` / `locations =
   ["US"]`) — each entry expands to one positive `campaign_criterion`,
   resolving human-readable codes (or raw `…Constants/NNNN` strings) via
