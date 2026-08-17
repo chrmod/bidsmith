@@ -306,6 +306,13 @@ the full set.
 
 Smaller follow-ups that can ride along:
 
+- `google_ads_image_asset` — reference an already-uploaded IMAGE asset
+  the way `google_ads_youtube_video_asset` references a video. This is
+  what would reopen `video_responsive_ad` creation: API v24 made
+  `business_name` and `logo_images` Required on that creative, and with
+  no image asset model every create bidsmith could emit is refused, so
+  the block is adopt-only for now (plan says so). The same resource
+  unlocks Demand Gen image ads later.
 - ✅ Ad schedules / dayparting (issue #171). `google_ads_campaign_criterion`
   takes an `ad_schedule { day_of_week, start_hour, start_minute,
   end_hour, end_minute }` block, so "no overnight spend" lives in the

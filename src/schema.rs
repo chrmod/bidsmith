@@ -616,7 +616,9 @@ fn ad_block(final_urls_required: bool) -> NestedBlockSchema {
                 // A YouTube in-stream / bumper / non-skippable video ad. `video`
                 // references an already-uploaded YouTube video by id — bidsmith does
                 // not (and cannot) upload the video file itself; see the upload
-                // notice `plan` surfaces.
+                // notice `plan` surfaces. Adopt-only since API v24: the API now
+                // requires a business name and logo image assets on create, and
+                // bidsmith has no image asset model yet.
                 NestedBlockSchema {
                     name: "video_responsive_ad",
                     schema: BlockSchema {

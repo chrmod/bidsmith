@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::api::creds;
 
-const DEFAULT_API_VERSION: &str = "v22";
+const DEFAULT_API_VERSION: &str = "v25";
 const USER_AGENT: &str = concat!("bidsmith/", env!("CARGO_PKG_VERSION"));
 const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 /// A mutate is one request Google works through server-side, and a batch of a

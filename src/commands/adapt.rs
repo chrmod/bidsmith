@@ -360,14 +360,16 @@ impl AdapterState {
             entry.advertising_channel_sub_type = Some(s.to_string())
                 .filter(|s| crate::schema::is_advertising_channel_sub_type(s));
         }
-        if let Some(s) = v.get("startDate").and_then(Value::as_str) {
-            entry.start_date = Some(s.to_string());
+        // The API reports "yyyy-MM-dd HH:mm:ss"; the `.bid` model is daily, so
+        // only the date part carries over.
+        if let Some(s) = v.get("startDateTime").and_then(Value::as_str) {
+            entry.start_date = Some(date_part(s));
         }
         // Google writes a far-future sentinel rather than clearing the field, so
         // an open-ended campaign reads as unset instead of baking a fake date
         // into every adopted `.bid` (issue #113).
-        if let Some(s) = v.get("endDate").and_then(Value::as_str) {
-            entry.end_date = Some(s.to_string()).filter(|d| d != crate::schema::NO_END_DATE);
+        if let Some(s) = v.get("endDateTime").and_then(Value::as_str) {
+            entry.end_date = Some(date_part(s)).filter(|d| d != crate::schema::NO_END_DATE);
         }
         if let Some(rn) = v.get("campaignBudget").and_then(Value::as_str) {
             if let Some(id) = last_segment(rn) {
@@ -1345,6 +1347,14 @@ fn extract_id(v: &Value) -> Option<String> {
 
 fn last_segment(s: &str) -> Option<&str> {
     s.rsplit('/').next()
+}
+
+fn date_part(date_time: &str) -> String {
+    date_time
+        .split_whitespace()
+        .next()
+        .unwrap_or(date_time)
+        .to_string()
 }
 
 fn label_address(label: Option<&Value>) -> Option<String> {
