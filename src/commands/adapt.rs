@@ -7,7 +7,8 @@ use crate::commands::export::{
     JsonAdSchedule,
     JsonAiMaxAdGroupSetting, JsonAiMaxSetting, JsonDemandGenCampaignSettings,
     JsonDynamicSearchAdsSetting,
-    JsonAssetAutomationSettings, JsonBidSelector, JsonBudget, JsonCallAsset,
+    JsonAssetAutomationSettings, JsonAttributionModelSettings, JsonBidSelector, JsonBudget,
+    JsonCallAsset,
     JsonCallToActionAsset, JsonCalloutAsset, JsonImageAsset,
     JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCriterion,
@@ -942,9 +943,13 @@ impl AdapterState {
                 category: String::new(),
                 status: None,
                 counting_type: None,
+                primary_for_goal: None,
+                include_in_conversions_metric: None,
                 click_through_lookback_window_days: None,
                 view_through_lookback_window_days: None,
+                phone_call_duration_seconds: None,
                 value_settings: None,
+                attribution_model_settings: None,
             });
         if let Some(s) = v.get("name").and_then(Value::as_str) {
             entry.name = s.to_string();
@@ -961,11 +966,20 @@ impl AdapterState {
         if let Some(s) = v.get("countingType").and_then(Value::as_str) {
             entry.counting_type = Some(s.to_string());
         }
+        if let Some(b) = v.get("primaryForGoal").and_then(Value::as_bool) {
+            entry.primary_for_goal = Some(b);
+        }
+        if let Some(b) = v.get("includeInConversionsMetric").and_then(Value::as_bool) {
+            entry.include_in_conversions_metric = Some(b);
+        }
         if let Some(n) = parse_i64(v.get("clickThroughLookbackWindowDays")) {
             entry.click_through_lookback_window_days = Some(n);
         }
         if let Some(n) = parse_i64(v.get("viewThroughLookbackWindowDays")) {
             entry.view_through_lookback_window_days = Some(n);
+        }
+        if let Some(n) = parse_i64(v.get("phoneCallDurationSeconds")) {
+            entry.phone_call_duration_seconds = Some(n);
         }
         if let Some(vs) = v.get("valueSettings") {
             entry.value_settings = Some(JsonValueSettings {
@@ -977,6 +991,14 @@ impl AdapterState {
                 always_use_default_value: vs
                     .get("alwaysUseDefaultValue")
                     .and_then(Value::as_bool),
+            });
+        }
+        if let Some(model) = v
+            .pointer("/attributionModelSettings/attributionModel")
+            .and_then(Value::as_str)
+        {
+            entry.attribution_model_settings = Some(JsonAttributionModelSettings {
+                attribution_model: Some(model.to_string()),
             });
         }
     }

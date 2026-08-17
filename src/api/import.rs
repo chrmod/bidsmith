@@ -7,7 +7,8 @@ use crate::commands::export::{
     JsonAdSchedule,
     JsonAiMaxAdGroupSetting, JsonAiMaxSetting, JsonDemandGenCampaignSettings,
     JsonDynamicSearchAdsSetting,
-    JsonAssetAutomationSettings, JsonBidSelector, JsonBudget, JsonCallAsset,
+    JsonAssetAutomationSettings, JsonAttributionModelSettings, JsonBidSelector, JsonBudget,
+    JsonCallAsset,
     JsonCallToActionAsset, JsonCalloutAsset, JsonImageAsset,
     JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCriterion,
@@ -2024,9 +2025,13 @@ fn import_conversion_action(
     let mut category = None;
     let mut status = None;
     let mut counting_type = None;
+    let mut primary_for_goal = None;
+    let mut include_in_conversions_metric = None;
     let mut click_lookback = None;
     let mut view_lookback = None;
+    let mut phone_call_duration = None;
     let mut value_settings = None;
+    let mut attribution_model_settings = None;
 
     for s in block.body.iter() {
         match s {
@@ -2036,8 +2041,13 @@ fn import_conversion_action(
                 "category" => category = expect_string_owned(ctx, a),
                 "status" => status = expect_string_owned(ctx, a),
                 "counting_type" => counting_type = expect_string_owned(ctx, a),
+                "primary_for_goal" => primary_for_goal = expect_bool(ctx, a),
+                "include_in_conversions_metric" => {
+                    include_in_conversions_metric = expect_bool(ctx, a)
+                }
                 "click_through_lookback_window_days" => click_lookback = expect_i64(ctx, a),
                 "view_through_lookback_window_days" => view_lookback = expect_i64(ctx, a),
+                "phone_call_duration_seconds" => phone_call_duration = expect_i64(ctx, a),
                 _ => {}
             },
             Structure::Block(b) if b.ident.as_str() == "value_settings" => {
@@ -2062,6 +2072,19 @@ fn import_conversion_action(
                 }
                 value_settings = Some(vs);
             }
+            Structure::Block(b) if b.ident.as_str() == "attribution_model_settings" => {
+                let mut model = None;
+                for st in b.body.iter() {
+                    if let Structure::Attribute(a) = st {
+                        if a.key.as_str() == "attribution_model" {
+                            model = expect_string_owned(ctx, a);
+                        }
+                    }
+                }
+                attribution_model_settings = Some(JsonAttributionModelSettings {
+                    attribution_model: model,
+                });
+            }
             _ => {}
         }
     }
@@ -2076,9 +2099,13 @@ fn import_conversion_action(
         category,
         status,
         counting_type,
+        primary_for_goal,
+        include_in_conversions_metric,
         click_through_lookback_window_days: click_lookback,
         view_through_lookback_window_days: view_lookback,
+        phone_call_duration_seconds: phone_call_duration,
         value_settings,
+        attribution_model_settings,
     })
 }
 

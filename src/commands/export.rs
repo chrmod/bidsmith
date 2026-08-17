@@ -1096,11 +1096,25 @@ pub struct JsonConversionAction {
     #[serde(default)]
     pub counting_type: Option<String>,
     #[serde(default)]
+    pub primary_for_goal: Option<bool>,
+    #[serde(default)]
+    pub include_in_conversions_metric: Option<bool>,
+    #[serde(default)]
     pub click_through_lookback_window_days: Option<i64>,
     #[serde(default)]
     pub view_through_lookback_window_days: Option<i64>,
     #[serde(default)]
+    pub phone_call_duration_seconds: Option<i64>,
+    #[serde(default)]
     pub value_settings: Option<JsonValueSettings>,
+    #[serde(default)]
+    pub attribution_model_settings: Option<JsonAttributionModelSettings>,
+}
+
+#[derive(Deserialize)]
+pub struct JsonAttributionModelSettings {
+    #[serde(default)]
+    pub attribution_model: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -3990,11 +4004,20 @@ fn write_conversion_action(out: &mut String, name: &str, c: &JsonConversionActio
     if let Some(ct) = &c.counting_type {
         write_attr(out, 1, "counting_type", &fmt_string(ct));
     }
+    if let Some(b) = c.primary_for_goal {
+        write_attr(out, 1, "primary_for_goal", &b.to_string());
+    }
+    if let Some(b) = c.include_in_conversions_metric {
+        write_attr(out, 1, "include_in_conversions_metric", &b.to_string());
+    }
     if let Some(d) = c.click_through_lookback_window_days {
         write_attr(out, 1, "click_through_lookback_window_days", &d.to_string());
     }
     if let Some(d) = c.view_through_lookback_window_days {
         write_attr(out, 1, "view_through_lookback_window_days", &d.to_string());
+    }
+    if let Some(d) = c.phone_call_duration_seconds {
+        write_attr(out, 1, "phone_call_duration_seconds", &d.to_string());
     }
     if let Some(vs) = &c.value_settings {
         out.push_str("\n  value_settings {\n");
@@ -4007,6 +4030,15 @@ fn write_conversion_action(out: &mut String, name: &str, c: &JsonConversionActio
         if let Some(b) = vs.always_use_default_value {
             write_attr(out, 2, "always_use_default_value", &b.to_string());
         }
+        out.push_str("  }\n");
+    }
+    if let Some(model) = c
+        .attribution_model_settings
+        .as_ref()
+        .and_then(|a| a.attribution_model.as_deref())
+    {
+        out.push_str("\n  attribution_model_settings {\n");
+        write_attr(out, 2, "attribution_model", &fmt_string(model));
         out.push_str("  }\n");
     }
     out.push_str("}\n\n");
@@ -5306,6 +5338,61 @@ mod tests {
 
         assert!(account.starts_with("provider \"google_ads\""));
         assert!(campaigns.starts_with("provider \"google_ads\""));
+    }
+
+    /// The shape the issue is about: an auto-imported GA4 pageview action that
+    /// drives the Conversions column. Every field Google reports about how it
+    /// reports has to survive the trip into a `.bid`, or a repo cannot demote it.
+    #[test]
+    fn an_imported_conversion_action_renders_what_it_reports() {
+        let raw = r#"[
+            {
+                "results": [
+                    { "conversionAction": {
+                        "resourceName": "customers/9/conversionActions/3001",
+                        "id": "3001",
+                        "name": "Imported event",
+                        "type": "GOOGLE_ANALYTICS_4_CUSTOM",
+                        "category": "PAGE_VIEW",
+                        "status": "ENABLED",
+                        "primaryForGoal": true,
+                        "includeInConversionsMetric": true,
+                        "phoneCallDurationSeconds": "60",
+                        "attributionModelSettings": {
+                            "attributionModel": "GOOGLE_SEARCH_ATTRIBUTION_DATA_DRIVEN",
+                            "dataDrivenModelStatus": "AVAILABLE"
+                        }
+                    } }
+                ]
+            }
+        ]"#;
+        let out = render(&from_search_response(raw).expect("adapter"));
+        assert!(out.contains("primary_for_goal = true"), "{out}");
+        assert!(out.contains("include_in_conversions_metric = true"), "{out}");
+        assert!(out.contains("phone_call_duration_seconds = 60"), "{out}");
+        assert!(
+            out.contains("attribution_model_settings {")
+                && out.contains(
+                    "attribution_model = \"GOOGLE_SEARCH_ATTRIBUTION_DATA_DRIVEN\""
+                ),
+            "{out}"
+        );
+        // Output-only, so it has no attribute to land in.
+        assert!(!out.contains("data_driven_model_status"), "{out}");
+
+        let canonical = canonicalize(&out);
+        let pf = crate::parser::parse_str(std::path::Path::new("conv.bid"), &canonical)
+            .expect("parses");
+        let diags = crate::schema::validate_files(
+            std::slice::from_ref(&pf),
+            &crate::schema::InputBindings::default(),
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(
+            errors.is_empty(),
+            "validate errors: {:?}\n{canonical}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]

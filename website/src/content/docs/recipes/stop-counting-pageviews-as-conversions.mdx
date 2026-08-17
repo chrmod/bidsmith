@@ -1,0 +1,132 @@
+---
+title: Stop counting pageviews as conversions
+description: Demote an imported Google Analytics event to a secondary conversion action so Smart Bidding stops buying pageviews, declared in the repo and reviewed in a PR.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Link Google Analytics to Google Ads and a pile of events arrives with
+it, already switched on. Most accounts end up with at least one of them
+counting a **pageview** as a conversion — and because Google's default
+for a new action is *primary*, that pageview lands in the same
+**Conversions** column as your leads.
+
+That column is what Smart Bidding optimizes toward. So the bidding
+isn't buying leads any more; it's buying whoever loads a page. On a
+small account it is easy for pageviews to become the large majority of
+the conversion count, at which point every "cost per conversion" number
+anyone quotes is measuring something you never wanted to pay for.
+
+The fix is one line in a `.bid` file.
+
+## Find the culprit
+
+```sh
+bidsmith query "SELECT conversion_action.name,
+                       conversion_action.category,
+                       conversion_action.primary_for_goal
+                FROM conversion_action
+                WHERE conversion_action.status = 'ENABLED'"
+```
+
+```
+conversion_action.name        conversion_action.category  conversion_action.primary_for_goal
+Lead form submit              SUBMIT_LEAD_FORM            true
+page_view (GA4)               PAGE_VIEW                   true
+Calls from ads                PHONE_CALL_LEAD             true
+```
+
+Anything with a `PAGE_VIEW`, `ENGAGEMENT` or `OUTBOUND_CLICK` category
+sitting at `primary_for_goal = true` is worth a second look. If you
+want the count alongside it, ask the reporting side which actions the
+conversions are actually coming from:
+
+```sh
+bidsmith query "SELECT segments.conversion_action_name, metrics.all_conversions
+                FROM campaign WHERE segments.date DURING LAST_30_DAYS"
+```
+
+## Demote it
+
+<Steps>
+
+1. **Declare the action.** bidsmith matches a conversion action to the
+   live one **by name**, so a block that repeats the account's name for
+   it adopts what's there instead of creating a second one. Copy the
+   name exactly:
+
+   ```hcl
+   resource "google_ads_conversion_action" "ga4_page_view" {
+     name             = "page_view (GA4)"
+     type             = "GOOGLE_ANALYTICS_4_CUSTOM"
+     category         = "PAGE_VIEW"
+     status           = "ENABLED"
+     primary_for_goal = false
+   }
+   ```
+
+   Or let `bidsmith refresh -d ads/` write every account-level
+   resource into `ads/account.bid` for you, and edit the block it
+   produced.
+
+2. **Check the plan.** Only the one field should move:
+
+   ```sh
+   bidsmith plan .
+   ```
+
+   Expected: one `~ update` row on the conversion action, spelling out
+   the change as `primary_for_goal: true -> false`, and nothing
+   created or destroyed. If you instead see a `+ create`, the `name`
+   doesn't match the live action character for character.
+
+3. **Apply after review.** `bidsmith apply .` — the action keeps
+   recording, keeps showing up under "all conversions", and stops
+   feeding the column bidding chases.
+
+</Steps>
+
+<Aside type="note" title="Nothing is lost">
+  A secondary conversion action is still measured and still reported.
+  `primary_for_goal = false` only takes it out of the Conversions
+  column and out of bidding. You can promote it again by flipping the
+  line back.
+</Aside>
+
+## While you're there: short calls
+
+The call action Google creates for you comes with a 60-second
+threshold, so a 45-second call that booked a job is not counted as
+anything. It is the same shape of surprise, one attribute along:
+
+```hcl
+resource "google_ads_conversion_action" "calls_from_ads" {
+  name                        = "Calls from ads"
+  type                        = "AD_CALL"
+  category                    = "PHONE_CALL_LEAD"
+  primary_for_goal            = true
+  phone_call_duration_seconds = 15
+}
+```
+
+## Keeping it that way
+
+- **`bidsmith validate` warns** about a `PAGE_VIEW` action that is
+  primary, or that says nothing about `primary_for_goal` — which is the
+  same thing, because Google's default is primary.
+- **Omitting the attribute leaves it unmanaged.** A file that doesn't
+  mention `primary_for_goal` is not declaring it `false`; the account
+  keeps whatever it has, and so does the next person who opens the UI.
+  Write it down.
+- **`bidsmith plan` catches the flip back.** Once the file says
+  `false`, anyone promoting the action in the UI shows up as a one-line
+  diff on the next plan.
+
+## See also
+
+- [`google_ads_conversion_action`](/bidsmith/resources/google_ads_conversion_action/) —
+  the full reference, including attribution models.
+- [See how your campaigns are performing](./see-campaign-performance/) —
+  more `bidsmith query` reporting.
+- [Google on primary and secondary conversion actions](https://support.google.com/google-ads/answer/11461796) —
+  what each setting does inside Google Ads.

@@ -3094,31 +3094,54 @@ fn bid_modifier_changed(d: Option<f64>, l: Option<f64>) -> bool {
     }
 }
 
+/// `status` carries a schema default, so it is managed even when omitted.
+/// Everything else here is unmanaged when omitted, as everywhere else — an
+/// action that says nothing about `primary_for_goal` is not asking to promote
+/// one a UI edit demoted, and an update body cannot express "clear it" anyway.
 fn diff_conversion_action(d: &JsonConversionAction, l: &JsonConversionAction) -> Vec<FieldChange> {
     let mut c = Vec::new();
     if d.status != l.status {
         c.push(change("status", &l.status, &d.status));
     }
-    if d.counting_type != l.counting_type {
+    if d.counting_type.is_some() && d.counting_type != l.counting_type {
         c.push(change("counting_type", &l.counting_type, &d.counting_type));
     }
-    if d.click_through_lookback_window_days != l.click_through_lookback_window_days {
-        c.push(change(
-            "click_through_lookback_window_days",
-            l.click_through_lookback_window_days,
-            d.click_through_lookback_window_days,
-        ));
+    for (field, desired, live) in [
+        ("primary_for_goal", d.primary_for_goal, l.primary_for_goal),
+        (
+            "include_in_conversions_metric",
+            d.include_in_conversions_metric,
+            l.include_in_conversions_metric,
+        ),
+    ] {
+        if desired.is_some() && desired != live {
+            c.push(change(field, live, desired));
+        }
     }
-    if d.view_through_lookback_window_days != l.view_through_lookback_window_days {
-        c.push(change(
+    for (field, desired, live) in [
+        (
+            "click_through_lookback_window_days",
+            d.click_through_lookback_window_days,
+            l.click_through_lookback_window_days,
+        ),
+        (
             "view_through_lookback_window_days",
-            l.view_through_lookback_window_days,
             d.view_through_lookback_window_days,
-        ));
+            l.view_through_lookback_window_days,
+        ),
+        (
+            "phone_call_duration_seconds",
+            d.phone_call_duration_seconds,
+            l.phone_call_duration_seconds,
+        ),
+    ] {
+        if desired.is_some() && desired != live {
+            c.push(change(field, live, desired));
+        }
     }
     let dv = d.value_settings.as_ref().and_then(|v| v.default_value);
     let lv = l.value_settings.as_ref().and_then(|v| v.default_value);
-    if dv != lv {
+    if dv.is_some() && dv != lv {
         c.push(change("value_settings.default_value", lv, dv));
     }
     let dc = d
@@ -3129,7 +3152,7 @@ fn diff_conversion_action(d: &JsonConversionAction, l: &JsonConversionAction) ->
         .value_settings
         .as_ref()
         .and_then(|v| v.default_currency_code.clone());
-    if dc != lc {
+    if dc.is_some() && dc != lc {
         c.push(change("value_settings.default_currency_code", &lc, &dc));
     }
     let da = d
@@ -3140,8 +3163,23 @@ fn diff_conversion_action(d: &JsonConversionAction, l: &JsonConversionAction) ->
         .value_settings
         .as_ref()
         .and_then(|v| v.always_use_default_value);
-    if da != la {
+    if da.is_some() && da != la {
         c.push(change("value_settings.always_use_default_value", la, da));
+    }
+    let dm = d
+        .attribution_model_settings
+        .as_ref()
+        .and_then(|a| a.attribution_model.as_deref());
+    let lm = l
+        .attribution_model_settings
+        .as_ref()
+        .and_then(|a| a.attribution_model.as_deref());
+    if dm.is_some() && dm != lm {
+        c.push(change(
+            "attribution_model_settings.attribution_model",
+            lm,
+            dm,
+        ));
     }
     c
 }
@@ -6617,5 +6655,93 @@ mod asset_prune_tests {
             "{:?}",
             report.warnings
         );
+    }
+}
+
+#[cfg(test)]
+mod conversion_action_tests {
+    use super::*;
+
+    fn input(json: &str) -> ExportInput {
+        serde_json::from_str(json).expect("valid test input")
+    }
+
+    /// An auto-imported GA4 pageview action, primary and counted, as Google
+    /// hands it over.
+    const LIVE: &str = r#"{
+        "customer_id": "1",
+        "conversion_actions": [{
+            "id": "7001",
+            "name": "Imported event",
+            "type": "GOOGLE_ANALYTICS_4_CUSTOM",
+            "category": "PAGE_VIEW",
+            "status": "ENABLED",
+            "counting_type": "ONE_PER_CLICK",
+            "primary_for_goal": true,
+            "include_in_conversions_metric": true,
+            "phone_call_duration_seconds": 60,
+            "attribution_model_settings": {"attribution_model": "GOOGLE_ADS_LAST_CLICK"}
+        }]
+    }"#;
+
+    fn declared(extra: &str) -> ExportInput {
+        input(&format!(
+            r#"{{
+            "customer_id": "1",
+            "conversion_actions": [{{
+                "id": "m.pageview",
+                "name": "Imported event",
+                "type": "GOOGLE_ANALYTICS_4_CUSTOM",
+                "category": "PAGE_VIEW",
+                "status": "ENABLED"{extra}
+            }}]
+        }}"#
+        ))
+    }
+
+    fn changed_fields(extra: &str) -> Vec<String> {
+        diff(&declared(extra), &input(LIVE))
+            .diffs
+            .iter()
+            .find(|d| d.address == "m.pageview")
+            .map(|d| match &d.action {
+                Action::Update { changed_fields, .. } => {
+                    changed_fields.iter().map(FieldChange::render).collect()
+                }
+                _ => Vec::new(),
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn demoting_a_pageview_to_secondary_is_an_update() {
+        assert_eq!(
+            changed_fields(r#","primary_for_goal":false"#),
+            vec!["primary_for_goal: true -> false".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_attribution_model_and_call_duration_are_compared() {
+        assert_eq!(
+            changed_fields(
+                r#","phone_call_duration_seconds":0,
+                   "attribution_model_settings":{"attribution_model":"GOOGLE_SEARCH_ATTRIBUTION_DATA_DRIVEN"}"#
+            ),
+            vec![
+                "phone_call_duration_seconds: 60 -> 0".to_string(),
+                "attribution_model_settings.attribution_model: \"GOOGLE_ADS_LAST_CLICK\" -> \
+                 \"GOOGLE_SEARCH_ATTRIBUTION_DATA_DRIVEN\""
+                    .to_string(),
+            ]
+        );
+    }
+
+    /// A file that says nothing about a field is not asking to clear it — and
+    /// the update body could not express that anyway, so the old behaviour was
+    /// a mask naming a field the payload left out.
+    #[test]
+    fn an_omitted_field_is_unmanaged_not_a_request_to_clear_it() {
+        assert!(changed_fields("").is_empty(), "{:?}", changed_fields(""));
     }
 }

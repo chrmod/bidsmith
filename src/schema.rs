@@ -473,6 +473,18 @@ const CONVERSION_ACTION_CATEGORY: &[&str] = &[
 ];
 const CONVERSION_ACTION_STATUS: &[&str] = &["ENABLED", "REMOVED", "HIDDEN"];
 const CONVERSION_COUNTING_TYPE: &[&str] = &["ONE_PER_CLICK", "MANY_PER_CLICK"];
+/// Google stopped offering the four heuristic models (first click, linear, time
+/// decay, position based) for new selections, but an account can still report
+/// one — refusing them here would break the round-trip on the accounts that do.
+const ATTRIBUTION_MODEL: &[&str] = &[
+    "EXTERNAL",
+    "GOOGLE_ADS_LAST_CLICK",
+    "GOOGLE_SEARCH_ATTRIBUTION_FIRST_CLICK",
+    "GOOGLE_SEARCH_ATTRIBUTION_LINEAR",
+    "GOOGLE_SEARCH_ATTRIBUTION_TIME_DECAY",
+    "GOOGLE_SEARCH_ATTRIBUTION_POSITION_BASED",
+    "GOOGLE_SEARCH_ATTRIBUTION_DATA_DRIVEN",
+];
 const CALL_CONVERSION_REPORTING_STATE: &[&str] = &[
     "DISABLED",
     "USE_ACCOUNT_LEVEL_CALL_CONVERSION_ACTION",
@@ -1468,6 +1480,8 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         FieldType::Enum(CONVERSION_COUNTING_TYPE),
                         false,
                     ),
+                    attr("primary_for_goal", FieldType::Bool, false),
+                    attr("include_in_conversions_metric", FieldType::Bool, false),
                     attr(
                         "click_through_lookback_window_days",
                         FieldType::Integer,
@@ -1478,18 +1492,32 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                         FieldType::Integer,
                         false,
                     ),
+                    attr("phone_call_duration_seconds", FieldType::Integer, false),
                 ],
-                blocks: vec![NestedBlockSchema {
-                    name: "value_settings",
-                    schema: BlockSchema {
-                        attributes: vec![
-                            attr("default_value", FieldType::Number, false),
-                            attr("default_currency_code", FieldType::String, false),
-                            attr("always_use_default_value", FieldType::Bool, false),
-                        ],
-                        blocks: vec![],
+                blocks: vec![
+                    NestedBlockSchema {
+                        name: "value_settings",
+                        schema: BlockSchema {
+                            attributes: vec![
+                                attr("default_value", FieldType::Number, false),
+                                attr("default_currency_code", FieldType::String, false),
+                                attr("always_use_default_value", FieldType::Bool, false),
+                            ],
+                            blocks: vec![],
+                        },
                     },
-                }],
+                    NestedBlockSchema {
+                        name: "attribution_model_settings",
+                        schema: BlockSchema {
+                            attributes: vec![attr(
+                                "attribution_model",
+                                FieldType::Enum(ATTRIBUTION_MODEL),
+                                false,
+                            )],
+                            blocks: vec![],
+                        },
+                    },
+                ],
             },
         );
 
