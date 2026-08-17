@@ -1091,6 +1091,17 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                             blocks: vec![],
                         },
                     },
+                    // Where a Demand Gen campaign's language / location
+                    // targeting lives. Google's create-default `true` puts it
+                    // on the ad groups; `false` keeps it on the campaign, and
+                    // the choice is fixed at creation (issue #168).
+                    NestedBlockSchema {
+                        name: "demand_gen_campaign_settings",
+                        schema: BlockSchema {
+                            attributes: vec![attr("upgraded_targeting", FieldType::Bool, true)],
+                            blocks: vec![],
+                        },
+                    },
                     targeting_setting_block(),
                     // Repeatable: one block per cap, mapping to a single
                     // `FrequencyCapEntry` in `Campaign.frequency_caps`.
@@ -2598,6 +2609,7 @@ pub fn validate_files(files: &[ParsedFile], inputs: &InputBindings) -> Vec<Diag>
     validate_ad_templates(files, &templates, &registry, &locals, &variables, &mut diags);
     validate_targeting_conflicts(files, &registry, &defaults, &mut diags);
     validate_targeting_setting_conflicts(files, &registry, &defaults, &mut diags);
+    validate_demand_gen_targeting_level(files, &registry, &defaults, &mut diags);
 
     diags.sort_by(|a, b| {
         (a.src.name(), a.span.offset()).cmp(&(b.src.name(), b.span.offset()))
@@ -3182,6 +3194,264 @@ fn report_targeting_setting_conflict(
              with it — declare the restrictions at one level, not both"
         ),
     ));
+}
+
+/// Where a Demand Gen campaign's language / location targeting is allowed to
+/// live. Google creates every Demand Gen campaign with ad-group-level
+/// ("upgraded") targeting unless `demand_gen_campaign_settings {
+/// upgraded_targeting = false }` opts out at creation, and rejects targeting
+/// declared at the other level — with an error code published in no API
+/// version, so the rejection is undiagnosable from the outside (issue #168).
+/// Both directions are checked: campaign-level targeting without the opt-out,
+/// and ad-group-level targeting under a campaign that declared it.
+fn validate_demand_gen_targeting_level(
+    files: &[ParsedFile],
+    registry: &ResourceRegistry,
+    defaults: &DefaultsRegistry,
+    diags: &mut Vec<Diag>,
+) {
+    let defaults_channel = defaults
+        .decl_for("google_ads_campaign", None)
+        .and_then(|d| attr_string_literal(&d.block.body, "advertising_channel_type"));
+    let defaults_upgraded = defaults
+        .decl_for("google_ads_campaign", None)
+        .and_then(|d| nested_block(&d.block.body, "demand_gen_campaign_settings"))
+        .map(|b| attr_bool_literal(&b.body, "upgraded_targeting"));
+    let campaign_defaults = defaults.provided_attrs("google_ads_campaign");
+
+    // Demand Gen campaigns that opted out of upgraded targeting — the set the
+    // ad-group-level check reads. `Some(None)` (a block whose value is not a
+    // literal) suppresses both checks: the value is only known at load time.
+    let mut campaign_level: HashSet<String> = HashSet::new();
+    let mut ad_group_to_campaign: HashMap<String, String> = HashMap::new();
+
+    for f in files {
+        for b in resource_blocks(f, "google_ads_campaign") {
+            let channel = attr_string_literal(&b.body, "advertising_channel_type")
+                .or_else(|| defaults_channel.clone());
+            if channel.as_deref() != Some("DEMAND_GEN") {
+                continue;
+            }
+            let name = b.labels[1].as_str();
+            let own_block = nested_block(&b.body, "demand_gen_campaign_settings");
+            let upgraded = match own_block {
+                Some(setting) => Some(attr_bool_literal(&setting.body, "upgraded_targeting")),
+                None => defaults_upgraded,
+            };
+            if upgraded == Some(None) {
+                continue;
+            }
+            let upgraded = upgraded.flatten();
+            if upgraded == Some(false) {
+                campaign_level.insert(ResourceRegistry::qualified(
+                    &f.module,
+                    "google_ads_campaign",
+                    name,
+                ));
+                continue;
+            }
+            for attr_name in ["languages", "locations"] {
+                let at = match find_attr_key_span(&b.body, attr_name) {
+                    Some(span) => Some(span),
+                    None if campaign_defaults.contains(attr_name) => {
+                        Some(span_of(b.ident.span()))
+                    }
+                    None => None,
+                };
+                if let Some(at) = at {
+                    diags.push(demand_gen_level_diag(f, at, name, attr_name));
+                }
+            }
+        }
+        for b in resource_blocks(f, "google_ads_ad_group") {
+            let Some(value) = b.body.iter().find_map(|s| match s {
+                Structure::Attribute(a) if a.key.as_str() == "campaign" => Some(&a.value),
+                _ => None,
+            }) else {
+                continue;
+            };
+            let Some((ty, cname)) = ref_type_name(value) else { continue };
+            if ty != "google_ads_campaign" {
+                continue;
+            }
+            if let Resolution::Found(target) = registry.resolve(&f.module, &ty, &cname) {
+                ad_group_to_campaign.insert(
+                    ResourceRegistry::qualified(
+                        &f.module,
+                        "google_ads_ad_group",
+                        b.labels[1].as_str(),
+                    ),
+                    target,
+                );
+            }
+        }
+    }
+
+    for f in files {
+        for b in resource_blocks(f, "google_ads_campaign_criterion") {
+            let Some(offender) = positive_geo_lang_block(&b.body) else { continue };
+            let Some((ty, cname)) = attr_ref(&b.body, "campaign") else { continue };
+            if ty != "google_ads_campaign" {
+                continue;
+            }
+            let Resolution::Found(target) = registry.resolve(&f.module, &ty, &cname) else {
+                continue;
+            };
+            // Only campaigns this pass classified matter; a criterion on a
+            // SEARCH campaign, or on a Demand Gen campaign that opted out, is
+            // exactly where it belongs.
+            if campaign_level.contains(&target) || !demand_gen_upgraded(files, defaults, &target)
+            {
+                continue;
+            }
+            diags.push(demand_gen_level_diag(
+                f,
+                span_of(offender.ident.span()),
+                &cname,
+                offender.ident.as_str(),
+            ));
+        }
+        for b in resource_blocks(f, "google_ads_ad_group_criterion") {
+            let Some(offender) = positive_geo_lang_block(&b.body) else { continue };
+            let Some((ty, agname)) = attr_ref(&b.body, "ad_group") else { continue };
+            if ty != "google_ads_ad_group" {
+                continue;
+            }
+            let Resolution::Found(ag) = registry.resolve(&f.module, &ty, &agname) else {
+                continue;
+            };
+            let Some(campaign) = ad_group_to_campaign.get(&ag) else { continue };
+            if !campaign_level.contains(campaign) {
+                continue;
+            }
+            diags.push(Diag::new(
+                f.src.clone(),
+                span_of(offender.ident.span()),
+                format!(
+                    "this ad group's campaign declares upgraded_targeting = false, which keeps \
+                     its language/location targeting at the campaign level — declare this \
+                     {} there (inline '{}s' or a campaign criterion), or drop the opt-out and \
+                     move all of the campaign's language/location targeting to its ad groups",
+                    offender.ident.as_str(),
+                    offender.ident.as_str(),
+                ),
+            ));
+        }
+    }
+}
+
+/// Whether the named campaign is a Demand Gen campaign the level check treats
+/// as upgraded — declared with no opt-out and no non-literal setting.
+fn demand_gen_upgraded(
+    files: &[ParsedFile],
+    defaults: &DefaultsRegistry,
+    qualified: &str,
+) -> bool {
+    let defaults_channel = defaults
+        .decl_for("google_ads_campaign", None)
+        .and_then(|d| attr_string_literal(&d.block.body, "advertising_channel_type"));
+    for f in files {
+        for b in resource_blocks(f, "google_ads_campaign") {
+            let q = ResourceRegistry::qualified(
+                &f.module,
+                "google_ads_campaign",
+                b.labels[1].as_str(),
+            );
+            if q != qualified {
+                continue;
+            }
+            let channel = attr_string_literal(&b.body, "advertising_channel_type")
+                .or_else(|| defaults_channel.clone());
+            if channel.as_deref() != Some("DEMAND_GEN") {
+                return false;
+            }
+            let setting = nested_block(&b.body, "demand_gen_campaign_settings").or_else(|| {
+                defaults
+                    .decl_for("google_ads_campaign", None)
+                    .and_then(|d| nested_block(&d.block.body, "demand_gen_campaign_settings"))
+            });
+            return match setting {
+                Some(s) => attr_bool_literal(&s.body, "upgraded_targeting") == Some(true),
+                None => true,
+            };
+        }
+    }
+    false
+}
+
+fn demand_gen_level_diag(
+    file: &ParsedFile,
+    at: std::ops::Range<usize>,
+    campaign_name: &str,
+    what: &str,
+) -> Diag {
+    Diag::new(
+        file.src.clone(),
+        at,
+        format!(
+            "campaign '{campaign_name}' is a Demand Gen campaign without \
+             demand_gen_campaign_settings {{ upgraded_targeting = false }}: Google creates it \
+             with ad-group-level targeting and rejects campaign-level '{what}' with an error \
+             code no API version can decode — add that block to keep targeting on the \
+             campaign, or declare language {{}} / location {{}} blocks on \
+             google_ads_ad_group_criterion resources instead"
+        ),
+    )
+}
+
+/// The first positive `location {}` / `language {}` block a criterion declares,
+/// or `None` for negatives and criteria on other axes.
+fn positive_geo_lang_block(body: &Body) -> Option<&Block> {
+    let negative = body.iter().any(|s| {
+        matches!(s, Structure::Attribute(a)
+            if a.key.as_str() == "negative"
+                && matches!(&a.value, Expression::Bool(v) if *v.as_ref()))
+    });
+    if negative {
+        return None;
+    }
+    body.iter().find_map(|s| match s {
+        Structure::Block(b)
+            if b.ident.as_str() == "location" || b.ident.as_str() == "language" =>
+        {
+            Some(b)
+        }
+        _ => None,
+    })
+}
+
+fn attr_string_literal(body: &Body, key: &str) -> Option<String> {
+    body.iter().find_map(|s| match s {
+        Structure::Attribute(a) if a.key.as_str() == key => match &a.value {
+            Expression::String(v) => Some(v.as_str().to_string()),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+fn attr_bool_literal(body: &Body, key: &str) -> Option<bool> {
+    body.iter().find_map(|s| match s {
+        Structure::Attribute(a) if a.key.as_str() == key => match &a.value {
+            Expression::Bool(v) => Some(*v.as_ref()),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+fn attr_ref(body: &Body, key: &str) -> Option<(String, String)> {
+    body.iter().find_map(|s| match s {
+        Structure::Attribute(a) if a.key.as_str() == key => ref_type_name(&a.value),
+        _ => None,
+    })
+}
+
+fn find_attr_key_span(body: &Body, key: &str) -> Option<std::ops::Range<usize>> {
+    body.iter().find_map(|s| match s {
+        Structure::Attribute(a) if a.key.as_str() == key => Some(span_of(a.key.span())),
+        _ => None,
+    })
 }
 
 /// The `resource "<ty>" "<name>"` blocks in one file.
@@ -6120,6 +6390,156 @@ resource "google_ads_campaign" "c" {{
         );
         assert!(
             diags.iter().any(|d| d.message.contains("unknown country code \"Atlantis\"")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// Issue #168: Google creates a Demand Gen campaign with ad-group-level
+    /// targeting unless it opts out, and rejects targeting declared at the
+    /// other level with an error code no API version can decode — so the level
+    /// mismatch has to be caught before the request goes out.
+    #[test]
+    fn demand_gen_campaign_level_targeting_requires_the_opt_out() {
+        let body = |extra: &str| {
+            format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "dg" {{
+  name                     = "DG"
+  advertising_channel_type = "DEMAND_GEN"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  languages                = ["fr"]
+  locations                = ["FR"]
+{extra}
+}}
+"#
+            )
+        };
+        let diags = validate_str("dg_no_opt_out", &body(""));
+        let hits: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.contains("upgraded_targeting = false"))
+            .collect();
+        assert_eq!(hits.len(), 2, "one per axis: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>());
+
+        let diags = validate_str(
+            "dg_opted_out",
+            &body("  demand_gen_campaign_settings {\n    upgraded_targeting = false\n  }"),
+        );
+        assert!(
+            diags.iter().all(|d| !d.message.contains("upgraded_targeting")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+
+        let diags = validate_str(
+            "dg_explicit_true",
+            &body("  demand_gen_campaign_settings {\n    upgraded_targeting = true\n  }"),
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("upgraded_targeting = false")),
+            "explicit true is the same mismatch: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn demand_gen_level_check_leaves_other_channels_alone() {
+        let diags = validate_str(
+            "dg_search_ok",
+            &format!(
+                r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "s" {{
+  name                     = "S"
+  advertising_channel_type = "SEARCH"
+  campaign_budget          = google_ads_campaign_budget.b.id
+  languages                = ["fr"]
+  locations                = ["FR"]
+}}
+"#
+            ),
+        );
+        assert!(
+            diags.iter().all(|d| !d.message.contains("upgraded_targeting")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn demand_gen_explicit_campaign_criterion_needs_the_opt_out_too() {
+        let src = format!(
+            r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "dg" {{
+  name                     = "DG"
+  advertising_channel_type = "DEMAND_GEN"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}}
+
+resource "google_ads_campaign_criterion" "dg_lang" {{
+  campaign = google_ads_campaign.dg.id
+
+  language {{
+    language_constant = "languageConstants/1002"
+  }}
+}}
+"#
+        );
+        let diags = validate_str("dg_explicit_criterion", &src);
+        assert!(
+            diags.iter().any(|d| d.message.contains("upgraded_targeting = false")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn demand_gen_ad_group_targeting_conflicts_with_the_opt_out() {
+        let base = format!(
+            r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "dg" {{
+  name                     = "DG"
+  advertising_channel_type = "DEMAND_GEN"
+  campaign_budget          = google_ads_campaign_budget.b.id
+
+  demand_gen_campaign_settings {{
+    upgraded_targeting = false
+  }}
+}}
+
+resource "google_ads_ad_group" "ag" {{
+  name     = "AG"
+  campaign = google_ads_campaign.dg.id
+}}
+
+resource "google_ads_ad_group_criterion" "ag_lang" {{
+  ad_group = google_ads_ad_group.ag.id
+
+  language {{
+    language_constant = "languageConstants/1002"
+  }}
+}}
+"#
+        );
+        let diags = validate_str("dg_ag_conflict", &base);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("declares upgraded_targeting = false")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+
+        // Without the opt-out the ad group is exactly where Demand Gen
+        // targeting belongs.
+        let upgraded = base.replace(
+            "\n  demand_gen_campaign_settings {\n    upgraded_targeting = false\n  }\n",
+            "",
+        );
+        let diags = validate_str("dg_ag_ok", &upgraded);
+        assert!(
+            diags.iter().all(|d| !d.message.contains("upgraded_targeting")),
             "{:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );

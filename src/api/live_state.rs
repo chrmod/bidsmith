@@ -85,6 +85,7 @@ pub const QUERIES: &[(&str, &str)] = &[
           campaign.video_campaign_settings.video_ad_inventory_control.allow_non_skippable_in_stream,
           campaign.asset_automation_settings,
           campaign.ai_max_setting.enable_ai_max,
+          campaign.demand_gen_campaign_settings.upgraded_targeting,
           campaign.dynamic_search_ads_setting.domain_name,
           campaign.dynamic_search_ads_setting.language_code,
           campaign.dynamic_search_ads_setting.use_supplied_urls_only,

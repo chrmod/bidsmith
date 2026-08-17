@@ -134,6 +134,62 @@ account writes the inline form for you automatically.
   inline lists are for plain positive targeting.
 </Aside>
 
+## Demand Gen campaigns pick a level first
+
+Demand Gen is the one channel where Google asks *where* the targeting
+lives before it accepts any: on the campaign, or on its ad groups —
+never both. Every new Demand Gen campaign starts in ad-group mode
+unless it opts out **at creation**, and the choice can't be changed
+afterwards.
+
+To keep the two-line form above, add the opt-out:
+
+```hcl
+resource "google_ads_campaign" "demand_gen_fr" {
+  name                     = "DemandGen_FR"
+  advertising_channel_type = "DEMAND_GEN"
+  campaign_budget          = google_ads_campaign_budget.dg.id
+  target_spend {}
+
+  languages = ["fr"]
+  locations = ["FR"]
+
+  demand_gen_campaign_settings {
+    upgraded_targeting = false
+  }
+}
+```
+
+Or leave the campaign in ad-group mode and declare the targeting per ad
+group instead — useful when one campaign runs a French and a German ad
+group side by side:
+
+```hcl
+resource "google_ads_ad_group_criterion" "dg_fr_language" {
+  ad_group = google_ads_ad_group.dg_fr.id
+
+  language {
+    language_constant = "languageConstants/1002"
+  }
+}
+
+resource "google_ads_ad_group_criterion" "dg_fr_location" {
+  ad_group = google_ads_ad_group.dg_fr.id
+
+  location {
+    geo_target_constant = "geoTargetConstants/2250"
+  }
+}
+```
+
+Mixing the two levels — `languages` on a Demand Gen campaign without
+the opt-out, or ad-group criteria under a campaign that declared it —
+is a `validate` error, because Google would reject the apply with an
+error message that names no cause. For a campaign that already exists,
+match the level it was created with: `bidsmith refresh` writes the
+opt-out block for campaigns that have it, and `plan` warns when a file
+declares the other level.
+
 ## See also
 
 - [`google_ads_campaign`](/bidsmith/resources/google_ads_campaign/) — the `languages` / `locations` reference.

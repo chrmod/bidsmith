@@ -17,6 +17,7 @@ export const videoCampaignSettings = resource.blocks.find((b) => b.name === 'vid
 export const videoAdInventoryControl = videoCampaignSettings.blocks.find((b) => b.name === 'video_ad_inventory_control');
 export const assetAutomationSettings = resource.blocks.find((b) => b.name === 'asset_automation_settings');
 export const aiMaxSetting = resource.blocks.find((b) => b.name === 'ai_max_setting');
+export const demandGenCampaignSettings = resource.blocks.find((b) => b.name === 'demand_gen_campaign_settings');
 export const dynamicSearchAdsSetting = resource.blocks.find((b) => b.name === 'dynamic_search_ads_setting');
 export const frequencyCaps = resource.blocks.find((b) => b.name === 'frequency_caps');
 export const targetingSetting = resource.blocks.find((b) => b.name === 'targeting_setting');
@@ -137,6 +138,11 @@ by an address), converting existing explicit `location {}` / `language {}`
 criteria to the inline form — or adopting targets that already exist on
 the account — plans as a no-op. `refresh` emits the inline form by
 default for plain positive targeting.
+
+On a **Demand Gen** campaign the lists need one extra line: Google asks
+where the targeting lives — campaign or ad groups — before it accepts
+any. See [`demand_gen_campaign_settings`](#demand_gen_campaign_settings)
+below.
 
 ### In a location, or interested in it
 
@@ -728,6 +734,48 @@ in the campaign moves with it.
 AI Max is a **Search** campaign feature; `validate` warns if you put the
 block on another channel. Its ad-group half lives on the ad group — see
 [`ai_max_ad_group_setting`](./google_ads_ad_group/#ai_max_ad_group_setting).
+
+### demand_gen_campaign_settings
+
+A Demand Gen campaign's language and location targeting lives at one of
+two levels — on the campaign, or on its ad groups — and Google fixes
+the choice **when the campaign is created**. Every new campaign starts
+in ad-group mode ("upgraded targeting"); `upgraded_targeting = false`
+is the opt-out that keeps the campaign-level `languages` / `locations`
+lists working:
+
+```hcl
+resource "google_ads_campaign" "demand_gen_fr" {
+  name                     = "DemandGen_FR"
+  advertising_channel_type = "DEMAND_GEN"
+  campaign_budget          = google_ads_campaign_budget.dg.id
+  target_spend {}
+
+  languages = ["fr"]
+  locations = ["FR"]
+
+  demand_gen_campaign_settings {
+    upgraded_targeting = false
+  }
+}
+```
+
+<AttributeTable block={demandGenCampaignSettings} headingLevel={4} />
+
+Without the opt-out, declare the targeting as `language {}` /
+`location {}` blocks on
+[`google_ads_ad_group_criterion`](./google_ads_ad_group_criterion/)
+resources instead — one set per ad group, which is the point of the
+upgraded mode: a single campaign can run a French and a German ad group
+side by side.
+
+Declaring targeting at the wrong level is a `validate` error rather
+than an apply failure, because Google rejects the mismatched criteria
+with an error message that names no cause. The field is immutable:
+adopting an existing campaign means matching the level it was created
+with (`bidsmith refresh` writes the block for campaigns that opted
+out), and `plan` warns when the file says one level and the live
+campaign carries the other.
 
 ### owns
 

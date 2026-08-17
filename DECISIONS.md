@@ -619,6 +619,40 @@ resource type, any file layout, modules, schema validation.
   emit the inline form by default for plain positive targeting, which
   retires the collision-suffixed criterion addresses for the common case
   (issue #37).
+- **Demand Gen targeting level** (issue #168): Google fixes *where* a
+  Demand Gen campaign's language/location targeting lives at creation —
+  every new campaign defaults to ad-group-level ("upgraded") targeting,
+  and `Campaign.demand_gen_campaign_settings.upgraded_targeting` (an
+  immutable, create-only bool) is the opt-out that keeps it on the
+  campaign. Targeting declared at the other level is rejected with an
+  error code **published in no API version** (v22–v25 all decode it to
+  "The error code is not in this version.", trigger
+  `OWNED_AND_OPERATED`), so a version bump buys nothing and the guard
+  has to live client-side. Modelled as a
+  `demand_gen_campaign_settings { upgraded_targeting }` block on
+  `google_ads_campaign`, with a **validate-time level check in both
+  directions**: campaign-level `languages` / `locations` (or explicit
+  positive language/location campaign criteria) on a Demand Gen campaign
+  without `upgraded_targeting = false` is an error, and ad-group-level
+  language/location criteria under a campaign that declared the opt-out
+  is the same error from the other side. The field is create-only: the
+  update mask never carries it, a declared-vs-live mismatch is a plan
+  warning in the `campaign_immutable_warnings` family (fix the file or
+  recreate the campaign), and `refresh` / `export` render the block only
+  when live says `false` — `true` is Google's create-default and a block
+  restating it would say nothing (the adapter still keeps both values,
+  because the live-state diff needs them). Two rider fixes verified in
+  the same probes: ad-group criterion creates **no longer pin a temp
+  composite `resourceName`** — a constant-backed criterion (language,
+  location, demographics, …) must carry the constant's own id there, so
+  the pin was rejected as `INCONSISTENT_FIELD_VALUES` on every channel,
+  not just Demand Gen — and plan rejections now append the error's
+  `trigger` string, which for an unpublished error code is the only
+  diagnosis Google sends. All verified live (`validateOnly` mutates
+  against a dedicated test account): the opt-out plus campaign criteria
+  is accepted on v22, the upgraded default plus ad-group criteria is
+  accepted once the pin is gone, and each level is rejected under the
+  other's setting.
 - **Schema defaults** (issue #38): optional attributes can carry the
   Google Ads API's effective create-default in the schema
   (`AttributeSchema::default`). An omitted attribute that has a default is
@@ -1808,6 +1842,10 @@ Validator covers (so far):
   managed as a whole list once declared, plus an optional
   `ai_max_setting { enable_ai_max? }` block saying whether Google may
   broaden what the campaign matches and write creative for it, plus an
+  optional `demand_gen_campaign_settings { upgraded_targeting }` block
+  saying where a Demand Gen campaign's language/location targeting lives
+  (`false` = campaign level, `true` = ad-group level, immutable after
+  creation — see the Demand Gen targeting-level decision), plus an
   optional `dynamic_search_ads_setting { domain_name, language_code,
   use_supplied_urls_only? }` block naming the site Google may crawl to
   write the campaign's ads, plus a

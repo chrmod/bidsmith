@@ -5,7 +5,8 @@ use serde_json::Value;
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
     JsonAdSchedule,
-    JsonAiMaxAdGroupSetting, JsonAiMaxSetting, JsonDynamicSearchAdsSetting,
+    JsonAiMaxAdGroupSetting, JsonAiMaxSetting, JsonDemandGenCampaignSettings,
+    JsonDynamicSearchAdsSetting,
     JsonAssetAutomationSettings, JsonBidSelector, JsonBudget, JsonCallAsset, JsonCalloutAsset,
     JsonCampaign, JsonCampaignAsset,
     JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction, JsonCriterion,
@@ -336,6 +337,7 @@ impl AdapterState {
                 video_campaign_settings: None,
                 asset_automation_settings: None,
                 ai_max_setting: None,
+                demand_gen_campaign_settings: None,
                 dynamic_search_ads_setting: None,
                 targeting_setting: None,
                 frequency_caps: Vec::new(),
@@ -506,6 +508,15 @@ impl AdapterState {
         {
             entry.ai_max_setting = Some(JsonAiMaxSetting {
                 enable_ai_max: Some(b),
+            });
+        }
+        if let Some(b) = v
+            .get("demandGenCampaignSettings")
+            .and_then(|s| s.get("upgradedTargeting"))
+            .and_then(Value::as_bool)
+        {
+            entry.demand_gen_campaign_settings = Some(JsonDemandGenCampaignSettings {
+                upgraded_targeting: Some(b),
             });
         }
         if v.get("targetingSetting").is_some() {

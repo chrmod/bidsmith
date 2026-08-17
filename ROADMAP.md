@@ -320,6 +320,20 @@ Smaller follow-ups that can ride along:
   `AD_SCHEDULE_INVALID_TIME_INTERVAL`, confirming the criterion op is
   genuinely validated. The VIDEO channel refuses all criterion mutates
   as before, and the existing channel blocker already covers that.
+- ✅ Demand Gen language/location targeting (issue #168). Google fixes
+  the targeting *level* at creation — new Demand Gen campaigns default
+  to ad-group-level targeting and reject campaign-level criteria with
+  an error code no public API version can decode (v22–v25 all print
+  "The error code is not in this version.", trigger
+  `OWNED_AND_OPERATED`), so bumping the pinned version buys nothing.
+  Modelled as `demand_gen_campaign_settings { upgraded_targeting }`
+  with a bidirectional validate-time level check; ad-group criterion
+  creates stopped pinning a temp composite `resourceName` (rejected as
+  `INCONSISTENT_FIELD_VALUES` for every constant-backed axis, on every
+  channel); plan rejections now append the error's `trigger` string.
+  **Verified live** (validateOnly against a dedicated test account):
+  both levels accepted under their own setting, both rejected under the
+  other's. See the DECISIONS.md entry for the full shape.
 - ✅ Inline campaign targeting (`languages = ["en"]` / `locations =
   ["US"]`) — each entry expands to one positive `campaign_criterion`,
   resolving human-readable codes (or raw `…Constants/NNNN` strings) via
