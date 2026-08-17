@@ -9,6 +9,7 @@ import schema from '~/data/schema.json';
 
 export const resource = schema.resources['google_ads_conversion_action'];
 export const value_settings = resource.blocks.find((b) => b.name === 'value_settings');
+export const attribution = resource.blocks.find((b) => b.name === 'attribution_model_settings');
 
 A **conversion action** is a measurable event you care about — a form
 submit, a phone call, a purchase. Conversion actions tell Google what
@@ -21,6 +22,12 @@ to optimize toward and what to report on.
   `account.bid`).
 </Aside>
 
+Google matches a declared conversion action to the live one **by
+name**, so writing a block that repeats the name of an action the
+account already has adopts it rather than creating a second one. That
+is how you take over an action Google Analytics or the Google Ads UI
+created for you.
+
 ## Example
 
 A simple lead-form conversion with a fixed value:
@@ -32,6 +39,7 @@ resource "google_ads_conversion_action" "lead" {
   category                            = "SUBMIT_LEAD_FORM"
   status                              = "ENABLED"
   counting_type                       = "ONE_PER_CLICK"
+  primary_for_goal                    = true
   click_through_lookback_window_days  = 30
   view_through_lookback_window_days   = 1
 
@@ -43,9 +51,42 @@ resource "google_ads_conversion_action" "lead" {
 }
 ```
 
+## Primary or secondary
+
+`primary_for_goal` is the setting that decides what your **Conversions**
+column means, and therefore what Smart Bidding buys:
+
+- `primary_for_goal = true` — the action counts in the Conversions
+  column and bidding optimizes toward it.
+- `primary_for_goal = false` — the action is still measured and still
+  reported ("all conversions"), but it is observation-only: it does not
+  drive bidding.
+
+Google's default is **primary**. An auto-imported pageview event left
+at the default can quietly become most of your reported conversions, so
+`bidsmith validate` warns about a `PAGE_VIEW` action that stays primary.
+See [Stop counting pageviews as
+conversions](/bidsmith/recipes/stop-counting-pageviews-as-conversions/).
+
+<Aside type="caution" title="Omitted means unmanaged">
+  Leaving `primary_for_goal` out doesn't declare it `true` — it leaves
+  the setting to whatever the account has, and out of review. Write it
+  down on every action you care about.
+</Aside>
+
 ## Schema
 
 <AttributeTable block={resource} headingLevel={3} />
+
+`phone_call_duration_seconds` applies to call actions: a call shorter
+than this many seconds is not counted at all. The Google Ads UI sets 60
+on the call action it creates for you, which discards every call under a
+minute; `0` counts them all.
+
+`include_in_conversions_metric` is a second, older switch over the same
+column, from before Google grouped actions into conversion goals. Both
+stay writable — declare whichever one your account actually uses, so a
+change to it lands in review rather than in a report nobody questions.
 
 ## Nested blocks
 
@@ -58,7 +99,18 @@ qualified).
 
 <AttributeTable block={value_settings} headingLevel={4} />
 
+### `attribution_model_settings`
+
+How credit for one conversion is spread across the clicks that led to
+it. Google offers two models for new selections —
+`GOOGLE_ADS_LAST_CLICK` and `GOOGLE_SEARCH_ATTRIBUTION_DATA_DRIVEN` —
+and the retired heuristic models are still accepted here so an account
+that reports one keeps round-tripping.
+
+<AttributeTable block={attribution} headingLevel={4} />
+
 ## See also
 
 - [`google_ads_call_asset`](./google_ads_call_asset/) — links a phone number to a call-tracking conversion action.
+- [Stop counting pageviews as conversions](/bidsmith/recipes/stop-counting-pageviews-as-conversions/) — the whole workflow for an imported action.
 - [Google's conversion-tracking docs](https://support.google.com/google-ads/answer/1722022) — for choosing `type` and `category`.

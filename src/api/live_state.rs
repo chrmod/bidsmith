@@ -268,11 +268,15 @@ pub const QUERIES: &[(&str, &str)] = &[
           conversion_action.category,
           conversion_action.status,
           conversion_action.counting_type,
+          conversion_action.primary_for_goal,
+          conversion_action.include_in_conversions_metric,
           conversion_action.click_through_lookback_window_days,
           conversion_action.view_through_lookback_window_days,
+          conversion_action.phone_call_duration_seconds,
           conversion_action.value_settings.default_value,
           conversion_action.value_settings.default_currency_code,
-          conversion_action.value_settings.always_use_default_value
+          conversion_action.value_settings.always_use_default_value,
+          conversion_action.attribution_model_settings.attribution_model
         FROM conversion_action
         WHERE conversion_action.status != 'REMOVED'",
     ),

@@ -108,6 +108,8 @@ resource "google_ads_conversion_action" "lead" {
   category = "SUBMIT_LEAD_FORM"
   status = "ENABLED"
   counting_type = "ONE_PER_CLICK"
+  primary_for_goal = true
+  include_in_conversions_metric = true
   click_through_lookback_window_days = 30
   view_through_lookback_window_days = 1
 
@@ -115,6 +117,10 @@ resource "google_ads_conversion_action" "lead" {
     default_value = 1
     default_currency_code = "USD"
     always_use_default_value = true
+  }
+
+  attribution_model_settings {
+    attribution_model = "GOOGLE_SEARCH_ATTRIBUTION_DATA_DRIVEN"
   }
 }
 

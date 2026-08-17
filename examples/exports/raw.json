@@ -141,12 +141,19 @@
           "category": "SUBMIT_LEAD_FORM",
           "status": "ENABLED",
           "countingType": "ONE_PER_CLICK",
+          "primaryForGoal": true,
+          "includeInConversionsMetric": true,
           "clickThroughLookbackWindowDays": "30",
           "viewThroughLookbackWindowDays": "1",
+          "phoneCallDurationSeconds": "60",
           "valueSettings": {
             "defaultValue": 1.0,
             "defaultCurrencyCode": "USD",
             "alwaysUseDefaultValue": true
+          },
+          "attributionModelSettings": {
+            "attributionModel": "GOOGLE_SEARCH_ATTRIBUTION_DATA_DRIVEN",
+            "dataDrivenModelStatus": "AVAILABLE"
           }
         }
       },

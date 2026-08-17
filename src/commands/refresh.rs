@@ -992,6 +992,29 @@ fn collect_edits(
                 match f.as_str() {
                     "status" => opt!(f, vec!["status"], c.status.as_deref().map(s)),
                     "counting_type" => opt!(f, vec!["counting_type"], c.counting_type.as_deref().map(s)),
+                    "primary_for_goal" => opt!(
+                        f,
+                        vec!["primary_for_goal"],
+                        c.primary_for_goal.map(Expression::from)
+                    ),
+                    "include_in_conversions_metric" => opt!(
+                        f,
+                        vec!["include_in_conversions_metric"],
+                        c.include_in_conversions_metric.map(Expression::from)
+                    ),
+                    "phone_call_duration_seconds" => opt!(
+                        f,
+                        vec!["phone_call_duration_seconds"],
+                        c.phone_call_duration_seconds.map(Expression::from)
+                    ),
+                    "attribution_model_settings.attribution_model" => opt!(
+                        f,
+                        vec!["attribution_model_settings", "attribution_model"],
+                        c.attribution_model_settings
+                            .as_ref()
+                            .and_then(|a| a.attribution_model.as_deref())
+                            .map(s)
+                    ),
                     "click_through_lookback_window_days" => opt!(
                         f,
                         vec!["click_through_lookback_window_days"],
@@ -1950,5 +1973,39 @@ module "m" {
             "expected a var note, got {:?}",
             outcome.skipped
         );
+    }
+
+    /// A UI edit that promotes an action back to primary has to be writable
+    /// back into the file, or the repo is only a record of what someone meant.
+    #[test]
+    fn a_promoted_conversion_action_writes_back_into_the_file() {
+        let src = r#"resource "google_ads_conversion_action" "ga4_page_view" {
+  name             = "page_view (GA4)"
+  type             = "GOOGLE_ANALYTICS_4_CUSTOM"
+  category         = "PAGE_VIEW"
+  primary_for_goal = false
+
+  attribution_model_settings {
+    attribution_model = "GOOGLE_ADS_LAST_CLICK"
+  }
+}
+"#;
+        let live = r#"{
+          "customer_id": "1234567890",
+          "conversion_actions": [
+            {"id":"7001","name":"page_view (GA4)","type":"GOOGLE_ANALYTICS_4_CUSTOM",
+             "category":"PAGE_VIEW","status":"ENABLED","primary_for_goal":true,
+             "attribution_model_settings":
+               {"attribution_model":"GOOGLE_SEARCH_ATTRIBUTION_DATA_DRIVEN"}}
+          ]
+        }"#;
+        let (out, outcome) = run(src, live);
+        assert!(out.contains("primary_for_goal = true"), "{out}");
+        assert!(
+            out.contains(r#"attribution_model = "GOOGLE_SEARCH_ATTRIBUTION_DATA_DRIVEN""#),
+            "{out}"
+        );
+        let (_, fields) = &outcome.applied[0];
+        assert!(fields.contains(&"primary_for_goal".to_string()), "{fields:?}");
     }
 }

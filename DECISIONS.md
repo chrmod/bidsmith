@@ -1231,6 +1231,29 @@ resource type, any file layout, modules, schema validation.
   itself. The verb is read-only and heavier than `plan` — one pass per
   batch of unmodelled fields — so it is a verb you run, not a flag on the
   hot path; the catalog caches for a week.
+- **What an account *reports* is as declarable as what it serves**
+  (issue #175): the four conversion-action fields that decide what lands
+  in the Conversions column — `primary_for_goal`,
+  `include_in_conversions_metric`, `phone_call_duration_seconds`, and
+  `attribution_model_settings.attribution_model` — are modelled, read,
+  diffed and written. None of them makes anything serve, which is how
+  they stayed outside the "live state == `.bid`" goal of issue #153; but
+  an auto-imported GA4 action at `category = PAGE_VIEW` and
+  `primary_for_goal = true` puts pageviews in the column Smart Bidding
+  optimises toward, so the number a budget conversation runs on stops
+  measuring leads. `drift` already read all four — the gap was the schema
+  and the write path. **No schema default is pinned on
+  `primary_for_goal`** even though Google documents the create-default as
+  `true`: pinning it would make an upgrade silently re-promote every
+  action someone had deliberately demoted. Omitted means unmanaged, as
+  everywhere else — and the same guard now covers `counting_type`, the
+  lookback windows and `value_settings.*`, which until now diffed as a
+  change whenever a file left them out and then sent an update mask
+  naming a field the payload omitted. `validate` warns when a `PAGE_VIEW`
+  action is primary *or* says nothing, since Google's default is primary
+  and silence is the reported bug. The retired heuristic attribution
+  models stay in the enum: an account can still report one, and refusing
+  it would break the round-trip on exactly the accounts that need it.
 - **The ad group models every settable bid field, and an omitted one is
   unmanaged** (issue #109): the campaign's block picks the strategy, the
   ad group carries the amount, and which field holds it follows from the
@@ -2126,8 +2149,10 @@ Validator covers (so far):
   either a typed reference or a literal Google Ads resource-name
   string for gradual adoption),
   `google_ads_conversion_action`
-  (`type`, `category`, lookback windows, optional `value_settings`
-  sub-block with default value / currency / always-use flag),
+  (`type`, `category`, lookback windows, `primary_for_goal`,
+  `include_in_conversions_metric`, `phone_call_duration_seconds`,
+  optional `value_settings` sub-block with default value / currency /
+  always-use flag, optional `attribution_model_settings` sub-block),
   `google_ads_call_asset` (country code + phone number, optional
   `call_conversion_reporting_state` and reference to a
   `google_ads_conversion_action` — the field also accepts a literal

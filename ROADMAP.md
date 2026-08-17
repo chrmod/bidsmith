@@ -337,6 +337,24 @@ Smaller follow-ups that can ride along:
   `AD_SCHEDULE_INVALID_TIME_INTERVAL`, confirming the criterion op is
   genuinely validated. The VIDEO channel refuses all criterion mutates
   as before, and the existing channel blocker already covers that.
+- ✅ What a conversion action reports (issue #175). `primary_for_goal`,
+  `include_in_conversions_metric`, `phone_call_duration_seconds` and an
+  `attribution_model_settings { attribution_model }` block close the four
+  settable fields `drift` was naming on every managed account. The one
+  that matters is `primary_for_goal`: Google defaults a new action to
+  primary, so an auto-imported analytics pageview event feeds the
+  Conversions column that Smart Bidding optimises toward, and a plan
+  reporting "0 to update, N unchanged" was true only about the fields
+  bidsmith modelled. No default is pinned on it — pinning Google's `true`
+  would have re-promoted every deliberately demoted action on upgrade —
+  and `validate` warns on a `PAGE_VIEW` action that is primary or silent.
+  A rider fix: the older conversion-action fields (`counting_type`, the
+  lookback windows, `value_settings.*`) diffed as a change when a file
+  omitted them, then sent an update mask naming a field the payload left
+  out; they now follow the "omitted means unmanaged" rule the rest of the
+  tool uses. Only `app_id` is left unmodelled on the resource. **Not yet
+  verified live** — the account-level `apply` round-trip is still the
+  outstanding item under priority 3 above.
 - ✅ Demand Gen language/location targeting (issue #168). Google fixes
   the targeting *level* at creation — new Demand Gen campaigns default
   to ad-group-level targeting and reject campaign-level criteria with

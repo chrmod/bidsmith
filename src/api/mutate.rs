@@ -1439,6 +1439,12 @@ fn conversion_action_create(c: &JsonConversionAction, resource_name: &str) -> Va
     if let Some(ct) = &c.counting_type {
         m.insert("countingType".into(), Value::String(ct.clone()));
     }
+    if let Some(b) = c.primary_for_goal {
+        m.insert("primaryForGoal".into(), Value::Bool(b));
+    }
+    if let Some(b) = c.include_in_conversions_metric {
+        m.insert("includeInConversionsMetric".into(), Value::Bool(b));
+    }
     if let Some(d) = c.click_through_lookback_window_days {
         m.insert(
             "clickThroughLookbackWindowDays".into(),
@@ -1451,8 +1457,24 @@ fn conversion_action_create(c: &JsonConversionAction, resource_name: &str) -> Va
             Value::String(d.to_string()),
         );
     }
+    if let Some(d) = c.phone_call_duration_seconds {
+        m.insert(
+            "phoneCallDurationSeconds".into(),
+            Value::String(d.to_string()),
+        );
+    }
     if let Some(vs) = &c.value_settings {
         m.insert("valueSettings".into(), value_settings_value(vs));
+    }
+    if let Some(model) = c
+        .attribution_model_settings
+        .as_ref()
+        .and_then(|a| a.attribution_model.as_ref())
+    {
+        m.insert(
+            "attributionModelSettings".into(),
+            json!({ "attributionModel": model }),
+        );
     }
     Value::Object(m)
 }
@@ -1491,6 +1513,36 @@ fn conversion_action_update_body(
             "counting_type" => {
                 if let Some(ct) = &c.counting_type {
                     m.insert("countingType".into(), Value::String(ct.clone()));
+                }
+            }
+            "primary_for_goal" => {
+                if let Some(b) = c.primary_for_goal {
+                    m.insert("primaryForGoal".into(), Value::Bool(b));
+                }
+            }
+            "include_in_conversions_metric" => {
+                if let Some(b) = c.include_in_conversions_metric {
+                    m.insert("includeInConversionsMetric".into(), Value::Bool(b));
+                }
+            }
+            "phone_call_duration_seconds" => {
+                if let Some(d) = c.phone_call_duration_seconds {
+                    m.insert(
+                        "phoneCallDurationSeconds".into(),
+                        Value::String(d.to_string()),
+                    );
+                }
+            }
+            "attribution_model_settings.attribution_model" => {
+                if let Some(model) = c
+                    .attribution_model_settings
+                    .as_ref()
+                    .and_then(|a| a.attribution_model.as_ref())
+                {
+                    m.insert(
+                        "attributionModelSettings".into(),
+                        json!({ "attributionModel": model }),
+                    );
                 }
             }
             "click_through_lookback_window_days" => {
@@ -5599,5 +5651,64 @@ mod tests {
             .find_map(|o| o.get("adGroupLabelOperation").and_then(|x| x.get("remove")))
             .expect("a claim release");
         assert_eq!(release.as_str().unwrap(), "customers/100/adGroupLabels/300~779");
+    }
+
+    #[test]
+    fn a_conversion_action_create_carries_what_the_conversions_column_reports() {
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "conversion_actions": [{
+                "id": "m.pageview",
+                "name": "Imported event",
+                "type": "GOOGLE_ANALYTICS_4_CUSTOM",
+                "category": "PAGE_VIEW",
+                "primary_for_goal": false,
+                "include_in_conversions_metric": false,
+                "phone_call_duration_seconds": 60,
+                "attribution_model_settings": {
+                    "attribution_model": "GOOGLE_SEARCH_ATTRIBUTION_DATA_DRIVEN"
+                }
+            }]
+        }))
+        .expect("valid ExportInput");
+        let report = report_of(vec![create_diff("m.pageview", "conversion_action")]);
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let create = &plan.body["mutateOperations"][0]["conversionActionOperation"]["create"];
+        assert_eq!(create["primaryForGoal"], json!(false));
+        assert_eq!(create["includeInConversionsMetric"], json!(false));
+        // int64 rides as a string in the REST JSON, like the lookback windows.
+        assert_eq!(create["phoneCallDurationSeconds"], json!("60"));
+        assert_eq!(
+            create["attributionModelSettings"]["attributionModel"],
+            json!("GOOGLE_SEARCH_ATTRIBUTION_DATA_DRIVEN")
+        );
+    }
+
+    #[test]
+    fn demoting_a_conversion_action_updates_that_field_alone() {
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "conversion_actions": [{
+                "id": "m.pageview",
+                "name": "Imported event",
+                "type": "GOOGLE_ANALYTICS_4_CUSTOM",
+                "category": "PAGE_VIEW",
+                "primary_for_goal": false
+            }]
+        }))
+        .expect("valid ExportInput");
+        let report = report_of(vec![update_diff(
+            "m.pageview",
+            "conversion_action",
+            &["primary_for_goal"],
+        )]);
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let op = &plan.body["mutateOperations"][0]["conversionActionOperation"];
+        assert_eq!(op["updateMask"], json!("primary_for_goal"));
+        assert_eq!(op["update"]["primaryForGoal"], json!(false));
+        assert_eq!(
+            op["update"]["resourceName"],
+            json!("customers/100/conversionActions/42")
+        );
     }
 }

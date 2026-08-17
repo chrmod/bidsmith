@@ -80,6 +80,10 @@ fn lint_resource(file: &ParsedFile, block: &Block, bindings: &Bindings, diags: &
         lint_ai_max_ad_group(file, block, &address, bindings, diags);
     }
 
+    if ty == "google_ads_conversion_action" {
+        lint_page_view_primary(file, block, &address, bindings, diags);
+    }
+
     if matches!(
         ty,
         "google_ads_campaign_criterion" | "google_ads_ad_group_criterion"
@@ -162,6 +166,43 @@ fn lint_undetermined_demographic(
             ),
         ));
     }
+}
+
+/// A primary conversion action feeds the Conversions column, and Smart Bidding
+/// optimises toward that column — so a pageview left primary is not a reporting
+/// nicety, it is budget going to whoever loads a page. Google's own default is
+/// primary, which is why an undeclared `primary_for_goal` warns too.
+fn lint_page_view_primary(
+    file: &ParsedFile,
+    block: &Block,
+    address: &str,
+    bindings: &Bindings,
+    diags: &mut Vec<Diag>,
+) {
+    let Some(category) = find_attr(&block.body, "category") else {
+        return;
+    };
+    if eval_str(bindings, &file.module, &category.value).as_deref() != Some("PAGE_VIEW") {
+        return;
+    }
+    let primary = find_attr(&block.body, "primary_for_goal");
+    if primary.is_some_and(|a| eval_bool(bindings, &file.module, &a.value) == Some(false)) {
+        return;
+    }
+    let (span, what) = match primary {
+        Some(a) => (a.value.span(), "counts a PAGE_VIEW as a primary conversion"),
+        None => (
+            category.value.span(),
+            "leaves a PAGE_VIEW conversion primary, which is what Google does when primary_for_goal is unset",
+        ),
+    };
+    diags.push(Diag::warning(
+        file.src.clone(),
+        span_of(span),
+        format!(
+            "{address} {what}: a primary action lands in the Conversions column Smart Bidding optimises toward, so pageviews compete with leads for the budget — primary_for_goal = false keeps it observation-only"
+        ),
+    ));
 }
 
 fn lint_frequency_caps(
@@ -565,6 +606,13 @@ fn collect_rsa_list_items(
 fn eval_str(bindings: &Bindings, module: &str, expr: &Expression) -> Option<String> {
     match bindings.resolve_value(module, expr).as_ref() {
         Expression::String(s) => Some(s.as_str().to_string()),
+        _ => None,
+    }
+}
+
+fn eval_bool(bindings: &Bindings, module: &str, expr: &Expression) -> Option<bool> {
+    match bindings.resolve_value(module, expr).as_ref() {
+        Expression::Bool(b) => Some(*b.as_ref()),
         _ => None,
     }
 }
@@ -1211,5 +1259,73 @@ resource "google_ads_ad_group_ad" "dg" {{
             !msgs.iter().any(|m| m.contains("google_ads_ad_group_ad.dg")),
             "a creatable Demand Gen ad should lint clean: {msgs:?}"
         );
+    }
+
+    fn conversion_action(name: &str, category: &str, extra: &str) -> Vec<String> {
+        lint_str(
+            name,
+            &format!(
+                r#"
+resource "google_ads_conversion_action" "a" {{
+  name     = "Imported event"
+  type     = "GOOGLE_ANALYTICS_4_CUSTOM"
+  category = "{category}"
+{extra}
+}}
+"#
+            ),
+        )
+    }
+
+    #[test]
+    fn a_page_view_left_primary_warns() {
+        let msgs = conversion_action("pv_primary", "PAGE_VIEW", "  primary_for_goal = true");
+        assert!(
+            msgs.iter().any(|m| m.contains("compete with leads")),
+            "{msgs:?}"
+        );
+    }
+
+    /// Google's own default is primary, so saying nothing is the reported bug.
+    #[test]
+    fn a_page_view_that_says_nothing_warns() {
+        let msgs = conversion_action("pv_silent", "PAGE_VIEW", "");
+        assert!(
+            msgs.iter().any(|m| m.contains("compete with leads")),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn a_demoted_page_view_is_quiet() {
+        let msgs = conversion_action("pv_secondary", "PAGE_VIEW", "  primary_for_goal = false");
+        assert!(msgs.is_empty(), "{msgs:?}");
+    }
+
+    #[test]
+    fn a_primary_lead_is_quiet() {
+        let msgs = conversion_action("lead_primary", "SUBMIT_LEAD_FORM", "  primary_for_goal = true");
+        assert!(msgs.is_empty(), "{msgs:?}");
+    }
+
+    #[test]
+    fn a_page_view_demoted_through_a_variable_is_quiet() {
+        let msgs = lint_str(
+            "pv_var",
+            r#"
+variable "count_pageviews" {
+  type    = bool
+  default = false
+}
+
+resource "google_ads_conversion_action" "a" {
+  name             = "Imported event"
+  type             = "GOOGLE_ANALYTICS_4_CUSTOM"
+  category         = "PAGE_VIEW"
+  primary_for_goal = var.count_pageviews
+}
+"#,
+        );
+        assert!(msgs.is_empty(), "{msgs:?}");
     }
 }
