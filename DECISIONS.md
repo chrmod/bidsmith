@@ -2039,7 +2039,17 @@ Validator covers (so far):
   of AI Max, plus an optional `audience_setting
   { use_audience_grouped? }` block — immutable, create-only — saying
   whether the ad group targets through a `google_ads_audience` rather
-  than segment criteria of its own, which Demand Gen requires),
+  than segment criteria of its own, which Demand Gen requires, plus an
+  optional `demand_gen_ad_group_settings { channel_controls { … } }`
+  block saying where a Demand Gen ad group's ads may serve —
+  `channel_controls` is a `oneof`: either `channel_strategy`
+  (`ALL_CHANNELS` / `ALL_OWNED_AND_OPERATED_CHANNELS`) or a
+  `selected_channels { youtube_in_stream?, youtube_in_feed?,
+  youtube_shorts?, gmail?, discover?, display?, maps? }` block with at
+  least one channel on; validate rejects both arms at once, an all-false
+  selection, and the block on a non-`DEMAND_GEN` campaign's ad group,
+  while the output-only `channel_config` stays undeclarable and only
+  disambiguates reads),
   `google_ads_ad_group_ad`
   (with `ad` → `responsive_search_ad` → repeating
   `headline { text, pin? }` / `description { text, pin? }` blocks,

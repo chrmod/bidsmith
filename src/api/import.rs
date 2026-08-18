@@ -5,7 +5,8 @@ use hcl_edit::structure::{Attribute, Block, Structure};
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
     JsonAdSchedule,
-    JsonAiMaxAdGroupSetting, JsonAiMaxSetting, JsonDemandGenCampaignSettings,
+    JsonAiMaxAdGroupSetting, JsonAiMaxSetting, JsonChannelControls,
+    JsonDemandGenAdGroupSettings, JsonDemandGenCampaignSettings, JsonSelectedChannels,
     JsonDynamicSearchAdsSetting,
     JsonAssetAutomationSettings, JsonAttributionModelSettings, JsonBidSelector, JsonBudget,
     JsonCallAsset,
@@ -944,6 +945,36 @@ fn import_ai_max_ad_group_setting(ctx: &Ctx, block: &Block) -> JsonAiMaxAdGroupS
     a
 }
 
+fn import_demand_gen_ad_group_settings(ctx: &Ctx, block: &Block) -> JsonDemandGenAdGroupSettings {
+    let mut settings = JsonDemandGenAdGroupSettings::default();
+    let Some(controls_block) = block.body.iter().find_map(|st| match st {
+        Structure::Block(b) if b.ident.as_str() == "channel_controls" => Some(b),
+        _ => None,
+    }) else {
+        return settings;
+    };
+    let mut controls = JsonChannelControls::default();
+    for st in controls_block.body.iter() {
+        match st {
+            Structure::Attribute(attr) if attr.key.as_str() == "channel_strategy" => {
+                controls.channel_strategy = expect_string_owned(ctx, attr);
+            }
+            Structure::Block(b) if b.ident.as_str() == "selected_channels" => {
+                let mut channels = JsonSelectedChannels::default();
+                for inner in b.body.iter() {
+                    if let Structure::Attribute(attr) = inner {
+                        channels.set(attr.key.as_str(), expect_bool(ctx, attr));
+                    }
+                }
+                controls.selected_channels = Some(channels);
+            }
+            _ => {}
+        }
+    }
+    settings.channel_controls = Some(controls);
+    settings
+}
+
 /// The block's presence is the claim, so an empty one imports as an empty list
 /// — "nothing here merely observes" is a statement, not an omission.
 fn import_targeting_setting(ctx: &Ctx, block: &Block) -> JsonTargetingSetting {
@@ -1017,6 +1048,7 @@ fn import_ad_group(
     let mut targeting_setting = None;
     let mut ai_max_ad_group_setting = None;
     let mut audience_setting = None;
+    let mut demand_gen_ad_group_settings = None;
     let mut final_url_suffix = None;
     let mut custom_parameters = None;
     let mut callouts: Vec<String> = Vec::new();
@@ -1053,6 +1085,9 @@ fn import_ad_group(
             Structure::Block(b) if b.ident.as_str() == "audience_setting" => {
                 audience_setting = Some(import_audience_setting(ctx, b))
             }
+            Structure::Block(b) if b.ident.as_str() == "demand_gen_ad_group_settings" => {
+                demand_gen_ad_group_settings = Some(import_demand_gen_ad_group_settings(ctx, b))
+            }
             Structure::Block(b) if b.ident.as_str() == "structured_snippet" => {
                 if let Some(sn) = import_inline_snippet(ctx, b) {
                     snippets.push(sn);
@@ -1073,6 +1108,7 @@ fn import_ad_group(
         targeting_setting,
         ai_max_ad_group_setting,
         audience_setting,
+        demand_gen_ad_group_settings,
         final_url_suffix,
         custom_parameters,
         ..Default::default()
@@ -5284,6 +5320,77 @@ resource "google_ads_ad_group" "ag" {
         .expect("adapt live");
 
         let report = diff_after_defaults(declared, live);
+        assert!(changed_fields(&report).is_empty(), "{:?}", report.diffs);
+    }
+
+    /// A Demand Gen ad group narrowing itself to YouTube: the declared list
+    /// diffs against a live ad group serving everywhere, and the same list
+    /// read back from the account is not a change (issue #180).
+    #[test]
+    fn declared_channel_controls_diff_against_the_live_arm() {
+        let declared = |name: &str| {
+            import_str(
+                name,
+                r#"
+resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 1000000
+}
+
+resource "google_ads_campaign" "dg" {
+  name                     = "DG"
+  advertising_channel_type = "DEMAND_GEN"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+
+resource "google_ads_ad_group" "yt" {
+  name     = "YouTube only"
+  campaign = google_ads_campaign.dg.id
+
+  demand_gen_ad_group_settings {
+    channel_controls {
+      selected_channels {
+        youtube_in_stream = true
+        youtube_in_feed = true
+        youtube_shorts = true
+      }
+    }
+  }
+}
+"#,
+            )
+        };
+        let live = |controls: &str| {
+            crate::commands::adapt::from_search_response(&format!(
+                r#"[{{"results":[
+              {{"campaignBudget":{{"resourceName":"customers/9/campaignBudgets/1","id":"1","name":"B","amountMicros":"1000000"}}}},
+              {{"campaign":{{"resourceName":"customers/9/campaigns/2","id":"2","name":"DG","status":"ENABLED","advertisingChannelType":"DEMAND_GEN","campaignBudget":"customers/9/campaignBudgets/1","containsEuPoliticalAdvertising":"DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"}}}},
+              {{"adGroup":{{"resourceName":"customers/9/adGroups/3","id":"3","name":"YouTube only","status":"ENABLED","campaign":"customers/9/campaigns/2","demandGenAdGroupSettings":{{"channelControls":{controls}}}}}}}
+            ]}}]"#
+            ))
+            .expect("adapt live")
+        };
+
+        let report = diff_after_defaults(
+            declared("dg_channels_drift"),
+            live(r#"{"channelConfig":"CHANNEL_STRATEGY","channelStrategy":"ALL_CHANNELS"}"#),
+        );
+        let change = match &report.diffs.iter().find(|d| d.kind == "ad_group").unwrap().action {
+            crate::api::diff::Action::Update { changed_fields, .. } => changed_fields[0].clone(),
+            other => panic!("expected an update, got {other:?}"),
+        };
+        assert_eq!(
+            change.render(),
+            "demand_gen_ad_group_settings.channel_controls: ALL_CHANNELS -> \
+             youtube_in_stream, youtube_in_feed, youtube_shorts"
+        );
+
+        let report = diff_after_defaults(
+            declared("dg_channels_match"),
+            live(
+                r#"{"channelConfig":"SELECTED_CHANNELS","selectedChannels":{"youtubeInStream":true,"youtubeInFeed":true,"youtubeShorts":true,"gmail":false,"discover":false,"display":false,"maps":false}}"#,
+            ),
+        );
         assert!(changed_fields(&report).is_empty(), "{:?}", report.diffs);
     }
 

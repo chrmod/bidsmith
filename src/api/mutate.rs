@@ -7,7 +7,8 @@ use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
     JsonBudget, JsonCallAsset, JsonCallToActionAsset, JsonCalloutAsset, JsonCampaign,
     JsonCampaignAsset,
-    JsonAudience, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
+    JsonAudience, JsonCampaignCriterion, JsonCampaignSharedSet, JsonChannelControls,
+    JsonConversionAction,
     JsonCriterion, JsonCustomAudience, JsonCustomParameter, JsonCustomerAsset,
     JsonGroupedAudience,
     JsonDemandGenVideoResponsiveAd, JsonResponsiveSearchAd, JsonRsaAsset, JsonSharedSet,
@@ -390,7 +391,7 @@ pub fn build_mutate_with_diff(
             mutate_ops.push(json!({
                 "adGroupOperation": {
                     "update": ad_group_update_body(g, rn, fields),
-                    "updateMask": tracking_mask(fields),
+                    "updateMask": ad_group_update_mask(g, fields),
                 }
             }));
             operations.push(PlanOperation { address: g.id.clone(), kind: "ad_group" });
@@ -1102,6 +1103,24 @@ fn tracking_mask(fields: &[String]) -> String {
         .join(",")
 }
 
+/// `tracking_mask` plus the channel-controls expansion, which needs the ad
+/// group to know which `oneof` arm the paths must reach.
+fn ad_group_update_mask(g: &JsonAdGroup, fields: &[String]) -> String {
+    fields
+        .iter()
+        .flat_map(|f| match f.as_str() {
+            "demand_gen_ad_group_settings.channel_controls" => g
+                .demand_gen_ad_group_settings
+                .as_ref()
+                .and_then(|s| s.channel_controls.as_ref())
+                .map(channel_controls_mask_paths)
+                .unwrap_or_default(),
+            other => vec![tracking_mask_path(other).to_string()],
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// Write the tracking pair into an update/create body under `m`.
 fn put_tracking(
     m: &mut Map<String, Value>,
@@ -1319,6 +1338,19 @@ fn ad_group_update_body(g: &JsonAdGroup, resource_name: &str, fields: &[String])
                     m.insert(
                         "aiMaxAdGroupSetting".into(),
                         json!({ "disableSearchTermMatching": v }),
+                    );
+                }
+            }
+            "demand_gen_ad_group_settings.channel_controls" => {
+                if let Some(v) = g
+                    .demand_gen_ad_group_settings
+                    .as_ref()
+                    .and_then(|s| s.channel_controls.as_ref())
+                    .and_then(channel_controls_value)
+                {
+                    m.insert(
+                        "demandGenAdGroupSettings".into(),
+                        json!({ "channelControls": v }),
                     );
                 }
             }
@@ -2181,6 +2213,44 @@ fn targeting_setting_value(setting: Option<&JsonTargetingSetting>) -> Value {
     })
 }
 
+/// The declared `channel_controls` arm as the API body: the strategy, or every
+/// selected channel spelled out — the falses too, so the message says exactly
+/// which channels are off rather than leaving them to whatever the ad group
+/// carried before. `None` when no arm is declared, which `validate` already
+/// rejects.
+fn channel_controls_value(controls: &JsonChannelControls) -> Option<Value> {
+    if let Some(channels) = &controls.selected_channels {
+        let mut sub = Map::new();
+        for (field, json) in crate::schema::DEMAND_GEN_SELECTED_CHANNEL_FIELDS {
+            sub.insert(
+                (*json).into(),
+                Value::Bool(channels.get(field).unwrap_or(false)),
+            );
+        }
+        return Some(json!({ "selectedChannels": Value::Object(sub) }));
+    }
+    controls
+        .channel_strategy
+        .as_ref()
+        .map(|s| json!({ "channelStrategy": s }))
+}
+
+/// The update-mask paths that reach the declared arm. Google refuses a mask
+/// naming a message field that carries subfields (issue #120), so the selected
+/// arm lists all seven booleans — which also clears whichever channels the
+/// body turns off — and the strategy arm names the enum leaf.
+fn channel_controls_mask_paths(controls: &JsonChannelControls) -> Vec<String> {
+    if controls.selected_channels.is_some() {
+        return crate::schema::DEMAND_GEN_SELECTED_CHANNEL_FIELDS
+            .iter()
+            .map(|(field, _)| {
+                format!("demand_gen_ad_group_settings.channel_controls.selected_channels.{field}")
+            })
+            .collect();
+    }
+    vec!["demand_gen_ad_group_settings.channel_controls.channel_strategy".to_string()]
+}
+
 fn frequency_caps_value(c: &JsonCampaign) -> Value {
     Value::Array(
         c.frequency_caps
@@ -2238,6 +2308,17 @@ fn ad_group_create(g: &JsonAdGroup, resource_name: &str, campaign_rn: &str) -> V
         m.insert(
             "audienceSetting".into(),
             json!({ "useAudienceGrouped": v }),
+        );
+    }
+    if let Some(v) = g
+        .demand_gen_ad_group_settings
+        .as_ref()
+        .and_then(|s| s.channel_controls.as_ref())
+        .and_then(channel_controls_value)
+    {
+        m.insert(
+            "demandGenAdGroupSettings".into(),
+            json!({ "channelControls": v }),
         );
     }
     put_tracking_all(&mut m, &g.final_url_suffix, &g.custom_parameters);
@@ -3478,6 +3559,121 @@ mod tests {
         assert_eq!(
             op["update"]["aiMaxAdGroupSetting"],
             json!({"disableSearchTermMatching": true})
+        );
+    }
+
+    fn channel_controls_input(controls: serde_json::Value) -> ExportInput {
+        serde_json::from_value(json!({
+            "customer_id": "100",
+            "campaign_budgets": [{"id": "m.b", "name": "B", "amount_micros": 10000000}],
+            "campaigns": [{
+                "id": "m.c", "name": "C", "advertising_channel_type": "DEMAND_GEN",
+                "campaign_budget": "m.b"
+            }],
+            "ad_groups": [{
+                "id": "m.g", "name": "G", "campaign": "m.c",
+                "demand_gen_ad_group_settings": {"channel_controls": controls}
+            }],
+        }))
+        .expect("valid ExportInput")
+    }
+
+    fn channel_controls_update_op(input: &ExportInput) -> serde_json::Value {
+        let report = DiffReport {
+            diffs: vec![
+                noop_diff("m.b", "campaign_budget", "41"),
+                noop_diff("m.c", "campaign", "42"),
+                update_diff(
+                    "m.g",
+                    "ad_group",
+                    &["demand_gen_ad_group_settings.channel_controls"],
+                ),
+            ],
+            noop_count: 2,
+            update_count: 1,
+            ..DiffReport::default()
+        };
+        let plan = expect_plan(build_mutate_with_diff(input, &report, true));
+        plan.body["mutateOperations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|op| op.get("adGroupOperation").cloned())
+            .expect("ad group update op")
+    }
+
+    /// The mask lists every selected-channel boolean — Google refuses a mask
+    /// naming a message field with subfields (issue #120) — and the body spells
+    /// out the falses, so the channels being turned off are in the operation
+    /// rather than implied (issue #180).
+    #[test]
+    fn an_ad_group_update_sends_its_selected_channels() {
+        let input = channel_controls_input(json!({
+            "selected_channels": {"youtube_in_stream": true, "youtube_in_feed": true, "youtube_shorts": true}
+        }));
+        let op = channel_controls_update_op(&input);
+        let mask = op["updateMask"].as_str().expect("mask");
+        for (field, _) in crate::schema::DEMAND_GEN_SELECTED_CHANNEL_FIELDS {
+            assert!(
+                mask.contains(&format!(
+                    "demand_gen_ad_group_settings.channel_controls.selected_channels.{field}"
+                )),
+                "{mask}"
+            );
+        }
+        assert_eq!(
+            op["update"]["demandGenAdGroupSettings"],
+            json!({"channelControls": {"selectedChannels": {
+                "youtubeInStream": true, "youtubeInFeed": true, "youtubeShorts": true,
+                "gmail": false, "discover": false, "display": false, "maps": false
+            }}})
+        );
+    }
+
+    #[test]
+    fn an_ad_group_update_sends_its_channel_strategy() {
+        let input = channel_controls_input(json!({"channel_strategy": "ALL_OWNED_AND_OPERATED_CHANNELS"}));
+        let op = channel_controls_update_op(&input);
+        assert_eq!(
+            op["updateMask"],
+            json!("demand_gen_ad_group_settings.channel_controls.channel_strategy")
+        );
+        assert_eq!(
+            op["update"]["demandGenAdGroupSettings"],
+            json!({"channelControls": {"channelStrategy": "ALL_OWNED_AND_OPERATED_CHANNELS"}})
+        );
+    }
+
+    #[test]
+    fn a_new_ad_group_creates_with_its_channel_controls() {
+        let input = channel_controls_input(json!({
+            "selected_channels": {"youtube_in_stream": true}
+        }));
+        let report = DiffReport {
+            diffs: vec![
+                noop_diff("m.b", "campaign_budget", "41"),
+                noop_diff("m.c", "campaign", "42"),
+                create_diff("m.g", "ad_group"),
+            ],
+            noop_count: 2,
+            create_count: 1,
+            ..DiffReport::default()
+        };
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+        let create = plan.body["mutateOperations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|op| op.get("adGroupOperation").and_then(|o| o.get("create")))
+            .expect("ad group create op");
+        assert_eq!(
+            create["demandGenAdGroupSettings"]["channelControls"]["selectedChannels"]
+                ["youtubeInStream"],
+            json!(true)
+        );
+        assert_eq!(
+            create["demandGenAdGroupSettings"]["channelControls"]["selectedChannels"]["gmail"],
+            json!(false)
         );
     }
 

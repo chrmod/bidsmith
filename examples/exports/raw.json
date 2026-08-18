@@ -271,6 +271,49 @@
           "status": "ENABLED",
           "audience": {"audience": "customers/1234567890/audiences/7001"}
         }
+      },
+      {
+        "campaignBudget": {
+          "resourceName": "customers/1234567890/campaignBudgets/1002",
+          "id": "1002",
+          "name": "Home battery — Demand Gen",
+          "amountMicros": "60000000",
+          "deliveryMethod": "STANDARD"
+        }
+      },
+      {
+        "campaign": {
+          "resourceName": "customers/1234567890/campaigns/2002",
+          "id": "2002",
+          "name": "Home battery — Demand Gen",
+          "status": "ENABLED",
+          "advertisingChannelType": "DEMAND_GEN",
+          "campaignBudget": "customers/1234567890/campaignBudgets/1002",
+          "targetSpend": {}
+        }
+      },
+      {
+        "adGroup": {
+          "resourceName": "customers/1234567890/adGroups/3010",
+          "id": "3010",
+          "name": "Home battery — YouTube only",
+          "campaign": "customers/1234567890/campaigns/2002",
+          "status": "ENABLED",
+          "demandGenAdGroupSettings": {
+            "channelControls": {
+              "channelConfig": "SELECTED_CHANNELS",
+              "selectedChannels": {
+                "youtubeInStream": true,
+                "youtubeInFeed": true,
+                "youtubeShorts": true,
+                "gmail": false,
+                "discover": false,
+                "display": false,
+                "maps": false
+              }
+            }
+          }
+        }
       }
     ]
   }

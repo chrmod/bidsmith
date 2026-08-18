@@ -116,6 +116,15 @@ pub const QUERIES: &[(&str, &str)] = &[
           ad_group.targeting_setting.target_restrictions,
           ad_group.ai_max_ad_group_setting.disable_search_term_matching,
           ad_group.audience_setting.use_audience_grouped,
+          ad_group.demand_gen_ad_group_settings.channel_controls.channel_config,
+          ad_group.demand_gen_ad_group_settings.channel_controls.channel_strategy,
+          ad_group.demand_gen_ad_group_settings.channel_controls.selected_channels.youtube_in_stream,
+          ad_group.demand_gen_ad_group_settings.channel_controls.selected_channels.youtube_in_feed,
+          ad_group.demand_gen_ad_group_settings.channel_controls.selected_channels.youtube_shorts,
+          ad_group.demand_gen_ad_group_settings.channel_controls.selected_channels.gmail,
+          ad_group.demand_gen_ad_group_settings.channel_controls.selected_channels.discover,
+          ad_group.demand_gen_ad_group_settings.channel_controls.selected_channels.display,
+          ad_group.demand_gen_ad_group_settings.channel_controls.selected_channels.maps,
           ad_group.final_url_suffix,
           ad_group.url_custom_parameters
         FROM ad_group
@@ -710,6 +719,23 @@ mod tests {
         let fields = selected_fields();
         assert!(fields.contains("campaign.ai_max_setting.enable_ai_max"));
         assert!(fields.contains("ad_group.ai_max_ad_group_setting.disable_search_term_matching"));
+    }
+
+    /// Both `channel_controls` arms plus the output-only `channel_config` —
+    /// the config is what tells a live explicit ALL_CHANNELS from an unset one
+    /// (issue #180).
+    #[test]
+    fn every_channel_controls_field_is_selected() {
+        let fields = selected_fields();
+        let prefix = "ad_group.demand_gen_ad_group_settings.channel_controls";
+        assert!(fields.contains(&format!("{prefix}.channel_config")));
+        assert!(fields.contains(&format!("{prefix}.channel_strategy")));
+        for (field, _) in crate::schema::DEMAND_GEN_SELECTED_CHANNEL_FIELDS {
+            assert!(
+                fields.contains(&format!("{prefix}.selected_channels.{field}")),
+                "{field} missing from the ad_group query"
+            );
+        }
     }
 
     /// A budget Google removed alongside its last campaign used to stay in

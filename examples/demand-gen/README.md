@@ -124,3 +124,27 @@ They stay on the **ad group** here. Google creates every Demand Gen
 campaign with ad-group-level targeting unless
 `demand_gen_campaign_settings { upgraded_targeting = false }` says
 otherwise at creation time.
+
+## Where the ads serve
+
+Demand Gen delivers across YouTube, Gmail, Discover and the Display
+Network unless the ad group says otherwise. This one is a video-first
+launch, so it narrows itself to YouTube:
+
+```hcl
+demand_gen_ad_group_settings {
+  channel_controls {
+    selected_channels {
+      youtube_in_stream = true
+      youtube_in_feed = true
+      youtube_shorts = true
+    }
+  }
+}
+```
+
+`channel_controls` is either this explicit list (at least one channel
+on) or a `channel_strategy` — `"ALL_CHANNELS"`, or
+`"ALL_OWNED_AND_OPERATED_CHANNELS"` for everything Google-owned with
+Display off. One or the other, never both, and unlike
+`audience_setting` it is an ordinary update on an existing ad group.

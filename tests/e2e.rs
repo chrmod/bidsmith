@@ -87,41 +87,61 @@ fn live_round_trip() {
         Command::new(BINARY).args(["fmt", "--check", roundtrip_path.to_str().unwrap()]),
     );
 
-    let plan_output = run_or_panic(
-        "plan (roundtrip)",
-        Command::new(BINARY)
-            .args(["plan", roundtrip_path.to_str().unwrap()])
-            .env("GOOGLE_ADS_CUSTOMER_ID", &cust),
-    );
-    let stdout = String::from_utf8_lossy(&plan_output.stdout);
     // The round-trip .bid uses export-derived addresses, so the labels written
     // under the fixture's addresses don't match — the labelable resources adopt
     // (relabel). No resource fields differ and nothing is orphaned, so this is
     // still a clean no-op at the resource level. That this plan succeeds also
     // proves the label create / association / stale-removal ops validate live.
-    assert!(
-        stdout.contains("0 to create, 0 to update, 0 to destroy"),
-        "plan was not resource-clean after round-trip. stdout:\n{stdout}",
+    plan_clean_with_retry(
+        "plan (roundtrip)",
+        roundtrip_path.to_str().unwrap(),
+        &cust,
+        |_| {},
     );
 
     // Re-planning the *original* fixture (the addresses apply labeled) must be
     // fully label-clean: the bidsmith:address labels written on apply are read
     // back and matched, so there is nothing left to adopt.
-    let fixture_plan = run_or_panic(
+    plan_clean_with_retry(
         "plan (fixture, label-clean)",
-        Command::new(BINARY)
-            .args(["plan", fixture_path.to_str().unwrap()])
-            .env("GOOGLE_ADS_CUSTOMER_ID", &cust),
+        fixture_path.to_str().unwrap(),
+        &cust,
+        |stdout| {
+            assert!(
+                !stdout.contains("to adopt"),
+                "labels written on apply should make the fixture re-plan label-clean. \
+                 stdout:\n{stdout}",
+            );
+        },
     );
-    let stdout = String::from_utf8_lossy(&fixture_plan.stdout);
-    assert!(
-        stdout.contains("0 to create, 0 to update, 0 to destroy"),
-        "re-planning the applied fixture should be clean. stdout:\n{stdout}",
-    );
-    assert!(
-        !stdout.contains("to adopt"),
-        "labels written on apply should make the fixture re-plan label-clean. stdout:\n{stdout}",
-    );
+}
+
+/// A Google Ads read is not guaranteed to see a mutate that just landed — a
+/// plan run seconds after the apply can miss freshly created rows (budgets
+/// are the usual stragglers) and report phantom creates. Retry with a pause
+/// before treating that as a failure; a genuinely dirty plan stays dirty.
+fn plan_clean_with_retry(label: &str, path: &str, customer_id: &str, extra: impl Fn(&str)) {
+    const ATTEMPTS: usize = 3;
+    let mut last = String::new();
+    for attempt in 1..=ATTEMPTS {
+        let output = run_or_panic(
+            label,
+            Command::new(BINARY)
+                .args(["plan", path])
+                .env("GOOGLE_ADS_CUSTOMER_ID", customer_id),
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        if stdout.contains("0 to create, 0 to update, 0 to destroy") {
+            extra(&stdout);
+            return;
+        }
+        eprintln!("e2e: `{label}` not clean on attempt {attempt}/{ATTEMPTS}; waiting for the read to catch up");
+        last = stdout;
+        if attempt < ATTEMPTS {
+            std::thread::sleep(std::time::Duration::from_secs(45));
+        }
+    }
+    panic!("`{label}` was not clean after {ATTEMPTS} attempts. stdout:\n{last}");
 }
 
 fn run_or_panic(label: &str, cmd: &mut Command) -> Output {
@@ -145,6 +165,13 @@ struct CleanupGuard {
 
 impl Drop for CleanupGuard {
     fn drop(&mut self) {
+        if std::env::var_os("BIDSMITH_E2E_KEEP").is_some() {
+            eprintln!(
+                "e2e: BIDSMITH_E2E_KEEP set — leaving prefix {} live for inspection",
+                self.prefix
+            );
+            return;
+        }
         eprintln!("e2e: teardown sweep for prefix {}", self.prefix);
         let _ = Command::new(BINARY)
             .args(["_e2e-cleanup", "--prefix", &self.prefix])
@@ -167,6 +194,10 @@ impl TempDir {
 
 impl Drop for TempDir {
     fn drop(&mut self) {
+        if std::env::var_os("BIDSMITH_E2E_KEEP").is_some() {
+            eprintln!("e2e: BIDSMITH_E2E_KEEP set — leaving {} in place", self.path.display());
+            return;
+        }
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }

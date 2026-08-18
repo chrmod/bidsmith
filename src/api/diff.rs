@@ -4,7 +4,8 @@ use crate::commands::export::{
     address_label_payload, ExportInput, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset,
     JsonAdGroupCriterion, JsonAssetAutomationSettings, JsonBudget, JsonCallAsset, JsonCampaign,
     JsonCampaignAsset, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
-    JsonAudience, JsonCriterion, JsonCustomAudience, JsonCustomParameter, JsonCustomerAsset,
+    JsonAudience, JsonChannelControls, JsonCriterion, JsonCustomAudience, JsonCustomParameter,
+    JsonCustomerAsset,
     JsonGroupedAudience, JsonSharedCriterion,
     JsonImageAsset, JsonSharedSet, JsonSitelinkAsset, JsonStructuredSnippetAsset,
     JsonTargetingSetting, JsonYoutubeVideoAsset, AUTOMATICALLY_CREATED,
@@ -2781,7 +2782,31 @@ fn diff_ad_group(d: &JsonAdGroup, l: &JsonAdGroup) -> Vec<FieldChange> {
             desired_matching,
         ));
     }
+    // One field, because the API models it as one `oneof`: switching arm and
+    // switching channels are the same kind of change. Compared through the
+    // shown form, which reads the output-only `channel_config` first — that is
+    // what tells a live explicit ALL_CHANNELS from an unset one. Never elided:
+    // a channel-controls write replaces the whole list, so the reviewer is
+    // approving exactly what an elision would hide.
+    let desired_channels = shown_channel_controls(d);
+    let live_channels = shown_channel_controls(l);
+    if let Some(desired) = desired_channels {
+        if Some(&desired) != live_channels.as_ref() {
+            c.push(whole_change(
+                "demand_gen_ad_group_settings.channel_controls",
+                live_channels.unwrap_or_else(|| "(unset)".to_string()),
+                desired,
+            ));
+        }
+    }
     c
+}
+
+fn shown_channel_controls(g: &JsonAdGroup) -> Option<String> {
+    g.demand_gen_ad_group_settings
+        .as_ref()
+        .and_then(|s| s.channel_controls.as_ref())
+        .and_then(JsonChannelControls::shown)
 }
 
 fn diff_ad_group_ad(d: &JsonAdGroupAd, l: &JsonAdGroupAd) -> Vec<FieldChange> {
@@ -5597,6 +5622,92 @@ mod targeting_setting_tests {
         assert_eq!(
             field_names(&changed),
             vec!["targeting_setting.target_restrictions".to_string()]
+        );
+    }
+}
+
+#[cfg(test)]
+mod channel_controls_tests {
+    use super::*;
+
+    fn ad_group(controls: &str) -> JsonAdGroup {
+        serde_json::from_str(&format!(
+            r#"{{"id":"g","name":"G","campaign":"c"{controls}}}"#
+        ))
+        .expect("valid test ad group")
+    }
+
+    fn controls(body: &str) -> String {
+        format!(r#","demand_gen_ad_group_settings":{{"channel_controls":{{{body}}}}}"#)
+    }
+
+    const YOUTUBE_ONLY: &str = r#""selected_channels":{"youtube_in_stream":true,"youtube_in_feed":true,"youtube_shorts":true}"#;
+
+    #[test]
+    fn the_same_selection_is_not_a_change() {
+        let live = controls(
+            r#""channel_config":"SELECTED_CHANNELS","selected_channels":{"youtube_in_stream":true,"youtube_in_feed":true,"youtube_shorts":true,"gmail":false,"discover":false,"display":false,"maps":false}"#,
+        );
+        let changed = diff_ad_group(&ad_group(&controls(YOUTUBE_ONLY)), &ad_group(&live));
+        assert!(changed.is_empty(), "{changed:?}");
+    }
+
+    #[test]
+    fn narrowing_an_unset_ad_group_reads_as_the_channels_it_gets() {
+        let changed = diff_ad_group(&ad_group(&controls(YOUTUBE_ONLY)), &ad_group(""));
+        assert_eq!(
+            changed.iter().map(FieldChange::render).collect::<Vec<_>>(),
+            vec![
+                "demand_gen_ad_group_settings.channel_controls: (unset) -> \
+                 youtube_in_stream, youtube_in_feed, youtube_shorts"
+                    .to_string()
+            ]
+        );
+    }
+
+    /// `channel_config` is what tells a live explicit ALL_CHANNELS from an
+    /// unset one: the first matches a declared ALL_CHANNELS, the second does
+    /// not.
+    #[test]
+    fn an_explicit_all_channels_matches_and_an_unset_one_does_not() {
+        let declared = ad_group(&controls(r#""channel_strategy":"ALL_CHANNELS""#));
+        let live_explicit = ad_group(&controls(
+            r#""channel_config":"CHANNEL_STRATEGY","channel_strategy":"ALL_CHANNELS""#,
+        ));
+        assert!(diff_ad_group(&declared, &live_explicit).is_empty());
+
+        let changed = diff_ad_group(&declared, &ad_group(""));
+        assert_eq!(
+            field_names(&changed),
+            vec!["demand_gen_ad_group_settings.channel_controls".to_string()]
+        );
+    }
+
+    #[test]
+    fn an_ad_group_that_declares_nothing_leaves_the_channels_alone() {
+        let live = controls(
+            r#""channel_config":"CHANNEL_STRATEGY","channel_strategy":"ALL_OWNED_AND_OPERATED_CHANNELS""#,
+        );
+        let changed = diff_ad_group(&ad_group(""), &ad_group(&live));
+        assert!(changed.is_empty(), "{changed:?}");
+    }
+
+    #[test]
+    fn switching_arm_reads_as_one_change() {
+        let live = controls(
+            r#""channel_config":"SELECTED_CHANNELS","selected_channels":{"gmail":true,"discover":true}"#,
+        );
+        let changed = diff_ad_group(
+            &ad_group(&controls(r#""channel_strategy":"ALL_OWNED_AND_OPERATED_CHANNELS""#)),
+            &ad_group(&live),
+        );
+        assert_eq!(
+            changed.iter().map(FieldChange::render).collect::<Vec<_>>(),
+            vec![
+                "demand_gen_ad_group_settings.channel_controls: gmail, discover -> \
+                 ALL_OWNED_AND_OPERATED_CHANNELS"
+                    .to_string()
+            ]
         );
     }
 }

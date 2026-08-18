@@ -63,6 +63,17 @@ resource "google_ads_ad_group" "home_battery" {
   audience_setting {
     use_audience_grouped = true
   }
+
+  # A video-first launch: YouTube only, no Gmail / Discover / Display.
+  demand_gen_ad_group_settings {
+    channel_controls {
+      selected_channels {
+        youtube_in_stream = true
+        youtube_in_feed = true
+        youtube_shorts = true
+      }
+    }
+  }
 }
 
 resource "google_ads_ad_group_criterion" "home_battery_audience" {

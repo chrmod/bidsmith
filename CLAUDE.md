@@ -47,7 +47,10 @@ The test forces `GOOGLE_ADS_CUSTOMER_ID` to `BIDSMITH_E2E_CUSTOMER_ID`
 for every subprocess, so a developer's shell env can't redirect it.
 Resources are named `bidsmith-e2e-<unix-ts>-…`; teardown (run from a
 `Drop` guard, so it fires even on panic) sweeps that prefix via the
-hidden `_e2e-cleanup` subcommand.
+hidden `_e2e-cleanup` subcommand. Set `BIDSMITH_E2E_KEEP=1` to skip the
+sweep and keep the temp dir, so a failing step's live state and files
+can be inspected; sweep by hand afterwards with
+`bidsmith _e2e-cleanup --prefix <run prefix>`.
 
 ## Project-specific rules
 
