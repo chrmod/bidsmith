@@ -16,11 +16,38 @@ shows up as drift on the next `plan`.
 
 One `ad_schedule` block covers one day. A window is `start_hour` to
 `end_hour` on a 24-hour clock, minutes snapping to the quarter hour
-(`"ZERO"`, `"FIFTEEN"`, `"THIRTY"`, `"FORTY_FIVE"`).
+(`"ZERO"`, `"FIFTEEN"`, `"THIRTY"`, `"FORTY_FIVE"`). One resource can
+hold the whole week — each block becomes its own criterion, the same
+way repeated `negative_keyword` blocks do:
 
-Writing seven near-identical resources by hand is boilerplate, so fan
-one block out with
-[`for_each`](/bidsmith/recipes/repeat-a-resource-with-for-each/):
+```hcl
+resource "google_ads_campaign_criterion" "daytime" {
+  campaign = google_ads_campaign.summer_search.id
+
+  ad_schedule {
+    day_of_week  = "MONDAY"
+    start_hour   = 8
+    start_minute = "ZERO"
+    end_hour     = 22
+    end_minute   = "ZERO"
+  }
+
+  ad_schedule {
+    day_of_week  = "TUESDAY"
+    start_hour   = 8
+    start_minute = "ZERO"
+    end_hour     = 22
+    end_minute   = "ZERO"
+  }
+
+  # ... WEDNESDAY through SUNDAY
+}
+```
+
+When every day gets the same window, writing seven near-identical
+blocks is still boilerplate — fan one block out with
+[`for_each`](/bidsmith/recipes/repeat-a-resource-with-for-each/)
+instead:
 
 ```hcl
 resource "google_ads_campaign_criterion" "daytime" {

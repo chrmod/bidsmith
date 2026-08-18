@@ -1653,9 +1653,9 @@ fn mixed_criterion_forms(ctx: &Ctx, block: &Block, address: &str) -> Diag {
     )
 }
 
-/// The criterion `oneof` blocks a resource carries, minus the keyword forms —
-/// those fan one resource out into several criteria, so each caller expands
-/// them itself.
+/// The criterion `oneof` blocks a resource carries, minus the keyword and
+/// ad_schedule forms — those fan one resource out into several criteria, so
+/// each caller expands them itself.
 fn import_criterion_blocks(ctx: &Ctx, block: &Block) -> JsonCriterion {
     let mut t = JsonCriterion::default();
     for s in block.body.iter() {
@@ -1664,7 +1664,6 @@ fn import_criterion_blocks(ctx: &Ctx, block: &Block) -> JsonCriterion {
             "location" => t.location = import_location(ctx, b),
             "language" => t.language = import_language(ctx, b),
             "proximity" => t.proximity = import_proximity(ctx, b),
-            "ad_schedule" => t.ad_schedule = import_ad_schedule(ctx, b),
             "device" => t.device = import_device(ctx, b),
             "youtube_channel" => {
                 t.youtube_channel = one_string(ctx, b, "channel_id")
@@ -1712,6 +1711,7 @@ fn import_campaign_criterion(
     let mut bid_modifier = None;
     let mut keyword = None;
     let mut bulk_negatives: Vec<JsonKeyword> = Vec::new();
+    let mut ad_schedules: Vec<JsonAdSchedule> = Vec::new();
 
     for s in block.body.iter() {
         match s {
@@ -1730,6 +1730,7 @@ fn import_campaign_criterion(
                     }
                 }
                 "negative_keywords" => bulk_negatives.extend(import_compact_keywords(ctx, b)),
+                "ad_schedule" => ad_schedules.extend(import_ad_schedule(ctx, b)),
                 _ => {}
             },
         }
@@ -1739,7 +1740,7 @@ fn import_campaign_criterion(
     let mut target = import_criterion_blocks(ctx, block);
 
     if !bulk_negatives.is_empty() {
-        if keyword.is_some() || !target.is_unset() {
+        if keyword.is_some() || !target.is_unset() || !ad_schedules.is_empty() {
             return Err(Diag::new(
                 ctx.file.src.clone(),
                 span_of(block.ident.span()),
@@ -1762,6 +1763,34 @@ fn import_campaign_criterion(
         return Ok(out);
     }
 
+    if ad_schedules.len() > 1 {
+        if keyword.is_some() || !target.is_unset() {
+            return Err(Diag::new(
+                ctx.file.src.clone(),
+                span_of(block.ident.span()),
+                format!(
+                    "{address} mixes ad_schedule blocks with another targeting block; pick one (a criterion resource targets one thing)"
+                ),
+            ));
+        }
+        let mut out = Vec::with_capacity(ad_schedules.len());
+        for (i, sched) in ad_schedules.into_iter().enumerate() {
+            out.push(JsonCampaignCriterion {
+                id: format!("{address}.ad_schedules[{i}]"),
+                campaign: campaign.clone(),
+                status: status.clone(),
+                negative: negative.or(Some(false)),
+                bid_modifier,
+                target: JsonCriterion {
+                    ad_schedule: Some(sched),
+                    ..JsonCriterion::default()
+                },
+            });
+        }
+        return Ok(out);
+    }
+
+    target.ad_schedule = ad_schedules.into_iter().next();
     target.keyword = keyword;
     let has_positive_shape = !target.is_unset();
     Ok(vec![JsonCampaignCriterion {
@@ -3236,6 +3265,153 @@ resource "google_ads_campaign_criterion" "neg" {
         assert_eq!(input.campaign_criteria.len(), 4);
         assert!(input.campaign_criteria.iter().all(|c| c.negative == Some(true)));
         assert!(input.campaign_criteria.iter().all(|c| c.target.keyword.is_some()));
+    }
+
+    /// Issue #179: repeated ad_schedule blocks collapsed to the last one, so
+    /// a five-day schedule applied as Friday-only and the campaign went dark
+    /// the rest of the week.
+    #[test]
+    fn repeated_ad_schedules_fan_out_to_one_criterion_each() {
+        let input = import_str(
+            "sched_fan_out",
+            r#"
+resource "google_ads_campaign_criterion" "daytime" {
+  campaign     = google_ads_campaign.c.id
+  status       = "ENABLED"
+  bid_modifier = 1.2
+
+  ad_schedule {
+    day_of_week  = "MONDAY"
+    start_hour   = 7
+    start_minute = "ZERO"
+    end_hour     = 18
+    end_minute   = "ZERO"
+  }
+
+  ad_schedule {
+    day_of_week  = "TUESDAY"
+    start_hour   = 7
+    start_minute = "ZERO"
+    end_hour     = 18
+    end_minute   = "ZERO"
+  }
+
+  ad_schedule {
+    day_of_week  = "WEDNESDAY"
+    start_hour   = 7
+    start_minute = "ZERO"
+    end_hour     = 18
+    end_minute   = "ZERO"
+  }
+}
+"#,
+        );
+        assert_eq!(input.campaign_criteria.len(), 3);
+        let days: Vec<&str> = input
+            .campaign_criteria
+            .iter()
+            .map(|c| c.target.ad_schedule.as_ref().expect("ad_schedule").day_of_week.as_str())
+            .collect();
+        assert_eq!(days, vec!["MONDAY", "TUESDAY", "WEDNESDAY"]);
+        for (i, c) in input.campaign_criteria.iter().enumerate() {
+            assert!(
+                c.id
+                    .ends_with(&format!("google_ads_campaign_criterion.daytime.ad_schedules[{i}]")),
+                "{}",
+                c.id
+            );
+            assert_eq!(c.status.as_deref(), Some("ENABLED"));
+            assert_eq!(c.negative, Some(false));
+            assert_eq!(c.bid_modifier, Some(1.2));
+        }
+    }
+
+    #[test]
+    fn a_single_ad_schedule_keeps_the_resource_address_as_id() {
+        let input = import_str(
+            "sched_single",
+            r#"
+resource "google_ads_campaign_criterion" "monday" {
+  campaign = google_ads_campaign.c.id
+
+  ad_schedule {
+    day_of_week  = "MONDAY"
+    start_hour   = 8
+    start_minute = "ZERO"
+    end_hour     = 22
+    end_minute   = "ZERO"
+  }
+}
+"#,
+        );
+        assert_eq!(input.campaign_criteria.len(), 1);
+        assert!(
+            input.campaign_criteria[0]
+                .id
+                .ends_with("google_ads_campaign_criterion.monday"),
+            "{}",
+            input.campaign_criteria[0].id
+        );
+        assert!(input.campaign_criteria[0].target.ad_schedule.is_some());
+    }
+
+    #[test]
+    fn repeated_ad_schedules_reject_another_targeting_block() {
+        let err = import_err(
+            "sched_mixed",
+            r#"
+resource "google_ads_campaign_criterion" "mixed" {
+  campaign = google_ads_campaign.c.id
+
+  ad_schedule {
+    day_of_week  = "MONDAY"
+    start_hour   = 8
+    start_minute = "ZERO"
+    end_hour     = 22
+    end_minute   = "ZERO"
+  }
+
+  ad_schedule {
+    day_of_week  = "TUESDAY"
+    start_hour   = 8
+    start_minute = "ZERO"
+    end_hour     = 22
+    end_minute   = "ZERO"
+  }
+
+  device {
+    type = "MOBILE"
+  }
+}
+"#,
+        );
+        assert!(err.contains("mixes ad_schedule blocks"), "{err}");
+    }
+
+    #[test]
+    fn negative_keywords_still_reject_an_ad_schedule_alongside() {
+        let err = import_err(
+            "sched_neg_mixed",
+            r#"
+resource "google_ads_campaign_criterion" "mixed" {
+  campaign = google_ads_campaign.c.id
+
+  negative_keyword {
+    text       = "free"
+    match_type = "BROAD"
+  }
+
+  ad_schedule {
+    day_of_week  = "MONDAY"
+    start_hour   = 8
+    start_minute = "ZERO"
+    end_hour     = 22
+    end_minute   = "ZERO"
+  }
+}
+"#,
+        );
+        assert!(err.contains("mixes negative_keyword blocks"), "{err}");
     }
 
     #[test]

@@ -129,12 +129,15 @@ resource "google_ads_campaign_criterion" "summer_warsaw" {
 }
 ```
 
-Only spend during waking hours — one `ad_schedule` block per day. A
-campaign with no schedule runs around the clock; the moment you declare
-one window, the campaign serves *only* inside the windows you declare:
+Only spend during waking hours — one `ad_schedule` block per day, and
+one resource can hold the whole week, the same way one resource holds
+many `negative_keyword` blocks. Each block becomes its own criterion in
+the account. A campaign with no schedule runs around the clock; the
+moment you declare one window, the campaign serves *only* inside the
+windows you declare:
 
 ```hcl
-resource "google_ads_campaign_criterion" "monday_daytime" {
+resource "google_ads_campaign_criterion" "daytime" {
   campaign = google_ads_campaign.summer_search.id
 
   ad_schedule {
@@ -144,10 +147,6 @@ resource "google_ads_campaign_criterion" "monday_daytime" {
     end_hour     = 22
     end_minute   = "ZERO"
   }
-}
-
-resource "google_ads_campaign_criterion" "tuesday_daytime" {
-  campaign = google_ads_campaign.summer_search.id
 
   ad_schedule {
     day_of_week  = "TUESDAY"
@@ -291,14 +290,17 @@ the given (latitude, longitude). Use for hyperlocal campaigns.
 
 One day-and-hours window the campaign is allowed to serve in — the
 setting the Google Ads website calls an *ad schedule* (or dayparting).
-Repeat the resource for each day: a Monday-to-Friday 8:00–22:00 schedule
-is five criteria, one per day. Minutes snap to the quarter hour
-(`"ZERO"`, `"FIFTEEN"`, `"THIRTY"`, `"FORTY_FIVE"`), hours run 0–24, and
-a window can't cross midnight — for an overnight window, declare one
-block up to `24` and another from `0`.
+Repeat the block for each day: a Monday-to-Friday 8:00–22:00 schedule
+is five `ad_schedule` blocks — in one resource or spread across
+several — and lands as five criteria, one per day. Minutes snap to the
+quarter hour (`"ZERO"`, `"FIFTEEN"`, `"THIRTY"`, `"FORTY_FIVE"`), hours
+run 0–24, and a window can't cross midnight — for an overnight window,
+declare one block up to `24` and another from `0`.
 
 Pair a window with the resource's `bid_modifier` to bid more or less in
-that window instead of switching the rest of the week off entirely.
+that window instead of switching the rest of the week off entirely; the
+modifier applies to every window in the resource, so give a differently
+weighted window its own resource.
 
 Works on Search and Demand Gen campaigns alike.
 
