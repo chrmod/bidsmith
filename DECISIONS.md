@@ -2108,7 +2108,11 @@ Validator covers (so far):
   API's `ZERO` / `FIFTEEN` / `THIRTY` / `FORTY_FIVE` enums, hours plain
   numbers; all five fields are the match key, so editing a window plans
   as a create plus a prune of the old one, and `bid_modifier` rides
-  along as the per-window bid adjustment; accepted by Google on the
+  along as the per-window bid adjustment; repeated `ad_schedule` blocks
+  in one resource fan out to one criterion each, like `negative_keyword`
+  blocks (issue #179 — they used to collapse silently to the last
+  block, taking the campaign dark outside that one window); accepted by
+  Google on the
   `DEMAND_GEN` channel as well as `SEARCH` — verified live via
   `validateOnly` mutates against a production account, since Google's
   own docs are silent on Demand Gen dayparting; plus the video
