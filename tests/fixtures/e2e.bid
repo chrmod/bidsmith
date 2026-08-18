@@ -44,6 +44,65 @@ resource "google_ads_ad_group" "default" {
       targeting_dimension = "AGE_RANGE"
       bid_only = true
     }
+
+    target_restriction {
+      targeting_dimension = "GENDER"
+      bid_only = true
+    }
+
+    target_restriction {
+      targeting_dimension = "PARENTAL_STATUS"
+      bid_only = true
+    }
+
+    target_restriction {
+      targeting_dimension = "INCOME_RANGE"
+      bid_only = true
+    }
+  }
+}
+
+resource "google_ads_campaign_budget" "demand_gen" {
+  name = "__PREFIX__dg-budget"
+  amount_micros = 60000000
+  delivery_method = "STANDARD"
+}
+
+resource "google_ads_campaign" "demand_gen" {
+  name = "__PREFIX__dg-campaign"
+  status = "PAUSED"
+  advertising_channel_type = "DEMAND_GEN"
+  campaign_budget = google_ads_campaign_budget.demand_gen.id
+  contains_eu_political_advertising = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"
+
+  target_spend {}
+}
+
+resource "google_ads_ad_group" "dg_youtube_only" {
+  name = "__PREFIX__dg-ag-youtube"
+  campaign = google_ads_campaign.demand_gen.id
+  status = "ENABLED"
+
+  demand_gen_ad_group_settings {
+    channel_controls {
+      selected_channels {
+        youtube_in_stream = true
+        youtube_in_feed = true
+        youtube_shorts = true
+      }
+    }
+  }
+}
+
+resource "google_ads_ad_group" "dg_owned_operated" {
+  name = "__PREFIX__dg-ag-owned"
+  campaign = google_ads_campaign.demand_gen.id
+  status = "ENABLED"
+
+  demand_gen_ad_group_settings {
+    channel_controls {
+      channel_strategy = "ALL_OWNED_AND_OPERATED_CHANNELS"
+    }
   }
 }
 

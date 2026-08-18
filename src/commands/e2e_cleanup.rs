@@ -12,12 +12,17 @@ const CLEANUP_QUERIES: &[(&str, &str)] = &[
          WHERE ad_group.name LIKE '{prefix}%'
            AND ad_group_criterion.status != 'REMOVED'",
     ),
+    // Device criteria are excluded: Google auto-creates them on every
+    // campaign and refuses to remove them (`CANNOT_REMOVE_CRITERION`), which
+    // would poison the whole atomic REMOVE batch. Removing the campaign
+    // removes them anyway.
     (
         "campaign_criterion",
         "SELECT campaign_criterion.resource_name
          FROM campaign_criterion
          WHERE campaign.name LIKE '{prefix}%'
-           AND campaign_criterion.status != 'REMOVED'",
+           AND campaign_criterion.status != 'REMOVED'
+           AND campaign_criterion.type != 'DEVICE'",
     ),
     (
         "ad_group_ad",

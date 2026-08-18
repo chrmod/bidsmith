@@ -11,7 +11,8 @@ use crate::api::live_state::CacheMode;
 use crate::api::{auth, client, diff, live_state};
 use crate::commands::export::{
     canonicalize, filter_removed, fmt_string, prune_orphans, render_split, report_orphans,
-    ExportInput, JsonAssetAutomationSettings, JsonFrequencyCap, JsonTargetingSetting,
+    ExportInput, JsonAssetAutomationSettings, JsonChannelControls, JsonFrequencyCap,
+    JsonTargetingSetting,
 };
 use crate::commands::vars;
 use crate::diagnostics::Diag;
@@ -687,6 +688,46 @@ const TARGET_RESTRICTIONS_UNWRITABLE: &str =
     "targeting_setting.target_restrictions (live restrictions did not render as valid blocks — \
      edit them by hand)";
 
+const CHANNEL_CONTROLS_UNWRITABLE: &str =
+    "demand_gen_ad_group_settings.channel_controls (the live ad group reports no channel arm — \
+     edit the block by hand)";
+
+/// Render the live channel controls as the one block the file holds them in,
+/// in `export`'s shape: the strategy, or the switched-on channels. `None` when
+/// the live ad group reports no arm — there is nothing to write that would not
+/// be invented.
+fn channel_controls_blocks(controls: Option<&JsonChannelControls>) -> Option<Vec<Block>> {
+    let controls = controls?;
+    let mut src = String::from("\n    channel_controls {\n");
+    let selected = matches!(controls.channel_config.as_deref(), Some("SELECTED_CHANNELS"))
+        || (controls.channel_config.is_none() && controls.selected_channels.is_some());
+    if selected {
+        src.push_str("      selected_channels {\n");
+        let mut any = false;
+        for (field, _) in crate::schema::DEMAND_GEN_SELECTED_CHANNEL_FIELDS {
+            if controls
+                .selected_channels
+                .as_ref()
+                .and_then(|s| s.get(field))
+                .unwrap_or(false)
+            {
+                src.push_str(&format!("        {field} = true\n"));
+                any = true;
+            }
+        }
+        if !any {
+            return None;
+        }
+        src.push_str("      }\n");
+    } else {
+        let strategy = controls.channel_strategy.as_deref()?;
+        src.push_str(&format!("      channel_strategy = {}\n", fmt_string(strategy)));
+    }
+    src.push_str("    }\n");
+    let blocks: Vec<Block> = src.parse::<Body>().ok()?.into_blocks().collect();
+    (blocks.len() == 1).then_some(blocks)
+}
+
 /// Render the live target restrictions as source blocks in `export`'s shape,
 /// indented for a `targeting_setting` body. `None` when the round-trip doesn't
 /// yield one block per restriction — better to report the drift than to write a
@@ -961,6 +1002,19 @@ fn collect_edits(
                             .and_then(|a| a.disable_search_term_matching)
                             .map(Expression::from)
                     ),
+                    "demand_gen_ad_group_settings.channel_controls" => {
+                        match channel_controls_blocks(
+                            g.demand_gen_ad_group_settings
+                                .as_ref()
+                                .and_then(|s| s.channel_controls.as_ref()),
+                        ) {
+                            Some(blocks) => push!(
+                                vec!["demand_gen_ad_group_settings", "channel_controls"],
+                                blocks
+                            ),
+                            None => skip.push(CHANNEL_CONTROLS_UNWRITABLE.to_string()),
+                        }
+                    }
                     other => match crate::schema::AD_GROUP_BID_FIELDS
                         .iter()
                         .find(|(field, _)| *field == other)
@@ -1373,6 +1427,61 @@ resource "google_ads_campaign" "summer_search" {
         assert!(out.contains("target_youtube = true"), "{out}");
         let (_, fields) = &outcome.applied[0];
         assert_eq!(fields, &["network_settings.target_youtube".to_string()]);
+    }
+
+    /// The whole `channel_controls` block swaps for what the account holds —
+    /// including an arm switch, which no attribute edit could express
+    /// (issue #180).
+    #[test]
+    fn drifted_channel_controls_round_trip_into_the_block() {
+        let src = r#"resource "google_ads_campaign_budget" "b" {
+  name          = "B"
+  amount_micros = 10000000
+}
+
+resource "google_ads_campaign" "dg" {
+  name                     = "DG"
+  advertising_channel_type = "DEMAND_GEN"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}
+
+resource "google_ads_ad_group" "yt" {
+  name     = "YouTube only"
+  campaign = google_ads_campaign.dg.id
+
+  demand_gen_ad_group_settings {
+    channel_controls {
+      selected_channels {
+        youtube_in_stream = true
+      }
+    }
+  }
+}
+"#;
+        let live = r#"{
+          "customer_id": "1234567890",
+          "campaign_budgets": [{"id":"111","name":"B","amount_micros":10000000}],
+          "campaigns": [
+            {"id":"555","name":"DG","advertising_channel_type":"DEMAND_GEN",
+             "campaign_budget":"111","managed_address":"main.google_ads_campaign.dg"}
+          ],
+          "ad_groups": [
+            {"id":"777","name":"YouTube only","campaign":"555",
+             "managed_address":"main.google_ads_ad_group.yt",
+             "demand_gen_ad_group_settings":{"channel_controls":{
+               "channel_config":"CHANNEL_STRATEGY","channel_strategy":"ALL_CHANNELS"}}}
+          ]
+        }"#;
+        let (out, outcome) = run(src, live);
+
+        assert!(out.contains("channel_strategy = \"ALL_CHANNELS\""), "{out}");
+        assert!(!out.contains("selected_channels"), "{out}");
+        assert_eq!(out.matches("channel_controls {").count(), 1, "{out}");
+        let (_, fields) = &outcome.applied[0];
+        assert_eq!(
+            fields,
+            &["demand_gen_ad_group_settings.channel_controls".to_string()]
+        );
     }
 
     /// Two blocks deep, which is where the edit model earns its recursion —

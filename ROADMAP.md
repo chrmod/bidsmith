@@ -410,6 +410,42 @@ Smaller follow-ups that can ride along:
   fixed, both now covered — the combine by a test that goes through
   `import_program` rather than `import_files`, the count by
   `ExportInput::declared_resource_count`.
+- ✅ Demand Gen channel controls (issue #180). Where a Demand Gen ad
+  group's ads may serve — the thing that answers "can this not show in
+  Gmail?" from a PR. Modelled as `demand_gen_ad_group_settings {
+  channel_controls { … } }` on the ad group (the API hangs it there,
+  not on the campaign): one `oneof` arm per file, either
+  `channel_strategy` (`ALL_CHANNELS` /
+  `ALL_OWNED_AND_OPERATED_CHANNELS`) or `selected_channels` with seven
+  booleans and at least one on. `validate` rejects both arms at once,
+  neither, an all-false selection, and the block under a campaign whose
+  literal channel is not `DEMAND_GEN`; the output-only `channel_config`
+  is not declarable but reads/diffs use it to tell a live explicit
+  `ALL_CHANNELS` from an unset one. Diffed as one field (the `oneof` is
+  one setting), mutated with the whole arm spelled out — the selected
+  arm masks all seven leaves, issue #120 style, so switched-off
+  channels are in the operation rather than implied — and none of it is
+  immutable, so an existing ad group narrows by ordinary update.
+  `refresh --in-place` swaps the whole `channel_controls` block.
+  **Verified live** against a dedicated test account: the v25 GAQL
+  selects all nine field paths; a `validateOnly` batch accepted budget →
+  Demand Gen campaign → one ad group per arm; a real apply created
+  them, and `pull → export → fmt --check → plan` round-tripped with the
+  channel-controls ad groups planning `unchanged` — no perpetual diff.
+  Three rider findings from the e2e runs, all pre-existing: Google
+  auto-creates device criteria on every campaign and refuses to remove
+  them, which poisoned `_e2e-cleanup`'s atomic REMOVE batch (the sweep
+  now excludes `type = DEVICE`; removing the campaign removes them
+  anyway); declaring one demographic dimension in an ad group's
+  `targeting_setting` makes Google materialize the whole demographic
+  group (AGE_RANGE, GENDER, PARENTAL_STATUS, INCOME_RANGE) as
+  observation and refuse the write that would flip the rest back, so
+  the e2e fixture now declares all four; and a plan run seconds after
+  an apply can miss freshly created budget rows (read-after-write lag
+  the plan output itself warns about), so the e2e's clean-plan
+  assertions retry with a pause. `BIDSMITH_E2E_KEEP=1` now leaves the
+  e2e's live resources and temp dir in place for inspection instead of
+  sweeping on teardown.
 - ✅ Inline campaign targeting (`languages = ["en"]` / `locations =
   ["US"]`) — each entry expands to one positive `campaign_criterion`,
   resolving human-readable codes (or raw `…Constants/NNNN` strings) via

@@ -55,6 +55,7 @@ export default defineConfig({
             { label: 'Stop ads running overnight', slug: 'recipes/stop-ads-running-overnight' },
             { label: 'Narrow a video campaign to a specific audience', slug: 'recipes/narrow-a-video-audience' },
             { label: 'Launch a Demand Gen video ad', slug: 'recipes/launch-a-demand-gen-video-ad' },
+            { label: 'Run a Demand Gen ad group on YouTube only', slug: 'recipes/run-demand-gen-on-youtube-only' },
             { label: 'Make an audience observe instead of target', slug: 'recipes/target-or-observe-an-audience' },
             { label: 'Stop counting pageviews as conversions', slug: 'recipes/stop-counting-pageviews-as-conversions' },
             { label: 'Add a whole keyword list at once', slug: 'recipes/add-many-keywords' },

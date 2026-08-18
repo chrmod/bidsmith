@@ -5,8 +5,9 @@ use serde_json::Value;
 use crate::commands::export::{
     ExportInput, JsonAd, JsonAdGroup, JsonAdGroupAd, JsonAdGroupAsset, JsonAdGroupCriterion,
     JsonAdSchedule,
-    JsonAiMaxAdGroupSetting, JsonAiMaxSetting, JsonDemandGenCampaignSettings,
-    JsonDynamicSearchAdsSetting,
+    JsonAiMaxAdGroupSetting, JsonAiMaxSetting, JsonChannelControls,
+    JsonDemandGenAdGroupSettings, JsonDemandGenCampaignSettings,
+    JsonDynamicSearchAdsSetting, JsonSelectedChannels,
     JsonAssetAutomationSettings, JsonAttributionModelSettings, JsonBidSelector, JsonBudget,
     JsonCallAsset,
     JsonCallToActionAsset, JsonCalloutAsset, JsonImageAsset,
@@ -597,6 +598,30 @@ impl AdapterState {
         {
             entry.audience_setting = Some(JsonAudienceSetting {
                 use_audience_grouped: Some(b),
+            });
+        }
+        if let Some(cc) = v
+            .get("demandGenAdGroupSettings")
+            .and_then(|s| s.get("channelControls"))
+        {
+            let mut controls = JsonChannelControls::default();
+            if let Some(s) = cc.get("channelConfig").and_then(Value::as_str) {
+                controls.channel_config = Some(s.to_string());
+            }
+            if let Some(s) = cc.get("channelStrategy").and_then(Value::as_str) {
+                controls.channel_strategy = Some(s.to_string());
+            }
+            if let Some(sel) = cc.get("selectedChannels") {
+                let mut channels = JsonSelectedChannels::default();
+                for (field, json) in crate::schema::DEMAND_GEN_SELECTED_CHANNEL_FIELDS {
+                    if let Some(b) = sel.get(*json).and_then(Value::as_bool) {
+                        channels.set(field, Some(b));
+                    }
+                }
+                controls.selected_channels = Some(channels);
+            }
+            entry.demand_gen_ad_group_settings = Some(JsonDemandGenAdGroupSettings {
+                channel_controls: Some(controls),
             });
         }
     }

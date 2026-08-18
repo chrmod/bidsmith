@@ -12,6 +12,9 @@ export const targetingSetting = resource.blocks.find((b) => b.name === 'targetin
 export const targetRestriction = targetingSetting.blocks.find((b) => b.name === 'target_restriction');
 export const aiMaxAdGroupSetting = resource.blocks.find((b) => b.name === 'ai_max_ad_group_setting');
 export const audienceSetting = resource.blocks.find((b) => b.name === 'audience_setting');
+export const demandGenSettings = resource.blocks.find((b) => b.name === 'demand_gen_ad_group_settings');
+export const channelControls = demandGenSettings.blocks.find((b) => b.name === 'channel_controls');
+export const selectedChannels = channelControls.blocks.find((b) => b.name === 'selected_channels');
 
 An **ad group** is a bucket inside a campaign. It holds the keywords
 people search for and the ads that show in response. Every campaign
@@ -237,6 +240,59 @@ resource "google_ads_ad_group" "home_battery" {
   criteria are rejected instead. `plan` warns when a live ad group carries
   the other value — the only fix at that point is a new ad group.
 </Aside>
+
+### demand_gen_ad_group_settings
+
+Where a **Demand Gen** ad group's ads may serve. By default Demand Gen
+delivers across YouTube, Gmail, Discover and the Display Network; this
+block is how the file narrows that — most often to *"YouTube only,
+please"*:
+
+```hcl
+resource "google_ads_ad_group" "youtube_only" {
+  name     = "Spring launch — YouTube only"
+  campaign = google_ads_campaign.demand_gen.id
+
+  demand_gen_ad_group_settings {
+    channel_controls {
+      selected_channels {
+        youtube_in_stream = true
+        youtube_in_feed   = true
+        youtube_shorts    = true
+      }
+    }
+  }
+}
+```
+
+`channel_controls` takes exactly one of two forms:
+
+- **`channel_strategy`** — a named preset. `"ALL_CHANNELS"` is
+  everywhere Demand Gen can serve; `"ALL_OWNED_AND_OPERATED_CHANNELS"`
+  is everything Google-owned (YouTube, Gmail, Discover, Maps) with the
+  Display Network off.
+- **`selected_channels`** — an explicit list. Turn on the channels you
+  want; a channel you leave out (or set to `false`) is off. At least
+  one has to be on.
+
+`validate` rejects a block that declares both, one that declares
+neither, and a channel list with nothing switched on — Google would
+refuse all three. It also rejects the block on an ad group whose
+campaign is not `DEMAND_GEN`, because no other campaign type has
+anywhere to put it.
+
+#### channel_controls
+
+<AttributeTable block={channelControls} headingLevel={5} />
+
+##### selected_channels
+
+<AttributeTable block={selectedChannels} headingLevel={6} />
+
+Unlike `audience_setting`, this one is an ordinary update: declare it
+on an existing ad group and the next `apply` narrows it in place, no
+recreation needed. Someone widening the channels in the Google Ads UI
+shows up as drift on the next `plan`.
 
 ## See also
 

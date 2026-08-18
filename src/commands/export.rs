@@ -530,6 +530,105 @@ pub struct JsonAudienceSetting {
     pub use_audience_grouped: Option<bool>,
 }
 
+/// `AdGroup.demand_gen_ad_group_settings` — where a Demand Gen ad group's ads
+/// may serve (issue #180).
+#[derive(Deserialize, Default)]
+pub struct JsonDemandGenAdGroupSettings {
+    #[serde(default)]
+    pub channel_controls: Option<JsonChannelControls>,
+}
+
+/// The `channel_controls` `oneof`: a strategy or an explicit channel list,
+/// never both. `channel_config` is output-only — Google's report of which arm
+/// a live ad group carries, kept so a read can tell an explicit `ALL_CHANNELS`
+/// from an unset one.
+#[derive(Deserialize, Default)]
+pub struct JsonChannelControls {
+    #[serde(default)]
+    pub channel_config: Option<String>,
+    #[serde(default)]
+    pub channel_strategy: Option<String>,
+    #[serde(default)]
+    pub selected_channels: Option<JsonSelectedChannels>,
+}
+
+impl JsonChannelControls {
+    fn selected(&self) -> bool {
+        match self.channel_config.as_deref() {
+            Some("SELECTED_CHANNELS") => true,
+            Some("CHANNEL_STRATEGY") => false,
+            _ => self.selected_channels.is_some(),
+        }
+    }
+
+    /// The populated arm as a reviewer reads it — the strategy name, or the
+    /// switched-on channels in schema order. `None` when neither arm is set,
+    /// which is what an untouched live ad group reports.
+    pub fn shown(&self) -> Option<String> {
+        if self.selected() {
+            let on: Vec<&str> = crate::schema::DEMAND_GEN_SELECTED_CHANNEL_FIELDS
+                .iter()
+                .filter(|(field, _)| {
+                    self.selected_channels
+                        .as_ref()
+                        .and_then(|s| s.get(field))
+                        .unwrap_or(false)
+                })
+                .map(|(field, _)| *field)
+                .collect();
+            return Some(on.join(", "));
+        }
+        self.channel_strategy.clone()
+    }
+}
+
+#[derive(Deserialize, Default)]
+pub struct JsonSelectedChannels {
+    #[serde(default)]
+    pub youtube_in_stream: Option<bool>,
+    #[serde(default)]
+    pub youtube_in_feed: Option<bool>,
+    #[serde(default)]
+    pub youtube_shorts: Option<bool>,
+    #[serde(default)]
+    pub gmail: Option<bool>,
+    #[serde(default)]
+    pub discover: Option<bool>,
+    #[serde(default)]
+    pub display: Option<bool>,
+    #[serde(default)]
+    pub maps: Option<bool>,
+}
+
+impl JsonSelectedChannels {
+    pub fn get(&self, field: &str) -> Option<bool> {
+        match field {
+            "youtube_in_stream" => self.youtube_in_stream,
+            "youtube_in_feed" => self.youtube_in_feed,
+            "youtube_shorts" => self.youtube_shorts,
+            "gmail" => self.gmail,
+            "discover" => self.discover,
+            "display" => self.display,
+            "maps" => self.maps,
+            _ => None,
+        }
+    }
+
+    pub fn set(&mut self, field: &str, value: Option<bool>) {
+        let slot = match field {
+            "youtube_in_stream" => &mut self.youtube_in_stream,
+            "youtube_in_feed" => &mut self.youtube_in_feed,
+            "youtube_shorts" => &mut self.youtube_shorts,
+            "gmail" => &mut self.gmail,
+            "discover" => &mut self.discover,
+            "display" => &mut self.display,
+            "maps" => &mut self.maps,
+            _ => return,
+        };
+        *slot = value;
+    }
+}
+
 /// `Campaign.demand_gen_campaign_settings`. `upgraded_targeting` decides where
 /// the campaign's language / location targeting lives — `true` (Google's
 /// create-default) on the ad groups, `false` on the campaign — and is fixed
@@ -707,6 +806,8 @@ pub struct JsonAdGroup {
     pub ai_max_ad_group_setting: Option<JsonAiMaxAdGroupSetting>,
     #[serde(default)]
     pub audience_setting: Option<JsonAudienceSetting>,
+    #[serde(default)]
+    pub demand_gen_ad_group_settings: Option<JsonDemandGenAdGroupSettings>,
     #[serde(default)]
     pub managed_address: Option<String>,
 }
@@ -2773,7 +2874,47 @@ fn write_ad_group(
         write_attr(out, 2, "use_audience_grouped", &v.to_string());
         out.push_str("  }\n");
     }
+    write_channel_controls(
+        out,
+        g.demand_gen_ad_group_settings
+            .as_ref()
+            .and_then(|s| s.channel_controls.as_ref()),
+    );
     out.push_str("}\n\n");
+}
+
+/// Only the populated arm renders — the strategy, or the switched-on channels;
+/// an off channel says nothing an absent line would not. A live ad group whose
+/// controls report no arm renders nothing: there is no setting to carry over.
+fn write_channel_controls(out: &mut String, controls: Option<&JsonChannelControls>) {
+    let Some(controls) = controls else { return };
+    if controls.selected() {
+        let on: Vec<&str> = crate::schema::DEMAND_GEN_SELECTED_CHANNEL_FIELDS
+            .iter()
+            .filter(|(field, _)| {
+                controls
+                    .selected_channels
+                    .as_ref()
+                    .and_then(|s| s.get(field))
+                    .unwrap_or(false)
+            })
+            .map(|(field, _)| *field)
+            .collect();
+        if on.is_empty() {
+            return;
+        }
+        out.push_str("\n  demand_gen_ad_group_settings {\n    channel_controls {\n      selected_channels {\n");
+        for field in on {
+            write_attr(out, 4, field, "true");
+        }
+        out.push_str("      }\n    }\n  }\n");
+        return;
+    }
+    if let Some(strategy) = &controls.channel_strategy {
+        out.push_str("\n  demand_gen_ad_group_settings {\n    channel_controls {\n");
+        write_attr(out, 3, "channel_strategy", &fmt_string(strategy));
+        out.push_str("    }\n  }\n");
+    }
 }
 
 /// Only the restrictions that differ from what an absent entry would mean —
@@ -4671,6 +4812,59 @@ mod tests {
         assert!(out.contains("enable_ai_max = false"), "{out}");
         assert!(out.contains("ai_max_ad_group_setting {"), "{out}");
         assert!(out.contains("disable_search_term_matching = true"), "{out}");
+    }
+
+    /// Pulling an account whose Demand Gen ad group limits its channels is how
+    /// the setting reaches the repo, one test per `oneof` arm (issue #180).
+    #[test]
+    fn demand_gen_channel_controls_render_as_the_blocks_that_declare_them() {
+        let raw = |controls: &str| {
+            format!(
+                r#"[{{"results":[
+            {{ "campaignBudget": {{ "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget", "amountMicros": "5000000" }} }},
+            {{ "campaign": {{ "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "DG", "status": "ENABLED", "advertisingChannelType": "DEMAND_GEN", "campaignBudget": "customers/9/campaignBudgets/1001" }} }},
+            {{ "adGroup": {{ "resourceName": "customers/9/adGroups/3001", "id": "3001", "name": "YouTube only", "campaign": "customers/9/campaigns/2001", "demandGenAdGroupSettings": {{ "channelControls": {controls} }} }} }}
+        ]}}]"#
+            )
+        };
+
+        let selected = raw(
+            r#"{ "channelConfig": "SELECTED_CHANNELS", "selectedChannels": { "youtubeInStream": true, "youtubeInFeed": true, "youtubeShorts": true, "gmail": false, "discover": false, "display": false, "maps": false } }"#,
+        );
+        let input = from_search_response(&selected).expect("adapter");
+        let out = render(&input);
+        assert!(out.contains("demand_gen_ad_group_settings {"), "{out}");
+        assert!(out.contains("channel_controls {"), "{out}");
+        assert!(out.contains("selected_channels {"), "{out}");
+        assert!(out.contains("youtube_in_stream = true"), "{out}");
+        assert!(out.contains("youtube_shorts = true"), "{out}");
+        assert!(!out.contains("gmail"), "{out}");
+        assert!(!out.contains("channel_strategy"), "{out}");
+
+        let strategy = raw(
+            r#"{ "channelConfig": "CHANNEL_STRATEGY", "channelStrategy": "ALL_OWNED_AND_OPERATED_CHANNELS" }"#,
+        );
+        let input = from_search_response(&strategy).expect("adapter");
+        let out = render(&input);
+        assert!(
+            out.contains("channel_strategy = \"ALL_OWNED_AND_OPERATED_CHANNELS\""),
+            "{out}"
+        );
+        assert!(!out.contains("selected_channels"), "{out}");
+    }
+
+    /// An ad group Google reports no channel arm for has nothing to render —
+    /// an empty block would read as a declaration nobody made.
+    #[test]
+    fn unset_channel_controls_render_nothing() {
+        let raw = r#"[{"results":[
+            { "campaignBudget": { "resourceName": "customers/9/campaignBudgets/1001", "id": "1001", "name": "Budget", "amountMicros": "5000000" } },
+            { "campaign": { "resourceName": "customers/9/campaigns/2001", "id": "2001", "name": "DG", "status": "ENABLED", "advertisingChannelType": "DEMAND_GEN", "campaignBudget": "customers/9/campaignBudgets/1001" } },
+            { "adGroup": { "resourceName": "customers/9/adGroups/3001", "id": "3001", "name": "Anywhere", "campaign": "customers/9/campaigns/2001" } }
+        ]}]"#;
+        let input = from_search_response(raw).expect("adapter");
+        let out = render(&input);
+        assert!(!out.contains("demand_gen_ad_group_settings"), "{out}");
     }
 
     /// A campaign the account never set AI Max on has nothing to render — an

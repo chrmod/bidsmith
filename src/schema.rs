@@ -189,6 +189,25 @@ pub fn is_asset_automation_status(value: &str) -> bool {
     ASSET_AUTOMATION_STATUS.contains(&value)
 }
 
+/// The two `DemandGenChannelStrategy` values a file can declare.
+/// `ALL_OWNED_AND_OPERATED_CHANNELS` is everything Google-owned — YouTube,
+/// Gmail, Discover, Maps — with the Display Network off (issue #180).
+pub const DEMAND_GEN_CHANNEL_STRATEGY: &[&str] =
+    &["ALL_CHANNELS", "ALL_OWNED_AND_OPERATED_CHANNELS"];
+
+/// The seven booleans of `DemandGenSelectedChannels`, each paired with its
+/// Google Ads JSON name. Google requires at least one of them true whenever
+/// the message is present (issue #180).
+pub const DEMAND_GEN_SELECTED_CHANNEL_FIELDS: &[(&str, &str)] = &[
+    ("youtube_in_stream", "youtubeInStream"),
+    ("youtube_in_feed", "youtubeInFeed"),
+    ("youtube_shorts", "youtubeShorts"),
+    ("gmail", "gmail"),
+    ("discover", "discover"),
+    ("display", "display"),
+    ("maps", "maps"),
+];
+
 /// The two fields of `Campaign.geo_target_type_setting`, each paired with its
 /// Google Ads JSON name. They decide whether a targeted location means "people
 /// there" or "people there plus people interested in there" (issue #114).
@@ -1448,6 +1467,39 @@ fn resource_schemas() -> &'static HashMap<&'static str, BlockSchema> {
                                 false,
                             )],
                             blocks: vec![],
+                        },
+                    },
+                    // Where a Demand Gen ad group's ads may serve.
+                    // `channel_controls` is a `oneof` at the API level — a
+                    // strategy or an explicit channel list, never both — and
+                    // the output-only `channel_config` is deliberately not
+                    // declarable (issue #180).
+                    NestedBlockSchema {
+                        name: "demand_gen_ad_group_settings",
+                        schema: BlockSchema {
+                            attributes: vec![],
+                            blocks: vec![NestedBlockSchema {
+                                name: "channel_controls",
+                                schema: BlockSchema {
+                                    attributes: vec![attr(
+                                        "channel_strategy",
+                                        FieldType::Enum(DEMAND_GEN_CHANNEL_STRATEGY),
+                                        false,
+                                    )],
+                                    blocks: vec![NestedBlockSchema {
+                                        name: "selected_channels",
+                                        schema: BlockSchema {
+                                            attributes: DEMAND_GEN_SELECTED_CHANNEL_FIELDS
+                                                .iter()
+                                                .map(|(field, _)| {
+                                                    attr(field, FieldType::Bool, false)
+                                                })
+                                                .collect(),
+                                            blocks: vec![],
+                                        },
+                                    }],
+                                },
+                            }],
                         },
                     },
                 ],
@@ -2836,6 +2888,7 @@ pub fn validate_files(files: &[ParsedFile], inputs: &InputBindings) -> Vec<Diag>
     validate_demand_gen_targeting_level(files, &registry, &defaults, &mut diags);
     validate_audience_dimensions(files, &mut diags);
     validate_demand_gen_grouped_audience(files, &registry, &defaults, &mut diags);
+    validate_demand_gen_channel_controls(files, &registry, &defaults, &mut diags);
 
     diags.sort_by(|a, b| {
         (a.src.name(), a.span.offset()).cmp(&(b.src.name(), b.span.offset()))
@@ -3841,6 +3894,137 @@ fn attr_names(body: &Body) -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+/// The shape and placement of `demand_gen_ad_group_settings.channel_controls`
+/// (issue #180). The API models the block as a `oneof` — a channel strategy or
+/// an explicit channel list, never both, never neither — requires at least one
+/// selected channel on, and only has somewhere to put any of it on a Demand
+/// Gen ad group. Non-literal values stay quiet: they are only known at load
+/// time.
+fn validate_demand_gen_channel_controls(
+    files: &[ParsedFile],
+    registry: &ResourceRegistry,
+    defaults: &DefaultsRegistry,
+    diags: &mut Vec<Diag>,
+) {
+    let defaults_channel = defaults
+        .decl_for("google_ads_campaign", None)
+        .and_then(|d| attr_string_literal(&d.block.body, "advertising_channel_type"));
+    let defaults_settings = defaults
+        .provided_blocks("google_ads_ad_group")
+        .contains("demand_gen_ad_group_settings");
+
+    let mut other_channel: HashMap<String, String> = HashMap::new();
+    for f in files {
+        for b in resource_blocks(f, "google_ads_campaign") {
+            let channel = attr_string_literal(&b.body, "advertising_channel_type")
+                .or_else(|| defaults_channel.clone());
+            if let Some(channel) = channel {
+                if channel != "DEMAND_GEN" {
+                    other_channel.insert(
+                        ResourceRegistry::qualified(
+                            &f.module,
+                            "google_ads_campaign",
+                            b.labels[1].as_str(),
+                        ),
+                        channel,
+                    );
+                }
+            }
+        }
+    }
+
+    for f in files {
+        for b in resource_blocks(f, "google_ads_ad_group") {
+            let own = nested_block(&b.body, "demand_gen_ad_group_settings");
+            if own.is_none() && !defaults_settings {
+                continue;
+            }
+            let at = span_of(match own {
+                Some(s) => s.ident.span(),
+                None => b.ident.span(),
+            });
+
+            if let Some((ty, cname)) = attr_ref(&b.body, "campaign") {
+                if ty == "google_ads_campaign" {
+                    if let Resolution::Found(target) = registry.resolve(&f.module, &ty, &cname) {
+                        if let Some(channel) = other_channel.get(&target) {
+                            diags.push(Diag::new(
+                                f.src.clone(),
+                                at.clone(),
+                                format!(
+                                    "campaign '{cname}' is a {channel} campaign, and only a \
+                                     Demand Gen ad group carries demand_gen_ad_group_settings — \
+                                     drop the block, or move the ad group under a DEMAND_GEN \
+                                     campaign"
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+
+            let Some(own) = own else { continue };
+            let Some(controls) = nested_block(&own.body, "channel_controls") else {
+                diags.push(Diag::new(
+                    f.src.clone(),
+                    at,
+                    "demand_gen_ad_group_settings declares no channel_controls block, which asks \
+                     the API for nothing — declare channel_controls with a channel_strategy or a \
+                     selected_channels block, or drop the setting"
+                        .to_string(),
+                ));
+                continue;
+            };
+            let strategy = find_attr_key_span(&controls.body, "channel_strategy");
+            let selected = nested_block(&controls.body, "selected_channels");
+            match (strategy, selected) {
+                (Some(_), Some(sel)) => diags.push(Diag::new(
+                    f.src.clone(),
+                    span_of(sel.ident.span()),
+                    "channel_controls declares both channel_strategy and selected_channels: the \
+                     API models them as alternatives — keep the strategy or the explicit list, \
+                     not both"
+                        .to_string(),
+                )),
+                (None, None) => diags.push(Diag::new(
+                    f.src.clone(),
+                    span_of(controls.ident.span()),
+                    "channel_controls declares neither channel_strategy nor selected_channels — \
+                     declare one: a channel_strategy, or a selected_channels block with at least \
+                     one channel turned on"
+                        .to_string(),
+                )),
+                (None, Some(sel)) => {
+                    let mut any_true = false;
+                    let mut any_unknown = false;
+                    for (field, _) in DEMAND_GEN_SELECTED_CHANNEL_FIELDS {
+                        match attr_bool_literal(&sel.body, field) {
+                            Some(true) => any_true = true,
+                            Some(false) => {}
+                            None => {
+                                if find_attr_key_span(&sel.body, field).is_some() {
+                                    any_unknown = true;
+                                }
+                            }
+                        }
+                    }
+                    if !any_true && !any_unknown {
+                        diags.push(Diag::new(
+                            f.src.clone(),
+                            span_of(sel.ident.span()),
+                            "selected_channels turns every channel off, and Google requires at \
+                             least one true value — turn a channel on, or declare a \
+                             channel_strategy instead"
+                                .to_string(),
+                        ));
+                    }
+                }
+                (Some(_), None) => {}
+            }
+        }
+    }
 }
 
 fn attr_string_literal(body: &Body, key: &str) -> Option<String> {
@@ -7103,6 +7287,149 @@ resource "google_ads_ad_group_criterion" "cr" {{
         let diags = validate_str("display_direct", &project);
         assert!(
             diags.iter().all(|d| !d.message.contains("grouped audience")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    fn channel_controls_project(channel: &str, ad_group_body: &str) -> String {
+        format!(
+            r#"{TARGETING_PREAMBLE}
+resource "google_ads_campaign" "dg" {{
+  name                     = "DG"
+  advertising_channel_type = "{channel}"
+  campaign_budget          = google_ads_campaign_budget.b.id
+}}
+
+resource "google_ads_ad_group" "ag" {{
+  name     = "AG"
+  campaign = google_ads_campaign.dg.id
+{ad_group_body}}}
+"#
+        )
+    }
+
+    const YOUTUBE_ONLY: &str = "\n  demand_gen_ad_group_settings {\n    channel_controls {\n      selected_channels {\n        youtube_in_stream = true\n        youtube_in_feed = true\n        youtube_shorts = true\n      }\n    }\n  }\n";
+
+    #[test]
+    fn demand_gen_selected_channels_validate() {
+        let diags = validate_str(
+            "dg_channels_ok",
+            &channel_controls_project("DEMAND_GEN", YOUTUBE_ONLY),
+        );
+        assert!(
+            diags.is_empty(),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn demand_gen_channel_strategy_validates() {
+        let body = "\n  demand_gen_ad_group_settings {\n    channel_controls {\n      channel_strategy = \"ALL_OWNED_AND_OPERATED_CHANNELS\"\n    }\n  }\n";
+        let diags = validate_str(
+            "dg_strategy_ok",
+            &channel_controls_project("DEMAND_GEN", body),
+        );
+        assert!(
+            diags.is_empty(),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn channel_controls_refuses_both_arms() {
+        let body = "\n  demand_gen_ad_group_settings {\n    channel_controls {\n      channel_strategy = \"ALL_CHANNELS\"\n\n      selected_channels {\n        gmail = true\n      }\n    }\n  }\n";
+        let diags = validate_str(
+            "dg_both_arms",
+            &channel_controls_project("DEMAND_GEN", body),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.is_error() && d.message.contains("alternatives")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn channel_controls_refuses_an_all_false_selection() {
+        let body = "\n  demand_gen_ad_group_settings {\n    channel_controls {\n      selected_channels {\n        gmail = false\n        display = false\n      }\n    }\n  }\n";
+        let diags = validate_str(
+            "dg_all_false",
+            &channel_controls_project("DEMAND_GEN", body),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.is_error() && d.message.contains("at least one true value")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn channel_controls_refuses_an_empty_oneof() {
+        let body = "\n  demand_gen_ad_group_settings {\n    channel_controls {\n    }\n  }\n";
+        let diags = validate_str(
+            "dg_empty_oneof",
+            &channel_controls_project("DEMAND_GEN", body),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.is_error() && d.message.contains("neither channel_strategy")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn an_empty_demand_gen_ad_group_settings_is_an_error() {
+        let body = "\n  demand_gen_ad_group_settings {\n  }\n";
+        let diags = validate_str(
+            "dg_empty_settings",
+            &channel_controls_project("DEMAND_GEN", body),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.is_error() && d.message.contains("no channel_controls block")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn channel_controls_belong_to_demand_gen_ad_groups_only() {
+        let diags = validate_str(
+            "search_channels",
+            &channel_controls_project("SEARCH", YOUTUBE_ONLY),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.is_error() && d.message.contains("only a Demand Gen ad group")),
+            "{:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// `channel_config` is output-only — it mirrors which arm is set, so a file
+    /// has nothing to say through it.
+    #[test]
+    fn the_output_only_channel_config_is_not_declarable() {
+        let body = "\n  demand_gen_ad_group_settings {\n    channel_controls {\n      channel_config = \"CHANNEL_STRATEGY\"\n      channel_strategy = \"ALL_CHANNELS\"\n    }\n  }\n";
+        let diags = validate_str(
+            "dg_channel_config",
+            &channel_controls_project("DEMAND_GEN", body),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.is_error() && d.message.contains("channel_config")),
             "{:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );

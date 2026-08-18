@@ -1,0 +1,98 @@
+---
+title: Run a Demand Gen ad group on YouTube only
+description: Keep a Demand Gen campaign off Gmail, Discover and the Display Network by declaring its channels in the .bid — and catch it in review if someone widens them.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A Demand Gen campaign serves across YouTube, Gmail, Discover and the
+Display Network by default. That is often exactly what you don't want —
+a video-first launch belongs on YouTube, and "can this not show in
+Gmail?" is a question a reviewer should be able to answer by reading
+the file.
+
+Channels are set **per ad group**, in a
+`demand_gen_ad_group_settings` block:
+
+```hcl
+resource "google_ads_ad_group" "spring_launch" {
+  name     = "Spring launch — YouTube only"
+  campaign = google_ads_campaign.demand_gen.id
+
+  demand_gen_ad_group_settings {
+    channel_controls {
+      selected_channels {
+        youtube_in_stream = true
+        youtube_in_feed   = true
+        youtube_shorts    = true
+      }
+    }
+  }
+}
+```
+
+```
+bidsmith plan .
+```
+
+```
+google_ads_ad_group.spring_launch                             ~ update
+    demand_gen_ad_group_settings.channel_controls: (unset) -> youtube_in_stream, youtube_in_feed, youtube_shorts
+```
+
+`bidsmith apply .` narrows the ad group in place — this is an ordinary
+update, so an existing ad group keeps its history. A channel you leave
+out of `selected_channels` is off; at least one has to be on.
+
+## The two-preset shortcut
+
+If all you want is *"nothing on the Display Network"*, there is a named
+strategy for it, and it reads better than six booleans:
+
+```hcl
+  demand_gen_ad_group_settings {
+    channel_controls {
+      channel_strategy = "ALL_OWNED_AND_OPERATED_CHANNELS"
+    }
+  }
+```
+
+`"ALL_OWNED_AND_OPERATED_CHANNELS"` is everything Google-owned —
+YouTube, Gmail, Discover, Maps — with Display off.
+`"ALL_CHANNELS"` is the everything-everywhere default, written down;
+declaring it pins the setting so a narrower value someone picks in the
+UI shows up as drift.
+
+Declare the strategy **or** the channel list, never both —
+`channel_controls` is one choice, and `validate` says so before the
+API would.
+
+## Keeping it narrow
+
+The point of the block is the next quarter, not the first apply.
+Someone opens the Google Ads UI, ticks Discover back on, and the next
+`plan` says:
+
+```
+google_ads_ad_group.spring_launch                             ~ update
+    demand_gen_ad_group_settings.channel_controls: youtube_in_stream, youtube_in_feed, youtube_shorts, discover -> youtube_in_stream, youtube_in_feed, youtube_shorts
+```
+
+Run `bidsmith plan --detailed-exitcode .` in CI and that widening fails
+the build instead of quietly spending on a surface nobody chose.
+
+<Aside>
+  An ad group with no `demand_gen_ad_group_settings` block leaves the
+  channels to whoever set them last — bidsmith only manages what the
+  file declares. Run `bidsmith refresh --in-place .` on an adopted
+  account to write the live channels into the file first.
+</Aside>
+
+## See also
+
+- [Launch a Demand Gen video ad](./launch-a-demand-gen-video-ad/) — the
+  campaign, ad group and video creative this block slots into.
+- [`google_ads_ad_group`](/bidsmith/resources/google_ads_ad_group/) —
+  the full `channel_controls` reference.
+- [About Demand Gen campaigns](https://support.google.com/google-ads/answer/13695777)
+  — Google's own overview of where Demand Gen serves.
