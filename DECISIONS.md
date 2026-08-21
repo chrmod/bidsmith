@@ -559,6 +559,14 @@ resource type, any file layout, modules, schema validation.
   `ad_group_ad` orphaned under an ad group that is gone from live state:
   removing an ad group leaves its ads addressable but un-mutatable, so
   the doomed per-ad destroy is dropped and the parent removal stands.
+  A positive direct audience criterion (`custom_audience` / `user_list`
+  / `combined_audience`) on an audience-grouped ad group is in the same
+  family (issue #183): grouped mode takes segments only through the
+  `Audience`, so the criterion can only be Google's own materialized
+  twin of a wrapped segment, and the API refuses every mutate on it —
+  it is never planned as a destroy. Dropping a grouped `audience {
+  audience = … }` attachment or a negative audience exclusion still
+  destroys normally.
   A `REMOVED` resource is likewise not something the file can be
   *matched* against, which is the same rule read from the other end
   (issue #161): Google auto-removes a non-shared budget with the last

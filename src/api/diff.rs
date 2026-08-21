@@ -1362,6 +1362,24 @@ fn orphan_criteria_deletes(
     {
         let matched = matched_live_ids("ad_group_criterion");
         let parent_addr = reverse(ad_group_match);
+        // An audience-grouped ad group takes segments only through its
+        // `Audience`; Google materializes a direct twin criterion per wrapped
+        // segment beside it and refuses every mutate on it, so a planned
+        // destroy can only sink the batch. Any positive direct audience
+        // criterion on such an ad group is Google's — a user never could have
+        // attached one (issue #183). Negatives stay prunable: an exclusion is
+        // not an attachment, so grouped mode accepts it and its removal.
+        let grouped_ad_groups: std::collections::HashSet<&str> = live
+            .ad_groups
+            .iter()
+            .filter(|g| {
+                g.audience_setting
+                    .as_ref()
+                    .and_then(|a| a.use_audience_grouped)
+                    == Some(true)
+            })
+            .map(|g| g.id.as_str())
+            .collect();
         let mut managed: std::collections::HashSet<(String, &'static str)> =
             std::collections::HashSet::new();
         for d in &declared.ad_group_criteria {
@@ -1393,6 +1411,12 @@ fn orphan_criteria_deletes(
             let Some(descriptor) = criterion_descriptor(&l.target, negative) else {
                 continue;
             };
+            if !negative
+                && grouped_ad_groups.contains(l.ad_group.as_str())
+                && l.target.audience.as_ref().is_some_and(|a| a.audience.is_none())
+            {
+                continue;
+            }
             out.push(delete_diff(
                 "ad_group_criterion",
                 parent_addr.get(&l.ad_group),
@@ -5266,6 +5290,184 @@ mod claim_tests {
         assert_eq!(
             report.claim_plans[0].stale_assoc_rn.as_deref(),
             Some("customers/1/adGroupLabels/300~781")
+        );
+    }
+
+    #[test]
+    fn materialized_direct_audience_on_a_grouped_ad_group_is_not_destroyed() {
+        // Issue #183: beside a grouped-audience attachment Google materializes
+        // a direct criterion per wrapped segment; it is un-mutatable, so a
+        // planned destroy is refused and sinks the whole atomic batch.
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"m.c","name":"C","advertising_channel_type":"DEMAND_GEN","campaign_budget":"m.b"}],
+            "ad_groups": [{"id":"m.g","name":"G","campaign":"m.c","audience_setting":{"use_audience_grouped":true}}],
+            "custom_audiences": [{"id":"m.ca","name":"Searchers","members":[{"keyword":"ad blocker"}]}],
+            "audiences": [{"id":"m.a","name":"Cohort","segments":[{"custom_audience":"m.ca"}]}],
+            "ad_group_criteria": [
+                {"id":"m.t","ad_group":"m.g","audience":{"audience":"m.a"}}
+            ]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"100","name":"C","advertising_channel_type":"DEMAND_GEN","campaign_budget":"200"}],
+            "ad_groups": [{"id":"300","name":"G","campaign":"100","audience_setting":{"use_audience_grouped":true}}],
+            "custom_audiences": [{"id":"501","name":"Searchers","members":[{"keyword":"ad blocker"}]}],
+            "audiences": [{"id":"7001","name":"Cohort","segments":[{"custom_audience":"customers/1/customAudiences/501"}]}],
+            "ad_group_criteria": [
+                {"id":"300~600","ad_group":"300","audience":{"audience":"customers/1/audiences/7001"}},
+                {"id":"300~601","ad_group":"300","audience":{"custom_audience":"customers/1/customAudiences/501"}}
+            ]
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        assert_eq!(
+            report.delete_count, 0,
+            "Google's materialized twin must be left alone: {:?}",
+            report.diffs.iter().map(|d| (&d.address, &d.action)).collect::<Vec<_>>()
+        );
+        let attachment = report
+            .diffs
+            .iter()
+            .find(|d| d.address == "m.t")
+            .expect("the grouped attachment");
+        assert!(
+            matches!(&attachment.action, Action::NoOp { live_id } if live_id == "300~600"),
+            "the declared attachment should match the live one: {:?}",
+            attachment.action
+        );
+    }
+
+    #[test]
+    fn orphaned_direct_audience_on_a_non_grouped_ad_group_still_destroys() {
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"m.c","name":"C","advertising_channel_type":"DISPLAY","campaign_budget":"m.b"}],
+            "ad_groups": [{"id":"m.g","name":"G","campaign":"m.c"}],
+            "ad_group_criteria": [
+                {"id":"m.aud","ad_group":"m.g","audience":{"user_list":"customers/1/userLists/987"}}
+            ]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"100","name":"C","advertising_channel_type":"DISPLAY","campaign_budget":"200"}],
+            "ad_groups": [{"id":"300","name":"G","campaign":"100"}],
+            "ad_group_criteria": [
+                {"id":"300~600","ad_group":"300","audience":{"user_list":"customers/1/userLists/987"}},
+                {"id":"300~601","ad_group":"300","audience":{"custom_audience":"customers/1/customAudiences/501"}}
+            ]
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        assert_eq!(report.delete_count, 1, "{:?}", report.diffs);
+        let del = report
+            .diffs
+            .iter()
+            .find(|d| matches!(d.action, Action::Delete { .. }))
+            .expect("a destroy");
+        assert!(
+            del.address
+                .contains("m.g (removed custom_audience customers/1/customAudiences/501)"),
+            "{}",
+            del.address
+        );
+    }
+
+    #[test]
+    fn dropped_negative_audience_exclusion_on_a_grouped_ad_group_still_destroys() {
+        // An exclusion is not an attachment: grouped mode accepts a direct
+        // negative audience criterion, so dropping one must keep pruning it.
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"m.c","name":"C","advertising_channel_type":"DEMAND_GEN","campaign_budget":"m.b"}],
+            "ad_groups": [{"id":"m.g","name":"G","campaign":"m.c","audience_setting":{"use_audience_grouped":true}}],
+            "audiences": [{"id":"m.a","name":"Cohort","segments":[{"user_list":"customers/1/userLists/987"}]}],
+            "ad_group_criteria": [
+                {"id":"m.t","ad_group":"m.g","audience":{"audience":"m.a"}},
+                {"id":"m.x","ad_group":"m.g","negative":true,"audience":{"user_list":"customers/1/userLists/988"}}
+            ]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"100","name":"C","advertising_channel_type":"DEMAND_GEN","campaign_budget":"200"}],
+            "ad_groups": [{"id":"300","name":"G","campaign":"100","audience_setting":{"use_audience_grouped":true}}],
+            "audiences": [{"id":"7001","name":"Cohort","segments":[{"user_list":"customers/1/userLists/987"}]}],
+            "ad_group_criteria": [
+                {"id":"300~600","ad_group":"300","audience":{"audience":"customers/1/audiences/7001"}},
+                {"id":"300~601","ad_group":"300","negative":true,"audience":{"user_list":"customers/1/userLists/988"}},
+                {"id":"300~602","ad_group":"300","negative":true,"audience":{"user_list":"customers/1/userLists/989"}}
+            ]
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        assert_eq!(report.delete_count, 1, "{:?}", report.diffs);
+        let del = report
+            .diffs
+            .iter()
+            .find(|d| matches!(d.action, Action::Delete { .. }))
+            .expect("a destroy");
+        assert!(
+            del.address.contains("m.g (removed user_list customers/1/userLists/989)"),
+            "{}",
+            del.address
+        );
+    }
+
+    #[test]
+    fn stale_grouped_attachment_on_a_grouped_ad_group_still_destroys() {
+        // Only the direct segment twins are Google's: dropping a grouped
+        // `audience { audience = ... }` attachment is a real detachment the
+        // API accepts, so it must keep planning as a destroy.
+        let declared = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"m.c","name":"C","advertising_channel_type":"DEMAND_GEN","campaign_budget":"m.b"}],
+            "ad_groups": [{"id":"m.g","name":"G","campaign":"m.c","audience_setting":{"use_audience_grouped":true}}],
+            "audiences": [{"id":"m.a","name":"Cohort","segments":[{"user_list":"customers/1/userLists/987"}]}],
+            "ad_group_criteria": [
+                {"id":"m.t","ad_group":"m.g","audience":{"audience":"m.a"}}
+            ]
+        }"#,
+        );
+        let live = input(
+            r#"{
+            "customer_id": "1",
+            "campaigns": [{"id":"100","name":"C","advertising_channel_type":"DEMAND_GEN","campaign_budget":"200"}],
+            "ad_groups": [{"id":"300","name":"G","campaign":"100","audience_setting":{"use_audience_grouped":true}}],
+            "audiences": [
+                {"id":"7001","name":"Cohort","segments":[{"user_list":"customers/1/userLists/987"}]},
+                {"id":"7002","name":"Old cohort","segments":[{"user_list":"customers/1/userLists/988"}]}
+            ],
+            "ad_group_criteria": [
+                {"id":"300~600","ad_group":"300","audience":{"audience":"customers/1/audiences/7001"}},
+                {"id":"300~601","ad_group":"300","audience":{"audience":"customers/1/audiences/7002"}}
+            ]
+        }"#,
+        );
+        let report = diff(&declared, &live);
+
+        assert_eq!(report.delete_count, 1, "{:?}", report.diffs);
+        let del = report
+            .diffs
+            .iter()
+            .find(|d| matches!(d.action, Action::Delete { .. }))
+            .expect("a destroy");
+        assert!(
+            del.address.contains("m.g (removed audience customers/1/audiences/7002)"),
+            "{}",
+            del.address
         );
     }
 
