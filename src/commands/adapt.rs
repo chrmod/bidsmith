@@ -1740,22 +1740,26 @@ fn parse_audience_segment(v: &Value) -> Option<JsonAudienceSegment> {
 /// `AgeDimension` counts in years, the rest of bidsmith speaks the
 /// `AGE_RANGE_*` enum every other age field uses, and `include_undetermined`
 /// is the enum's `AGE_RANGE_UNDETERMINED` member — see
-/// [`crate::schema::age_range_for_bounds`].
+/// [`crate::schema::age_ranges_for_bounds`]. One live span can cover several
+/// declared bands, and Google is free to split or merge them however it likes,
+/// so the expansion is deduped: the axis diffs as a set of bands.
 fn parse_age_dimension(v: &Value) -> Vec<String> {
-    let mut out: Vec<String> = v
+    let mut out: Vec<String> = Vec::new();
+    for r in v
         .get("ageRanges")
         .and_then(Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or_default()
-        .iter()
-        .filter_map(|r| {
-            crate::schema::age_range_for_bounds(
-                parse_i64(r.get("minAge")),
-                parse_i64(r.get("maxAge")),
-            )
-            .map(str::to_string)
-        })
-        .collect();
+    {
+        for band in crate::schema::age_ranges_for_bounds(
+            parse_i64(r.get("minAge")),
+            parse_i64(r.get("maxAge")),
+        ) {
+            if !out.iter().any(|b| b == band) {
+                out.push(band.to_string());
+            }
+        }
+    }
     if v.get("includeUndetermined").and_then(Value::as_bool) == Some(true) {
         out.push("AGE_RANGE_UNDETERMINED".to_string());
     }

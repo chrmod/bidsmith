@@ -398,17 +398,26 @@ pub fn age_range_bounds(ty: &str) -> Option<(i64, Option<i64>)> {
         .map(|(_, min, max)| (*min, *max))
 }
 
-/// The `AGE_RANGE_*` band a live `AgeSegment` names — both bounds have to
-/// match. The API permits a span no band covers (`min_age = 25, max_age = 44`),
-/// which nothing here can name; reporting that as unreconciled drift is safer
-/// than rounding it down to the narrower band it starts at, since a `refresh`
-/// that wrote `AGE_RANGE_25_34` would then narrow live targeting on apply.
-pub fn age_range_for_bounds(min_age: Option<i64>, max_age: Option<i64>) -> Option<&'static str> {
-    let min = min_age?;
-    AGE_RANGE_BOUNDS
-        .iter()
-        .find(|(_, m, x)| *m == min && *x == max_age)
-        .map(|(name, _, _)| *name)
+/// The `AGE_RANGE_*` bands a live `AgeSegment` covers. Google merges adjacent
+/// bands into one contiguous span — `AGE_RANGE_25_34` + `AGE_RANGE_35_44` comes
+/// back as `min_age = 25, max_age = 44` — so a span names as many bands as it
+/// spans, not one (issue #185). An omitted `max_age` is open-ended and runs to
+/// the top band. A span whose bounds land inside a band rather than on its
+/// edges names nothing: reporting that as unreconciled drift is safer than
+/// rounding to the bands it brushes, since a `refresh` that wrote them would
+/// then move live targeting on apply.
+pub fn age_ranges_for_bounds(min_age: Option<i64>, max_age: Option<i64>) -> Vec<&'static str> {
+    let starts_at = |min| AGE_RANGE_BOUNDS.iter().position(|(_, m, _)| *m == min);
+    // An unset `max_age` means the span has no upper bound — which is exactly
+    // the open-ended top band's own `max_age`, so this finds it unaided.
+    let ends_at = |max| AGE_RANGE_BOUNDS.iter().position(|(_, _, x)| *x == max);
+    match (min_age.and_then(starts_at), ends_at(max_age)) {
+        (Some(first), Some(last)) if first <= last => AGE_RANGE_BOUNDS[first..=last]
+            .iter()
+            .map(|(name, _, _)| *name)
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 const GENDER_TYPE: &[&str] = &["MALE", "FEMALE", "UNDETERMINED"];
@@ -5753,13 +5762,35 @@ locals {
                 assert_eq!(*ty, "AGE_RANGE_UNDETERMINED", "{ty} has no bounds");
                 continue;
             };
-            assert_eq!(age_range_for_bounds(Some(min), max), Some(*ty));
+            assert_eq!(age_ranges_for_bounds(Some(min), max), vec![*ty]);
         }
-        // A span no band covers stays unnamed rather than rounding down to the
-        // narrower band it starts at.
-        assert_eq!(age_range_for_bounds(Some(25), Some(44)), None);
-        assert_eq!(age_range_for_bounds(Some(65), Some(74)), None);
-        assert_eq!(age_range_for_bounds(None, None), None);
+    }
+
+    /// Google merges adjacent bands into one span, so a span names every band
+    /// it covers — otherwise the declared list never matches what comes back
+    /// and the audience re-plans forever (issue #185).
+    #[test]
+    fn a_merged_span_expands_to_every_band_it_covers() {
+        assert_eq!(
+            age_ranges_for_bounds(Some(25), Some(44)),
+            vec!["AGE_RANGE_25_34", "AGE_RANGE_35_44"]
+        );
+        // An open-ended span runs to the top band.
+        assert_eq!(
+            age_ranges_for_bounds(Some(45), None),
+            vec!["AGE_RANGE_45_54", "AGE_RANGE_55_64", "AGE_RANGE_65_UP"]
+        );
+        assert_eq!(
+            age_ranges_for_bounds(Some(18), None),
+            AGE_RANGE_TYPE[..6].to_vec()
+        );
+        // A bound that lands inside a band rather than on its edge names
+        // nothing, rather than rounding to the bands it brushes.
+        assert!(age_ranges_for_bounds(Some(65), Some(74)).is_empty());
+        assert!(age_ranges_for_bounds(Some(30), Some(44)).is_empty());
+        assert!(age_ranges_for_bounds(Some(25), Some(20)).is_empty());
+        assert!(age_ranges_for_bounds(None, None).is_empty());
+        assert!(age_ranges_for_bounds(None, Some(34)).is_empty());
     }
 
     #[test]
