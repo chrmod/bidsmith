@@ -1410,6 +1410,22 @@ resource type, any file layout, modules, schema validation.
   criterion resolves the audience's temp resource name. `Audience` is the
   first resource bidsmith creates through a service-specific operation
   inside the unified batch rather than a call of its own.
+- **An audience's age dimension is read as the bands a span covers**
+  (issue #185): Google stores `AgeDimension` in years, and it *merges*
+  adjacent bands — a declared `AGE_RANGE_25_34` + `AGE_RANGE_35_44` comes
+  back as the single segment `{min_age: 25, max_age: 44}`. Reading that
+  segment as one band named nothing, so live read as `none`, `plan` showed
+  an `age_ranges` update every run and `apply` reported a mutate that
+  changed nothing. `age_ranges_for_bounds` now expands a span into every
+  band it covers, so the two representations compare equal. A span whose
+  bounds land *inside* a band still names nothing: reporting unreconciled
+  drift is safer than rounding to the bands it brushes, since a `refresh`
+  that wrote them would move live targeting on the next apply. Normalising
+  on the read side rather than collapsing declared bands into spans keeps
+  one vocabulary — the `AGE_RANGE_*` enum — everywhere a `.bid` or a plan
+  row names an age. The sibling axes need no such mapping: `gender`,
+  `parental_status`, and `household_income` are repeated enums on both
+  sides.
 - **Segment constants are customer-scoped, not global** (issue #169): the
   `UserInterest`, `LifeEvent`, and `DetailedDemographic` resources are
   named `customers/{customer_id}/userInterests/{id}` (and `/lifeEvents/`,

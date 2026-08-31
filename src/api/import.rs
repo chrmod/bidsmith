@@ -6285,6 +6285,62 @@ resource "google_ads_ad_group_criterion" "grouped" {
         assert_eq!(report.create_count, 0, "diffs: {:?}", report.diffs);
     }
 
+    /// Google stores adjacent bands as one contiguous span, so a declaration of
+    /// `AGE_RANGE_25_34` + `AGE_RANGE_35_44` comes back as `minAge 25, maxAge
+    /// 44`. Reading the span as the bands it covers is what keeps the audience
+    /// from re-planning the same update on every run (issue #185).
+    #[test]
+    fn a_span_google_merged_from_adjacent_bands_is_not_drift() {
+        let declared = import_str(
+            "grouped_audience_merged_span",
+            &GROUPED_AUDIENCE_BID.replace(
+                r#"age_ranges    = ["AGE_RANGE_35_44", "AGE_RANGE_65_UP", "AGE_RANGE_UNDETERMINED"]"#,
+                r#"age_ranges    = ["AGE_RANGE_25_34", "AGE_RANGE_35_44"]"#,
+            ),
+        );
+        let live = crate::commands::adapt::from_search_response(&LIVE_GROUPED_AUDIENCE.replace(
+            r#"{"age":{"ageRanges":[{"minAge":65},{"minAge":35,"maxAge":44}],"includeUndetermined":true}}"#,
+            r#"{"age":{"ageRanges":[{"minAge":25,"maxAge":44}]}}"#,
+        ))
+        .expect("adapt live");
+        let report = diff_after_defaults(declared, live);
+        assert_eq!(report.update_count, 0, "diffs: {:?}", report.diffs);
+        assert_eq!(report.create_count, 0, "diffs: {:?}", report.diffs);
+        assert_eq!(report.delete_count, 0, "diffs: {:?}", report.diffs);
+    }
+
+    /// Dropping a band out of a merged span is still real drift — the fix for
+    /// #185 must not make the axis compare equal to everything.
+    #[test]
+    fn narrowing_a_merged_span_still_plans_an_audience_update() {
+        let declared = import_str(
+            "grouped_audience_narrowed_span",
+            &GROUPED_AUDIENCE_BID.replace(
+                r#"age_ranges    = ["AGE_RANGE_35_44", "AGE_RANGE_65_UP", "AGE_RANGE_UNDETERMINED"]"#,
+                r#"age_ranges    = ["AGE_RANGE_25_34"]"#,
+            ),
+        );
+        let live = crate::commands::adapt::from_search_response(&LIVE_GROUPED_AUDIENCE.replace(
+            r#"{"age":{"ageRanges":[{"minAge":65},{"minAge":35,"maxAge":44}],"includeUndetermined":true}}"#,
+            r#"{"age":{"ageRanges":[{"minAge":25,"maxAge":44}]}}"#,
+        ))
+        .expect("adapt live");
+        let report = diff_after_defaults(declared, live);
+        let changed: Vec<(&str, Vec<String>)> = report
+            .diffs
+            .iter()
+            .filter_map(|d| match &d.action {
+                crate::api::diff::Action::Update { changed_fields, .. } => {
+                    Some((d.kind, crate::api::diff::field_names(changed_fields)))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(changed.len(), 1, "diffs: {:?}", report.diffs);
+        assert_eq!(changed[0].0, "audience");
+        assert_eq!(changed[0].1, vec!["age_ranges".to_string()]);
+    }
+
     /// The setting is immutable, so a mismatch can never be reconciled — and it
     /// decides whether the ad group can carry an audience criterion at all.
     #[test]

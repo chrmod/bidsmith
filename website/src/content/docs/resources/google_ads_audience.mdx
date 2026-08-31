@@ -94,6 +94,11 @@ Google's API states an audience's age dimension in years and every other
 age field as an enum. `.bid` files use the enum in both places, so
 `AGE_RANGE_35_44` means the same thing wherever you write it.
 
+Google also merges bands that sit next to each other into one stretch of
+years — the three bands above are stored as "35 to 64". bidsmith reads
+that back as the bands it covers, so listing adjacent bands is not drift
+and `plan` stays clean after `apply`.
+
 `AGE_RANGE_UNDETERMINED` — and `UNDETERMINED` on `genders` /
 `parental_statuses`, `INCOME_RANGE_UNDETERMINED` on `income_ranges` —
 means *"include people Google could not classify"*. That is a large share
