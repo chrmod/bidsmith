@@ -6,7 +6,7 @@ use crate::commands::export::{
     JsonCampaignAsset, JsonCampaignCriterion, JsonCampaignSharedSet, JsonConversionAction,
     JsonAudience, JsonChannelControls, JsonCriterion, JsonCustomAudience, JsonCustomParameter,
     JsonCustomerAsset,
-    JsonGroupedAudience, JsonSharedCriterion,
+    JsonGroupedAudience, JsonRsaAsset, JsonSharedCriterion,
     JsonImageAsset, JsonSharedSet, JsonSitelinkAsset, JsonStructuredSnippetAsset,
     JsonTargetingSetting, JsonYoutubeVideoAsset, AUTOMATICALLY_CREATED,
 };
@@ -664,6 +664,14 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
     }
     let live_ad_group_ids: std::collections::HashSet<&str> =
         live.ad_groups.iter().map(|g| g.id.as_str()).collect();
+    // A labeled ad whose address is still declared is being replaced, not
+    // removed. The label holds a payload — for a long address a hashed
+    // truncation — while the declared side holds the address itself to show.
+    let declared_ad_by_payload: HashMap<String, &str> = declared
+        .ad_group_ads
+        .iter()
+        .map(|d| (address_label_payload(&d.id), d.id.as_str()))
+        .collect();
     for (i, l) in live.ad_group_ads.iter().enumerate() {
         if ad_claimed[i] {
             continue;
@@ -688,7 +696,10 @@ pub fn diff(declared: &ExportInput, live: &ExportInput) -> DiffReport {
                 skipped_removal_count += 1;
                 continue;
             }
-            diffs.push(removal_diff("ad_group_ad", addr, &l.id));
+            diffs.push(match declared_ad_by_payload.get(addr.as_str()) {
+                Some(address) => replaced_diff("ad_group_ad", address, &l.id),
+                None => removal_diff("ad_group_ad", addr, &l.id),
+            });
         }
     }
 
@@ -1984,6 +1995,18 @@ fn removal_diff(kind: &'static str, address: &str, live_id: &str) -> ResourceDif
     }
 }
 
+/// A labeled live resource whose address is still declared but which the
+/// declared resource did not claim: its body is being replaced by a create.
+fn replaced_diff(kind: &'static str, address: &str, live_id: &str) -> ResourceDiff {
+    ResourceDiff {
+        address: format!("{address} (managed, replaced)"),
+        kind,
+        action: Action::Delete {
+            live_id: live_id.to_string(),
+        },
+    }
+}
+
 fn delete_diff(
     kind: &'static str,
     parent_addr: Option<&String>,
@@ -2838,10 +2861,39 @@ fn diff_ad_group_ad(d: &JsonAdGroupAd, l: &JsonAdGroupAd) -> Vec<FieldChange> {
     if d.status != l.status {
         c.push(change("status", &l.status, &d.status));
     }
-    // The creative is creation-only — a new ad is how you "edit" copy — but the
-    // tracking pair is not part of it. The API updates both in place, and
-    // recreating an ad to change a UTM slug would throw away its performance
-    // history for a string the visitor never sees.
+    // Everything under `ad.` is written through `AdService.MutateAds`, which
+    // edits the live ad in place — the id, the review history and the
+    // statistics stay with it. RSA copy and URLs are editable that way (issue
+    // #187); the video creatives are creation-only, see `ad_editable_in_place`.
+    if let (Some(dr), Some(lr)) = (&d.ad.responsive_search_ad, &l.ad.responsive_search_ad) {
+        if d.ad.final_urls != l.ad.final_urls {
+            c.push(whole_change(
+                "ad.final_urls",
+                shown_urls(&l.ad.final_urls),
+                shown_urls(&d.ad.final_urls),
+            ));
+        }
+        if d.ad.final_mobile_urls != l.ad.final_mobile_urls {
+            c.push(whole_change(
+                "ad.final_mobile_urls",
+                shown_urls(&l.ad.final_mobile_urls),
+                shown_urls(&d.ad.final_mobile_urls),
+            ));
+        }
+        diff_rsa_assets(&mut c, "ad.responsive_search_ad.headlines", &lr.headlines, &dr.headlines);
+        diff_rsa_assets(
+            &mut c,
+            "ad.responsive_search_ad.descriptions",
+            &lr.descriptions,
+            &dr.descriptions,
+        );
+        if dr.path1 != lr.path1 {
+            c.push(change("ad.responsive_search_ad.path1", &lr.path1, &dr.path1));
+        }
+        if dr.path2 != lr.path2 {
+            c.push(change("ad.responsive_search_ad.path2", &lr.path2, &dr.path2));
+        }
+    }
     let mut tracking = Vec::new();
     diff_tracking(
         &mut tracking,
@@ -2854,6 +2906,77 @@ fn diff_ad_group_ad(d: &JsonAdGroupAd, l: &JsonAdGroupAd) -> Vec<FieldChange> {
         desired: f.desired,
     }));
     c
+}
+
+/// A URL list in full: a reviewer approving a landing-page change has to see
+/// the whole address, and these lists are one or two entries long.
+fn shown_urls(urls: &[String]) -> String {
+    let items: Vec<String> = urls.iter().map(|u| format!("{u:?}")).collect();
+    format!("[{}]", items.join(", "))
+}
+
+/// The asset lists diff as multisets — Google serves from the list, so the
+/// order a file writes them in is not a change. The row shows only what
+/// moves: the assets the live ad loses on the left, the ones it gains on the
+/// right, each in the form the `.bid` list spells it. Fifteen headlines
+/// written out twice would bury the one that changed.
+fn diff_rsa_assets(
+    c: &mut Vec<FieldChange>,
+    field: &str,
+    live: &[JsonRsaAsset],
+    desired: &[JsonRsaAsset],
+) {
+    let live = sorted_rsa_assets(live);
+    let desired = sorted_rsa_assets(desired);
+    if live == desired {
+        return;
+    }
+    c.push(whole_change(
+        field,
+        shown_rsa_assets(&multiset_difference(&live, &desired)),
+        shown_rsa_assets(&multiset_difference(&desired, &live)),
+    ));
+}
+
+fn sorted_rsa_assets(assets: &[JsonRsaAsset]) -> Vec<(&str, &str)> {
+    let mut out: Vec<(&str, &str)> = assets
+        .iter()
+        .map(|a| (a.text.as_str(), a.pin.as_deref().unwrap_or("")))
+        .collect();
+    out.sort_unstable();
+    out
+}
+
+/// The entries of `a` left after removing one occurrence of each entry of `b`.
+fn multiset_difference<'a>(
+    a: &[(&'a str, &'a str)],
+    b: &[(&'a str, &'a str)],
+) -> Vec<(&'a str, &'a str)> {
+    let mut rest: Vec<(&str, &str)> = b.to_vec();
+    a.iter()
+        .copied()
+        .filter(|x| match rest.iter().position(|y| y == x) {
+            Some(i) => {
+                rest.swap_remove(i);
+                false
+            }
+            None => true,
+        })
+        .collect()
+}
+
+fn shown_rsa_assets(assets: &[(&str, &str)]) -> String {
+    let items: Vec<String> = assets
+        .iter()
+        .map(|(text, pin)| {
+            if pin.is_empty() {
+                format!("{text:?}")
+            } else {
+                format!("{{ text = {text:?}, pin = {pin:?} }}")
+            }
+        })
+        .collect();
+    format!("[{}]", items.join(", "))
 }
 
 /// Match declared ads to live ads 1:1 within each ad group, keyed on the ad
@@ -2876,8 +2999,9 @@ fn match_ad_group_ads(
     let mut out: Vec<(Action, Option<usize>)> = vec![(Action::Create, None); declared.len()];
 
     // Pass 0: label hits — a declared ad claims the live ad carrying its
-    // address, regardless of body. Body is creation-only, so a body edit on a
-    // labeled ad falls through to a create + a destroy of the old ad below.
+    // address when that ad can be edited into the declared one in place. An
+    // RSA always can; a video creative is creation-only, so a body edit on a
+    // labeled video ad falls through to a create + a destroy of the old ad.
     let mut live_by_addr: HashMap<&str, usize> = HashMap::new();
     for (i, l) in live.iter().enumerate() {
         if let Some(a) = l.managed_address.as_deref() {
@@ -2886,7 +3010,7 @@ fn match_ad_group_ads(
     }
     for (di, d) in declared.iter().enumerate() {
         if let Some(&li) = live_by_addr.get(address_label_payload(&d.id).as_str()) {
-            if !consumed[li] && ad_bodies_match(d, &live[li], asset_match) {
+            if !consumed[li] && ad_editable_in_place(d, &live[li], asset_match) {
                 consumed[li] = true;
                 out[di] = (
                     action_for_match(live[li].id.clone(), diff_ad_group_ad(d, &live[li])),
@@ -2994,7 +3118,24 @@ fn declares_creative(a: &JsonAdGroupAd) -> bool {
         || a.ad.demand_gen_video_responsive_ad.is_some()
 }
 
-/// Body match for the label pass: a declared ad that leaves the creative
+/// Whether the live ad a label points at can become the declared one through
+/// `AdService.MutateAds`, or has to be recreated. RSA copy and URLs are all
+/// mutable there, so one RSA can always be edited into another — except on
+/// `display_url`, which is not an RSA field (Google derives it from the final
+/// URL and the paths). Every other creative is creation-only and has to match
+/// byte for byte, as does a creative-less `ad {}` on its URLs.
+fn ad_editable_in_place(
+    d: &JsonAdGroupAd,
+    l: &JsonAdGroupAd,
+    asset_match: &HashMap<String, String>,
+) -> bool {
+    match (&d.ad.responsive_search_ad, &l.ad.responsive_search_ad) {
+        (Some(_), Some(_)) => d.ad.display_url == l.ad.display_url,
+        _ => ad_bodies_match(d, l, asset_match),
+    }
+}
+
+/// Body match for the content pass: a declared ad that leaves the creative
 /// unmanaged compares on URLs alone, everything else on the full body.
 fn ad_bodies_match(
     d: &JsonAdGroupAd,
@@ -3023,9 +3164,11 @@ fn ad_urls_key(a: &JsonAdGroupAd) -> String {
     a.ad.final_urls.join("\u{1f}")
 }
 
-/// A stable key for an ad's content (everything `diff_ad_group_ad` treats as
-/// creation-only). Status is deliberately excluded so identical-bodied ads in
-/// different states share a bucket and get assigned 1:1. Asset refs run through
+/// A stable key for an ad's content, the identity an unlabeled ad is matched
+/// on. Status is deliberately excluded so identical-bodied ads in different
+/// states share a bucket and get assigned 1:1, and RSA assets are keyed as a
+/// sorted set because Google serves from the list regardless of its order.
+/// Asset refs run through
 /// `asset_match` so a declared asset address and the live asset id it matched
 /// produce the same key; a live id is its own key, so one function serves both
 /// sides.
@@ -3042,12 +3185,12 @@ fn ad_body_key(a: &JsonAdGroupAd, asset_match: &HashMap<String, String>) -> Stri
     );
     if let Some(rsa) = &a.ad.responsive_search_ad {
         k.push_str("\u{1e}h:");
-        for h in &rsa.headlines {
-            let _ = write!(k, "{}\u{1f}{}\u{1d}", h.text, h.pin.as_deref().unwrap_or(""));
+        for (text, pin) in sorted_rsa_assets(&rsa.headlines) {
+            let _ = write!(k, "{text}\u{1f}{pin}\u{1d}");
         }
         k.push_str("\u{1e}d:");
-        for d in &rsa.descriptions {
-            let _ = write!(k, "{}\u{1f}{}\u{1d}", d.text, d.pin.as_deref().unwrap_or(""));
+        for (text, pin) in sorted_rsa_assets(&rsa.descriptions) {
+            let _ = write!(k, "{text}\u{1f}{pin}\u{1d}");
         }
         let _ = write!(
             k,
@@ -3750,6 +3893,116 @@ mod ad_match_tests {
                 .collect();
 
         assert!(matches!(&actions[0], Action::Create));
+    }
+
+    fn labeled(mut a: JsonAdGroupAd, address: &str) -> JsonAdGroupAd {
+        a.managed_address = Some(address_label_payload(address));
+        a
+    }
+
+    fn rsa_of(a: &mut JsonAdGroupAd) -> &mut JsonResponsiveSearchAd {
+        a.ad.responsive_search_ad.as_mut().expect("rsa")
+    }
+
+    fn only_action(declared: &[JsonAdGroupAd], live: &[JsonAdGroupAd]) -> Action {
+        match_ad_group_ads(declared, live, &identity_match(), &HashMap::new())
+            .into_iter()
+            .map(|(a, _)| a)
+            .next()
+            .expect("one declared ad")
+    }
+
+    fn changed(action: &Action) -> Vec<(&str, &str, &str)> {
+        match action {
+            Action::Update { changed_fields, .. } => changed_fields
+                .iter()
+                .map(|c| (c.field.as_str(), c.live.as_str(), c.desired.as_str()))
+                .collect(),
+            other => panic!("expected an update, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_url_change_on_a_labeled_rsa_is_an_in_place_update() {
+        // Issue #187: the host-only landing page change that planned as a
+        // destroy plus a create, splitting the ad's history for nothing.
+        let mut d = ad("m.google_ads_ad_group_ad.city_rsa", "ag", "ENABLED", "Same copy");
+        d.ad.final_urls = vec!["https://example.com/landing/".to_string()];
+        let mut l = labeled(ad("ag~9", "ag", "ENABLED", "Same copy"), &d.id);
+        l.ad.final_urls = vec!["https://www.example.com/landing/".to_string()];
+
+        let action = only_action(&[d], &[l]);
+
+        assert_eq!(action.live_id(), Some("ag~9"));
+        assert_eq!(
+            changed(&action),
+            vec![(
+                "ad.final_urls",
+                r#"["https://www.example.com/landing/"]"#,
+                r#"["https://example.com/landing/"]"#
+            )],
+            "the whole URL shows, nothing is elided"
+        );
+    }
+
+    #[test]
+    fn an_rsa_copy_edit_shows_only_what_moves() {
+        let mut d = ad("m.rsa", "ag", "ENABLED", "Blue Widgets");
+        rsa_of(&mut d).headlines.push(JsonRsaAsset {
+            text: "Order Online".to_string(),
+            pin: Some("HEADLINE_2".to_string()),
+        });
+        rsa_of(&mut d).path2 = Some("blue".to_string());
+        let mut l = labeled(ad("ag~9", "ag", "ENABLED", "Blue Widgets"), &d.id);
+        rsa_of(&mut l).headlines.push(JsonRsaAsset {
+            text: "Order Online Today".to_string(),
+            pin: None,
+        });
+
+        let action = only_action(&[d], &[l]);
+
+        assert_eq!(
+            changed(&action),
+            vec![
+                (
+                    "ad.responsive_search_ad.headlines",
+                    r#"["Order Online Today"]"#,
+                    r#"[{ text = "Order Online", pin = "HEADLINE_2" }]"#
+                ),
+                ("ad.responsive_search_ad.path2", "(unset)", r#""blue""#),
+            ]
+        );
+    }
+
+    fn two_headlines(id: &str, first: &str, second: &str) -> JsonAdGroupAd {
+        let mut a = ad(id, "ag", "ENABLED", first);
+        rsa_of(&mut a).headlines.push(JsonRsaAsset { text: second.to_string(), pin: None });
+        a
+    }
+
+    #[test]
+    fn reordering_rsa_assets_is_not_a_change() {
+        // Unlabeled: the body key is order-free, so the two are one body.
+        let d = two_headlines("m.rsa", "First", "Second");
+        let l = two_headlines("ag~9", "Second", "First");
+        assert!(matches!(only_action(&[d], &[l]), Action::NoOp { .. }));
+
+        // Labeled: the in-place diff is order-free too.
+        let d = two_headlines("m.rsa", "First", "Second");
+        let l = labeled(two_headlines("ag~9", "Second", "First"), &d.id);
+        assert!(matches!(only_action(&[d], &[l]), Action::NoOp { .. }));
+    }
+
+    #[test]
+    fn a_labeled_ad_that_is_not_an_rsa_still_has_to_match_by_body() {
+        // A creative-less `ad {}` manages the URLs alone, and its live ad might
+        // be of a type AdService cannot edit — a URL change recreates it.
+        let mut d = ad("m.rsa", "ag", "ENABLED", "unused");
+        d.ad.responsive_search_ad = None;
+        d.ad.final_urls = vec!["https://example.com/new".to_string()];
+        let l = labeled(ad("ag~9", "ag", "ENABLED", "UI copy"), &d.id);
+
+        assert!(matches!(only_action(&[d], &[l]), Action::Create));
     }
 }
 
@@ -4708,6 +4961,48 @@ mod removed_resource_tests {
             ad.action
         );
         assert_eq!(ad_destroys(&report), vec!["55~9"]);
+    }
+
+    #[test]
+    fn a_replaced_ad_with_a_long_address_prints_the_address_not_the_label_payload() {
+        // Issue #187's side observation: the destroy row of a replace showed
+        // `w2_city.google_ads_ad_group_ad.~9u_OYWe47tPeNow-`, the hashed label
+        // payload a long address is stored as, next to a create row with the
+        // address spelled out.
+        let address = "a_module_name_that_runs_long.google_ads_ad_group_ad.and_a_resource_name_that_runs_longer_still";
+        let payload = address_label_payload(address);
+        assert_ne!(payload, address, "the fixture address must be long enough to hash");
+        let declared = input(&format!(
+            r#"{{
+            "customer_id": "100",
+            "ad_groups": [{{"id":"m.ag","name":"In-stream","campaign":"m.c"}}],
+            "ad_group_ads": [{{
+                "id":"{address}","ad_group":"m.ag","status":"PAUSED",
+                "ad":{{"final_urls":["https://e.com/new"]}}
+            }}]
+        }}"#
+        ));
+        let live = input(&format!(
+            r#"{{
+            "customer_id": "100",
+            "ad_groups": [{{"id":"55","name":"In-stream","campaign":"c1","managed_address":"m.ag"}}],
+            "ad_group_ads": [{{
+                "id":"55~9","ad_group":"55","status":"PAUSED",
+                "ad":{{"final_urls":["https://e.com"],"video_ad":{{"video":"42"}}}},
+                "managed_address":"{payload}"
+            }}],
+            "labels": {{"m.ag":"customers/100/labels/1","{payload}":"customers/100/labels/2"}}
+        }}"#
+        ));
+        let report = diff(&declared, &live);
+
+        let destroy = report
+            .diffs
+            .iter()
+            .find(|d| matches!(d.action, Action::Delete { .. }) && d.kind == "ad_group_ad")
+            .expect("the labeled ad is replaced");
+        assert_eq!(destroy.address, format!("{address} (managed, replaced)"));
+        assert!(!destroy.address.contains(&payload), "no hashed payload in the row");
     }
 
     #[test]

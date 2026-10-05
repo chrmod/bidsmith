@@ -59,11 +59,10 @@ declared HCL against live labeled state. Local cache is rebuildable.
   headlines/descriptions, phone-in-RSA). Still open: missing-negatives
   on search campaigns, declension hints for PL, RSA pinning advice,
   policy-wordlist patterns.
-- RSA repeating-block diff strategy: today `headline` / `description`
-  blocks are matched all-or-nothing (live trumps; we don't diff them
-  per-asset). Open: detect added/removed/repinned assets and emit a
-  granular update — or accept "replace the whole ad" as the only edit
-  path (which matches how Google Ads operators usually edit RSAs).
+- RSA repeating-block diff strategy: **resolved** (issue #187). A
+  labeled RSA's URLs, copy and paths update in place through
+  `AdService.MutateAds`; asset lists diff as multisets and the plan row
+  shows only the assets that move. See DECISIONS.md "In-place RSA edits".
 - Removal mechanics on `apply`: **resolved.** Orphaned criteria
   *members* and *whole* labeled resources (campaign / ad_group /
   ad_group_ad) both plan as `- destroy` and apply terraform-style
@@ -136,8 +135,10 @@ declared HCL against live labeled state. Local cache is rebuildable.
   the whole batch un-applyable. Within a body bucket, ads that already
   match are claimed first (no diff), the rest become status updates, and
   any declared ad with no live body left is a create, so a `plan`
-  straight after `refresh` is a clean no-op. Ads still match by body
-  (copy is identity); the label authorizes their cleanup.
+  straight after `refresh` is a clean no-op. An unlabeled ad still
+  matches by body (copy is identity); a labeled one is claimed by its
+  label, and a changed RSA body is applied in place (issue #187) while a
+  changed video creative is replaced, the label authorizing the cleanup.
 - ✅ Whole-resource removal detection: a labeled live campaign /
   ad_group / ad_group_ad with no matching `.bid` entry → `- destroy`
   (children cascade, ordered child-first). Unlabeled live resources are
@@ -297,12 +298,9 @@ what closes the most user-facing gaps next:
 
 Smaller independent wins that need no labels: expand the **lint
 catalog** (missing-negatives on search campaigns, PL declension hints,
-RSA pinning advice, policy-wordlist patterns), **per-asset RSA
-diff** (today `headline` / `description` blocks + `final_urls` match
-all-or-nothing — the last drift gap below the apply layer), and
-**Windows binary distribution** (`.exe` via `cargo-dist` / `cross` +
-scoop / winget). See the follow-ups list above and "Open decisions" for
-the full set.
+RSA pinning advice, policy-wordlist patterns) and **Windows binary
+distribution** (`.exe` via `cargo-dist` / `cross` + scoop / winget). See
+the follow-ups list above and "Open decisions" for the full set.
 
 Smaller follow-ups that can ride along:
 

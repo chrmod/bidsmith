@@ -474,13 +474,31 @@ pub fn build_mutate_with_diff(
             }));
             operations.push(PlanOperation { address: a.id.clone(), kind: "ad_group_ad" });
         } else if let Some(fields) = update_set.get(&a.id) {
-            mutate_ops.push(json!({
-                "adGroupAdOperation": {
-                    "update": ad_group_ad_update_body(a, rn, fields),
-                    "updateMask": tracking_mask(fields),
-                }
-            }));
-            operations.push(PlanOperation { address: a.id.clone(), kind: "ad_group_ad" });
+            // `AdGroupAd.ad` is immutable: the ad itself is edited through
+            // `AdService`, whose operation rides in the same batch.
+            let (ad_fields, ad_group_ad_fields): (Vec<String>, Vec<String>) =
+                fields.iter().cloned().partition(|f| f.starts_with("ad."));
+            if !ad_group_ad_fields.is_empty() {
+                mutate_ops.push(json!({
+                    "adGroupAdOperation": {
+                        "update": ad_group_ad_update_body(a, rn, &ad_group_ad_fields),
+                        "updateMask": ad_group_ad_fields.join(","),
+                    }
+                }));
+                operations.push(PlanOperation { address: a.id.clone(), kind: "ad_group_ad" });
+            }
+            if !ad_fields.is_empty() {
+                let Some(ad_rn) = ad_rn(customer_id, rn, &a.id, &mut errors) else {
+                    continue;
+                };
+                mutate_ops.push(json!({
+                    "adOperation": {
+                        "update": ad_update_body(&a.ad, &ad_rn, &ad_fields),
+                        "updateMask": ad_update_mask(&ad_fields),
+                    }
+                }));
+                operations.push(PlanOperation { address: a.id.clone(), kind: "ad_group_ad" });
+            }
         }
     }
     for cr in &input.ad_group_criteria {
@@ -1095,16 +1113,8 @@ fn put_tracking_all(
     }
 }
 
-fn tracking_mask(fields: &[String]) -> String {
-    fields
-        .iter()
-        .map(|f| tracking_mask_path(f))
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-/// `tracking_mask` plus the channel-controls expansion, which needs the ad
-/// group to know which `oneof` arm the paths must reach.
+/// `tracking_mask_path` per field plus the channel-controls expansion, which
+/// needs the ad group to know which `oneof` arm the paths must reach.
 fn ad_group_update_mask(g: &JsonAdGroup, fields: &[String]) -> String {
     fields
         .iter()
@@ -1372,22 +1382,103 @@ fn ad_group_update_body(g: &JsonAdGroup, resource_name: &str, fields: &[String])
 fn ad_group_ad_update_body(a: &JsonAdGroupAd, resource_name: &str, fields: &[String]) -> Value {
     let mut m = Map::new();
     m.insert("resourceName".into(), Value::String(resource_name.to_string()));
-    let mut ad_sub: Map<String, Value> = Map::new();
-    for f in fields {
-        if f == "status" {
-            if let Some(s) = &a.status {
-                m.insert("status".into(), Value::String(s.clone()));
-            }
-            continue;
+    if fields.iter().any(|f| f == "status") {
+        if let Some(s) = &a.status {
+            m.insert("status".into(), Value::String(s.clone()));
         }
-        if let Some(inner) = f.strip_prefix("ad.") {
-            put_tracking(&mut ad_sub, inner, &a.ad.final_url_suffix, &a.ad.custom_parameters);
-        }
-    }
-    if !ad_sub.is_empty() {
-        m.insert("ad".into(), Value::Object(ad_sub));
     }
     Value::Object(m)
+}
+
+/// `customers/{cid}/ads/{ad_id}` — the `AdService` name of the ad behind an
+/// `adGroupAds/{ad_group_id}~{ad_id}` resource name.
+fn ad_rn(
+    customer_id: &str,
+    ad_group_ad_rn: &str,
+    address: &str,
+    errors: &mut Vec<PlanBuildError>,
+) -> Option<String> {
+    match ad_group_ad_rn.rsplit_once('~') {
+        Some((_, ad_id)) => Some(format!("customers/{customer_id}/ads/{ad_id}")),
+        None => {
+            errors.push(PlanBuildError {
+                address: address.to_string(),
+                message: format!(
+                    "internal error: live ad_group_ad resource name '{ad_group_ad_rn}' carries \
+                     no ad id"
+                ),
+            });
+            None
+        }
+    }
+}
+
+/// The `Ad` an `AdOperation.update` carries: only the fields in the mask, with
+/// a cleared optional written as `null` so the mask can clear it live.
+fn ad_update_body(ad: &JsonAd, resource_name: &str, fields: &[String]) -> Value {
+    let mut m = Map::new();
+    m.insert("resourceName".into(), Value::String(resource_name.to_string()));
+    let mut rsa_sub: Map<String, Value> = Map::new();
+    let rsa = ad.responsive_search_ad.as_ref();
+    for f in fields {
+        let Some(field) = f.strip_prefix("ad.") else {
+            continue;
+        };
+        match field {
+            "final_urls" => {
+                m.insert("finalUrls".into(), string_list(&ad.final_urls));
+            }
+            "final_mobile_urls" => {
+                m.insert("finalMobileUrls".into(), string_list(&ad.final_mobile_urls));
+            }
+            "responsive_search_ad.headlines" => {
+                if let Some(rsa) = rsa {
+                    rsa_sub.insert(
+                        "headlines".into(),
+                        Value::Array(rsa.headlines.iter().map(asset_value).collect()),
+                    );
+                }
+            }
+            "responsive_search_ad.descriptions" => {
+                if let Some(rsa) = rsa {
+                    rsa_sub.insert(
+                        "descriptions".into(),
+                        Value::Array(rsa.descriptions.iter().map(asset_value).collect()),
+                    );
+                }
+            }
+            "responsive_search_ad.path1" => {
+                rsa_sub.insert("path1".into(), optional_string(rsa.and_then(|r| r.path1.as_deref())));
+            }
+            "responsive_search_ad.path2" => {
+                rsa_sub.insert("path2".into(), optional_string(rsa.and_then(|r| r.path2.as_deref())));
+            }
+            other => {
+                put_tracking(&mut m, other, &ad.final_url_suffix, &ad.custom_parameters);
+            }
+        }
+    }
+    if !rsa_sub.is_empty() {
+        m.insert("responsiveSearchAd".into(), Value::Object(rsa_sub));
+    }
+    Value::Object(m)
+}
+
+/// `ad.`-prefixed diff fields as `Ad` mask paths.
+fn ad_update_mask(fields: &[String]) -> String {
+    fields
+        .iter()
+        .map(|f| tracking_mask_path(f.strip_prefix("ad.").unwrap_or(f)))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn string_list(values: &[String]) -> Value {
+    Value::Array(values.iter().cloned().map(Value::String).collect())
+}
+
+fn optional_string(value: Option<&str>) -> Value {
+    value.map_or(Value::Null, |v| Value::String(v.to_string()))
 }
 
 fn ad_group_criterion_update_body(
@@ -2952,6 +3043,78 @@ mod tests {
     }
 
     #[test]
+    fn an_rsa_edit_splits_into_an_ad_op_and_a_status_op() {
+        let input: ExportInput = serde_json::from_value(json!({
+            "customer_id": "100",
+            "ad_group_ads": [{
+                "id": "m.ad", "ad_group": "m.g", "status": "PAUSED",
+                "ad": {
+                    "final_urls": ["https://example.com/landing/"],
+                    "responsive_search_ad": {
+                        "headlines": [
+                            {"text": "Blue Widgets", "pin": "HEADLINE_1"},
+                            {"text": "Order Online"}
+                        ],
+                        "descriptions": [{"text": "Premium widgets."}],
+                        "path1": "widgets"
+                    }
+                }
+            }]
+        }))
+        .expect("valid ExportInput");
+        let report = report_of(vec![
+            noop_diff("m.g", "ad_group", "600"),
+            ad_update_diff(
+                "m.ad",
+                &[
+                    "status",
+                    "ad.final_urls",
+                    "ad.responsive_search_ad.headlines",
+                    "ad.responsive_search_ad.path2",
+                ],
+            ),
+        ]);
+        let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
+
+        let status_ops = ops_named(&plan, "adGroupAdOperation");
+        assert_eq!(status_ops.len(), 1);
+        let status = &status_ops[0]["adGroupAdOperation"];
+        assert_eq!(status["updateMask"], json!("status"));
+        assert_eq!(
+            status["update"],
+            json!({"resourceName": "customers/100/adGroupAds/600~42", "status": "PAUSED"})
+        );
+
+        let ad_ops = ops_named(&plan, "adOperation");
+        assert_eq!(ad_ops.len(), 1);
+        let ad = &ad_ops[0]["adOperation"];
+        assert_eq!(
+            ad["updateMask"],
+            json!("final_urls,responsive_search_ad.headlines,responsive_search_ad.path2")
+        );
+        assert_eq!(
+            ad["update"],
+            json!({
+                "resourceName": "customers/100/ads/42",
+                "finalUrls": ["https://example.com/landing/"],
+                "responsiveSearchAd": {
+                    "headlines": [
+                        {"text": "Blue Widgets", "pinnedField": "HEADLINE_1"},
+                        {"text": "Order Online"}
+                    ],
+                    "path2": null
+                }
+            }),
+            "only the masked fields travel; an absent path clears as null"
+        );
+        // Both operations answer for the one address when results are mapped back.
+        assert_eq!(
+            plan.operations.iter().filter(|o| o.address == "m.ad").count(),
+            2
+        );
+    }
+
+    #[test]
     fn a_custom_parameters_update_uses_the_api_field_name_in_its_mask() {
         // bidsmith spells it `custom_parameters`; the mask path Google expects
         // is `url_custom_parameters`, and a wrong path silently no-ops.
@@ -3028,8 +3191,30 @@ mod tests {
         );
     }
 
+    fn ad_update_diff(address: &str, fields: &[&str]) -> ResourceDiff {
+        ResourceDiff {
+            address: address.to_string(),
+            kind: "ad_group_ad",
+            action: Action::Update {
+                live_id: "600~42".to_string(),
+                changed_fields: fields.iter().map(|f| FieldChange::named(f)).collect(),
+            },
+        }
+    }
+
+    fn ops_named<'a>(plan: &'a PlanBody, envelope: &str) -> Vec<&'a Value> {
+        plan.body["mutateOperations"]
+            .as_array()
+            .expect("ops")
+            .iter()
+            .filter(|o| o.get(envelope).is_some())
+            .collect()
+    }
+
     #[test]
     fn an_ads_tracking_update_reaches_into_the_ad_rather_than_recreating_it() {
+        // `AdGroupAd.ad` is immutable ("Field 'ad.final_url_suffix' cannot be
+        // modified by 'UPDATE' operation"); the ad is edited through AdService.
         let input: ExportInput = serde_json::from_value(json!({
             "customer_id": "100",
             "ad_group_ads": [{
@@ -3043,19 +3228,17 @@ mod tests {
         .expect("valid ExportInput");
         let report = report_of(vec![
             noop_diff("m.g", "ad_group", "600"),
-            update_diff("m.ad", "ad_group_ad", &["ad.custom_parameters"]),
+            ad_update_diff("m.ad", &["ad.custom_parameters"]),
         ]);
         let plan = expect_plan(build_mutate_with_diff(&input, &report, true));
-        let op = plan.body["mutateOperations"]
-            .as_array()
-            .expect("ops")
-            .iter()
-            .find(|o| o.get("adGroupAdOperation").is_some())
-            .expect("an ad op");
-        let ad = &op["adGroupAdOperation"];
-        assert_eq!(ad["updateMask"], json!("ad.url_custom_parameters"));
+        assert!(ops_named(&plan, "adGroupAdOperation").is_empty(), "nothing on the AdGroupAd");
+        let ops = ops_named(&plan, "adOperation");
+        assert_eq!(ops.len(), 1);
+        let ad = &ops[0]["adOperation"];
+        assert_eq!(ad["updateMask"], json!("url_custom_parameters"));
+        assert_eq!(ad["update"]["resourceName"], json!("customers/100/ads/42"));
         assert_eq!(
-            ad["update"]["ad"]["urlCustomParameters"],
+            ad["update"]["urlCustomParameters"],
             json!([{"key": "slug", "value": "rsa_b"}])
         );
         assert!(
