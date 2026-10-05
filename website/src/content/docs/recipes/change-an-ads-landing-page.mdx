@@ -1,0 +1,113 @@
+---
+title: Change an ad's landing page
+description: Point a live search ad at a new URL — or fix its copy — without a new ad id, a split in its history, or a fresh start in review.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Your site moved from `www.example.com` to `example.com`. Or marketing
+renamed the landing page. Or one headline needs a word changed. You
+want the live ad to follow — and you do **not** want thirty brand-new
+ads with empty history replacing thirty that have been running for
+months.
+
+## The change
+
+In the `.bid` file, edit the `ad` block of the `google_ads_ad_group_ad`:
+
+```hcl
+resource "google_ads_ad_group_ad" "summer_default_rsa" {
+  ad_group = google_ads_ad_group.summer_default.id
+  status   = "ENABLED"
+
+  ad {
+    final_urls = ["https://example.com/summer"]   # ← was https://www.example.com/summer
+
+    responsive_search_ad {
+      headlines = [
+        { text = "Summer Deals 2026", pin = "HEADLINE_1" },
+        "Save On Summer Gear",
+        "Free Shipping This Season",
+      ]
+      descriptions = [
+        "Limited-time offers across our summer range.",
+        "Order today, get it before July.",
+      ]
+      path1 = "summer"
+      path2 = "deals"
+    }
+  }
+}
+```
+
+That is the whole change. If the URL is built from a shared prefix,
+change the prefix once — see
+[Build tracking URLs from a shared prefix](./build-urls-from-a-shared-prefix/).
+
+## Plan and apply
+
+```sh
+bidsmith plan .
+```
+
+Expected: one `~ update` row per edited ad, nothing to create, nothing
+to destroy:
+
+```
+summer.google_ads_ad_group_ad.summer_default_rsa   ~ update (ad.final_urls: ["https://www.example.com/summer"] -> ["https://example.com/summer"])
+
+Plan: 0 to create, 1 to update, 0 to destroy, 212 unchanged. (1 accepted, 0 rejected)
+```
+
+Commit, PR, merge, `bidsmith apply .`.
+
+## What actually happens at apply time
+
+bidsmith edits the **existing** ad through the Google Ads API. The ad
+keeps:
+
+- its **ad id**, so reports, scripts and saved filters keep working;
+- its **performance history** — clicks, conversions and quality signals
+  stay on one ad instead of splitting across an old one and a new one;
+- its **place in the ad group** and its status.
+
+Google does re-check the edited copy against its advertising policies,
+the same as after an edit in the Google Ads UI. Most reviews finish
+within one business day; the ad keeps serving its last approved
+version until then. See
+[About the ad review process](https://support.google.com/google-ads/answer/1722120)
+for what Google reviews.
+
+The same in-place path covers every field of a responsive search ad:
+`final_urls`, `final_mobile_urls`, `headlines`, `descriptions`, `path1`,
+`path2`, `final_url_suffix` and `custom_parameters`.
+
+## Reading a copy change in the plan
+
+For a headline or description edit the row shows only what moves — the
+copy the ad loses on the left, the copy it gains on the right, spelled
+the way your file spells it:
+
+```
+~ update (ad.responsive_search_ad.headlines: ["Save On Summer Gear"] -> [{ text = "Save 20% On Summer Gear", pin = "HEADLINE_2" }])
+```
+
+Reordering the headlines in your file is not a change: Google serves
+from the list, not from its order, so `plan` reports nothing.
+
+<Aside type="caution" title="Video ads are the exception">
+  The copy of a `video_responsive_ad` or a `video_ad` cannot be edited
+  through the Google Ads API. Changing it plans as a **new ad plus a
+  destroy of the old one**, which is what the row says. On a `VIDEO`
+  campaign the API cannot create the new ad either — make that edit in
+  the Google Ads UI and adopt the result.
+</Aside>
+
+## See also
+
+- [`google_ads_ad_group_ad`](/bidsmith/resources/google_ads_ad_group_ad/)
+  — the resource reference.
+- [Rename a resource without recreating it](./rename-without-recreating/)
+  — renaming the *internal* handle is free too, for a different reason.
+- [Move a keyword between match types](./change-keyword-match-type/) —
+  the opposite case: a change Google Ads can only make by recreating.

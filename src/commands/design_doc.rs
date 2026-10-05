@@ -400,6 +400,11 @@ fn api_necessity_table() -> Vec<ApiNecessityRow> {
             why: "Manual edits are one-at-a-time and non-transactional; a half-applied change set would leave live campaigns in an inconsistent, spend-affecting intermediate state.",
         },
         ApiNecessityRow {
+            capability: "Edit a live ad's landing page URL or copy in place, keeping its id, review history and statistics",
+            service: "<code>AdService.MutateAds</code> (as <code>ad_operation</code> inside the <code>GoogleAdsService.Mutate</code> batch)",
+            why: "<code>AdGroupAd.ad</code> is immutable through <code>AdGroupAdService</code>. Without this operation a changed final URL or headline would have to be a destroy plus a create, which splits the ad's history across two ids and sends the new ad through policy review again.",
+        },
+        ApiNecessityRow {
             capability: "Create the search-intent custom audiences the declared campaigns reference",
             service: "<code>CustomAudienceService.MutateCustomAudiences</code>",
             why: "Custom audiences cannot be carried by the <code>GoogleAdsService.Mutate</code> batch; this service is the only way to manage them declaratively.",
@@ -443,7 +448,7 @@ fn rmf_table() -> Vec<RmfRow> {
         },
         RmfRow {
             requirement: "Show ads (RSA): headlines, descriptions, final URLs, status",
-            satisfied_by: "Modelled as <code>google_ads_ad_group_ad</code> with repeating <code>headline { text, pin? }</code> and <code>description { text, pin? }</code> sub-blocks. Edited and displayed in <code>.bid</code> source.",
+            satisfied_by: "Modelled as <code>google_ads_ad_group_ad</code> with repeating <code>headline { text, pin? }</code> and <code>description { text, pin? }</code> sub-blocks. Edited and displayed in <code>.bid</code> source; a changed headline, description, path or final URL is applied to the live ad in place through <code>AdService.MutateAds</code>, so the ad keeps its id and history.",
         },
         RmfRow {
             requirement: "Show keywords: text, match type, status, bid",

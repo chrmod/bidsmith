@@ -197,13 +197,39 @@ resource type, any file layout, modules, schema validation.
   an HCL map rather than the API's repeated key/value message, sorted by
   name on both sides so a map — which has no inherent order — diffs
   deterministically. The update mask translates `custom_parameters` to
-  the API's `url_custom_parameters`. On an ad the pair is **updatable**,
-  unlike the creative: the API mutates it in place, and recreating an ad
-  to change a UTM slug would discard its performance history for a
-  string the visitor never sees. Omitted stays unmanaged, as everywhere
-  else; a declared empty map is an explicit clear. Docs flag that this
-  is a live-behaviour change rather than pure syntax — the suffix is
-  appended by Google at click time and never appears in the display URL.
+  the API's `url_custom_parameters`. On an ad the pair is **updatable**:
+  the API mutates it in place, and recreating an ad to change a UTM slug
+  would discard its performance history for a string the visitor never
+  sees. Omitted stays unmanaged, as everywhere else; a declared empty
+  map is an explicit clear. Docs flag that this is a live-behaviour
+  change rather than pure syntax — the suffix is appended by Google at
+  click time and never appears in the display URL.
+- **In-place RSA edits** (issue #187): a labeled responsive search ad
+  whose `final_urls`, `final_mobile_urls`, `headlines`, `descriptions`,
+  `path1` / `path2` or tracking pair changed plans as `~ update`, not as
+  `+ create` + `- destroy`. `AdGroupAd.ad` is immutable — the API answers
+  any `ad.*` mask on an `adGroupAdOperation` with "Field 'ad.…' cannot be
+  modified by 'UPDATE' operation", which is also what the earlier
+  tracking-pair update had been getting — so every `ad.*` field rides an
+  `adOperation` (`AdService.MutateAds`, `customers/{cid}/ads/{ad_id}`) in
+  the same atomic batch, with `status` staying on the `adGroupAdOperation`.
+  The live ad keeps its id, its review history and its statistics;
+  Google re-reviews the edited copy as it does after a UI edit. Settles
+  the "RSA repeating-block diff strategy" question: the API takes the
+  whole list per field, so an asset list is written as a unit, but it
+  **diffs as a multiset** — reordering `headlines` in a file is not a
+  change — and the plan row shows only what moves (the assets the live
+  ad loses `->` the ones it gains, each spelled the way the `.bid` list
+  spells it), because fifteen headlines written out twice would bury
+  the one that changed. URL lists print in full, never elided. Scope:
+  RSA ↔ RSA only. `display_url` is not an RSA field, so a disagreement
+  there still replaces; a video creative is creation-only and a
+  creative-less `ad {}` may sit on an ad type AdService cannot edit, so
+  both keep matching byte for byte. An *unlabeled* RSA with changed copy
+  is still a create with no destroy, as before — the label is what
+  proves the live ad is the same resource. The destroy row of a replace
+  prints the full declared address with `(managed, replaced)` instead
+  of the hashed label payload a long address is stored as.
 - **Asset attachment sugar** (issue #145): attaching an asset took three
   layers of ceremony — a `field_type` that is 1:1 derivable from the
   asset's resource type, one attachment resource per asset, and a
@@ -726,10 +752,12 @@ resource type, any file layout, modules, schema validation.
     source) stays a no-op against live — the next `apply` reconciles the
     moved resource's label declaratively, which is why no live-mutate
     half was added to `mv` and `moved {}` blocks stay deferred.
-  - **Ads** keep matching by **body** (an RSA's copy *is* its identity,
-    and copy is creation-only — label-first would mask a copy edit), but
-    gain a label so a replaced ad's predecessor is cleaned up rather than
-    left to linger. **Keywords are not labeled**: their text + match_type
+  - **Ads** match by **body** until labeled (an RSA's copy *is* its
+    identity for an ad bidsmith has never applied); once labeled, the
+    label claims the live ad and a changed RSA body is applied in place
+    (see **In-place RSA edits**), while a creative the API cannot edit
+    (video) is replaced and the label is what cleans up its predecessor
+    rather than leaving it to linger. **Keywords are not labeled**: their text + match_type
     is identity, per-keyword labels would be high volume (thousands of
     label ops), and the API outright forbids them on negative criteria
     (`CANNOT_ADD_LABEL_TO_NEGATIVE_CRITERION`), which is exactly where

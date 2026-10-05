@@ -80,6 +80,29 @@ resource "google_ads_ad_group_ad" "summer_default_rsa" {
 }
 ```
 
+## Editing a live ad
+
+Change the landing page, a headline, a description, a path or the
+tracking fields of a responsive search ad and `plan` shows one
+`~ update` row for it:
+
+```
+summer.google_ads_ad_group_ad.summer_default_rsa   ~ update (ad.final_urls: ["https://www.example.com/summer"] -> ["https://example.com/summer"])
+```
+
+`apply` edits the live ad in place. It keeps its id, its performance
+history and its place in the ad group; Google re-reviews the edited copy
+the same way it does after an edit in the Google Ads UI. For a headline
+or description change the row lists only what moves — the copy the ad
+loses on the left, the copy it gains on the right — and reordering the
+items in your file is not a change at all.
+
+Video creatives are different: their copy is create-only in the Google
+Ads API, so editing a `video_responsive_ad` or a `video_ad` plans as a
+new ad plus a destroy of the old one. See
+[Change an ad's landing page](/bidsmith/recipes/change-an-ads-landing-page/)
+for the full workflow.
+
 ## Schema
 
 <AttributeTable block={resource} headingLevel={3} />
@@ -153,7 +176,7 @@ The ad group must be a video type (`VIDEO_TRUE_VIEW_IN_STREAM`,
 `VIDEO_BUMPER`, `VIDEO_NON_SKIPPABLE_IN_STREAM`, …) and its campaign
 must be `advertising_channel_type = "VIDEO"`.
 
-Ad copy is create-only, exactly as it is for RSAs: editing a headline
+Video ad copy is create-only, unlike an RSA's: editing a headline here
 plans as a new ad plus a destroy of the old one, not an in-place edit.
 
 <Aside type="caution" title="bidsmith does not upload video">

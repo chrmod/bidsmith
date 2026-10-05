@@ -50,6 +50,7 @@ export default defineConfig({
             { label: 'Use bidsmith in Claude Cowork', slug: 'recipes/claude-cowork' },
             { label: 'Pause everything for the holidays', slug: 'recipes/pause-for-holidays' },
             { label: 'Move a keyword between match types', slug: 'recipes/change-keyword-match-type' },
+            { label: "Change an ad's landing page", slug: 'recipes/change-an-ads-landing-page' },
             { label: 'Target specific countries and languages', slug: 'recipes/target-countries-and-languages' },
             { label: 'Cap how often people see your video ad', slug: 'recipes/cap-how-often-people-see-your-video' },
             { label: 'Stop ads running overnight', slug: 'recipes/stop-ads-running-overnight' },

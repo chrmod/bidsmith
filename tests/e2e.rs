@@ -39,7 +39,7 @@ fn live_round_trip() {
     let roundtrip_path = tmp.path.join("roundtrip.bid");
 
     let rewritten = FIXTURE.replace("__PREFIX__", &prefix);
-    std::fs::write(&fixture_path, rewritten).expect("write fixture");
+    std::fs::write(&fixture_path, &rewritten).expect("write fixture");
 
     let cust = test_customer_id.clone();
 
@@ -114,6 +114,68 @@ fn live_round_trip() {
             );
         },
     );
+
+    // Issue #187: a changed landing page or headline on a labeled RSA is an
+    // in-place update through AdService, so the live ad keeps its id. Pull
+    // before and after the edit and compare.
+    let ad_ids_before = ad_ids(&dump_path);
+    assert!(!ad_ids_before.is_empty(), "the pull should carry the fixture's RSA");
+    let edited = rewritten
+        .replace("https://example.com/widgets", "https://example.com/widgets-v2")
+        .replace("Order Online Today", "Order Online Now");
+    assert_ne!(edited, rewritten, "the fixture edit must change something");
+    std::fs::write(&fixture_path, edited).expect("write edited fixture");
+    let output = run_or_panic(
+        "apply --auto-approve (RSA edited in place)",
+        Command::new(BINARY)
+            .args(["apply", "--auto-approve", fixture_path.to_str().unwrap()])
+            .env("GOOGLE_ADS_CUSTOMER_ID", &cust),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("0 to create, 1 to update, 0 to destroy"),
+        "an RSA edit is one in-place update, not a replace. stdout:\n{stdout}"
+    );
+    let edited_dump_path = tmp.path.join("dump-edited.json");
+    run_or_panic(
+        "pull (after the edit)",
+        Command::new(BINARY)
+            .args(["pull", "-o", edited_dump_path.to_str().unwrap()])
+            .env("GOOGLE_ADS_CUSTOMER_ID", &cust),
+    );
+    assert_eq!(
+        ad_ids(&edited_dump_path),
+        ad_ids_before,
+        "the edited ad keeps its id — no destroy, no create"
+    );
+    plan_clean_with_retry(
+        "plan (edited fixture)",
+        fixture_path.to_str().unwrap(),
+        &cust,
+        |_| {},
+    );
+}
+
+/// Every `ad_group_ad.ad.id` in a `pull` dump — the array of raw searchStream
+/// batches, walked without assuming where the ad rows sit.
+fn ad_ids(dump: &std::path::Path) -> std::collections::BTreeSet<String> {
+    let raw = std::fs::read_to_string(dump).expect("read pull dump");
+    let batches: serde_json::Value = serde_json::from_str(&raw).expect("pull dump is JSON");
+    let mut ids = std::collections::BTreeSet::new();
+    let mut stack = vec![&batches];
+    while let Some(v) = stack.pop() {
+        match v {
+            serde_json::Value::Array(items) => stack.extend(items),
+            serde_json::Value::Object(map) => {
+                if let Some(id) = map.get("adGroupAd").and_then(|a| a.pointer("/ad/id")) {
+                    ids.insert(id.to_string());
+                }
+                stack.extend(map.values());
+            }
+            _ => {}
+        }
+    }
+    ids
 }
 
 /// A Google Ads read is not guaranteed to see a mutate that just landed — a

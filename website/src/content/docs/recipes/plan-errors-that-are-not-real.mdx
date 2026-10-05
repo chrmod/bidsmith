@@ -121,16 +121,18 @@ distrust. Two ways to stay ahead of it:
 This pair is normal, not a loop:
 
 ```
-google_ads_ad_group_ad.spring_rsa                             + create
-google_ads_ad_group_ad.spring_rsa (managed, no longer declared)  - destroy
+google_ads_ad_group_ad.preroll_12s                       + create
+google_ads_ad_group_ad.preroll_12s (managed, replaced)   - destroy
 ```
 
-Google Ads ads are mostly immutable — an edited headline can't be
-changed in place, so bidsmith replaces the ad. The `destroy` is the old
-creative, the `create` is the new one, and both carry the same address
-because it's the same ad in your files. It only warrants a second look
-if the destroy is *rejected*, which is one of the stale-state
-signatures above.
+A video ad's body cannot be changed in place, so when you edit one
+bidsmith replaces the ad. The `destroy` is the old creative, the
+`create` is the new one, and both carry the same address because it's
+the same ad in your files. It only warrants a second look if the
+destroy is *rejected*, which is one of the stale-state signatures
+above. (A search ad never shows this pair: its URL and copy are edited
+in place as a single `~ update` row, see
+[Change an ad's landing page](./change-an-ads-landing-page/).)
 
 ## See also
 
